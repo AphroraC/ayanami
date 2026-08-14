@@ -30,6 +30,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
   include/ayanami/components/impl/execution_base.cpp
+  include/ayanami/components/impl/plugin_manager.cpp
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -84,6 +85,7 @@ if(BUILD_TESTING)
 
     # load_module / ExtensionModule 测试插件 (被 dlopen 的 .so)
     add_library(dummy_planner_module SHARED tests/plugins/dummy_planner_module.cpp)
+    target_link_libraries(dummy_planner_module PRIVATE ayanami)
     set_target_properties(dummy_planner_module PROPERTIES PREFIX "lib")
     add_library(dummy_extension_module SHARED tests/plugins/dummy_extension_module.cpp)
     target_link_libraries(dummy_extension_module PRIVATE ayanami)
@@ -123,6 +125,11 @@ if(BUILD_TESTING)
     add_executable(action_test tests/action_test.cpp)
     target_link_libraries(action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME ActionTest COMMAND action_test)
+
+    add_executable(plugin_manager_test tests/plugin_manager_test.cpp)
+    target_link_libraries(plugin_manager_test PRIVATE ayanami GTest::gtest)
+    add_test(NAME PluginManagerTest COMMAND plugin_manager_test
+      $<TARGET_FILE:dummy_planner_module>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
