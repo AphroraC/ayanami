@@ -46,6 +46,13 @@ public:
     ExecutionBase::start();
   }
 
+  /// @brief 取消: 置 cancel_ 并透传到 planner 插件 (virtual cancel)。
+  void cancel() override {
+    cancel_ = true;
+    if (planner_) planner_->cancel();
+    condition_.notify_all();
+  }
+
   PlanningState getState() const {
     return static_cast<PlanningState>(state_.load());
   }
@@ -73,7 +80,15 @@ protected:
     start_time_ = std::chrono::steady_clock::now();
     int retries = 0;
     try {
-      while (!should_exit_ && !cancel_) {
+      while (true) {
+        if (cancel_) {
+          setState(CANCELED, true);
+          return;
+        }
+        if (should_exit_) {
+          setState(STOPPED, true);
+          return;
+        }
         setState(PLANNING, false);
 
         double cost = 0.0;
@@ -101,7 +116,6 @@ protected:
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
       }
-      setState(STOPPED, true);
     } catch (...) {
       message_ = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);

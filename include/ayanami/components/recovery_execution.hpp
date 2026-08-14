@@ -37,6 +37,13 @@ public:
     return static_cast<RecoveryState>(state_.load());
   }
 
+  /// @brief 取消: 置 cancel_ 并透传到 recovery 插件 (virtual cancel)。
+  void cancel() override {
+    cancel_ = true;
+    if (recovery_) recovery_->cancel();
+    condition_.notify_all();
+  }
+
   /// @brief 恢复耐心 (秒); <=0 关闭。取消时等待该时长后仍不返回则超时。
   void setRecoveryPatience(double seconds) {
     recovery_patience_ = std::chrono::duration<double>(seconds);
@@ -49,7 +56,8 @@ public:
 
 protected:
   void run() override {
-    cancel_ = false;
+    // 注意: 不在 run() 内 reset cancel_。start() 期已复位, 这里只读 cancel_;
+    // 若在 run() 开头复位会把 start() 后刚发生的 cancel() 丢掉 (TOCTOU)。
     setState(STARTED, false);
     start_time_ = std::chrono::steady_clock::now();
     setState(RECOVERING, false);

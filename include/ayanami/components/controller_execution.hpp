@@ -107,6 +107,15 @@ public:
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd);
   }
 
+  /// @brief 取消: 置 cancel_ → 透传到 controller 插件 (virtual cancel) →
+  /// 发布清零停止命令 → notify 唤醒 waitForStateUpdate。
+  void cancel() override {
+    cancel_ = true;
+    if (controller_) controller_->cancel();
+    publishStopCommand();
+    condition_.notify_all();
+  }
+
 protected:
   void run() override {
     start_time_ = std::chrono::steady_clock::now();
@@ -124,10 +133,15 @@ protected:
 
     int retries = 0;
     try {
-      while (!should_exit_ && !cancel_) {
+      while (true) {
         if (cancel_) {
           publishStopCommand();
           setState(CANCELED, true);
+          return;
+        }
+        if (should_exit_) {
+          publishStopCommand();
+          setState(STOPPED, true);
           return;
         }
 
@@ -192,9 +206,6 @@ protected:
 
         std::this_thread::sleep_for(period);
       }
-
-      publishStopCommand();
-      setState(STOPPED, true);
     } catch (...) {
       message_ = "Unknown error occurred";
       publishStopCommand();
