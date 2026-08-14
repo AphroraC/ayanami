@@ -23,6 +23,12 @@ find_package(spdlog REQUIRED)  # 或 vendored
 # 第三方接口库 (新增 cmake/thirdparty.cmake 引入)
 include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
 
+# Task 14: BT 依赖源 (BUILD_WITH_BT=OFF 时剔除, 避免缺 BT 头编译失败)
+set(AYANAMI_BT_SOURCES "")
+if(BUILD_WITH_BT)
+  list(APPEND AYANAMI_BT_SOURCES src/behavior_tree/pilot.cpp)
+endif()
+
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
@@ -33,6 +39,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   include/ayanami/components/impl/plugin_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/impl/navigation_server_base_impl.cpp
+  ${AYANAMI_BT_SOURCES}
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -154,6 +161,15 @@ if(BUILD_TESTING)
     target_compile_definitions(behavior_tree_action_test PRIVATE
       AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
     add_test(NAME BehaviorTreeActionTest COMMAND behavior_tree_action_test)
+
+    # Task 14: BT Pilot (常驻树 + pending_goal 黑板 + 抢占零速度)
+    if(BUILD_WITH_BT)
+      add_executable(pilot_test tests/pilot_test.cpp)
+      target_link_libraries(pilot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+      target_compile_definitions(pilot_test PRIVATE
+        AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
+      add_test(NAME PilotTest COMMAND pilot_test)
+    endif()
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
