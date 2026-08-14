@@ -27,7 +27,8 @@ include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_c
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
   src/utility/load_module.cpp
-  src/utility/extension_module.cpp)
+  src/utility/extension_module.cpp
+  thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -89,6 +90,10 @@ if(BUILD_TESTING)
     add_executable(messages_test tests/messages_test.cpp)
     target_link_libraries(messages_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME MessagesTest COMMAND messages_test)
+
+    add_executable(transform_store_test tests/transform_store_test.cpp)
+    target_link_libraries(transform_store_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME TransformStoreTest COMMAND transform_store_test)
 
     add_executable(load_module_test tests/load_module_test.cpp)
     target_link_libraries(load_module_test PRIVATE ayanami GTest::gtest)
