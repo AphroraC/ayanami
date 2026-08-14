@@ -110,6 +110,10 @@ if(BUILD_TESTING)
     target_link_libraries(callbacks_test PRIVATE ayanami GTest::gtest)
     add_test(NAME CallbacksTest COMMAND callbacks_test
       $<TARGET_FILE:echo_extension>)
+
+    add_executable(core_interfaces_test tests/core_interfaces_test.cpp)
+    target_link_libraries(core_interfaces_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME CoreInterfacesTest COMMAND core_interfaces_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
