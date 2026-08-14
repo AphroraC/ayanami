@@ -24,12 +24,17 @@ find_package(spdlog REQUIRED)  # 或 vendored
 include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
 
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
-add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL} src/utility/config.cpp)
+add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
+  src/utility/config.cpp
+  src/utility/load_module.cpp
+  src/utility/extension_module.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
+# src/utility/load_module.cpp uses dlfcn (dlopen/dlsym)
+target_link_libraries(ayanami PRIVATE ${CMAKE_DL_LIBS})
 # src/utility/config.cpp (via config_impl.hpp) 依赖 vendored nlohmann；
 # 公开头 config.hpp 不 include nlohmann (spec §2.1)，故 PRIVATE 即可。
 target_link_libraries(ayanami PRIVATE nlohmann_json::nlohmann_json)
@@ -73,6 +78,18 @@ if(BUILD_TESTING)
     add_executable(callback_slot_test tests/callback_slot_test.cpp)
     target_link_libraries(callback_slot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME CallbackSlotTest COMMAND callback_slot_test)
+
+    # load_module / ExtensionModule 测试插件 (被 dlopen 的 .so)
+    add_library(dummy_planner_module SHARED tests/plugins/dummy_planner_module.cpp)
+    set_target_properties(dummy_planner_module PROPERTIES PREFIX "lib")
+    add_library(dummy_extension_module SHARED tests/plugins/dummy_extension_module.cpp)
+    target_link_libraries(dummy_extension_module PRIVATE ayanami)
+    set_target_properties(dummy_extension_module PROPERTIES PREFIX "lib")
+
+    add_executable(load_module_test tests/load_module_test.cpp)
+    target_link_libraries(load_module_test PRIVATE ayanami GTest::gtest)
+    add_test(NAME LoadModuleTest COMMAND load_module_test
+      $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
