@@ -30,8 +30,11 @@ target_include_directories(ayanami PUBLIC
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
+# src/utility/config.cpp (via config_impl.hpp) 依赖 vendored nlohmann；
+# 公开头 config.hpp 不 include nlohmann (spec §2.1)，故 PRIVATE 即可。
+target_link_libraries(ayanami PRIVATE nlohmann_json::nlohmann_json)
 if(BUILD_WITH_BT)
-  target_link_libraries(ayanami PUBLIC BT::behaviortree_cpp fast_tf::fast_tf nlohmann_json::nlohmann_json)
+  target_link_libraries(ayanami PUBLIC BT::behaviortree_cpp fast_tf::fast_tf)
 endif()
 install(TARGETS ayanami EXPORT ayanamiTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)

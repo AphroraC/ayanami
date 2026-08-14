@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 namespace {
 
@@ -22,6 +23,27 @@ void write_json(const std::filesystem::path& path,
 }
 
 } // namespace
+
+TEST(ConfigTest, EmptyFileGracefulReturn) {
+  // 文件打不开 -> spdlog::error + 空 json，param 回退 default
+  auto dir = make_temp_config_dir();
+  ayanami::Config cfg((dir / "nonexistent.json").string());
+  EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
+}
+
+TEST(ConfigTest, EigenIsometry3dVector) {
+  // TUM 7 元 x2: [x,y,z,qx,qy,qz,qw] * 2
+  auto dir = make_temp_config_dir();
+  write_json(dir / "test.json",
+             R"({ "p": { "vec": [1,2,3,0,0,0,1, 4,5,6,0,0,0,1] } })");
+  ayanami::Config cfg((dir / "test.json").string());
+  auto vec = cfg.param<std::vector<Eigen::Isometry3d>>(
+      "p", "vec", std::vector<Eigen::Isometry3d>{});
+  ASSERT_EQ(vec.size(), 2u);
+  EXPECT_NEAR(vec[0].translation().x(), 1.0, 1e-6);
+  EXPECT_NEAR(vec[1].translation().x(), 4.0, 1e-6);
+  EXPECT_NEAR(vec[1].translation().y(), 5.0, 1e-6);
+}
 
 TEST(ConfigTest, LoadAndParamScalar) {
   auto dir = make_temp_config_dir();
@@ -44,6 +66,17 @@ TEST(ConfigTest, EigenTrait) {
   EXPECT_NEAR(t.translation().x(), 1.0, 1e-6);
   EXPECT_NEAR(t.translation().y(), 2.0, 1e-6);
   EXPECT_NEAR(t.translation().z(), 3.0, 1e-6);
+}
+
+TEST(GlobalConfigTest, ConfigsSubdirFallback) {
+  // §2.2 branch ④: 目录下无 config.json 但 configs/config.json 存在 -> 切到 configs/
+  auto dir = make_temp_config_dir();
+  std::filesystem::create_directories(dir / "configs");
+  write_json(dir / "configs" / "config.json", R"({ "global": {} })");
+  ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance(dir.string(), true);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->param<std::string>("global", "config_path", ""),
+            (dir / "configs").string());
 }
 
 TEST(GlobalConfigTest, InstanceOnce) {
