@@ -31,6 +31,8 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/interfaces/callbacks.cpp
   include/ayanami/components/impl/execution_base.cpp
   include/ayanami/components/impl/plugin_manager.cpp
+  src/components/navigation_server_base.cpp
+  src/components/impl/navigation_server_base_impl.cpp
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -130,6 +132,16 @@ if(BUILD_TESTING)
     target_link_libraries(plugin_manager_test PRIVATE ayanami GTest::gtest)
     add_test(NAME PluginManagerTest COMMAND plugin_manager_test
       $<TARGET_FILE:dummy_planner_module>)
+
+    # Task 11: NavigationServerBase (4 族插件工厂在 navigation_plugins .so)
+    add_library(navigation_plugins SHARED tests/plugins/navigation_plugins.cpp)
+    target_link_libraries(navigation_plugins PRIVATE ayanami)
+    set_target_properties(navigation_plugins PROPERTIES PREFIX "lib")
+
+    add_executable(navigation_server_test tests/navigation_server_test.cpp)
+    target_link_libraries(navigation_server_test PRIVATE ayanami GTest::gtest)
+    add_test(NAME NavigationServerTest COMMAND navigation_server_test
+      $<TARGET_FILE:navigation_plugins>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
