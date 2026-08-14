@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ayanami</name>
+  <version>1.0.0</version>
+  <description>ayanami: pure C++ navigation framework</description>
+  <maintainer email="dev@example.com">ayanami</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>cmake</buildtool_depend>
+  <depend>eigen</depend>
+  <depend>spdlog</depend>
+</package>
