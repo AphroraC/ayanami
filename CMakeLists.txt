@@ -142,6 +142,11 @@ if(BUILD_TESTING)
     target_link_libraries(navigation_server_test PRIVATE ayanami GTest::gtest)
     add_test(NAME NavigationServerTest COMMAND navigation_server_test
       $<TARGET_FILE:navigation_plugins>)
+
+    # Task 12: BT 控制节点 + 条件节点 + 黑板协议
+    add_executable(behavior_tree_control_test tests/behavior_tree_control_test.cpp)
+    target_link_libraries(behavior_tree_control_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME BehaviorTreeControlTest COMMAND behavior_tree_control_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
