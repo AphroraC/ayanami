@@ -68,14 +68,14 @@ public:
   std::vector<std::string> recoveryActionNames() const;
 
   /// @brief 主流 TaskHandle 直连 (spec §3.4): 以 server 当前 session/plan_version
-  /// 填充 Goal 后 acceptGoal。
-  TaskHandle<ayanami::actions::GetPathResult> requestPath(
+  /// 填充 Goal 后 acceptGoal。virtual 供测试 Mock 覆写 (Task 13)。
+  virtual TaskHandle<ayanami::actions::GetPathResult> requestPath(
       const ayanami::actions::GetPathGoal& goal);
-  TaskHandle<ayanami::actions::SmoothPathResult> requestSmoothing(
+  virtual TaskHandle<ayanami::actions::SmoothPathResult> requestSmoothing(
       const ayanami::actions::SmoothPathGoal& goal);
-  TaskHandle<ayanami::actions::ExePathResult> requestExecution(
+  virtual TaskHandle<ayanami::actions::ExePathResult> requestExecution(
       const ayanami::actions::ExePathGoal& goal);
-  TaskHandle<ayanami::actions::RecoveryResult> requestRecovery(
+  virtual TaskHandle<ayanami::actions::RecoveryResult> requestRecovery(
       const ayanami::actions::RecoveryGoal& goal);
 
   uint64_t currentSessionId() const;

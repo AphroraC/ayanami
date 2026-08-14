@@ -1,0 +1,37 @@
+<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
+  <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="6">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="{planner_frequency}">
+          <RecoveryNode name="ComputePath" number_of_retries="1">
+            <Sequence>
+              <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+              <IsPathValid path="{raw_path}"/>
+              <SmoothPath  input_path="{raw_path}" path="{smoothed_path}"/>
+              <IsPathValid path="{smoothed_path}"/>
+            </Sequence>
+            <Sequence>
+              <Recovery recovery="{clear_costmap_id}"/>
+              <AlwaysFailure/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode name="FollowPath" number_of_retries="1">
+          <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
+          <Sequence>
+            <Recovery recovery="{clear_costmap_id}"/>
+            <AlwaysFailure/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryActions">
+        <GoalUpdated goal="{goal}"/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence><Recovery recovery="{spin_id}"/>    <AlwaysFailure/></Sequence>
+          <Sequence><Recovery recovery="{wait_id}"/>    <AlwaysFailure/></Sequence>
+          <Sequence><Recovery recovery="{backup_id}"/>  <AlwaysFailure/></Sequence>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

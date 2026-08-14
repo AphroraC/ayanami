@@ -147,6 +147,13 @@ if(BUILD_TESTING)
     add_executable(behavior_tree_control_test tests/behavior_tree_control_test.cpp)
     target_link_libraries(behavior_tree_control_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME BehaviorTreeControlTest COMMAND behavior_tree_control_test)
+
+    # Task 13: BT action 节点 (TaskHandle 直连) + 注册 + 默认 XML
+    add_executable(behavior_tree_action_test tests/behavior_tree_action_test.cpp)
+    target_link_libraries(behavior_tree_action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(behavior_tree_action_test PRIVATE
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
+    add_test(NAME BehaviorTreeActionTest COMMAND behavior_tree_action_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
