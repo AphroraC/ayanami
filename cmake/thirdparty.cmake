@@ -31,9 +31,13 @@ add_library(fast_tf::fast_tf ALIAS fast_tf)
 install(TARGETS fast_tf EXPORT ayanamiTargets)
 
 # ---- nlohmann_json (header-only) ----
+# Vendored tree keeps `#include <nlohmann/...>` prefixes internally, so the
+# include root must be thirdparty/ (not thirdparty/nlohmann). With the wrong
+# dir, <nlohmann/json.hpp> silently falls back to the system copy (3.7.3,
+# incompatible with std::any under this toolchain).
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/thirdparty/nlohmann>
+  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/thirdparty>
   $<INSTALL_INTERFACE:include>)
 add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 install(TARGETS nlohmann_json EXPORT ayanamiTargets)

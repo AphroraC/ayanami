@@ -24,7 +24,7 @@ find_package(spdlog REQUIRED)  # 或 vendored
 include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
 
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
-add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL} src/dummy.cpp)  # 占位; 后续 task 替换为真实源
+add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL} src/utility/config.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -57,3 +57,16 @@ configure_package_config_file(${CMAKE_SOURCE_DIR}/cmake/ayanami-config.cmake.in
 write_basic_package_version_file(ayanami-configVersion.cmake COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_BINARY_DIR}/ayanami-config.cmake ${CMAKE_BINARY_DIR}/ayanami-configVersion.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
+
+# ---- Tests ----
+if(BUILD_TESTING)
+  enable_testing()
+  find_package(GTest)
+  if(GTest_FOUND)
+    add_executable(config_test tests/config_test.cpp)
+    target_link_libraries(config_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ConfigTest COMMAND config_test)
+  else()
+    message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
+  endif()
+endif()
