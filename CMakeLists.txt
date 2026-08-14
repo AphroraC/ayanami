@@ -28,6 +28,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
+  src/interfaces/callbacks.cpp
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -99,6 +100,16 @@ if(BUILD_TESTING)
     target_link_libraries(load_module_test PRIVATE ayanami GTest::gtest)
     add_test(NAME LoadModuleTest COMMAND load_module_test
       $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
+
+    # NavigationCallbacks 跨 .so echo 测试插件 (dlopen 后 add 到槽, 链接 libayanami)
+    add_library(echo_extension SHARED tests/plugins/echo_extension.cpp)
+    target_link_libraries(echo_extension PRIVATE ayanami)
+    set_target_properties(echo_extension PROPERTIES PREFIX "lib")
+
+    add_executable(callbacks_test tests/callbacks_test.cpp)
+    target_link_libraries(callbacks_test PRIVATE ayanami GTest::gtest)
+    add_test(NAME CallbacksTest COMMAND callbacks_test
+      $<TARGET_FILE:echo_extension>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

@@ -1,0 +1,29 @@
+#include "ayanami/interfaces/callbacks.hpp"
+
+namespace ayanami {
+namespace interfaces {
+
+// 槽对象实体定义 —— 只在 libayanami 内一份 (spec §3.2 关键纪律)。
+// 不用 inline static: 否则每个 .so 各持一份实例, 插件 add 的回调与核心
+// emit 落在不同对象上, 跨 .so 静默失效。
+
+CallbackSlot<void(const ayanami::actions::GetPathGoal&)> NavigationCallbacks::on_get_path_goal;
+CallbackSlot<void(const ayanami::actions::GetPathFeedback&)> NavigationCallbacks::on_get_path_feedback;
+CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::GetPathResult>&)> NavigationCallbacks::on_get_path_result;
+CallbackSlot<void(const ayanami::actions::SmoothPathGoal&)> NavigationCallbacks::on_smooth_path_goal;
+CallbackSlot<void(const ayanami::actions::SmoothPathFeedback&)> NavigationCallbacks::on_smooth_path_feedback;
+CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::SmoothPathResult>&)> NavigationCallbacks::on_smooth_path_result;
+CallbackSlot<void(const ayanami::actions::ExePathGoal&)> NavigationCallbacks::on_exe_path_goal;
+CallbackSlot<void(const ayanami::actions::ExePathFeedback&)> NavigationCallbacks::on_exe_path_feedback;
+CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::ExePathResult>&)> NavigationCallbacks::on_exe_path_result;
+CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> NavigationCallbacks::on_recovery_goal;
+CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> NavigationCallbacks::on_recovery_feedback;
+CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> NavigationCallbacks::on_recovery_result;
+CallbackSlot<void(const ayanami::geometry_msgs::PoseStamped&, const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_robot_state_updated;
+CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_velocity_command;
+CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_costmap_visualization;
+CallbackSlot<void(const ayanami::sensor_msgs::PointCloud2&)> NavigationCallbacks::on_obstacle_pointcloud;
+CallbackSlot<void(const ayanami::sensor_msgs::LaserScan&)> NavigationCallbacks::on_obstacle_laserscan;
+
+} // namespace interfaces
+} // namespace ayanami

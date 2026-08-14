@@ -1,0 +1,73 @@
+#include <gtest/gtest.h>
+
+#include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/utility/extension_module.hpp>
+#include <ayanami/utility/load_module.hpp>
+
+#include <atomic>
+#include <string>
+#include <thread>
+#include <vector>
+
+using namespace ayanami::interfaces;
+using ayanami::actions::GetPathResult;
+using ayanami::actions::GoalResult;
+
+namespace {
+
+// 由 main() 从 argv 读取 (ctest 传 $<TARGET_FILE:echo_extension> 路径)
+std::string g_echo_so;
+
+} // namespace
+
+TEST(NavigationCallbacksTest, AddAndCallAcrossCompilationUnits) {
+  // 槽对象实体定义在 libayanami 的 src/interfaces/callbacks.cpp (不 inline),
+  // 测试编译单元 (link libayanami) 引用到同一实例 → 跨编译单元一致。
+  int received = 0;
+  const int id = NavigationCallbacks::on_get_path_result.add(
+      [&](const auto&){ received++; });
+  NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+  EXPECT_EQ(received, 1);
+  NavigationCallbacks::on_get_path_result.remove(id);
+}
+
+TEST(NavigationCallbacksTest, ThreadSafeAcrossAddRemoveCall) {
+  // 同 Task 2 的并发测试, 但挂在 NavigationCallbacks 槽上。
+  std::atomic<int> hits{0};
+  const int id = NavigationCallbacks::on_get_path_result.add([&](const auto&){ hits++; });
+  std::vector<std::thread> ts;
+  for (int i = 0; i < 8; ++i) {
+    ts.emplace_back([&]{
+      for (int j = 0; j < 1000; ++j) {
+        NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+      }
+    });
+  }
+  for (auto& t : ts) t.join();
+  EXPECT_EQ(hits.load(), 8000);
+  NavigationCallbacks::on_get_path_result.remove(id);
+}
+
+TEST(NavigationCallbacksTest, CallbackVisibleAcrossSoBoundary) {
+  // dlopen echo_extension.so (链接 libayanami): 其构造期 add 到
+  // NavigationCallbacks::on_get_path_result。本测试 emit 槽后, echo .so
+  // 内部的计数必须增加 —— 证明槽对象是 libayanami 内的同一实例
+  // (spec §3.2 关键纪律, 不能用 inline static)。
+  auto ext = ayanami::ExtensionModule::load_module(g_echo_so);
+  ASSERT_NE(ext, nullptr);
+  auto hits_fn =
+      ayanami::load_module_from_so<int(*)()>(g_echo_so, "echo_extension_hits");
+  ASSERT_NE(hits_fn, nullptr);
+  const int before = hits_fn();
+  NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+  EXPECT_EQ(hits_fn(), before + 1);
+  NavigationCallbacks::on_get_path_result.remove(0);
+}
+
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  if (argc > 1) {
+    g_echo_so = argv[1];
+  }
+  return RUN_ALL_TESTS();
+}
