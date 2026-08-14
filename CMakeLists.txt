@@ -86,6 +86,10 @@ if(BUILD_TESTING)
     target_link_libraries(dummy_extension_module PRIVATE ayanami)
     set_target_properties(dummy_extension_module PROPERTIES PREFIX "lib")
 
+    add_executable(messages_test tests/messages_test.cpp)
+    target_link_libraries(messages_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME MessagesTest COMMAND messages_test)
+
     add_executable(load_module_test tests/load_module_test.cpp)
     target_link_libraries(load_module_test PRIVATE ayanami GTest::gtest)
     add_test(NAME LoadModuleTest COMMAND load_module_test
