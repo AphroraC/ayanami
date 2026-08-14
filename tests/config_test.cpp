@@ -31,6 +31,16 @@ TEST(ConfigTest, EmptyFileGracefulReturn) {
   EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
 }
 
+TEST(ConfigTest, EmptyOrInvalidJsonGracefulReturn) {
+  // 文件存在但内容非法 JSON -> nlohmann parse_error 被捕获 -> spdlog::error +
+  // 空 json，param 回退 default（不 abort）
+  auto dir = make_temp_config_dir();
+  write_json(dir / "invalid_config.json", R"({ "unclosed": )");
+  ayanami::Config cfg((dir / "invalid_config.json").string());
+  EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
+  EXPECT_FALSE(cfg.has_param("any", "any"));
+}
+
 TEST(ConfigTest, EigenIsometry3dVector) {
   // TUM 7 元 x2: [x,y,z,qx,qy,qz,qw] * 2
   auto dir = make_temp_config_dir();
