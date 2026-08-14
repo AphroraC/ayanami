@@ -29,6 +29,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
+  include/ayanami/components/impl/execution_base.cpp
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -114,6 +115,10 @@ if(BUILD_TESTING)
     add_executable(core_interfaces_test tests/core_interfaces_test.cpp)
     target_link_libraries(core_interfaces_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME CoreInterfacesTest COMMAND core_interfaces_test)
+
+    add_executable(execution_test tests/execution_test.cpp)
+    target_link_libraries(execution_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ExecutionTest COMMAND execution_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

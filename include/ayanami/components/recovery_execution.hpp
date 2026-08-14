@@ -1,0 +1,78 @@
+#pragma once
+
+#include "ayanami/components/execution_base.hpp"
+#include "ayanami/core/abstract_recovery.hpp"
+
+#include <chrono>
+#include <memory>
+
+namespace ayanami {
+namespace components {
+
+/**
+ * @brief 恢复行为执行 (对标 MBF AbstractRecoveryExecution, spec §5.1)。
+ *
+ * 单次 runRecovery + 状态机: INITIALIZED→STARTED→RECOVERING→RECOVERY_DONE
+ * (或 CANCELED/STOPPED/INTERNAL_ERROR)。
+ */
+class RecoveryExecution : public ExecutionBase {
+public:
+  using Ptr = std::shared_ptr<RecoveryExecution>;
+
+  enum RecoveryState {
+    INITIALIZED,
+    STARTED,
+    RECOVERING,
+    RECOVERY_DONE,
+    CANCELED,
+    STOPPED,
+    INTERNAL_ERROR,
+    PAT_EXCEEDED,
+  };
+
+  explicit RecoveryExecution(ayanami::abstract::AbstractRecovery::Ptr recovery)
+      : recovery_(std::move(recovery)) {}
+
+  RecoveryState getState() const {
+    return static_cast<RecoveryState>(state_.load());
+  }
+
+  /// @brief 恢复耐心 (秒); <=0 关闭。取消时等待该时长后仍不返回则超时。
+  void setRecoveryPatience(double seconds) {
+    recovery_patience_ = std::chrono::duration<double>(seconds);
+  }
+
+  bool isPatienceExceeded() const {
+    if (recovery_patience_ <= std::chrono::duration<double>(0)) return false;
+    return std::chrono::steady_clock::now() - start_time_ > recovery_patience_;
+  }
+
+protected:
+  void run() override {
+    cancel_ = false;
+    setState(STARTED, false);
+    start_time_ = std::chrono::steady_clock::now();
+    setState(RECOVERING, false);
+    try {
+      outcome_ = recovery_->runRecovery(message_);
+      if (cancel_) {
+        setState(CANCELED, true);
+      } else if (isPatienceExceeded()) {
+        setState(PAT_EXCEEDED, true);
+      } else {
+        setState(RECOVERY_DONE, true);
+      }
+    } catch (...) {
+      message_ = "Unknown error occurred";
+      setState(INTERNAL_ERROR, true);
+    }
+  }
+
+private:
+  ayanami::abstract::AbstractRecovery::Ptr recovery_;
+  std::chrono::duration<double> recovery_patience_{0};
+  std::chrono::steady_clock::time_point start_time_;
+};
+
+} // namespace components
+} // namespace ayanami
