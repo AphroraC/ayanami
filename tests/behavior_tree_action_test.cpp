@@ -288,6 +288,32 @@ TEST(BehaviorTreeActionTest, StaleSessionIsRejectedOnRunning) {
   EXPECT_EQ(server.currentPlanVersion(), 0u);
 }
 
+TEST(BehaviorTreeActionTest, VersionStaleResultRejected) {
+  MockNavServer server;
+  server.path_result_ = makePath(2);
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, &server);
+  setRequiredEntries(bb);
+  bb->set<PoseStamped>(kGoal, makePose(1.0, 2.0));
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(kComputePathXml, bb);
+
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+
+  // result 带 current session 但 plan_version 陈旧 (current-1): 任务完成前新路径
+  // 已生成并自增 plan_version (spec §6.2 session/version 双校验)
+  server.incrementPlanVersion();
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+
+  // 拒收: raw_path 不写入 (plan_version stale 拒收纪律)
+  Path raw;
+  ASSERT_TRUE(bb->get<Path>(kRawPath, raw));
+  EXPECT_TRUE(raw.poses.empty());
+}
+
 TEST(BehaviorTreeActionTest, HaltedNodeCancelsTask) {
   MockNavServer server;
   server.path_sync_ = false;  // 任务挂起, 节点保持 RUNNING

@@ -39,8 +39,9 @@ inline components::NavigationServerBase* lookupNavigationServer(
  *
  * onStart: 读 goal 端口, 组 GetPathGoal (填 server 当前 session/plan_version),
  * requestPath 持 TaskHandle, 注册 onComplete -> emitWakeUpSignal。
- * onRunning: 等 task ready; sessionIsCurrent 校验防 stale 竞态 (spec §6.2 关键
- * 纪律), 通过后写 path 端口 (XML 绑定 {raw_path}) 并 incrementPlanVersion。
+ * onRunning: 等 task ready; sessionIsCurrent + planVersionIsCurrent 双校验防
+ * stale 竞态 (spec §6.2 关键纪律), 通过后写 path 端口 (XML 绑定 {raw_path}) 并
+ * incrementPlanVersion。
  * onHalted: 取消在飞 task。
  *
  * 端口: goal={goal} (输入), path={raw_path} (输出)。
@@ -84,7 +85,8 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
       return BT::NodeStatus::RUNNING;
     }
     const auto& r = task_.result();
-    if (!nav_server_->sessionIsCurrent(r.session_id)) {
+    if (!nav_server_->sessionIsCurrent(r.session_id) ||
+        !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
     if (r.outcome != actions::GetPathResult::SUCCESS) {
@@ -146,7 +148,8 @@ class SmoothPathNode : public BT::StatefulActionNode {
       return BT::NodeStatus::RUNNING;
     }
     const auto& r = task_.result();
-    if (!nav_server_->sessionIsCurrent(r.session_id)) {
+    if (!nav_server_->sessionIsCurrent(r.session_id) ||
+        !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
     if (r.outcome != actions::SmoothPathResult::SUCCESS) {
@@ -208,7 +211,8 @@ class FollowPathNode : public BT::StatefulActionNode {
       return BT::NodeStatus::RUNNING;
     }
     const auto& r = task_.result();
-    if (!nav_server_->sessionIsCurrent(r.session_id)) {
+    if (!nav_server_->sessionIsCurrent(r.session_id) ||
+        !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
     // controller 成功且到达目标才算完成 (ARRIVED_GOAL 语义)
@@ -269,7 +273,8 @@ class RecoveryActionNode : public BT::StatefulActionNode {
       return BT::NodeStatus::RUNNING;
     }
     const auto& r = task_.result();
-    if (!nav_server_->sessionIsCurrent(r.session_id)) {
+    if (!nav_server_->sessionIsCurrent(r.session_id) ||
+        !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
     return r.outcome == actions::RecoveryResult::SUCCESS
