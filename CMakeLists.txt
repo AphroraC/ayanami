@@ -32,6 +32,7 @@ endif()
 # Task 15: packages/* 纯 C++ 子库
 add_subdirectory(packages/costmap_2d)
 add_subdirectory(packages/costmap_layers)
+add_subdirectory(packages/costmap_server)
 
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
@@ -185,6 +186,12 @@ if(BUILD_TESTING)
     target_link_libraries(costmap_layers_test PRIVATE
       costmap_2d_layers::costmap_2d_layers GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapLayersTest COMMAND costmap_layers_test)
+
+    # Task 17: packages/costmap_server (CostmapWrapper lifecycle)
+    add_executable(costmap_server_test tests/costmap_server_test.cpp)
+    target_link_libraries(costmap_server_test PRIVATE
+      costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapServerTest COMMAND costmap_server_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
