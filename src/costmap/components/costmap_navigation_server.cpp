@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <utility>
 
 namespace ayanami {
@@ -301,6 +302,19 @@ CostmapNavigationServer::newRecoveryExecution(
 
 void CostmapNavigationServer::handleObstaclePointCloud(
     const ayanami::sensor_msgs::PointCloud2& cloud) {
+  if (!costmap_context_ || !costmap_context_->local_costmap_) {
+    spdlog::warn(
+        "CostmapNavigationServer::handleObstaclePointCloud: costmap not "
+        "configured (call configureCoreMaps first)");
+    return;
+  }
+  // R1 (reviewer I1): 并发传感器回调串行化。局部 wrapper 的 recursive_mutex
+  // 保护 obstacle_layer_ 的 marks_/clear_regions_、prev_obstacles_local_ 与
+  // local master grid 的访问 (同一帧内只写 local costmap, global 不涉及)。
+  // recursive_mutex 允许同线程重入 (updateMap 内部再锁不重锁死)。
+  std::lock_guard<std::recursive_mutex> lock(
+      costmap_context_->local_costmap_->mutex());
+
   if (cloud.point_step == 0) {
     spdlog::warn("handleObstaclePointCloud: invalid point_step=0");
     return;
@@ -343,6 +357,16 @@ void CostmapNavigationServer::handleObstaclePointCloud(
 
 void CostmapNavigationServer::handleObstacleLaserScan(
     const ayanami::sensor_msgs::LaserScan& scan) {
+  if (!costmap_context_ || !costmap_context_->local_costmap_) {
+    spdlog::warn(
+        "CostmapNavigationServer::handleObstacleLaserScan: costmap not "
+        "configured (call configureCoreMaps first)");
+    return;
+  }
+  // R1 (reviewer I1): 与 handleObstaclePointCloud 同一把 local wrapper 锁。
+  std::lock_guard<std::recursive_mutex> lock(
+      costmap_context_->local_costmap_->mutex());
+
   if (scan.ranges.empty()) {
     return;
   }

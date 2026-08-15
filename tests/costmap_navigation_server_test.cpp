@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
@@ -414,6 +415,35 @@ TEST(CostmapNavigationServerTest, ObstacleCallbacksForwardToObstacleLayer) {
 
   ayanami::interfaces::NavigationCallbacks::on_obstacle_pointcloud(
       makePointCloud(0.0f, 0.0f, 0.0f));
+
+  auto* master = server.localCostmap()->get().getCostmap();
+  EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CostmapNavigationServerTest, ConcurrentObstacleHandlersDoNotCrash) {
+  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  setupTransforms();
+
+  // 两线程并发 hammer 同一障碍位置: 共享 prev_obstacles_local_ 使 clear 窗口
+  // 必覆盖本帧点 (obs 帧语义 = "当前观测覆盖旧观测"), 故用同一 cell 保证
+  // 任何交错下的最后写入都是 LETHAL → 断言确定。锁的作用是串行化 marks_/
+  // clear_regions_/prev_obstacles_local_/grid 的并发改写 (无锁则 UB 可能崩)。
+  std::atomic<bool> start{false};
+  auto run = [&](float x) {
+    while (!start.load()) {
+      std::this_thread::yield();
+    }
+    for (int i = 0; i < 50; ++i) {
+      server.handleObstaclePointCloud(makePointCloud(x, 0.0f, 0.0f));
+    }
+  };
+  std::thread ta(run, 0.0f);
+  std::thread tb(run, 0.0f);
+  start.store(true);
+  ta.join();
+  tb.join();
 
   auto* master = server.localCostmap()->get().getCostmap();
   EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
