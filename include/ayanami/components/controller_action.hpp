@@ -87,42 +87,47 @@ protected:
     server_->setActive(gh.id);
     exec.setNewPlan(gh.goal.path);
     exec.start();
-    while (true) {
-      if (server_->isCancelRequested(gh.id)) {
-        exec.cancel();
-      }
-      exec.waitForStateUpdate(std::chrono::milliseconds(50));
-      const bool canceled =
-          server_->isCancelRequested(gh.id) ||
-          exec.getState() == ControllerExecution::CANCELED;
-      if (canceled) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-        return;
-      }
-      if (exec.getState() == ControllerExecution::ARRIVED_GOAL) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-        return;
-      }
-      switch (exec.getState()) {
-        case ControllerExecution::NO_PLAN:
-        case ControllerExecution::EMPTY_PLAN:
-        case ControllerExecution::INVALID_PLAN:
-        case ControllerExecution::MAX_RETRIES:
-        case ControllerExecution::PAT_EXCEEDED:
-        case ControllerExecution::STOPPED:
-        case ControllerExecution::INTERNAL_ERROR:
-        case ControllerExecution::ROBOT_DISABLED:
-          finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-          return;
-        default:
-          break;
-      }
-    }
+    runImplCommon(
+        gh, exec,
+        [this](const GoalHandleType& gh, ControllerExecution& exec) -> bool {
+          if (server_->isCancelRequested(gh.id)) {
+            exec.cancel();
+          }
+          const bool canceled =
+              server_->isCancelRequested(gh.id) ||
+              exec.getState() == ControllerExecution::CANCELED;
+          if (canceled) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
+            return true;
+          }
+          if (exec.getState() == ControllerExecution::ARRIVED_GOAL) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
+            return true;
+          }
+          switch (exec.getState()) {
+            case ControllerExecution::NO_PLAN:
+            case ControllerExecution::EMPTY_PLAN:
+            case ControllerExecution::INVALID_PLAN:
+            case ControllerExecution::MAX_RETRIES:
+            case ControllerExecution::PAT_EXCEEDED:
+            case ControllerExecution::STOPPED:
+            case ControllerExecution::INTERNAL_ERROR:
+            case ControllerExecution::ROBOT_DISABLED:
+              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
+              return true;
+            default:
+              break;
+          }
+          return false;
+        });
   }
 
   virtual ControllerExecution::Ptr createExecution() {
     return std::make_shared<ControllerExecution>(controller_);
   }
+
+protected:
+  ayanami::abstract::AbstractController::Ptr controller_;
 
 private:
   void finishResult(const GoalHandleType& gh, const ControllerExecution& exec,
@@ -136,7 +141,6 @@ private:
     server_->publishResult(gh.id, status, result);
   }
 
-  ayanami::abstract::AbstractController::Ptr controller_;
   ServerPtr server_;
 };
 

@@ -86,39 +86,44 @@ protected:
     server_->setActive(gh.id);
     exec.smoothPath(gh.goal.path, gh.goal.max_duration,
                     gh.goal.check_for_collision);
-    while (true) {
-      if (server_->isCancelRequested(gh.id)) {
-        exec.cancel();
-      }
-      exec.waitForStateUpdate(std::chrono::milliseconds(50));
-      const bool canceled =
-          server_->isCancelRequested(gh.id) ||
-          exec.getState() == SmootherExecution::CANCELED;
-      if (canceled) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-        return;
-      }
-      if (exec.getState() == SmootherExecution::SMOOTHED_PATH) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-        return;
-      }
-      switch (exec.getState()) {
-        case SmootherExecution::MAX_RETRIES:
-        case SmootherExecution::PAT_EXCEEDED:
-        case SmootherExecution::NO_SMOOTHED_PATH:
-        case SmootherExecution::STOPPED:
-        case SmootherExecution::INTERNAL_ERROR:
-          finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-          return;
-        default:
-          break;
-      }
-    }
+    runImplCommon(
+        gh, exec,
+        [this](const GoalHandleType& gh, SmootherExecution& exec) -> bool {
+          if (server_->isCancelRequested(gh.id)) {
+            exec.cancel();
+          }
+          const bool canceled =
+              server_->isCancelRequested(gh.id) ||
+              exec.getState() == SmootherExecution::CANCELED;
+          if (canceled) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
+            return true;
+          }
+          if (exec.getState() == SmootherExecution::SMOOTHED_PATH) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
+            return true;
+          }
+          switch (exec.getState()) {
+            case SmootherExecution::MAX_RETRIES:
+            case SmootherExecution::PAT_EXCEEDED:
+            case SmootherExecution::NO_SMOOTHED_PATH:
+            case SmootherExecution::STOPPED:
+            case SmootherExecution::INTERNAL_ERROR:
+              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
+              return true;
+            default:
+              break;
+          }
+          return false;
+        });
   }
 
   virtual SmootherExecution::Ptr createExecution() {
     return std::make_shared<SmootherExecution>(smoother_);
   }
+
+protected:
+  ayanami::abstract::AbstractSmoother::Ptr smoother_;
 
 private:
   void finishResult(const GoalHandleType& gh, const SmootherExecution& exec,
@@ -132,7 +137,6 @@ private:
     server_->publishResult(gh.id, status, result);
   }
 
-  ayanami::abstract::AbstractSmoother::Ptr smoother_;
   ServerPtr server_;
 };
 

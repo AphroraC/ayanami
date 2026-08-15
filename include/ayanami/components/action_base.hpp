@@ -2,6 +2,7 @@
 
 #include "ayanami/components/action_server.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -59,6 +60,28 @@ protected:
                        Execution& execution) {
     (void)goal_handle;
     (void)execution;
+  }
+
+  /**
+   * @brief runImpl 公共轮询骨架 (Ruling #4 DRY 收敛)。
+   *
+   * 派生 Action 不再各自复制 while{wait;switch} 骨架, 而是注入 StateMapper
+   * (lambda/functor, 捕获派生 server_/finishResult): 每轮由骨架先调 mapper,
+   * 再 waitForStateUpdate(50ms) 等 execution 状态机推进。mapper 负责:
+   *   - 透传 cancel (server_->isCancelRequested → exec.cancel()),
+   *   - 把 Execution 内部状态机枚举 + outcome + message 映射到 GoalStatus,
+   *   - 调 finish (server_->publishResult) 完成 goal,
+   * 返回 true 表示已 finish (骨架退出), false 继续轮询。
+   */
+  template <typename StateMapper>
+  void runImplCommon(const GoalHandleType& gh, Execution& exec,
+                     StateMapper mapper) {
+    while (true) {
+      if (mapper(gh, exec)) {
+        return;
+      }
+      exec.waitForStateUpdate(std::chrono::milliseconds(50));
+    }
   }
 
   /// @brief 槽线程入口: runImpl → join execution 线程 → 释放槽。

@@ -89,39 +89,44 @@ protected:
   void runImpl(const GoalHandleType& gh, PlannerExecution& exec) override {
     server_->setActive(gh.id);
     exec.start(gh.goal.start, gh.goal.goal, gh.goal.tolerance);
-    while (true) {
-      if (server_->isCancelRequested(gh.id)) {
-        exec.cancel();
-      }
-      exec.waitForStateUpdate(std::chrono::milliseconds(50));
-      const bool canceled =
-          server_->isCancelRequested(gh.id) ||
-          exec.getState() == PlannerExecution::CANCELED;
-      if (canceled) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-        return;
-      }
-      if (exec.getState() == PlannerExecution::FOUND_PLAN) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-        return;
-      }
-      switch (exec.getState()) {
-        case PlannerExecution::MAX_RETRIES:
-        case PlannerExecution::PAT_EXCEEDED:
-        case PlannerExecution::NO_PLAN_FOUND:
-        case PlannerExecution::STOPPED:
-        case PlannerExecution::INTERNAL_ERROR:
-          finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-          return;
-        default:
-          break;
-      }
-    }
+    runImplCommon(
+        gh, exec,
+        [this](const GoalHandleType& gh, PlannerExecution& exec) -> bool {
+          if (server_->isCancelRequested(gh.id)) {
+            exec.cancel();
+          }
+          const bool canceled =
+              server_->isCancelRequested(gh.id) ||
+              exec.getState() == PlannerExecution::CANCELED;
+          if (canceled) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
+            return true;
+          }
+          if (exec.getState() == PlannerExecution::FOUND_PLAN) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
+            return true;
+          }
+          switch (exec.getState()) {
+            case PlannerExecution::MAX_RETRIES:
+            case PlannerExecution::PAT_EXCEEDED:
+            case PlannerExecution::NO_PLAN_FOUND:
+            case PlannerExecution::STOPPED:
+            case PlannerExecution::INTERNAL_ERROR:
+              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
+              return true;
+            default:
+              break;
+          }
+          return false;
+        });
   }
 
   virtual PlannerExecution::Ptr createExecution() {
     return std::make_shared<PlannerExecution>(planner_);
   }
+
+protected:
+  ayanami::abstract::AbstractPlanner::Ptr planner_;
 
 private:
   void finishResult(const GoalHandleType& gh, const PlannerExecution& exec,
@@ -137,7 +142,6 @@ private:
     server_->publishResult(gh.id, status, result);
   }
 
-  ayanami::abstract::AbstractPlanner::Ptr planner_;
   ServerPtr server_;
 };
 

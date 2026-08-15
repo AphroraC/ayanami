@@ -85,37 +85,42 @@ protected:
   void runImpl(const GoalHandleType& gh, RecoveryExecution& exec) override {
     server_->setActive(gh.id);
     exec.start();
-    while (true) {
-      if (server_->isCancelRequested(gh.id)) {
-        exec.cancel();
-      }
-      exec.waitForStateUpdate(std::chrono::milliseconds(50));
-      const bool canceled =
-          server_->isCancelRequested(gh.id) ||
-          exec.getState() == RecoveryExecution::CANCELED;
-      if (canceled) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-        return;
-      }
-      if (exec.getState() == RecoveryExecution::RECOVERY_DONE) {
-        finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-        return;
-      }
-      switch (exec.getState()) {
-        case RecoveryExecution::PAT_EXCEEDED:
-        case RecoveryExecution::STOPPED:
-        case RecoveryExecution::INTERNAL_ERROR:
-          finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-          return;
-        default:
-          break;
-      }
-    }
+    runImplCommon(
+        gh, exec,
+        [this](const GoalHandleType& gh, RecoveryExecution& exec) -> bool {
+          if (server_->isCancelRequested(gh.id)) {
+            exec.cancel();
+          }
+          const bool canceled =
+              server_->isCancelRequested(gh.id) ||
+              exec.getState() == RecoveryExecution::CANCELED;
+          if (canceled) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
+            return true;
+          }
+          if (exec.getState() == RecoveryExecution::RECOVERY_DONE) {
+            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
+            return true;
+          }
+          switch (exec.getState()) {
+            case RecoveryExecution::PAT_EXCEEDED:
+            case RecoveryExecution::STOPPED:
+            case RecoveryExecution::INTERNAL_ERROR:
+              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
+              return true;
+            default:
+              break;
+          }
+          return false;
+        });
   }
 
   virtual RecoveryExecution::Ptr createExecution() {
     return std::make_shared<RecoveryExecution>(recovery_);
   }
+
+protected:
+  ayanami::abstract::AbstractRecovery::Ptr recovery_;
 
 private:
   void finishResult(const GoalHandleType& gh, const RecoveryExecution& exec,
@@ -128,7 +133,6 @@ private:
     server_->publishResult(gh.id, status, result);
   }
 
-  ayanami::abstract::AbstractRecovery::Ptr recovery_;
   ServerPtr server_;
 };
 

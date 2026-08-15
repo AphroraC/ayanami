@@ -198,6 +198,12 @@ if(BUILD_TESTING)
     target_link_libraries(costmap_context_test PRIVATE
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapContextTest COMMAND costmap_context_test)
+
+    # Task 19: costmap/components (Costmap*Execution + Costmap*Action)
+    add_executable(costmap_components_test tests/costmap_components_test.cpp)
+    target_link_libraries(costmap_components_test PRIVATE
+      ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapComponentsTest COMMAND costmap_components_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
