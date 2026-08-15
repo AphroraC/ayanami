@@ -29,6 +29,9 @@ if(BUILD_WITH_BT)
   list(APPEND AYANAMI_BT_SOURCES src/behavior_tree/pilot.cpp)
 endif()
 
+# Task 15: packages/* 纯 C++ 子库
+add_subdirectory(packages/costmap_2d)
+
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
@@ -170,6 +173,11 @@ if(BUILD_TESTING)
         AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
       add_test(NAME PilotTest COMMAND pilot_test)
     endif()
+
+    # Task 15: packages/costmap_2d (纯 C++ header-only 子库)
+    add_executable(costmap_2d_test tests/costmap_2d_test.cpp)
+    target_link_libraries(costmap_2d_test PRIVATE costmap_2d::costmap_2d GTest::gtest GTest::gtest_main)
+    add_test(NAME Costmap2DTest COMMAND costmap_2d_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
