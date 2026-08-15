@@ -92,3 +92,12 @@ TEST(Costmap2DTest, CostValuesMatchSpec) {
   EXPECT_EQ(costmap_2d::LETHAL_OBSTACLE, 254);
   EXPECT_EQ(costmap_2d::NO_INFORMATION, 255);
 }
+
+TEST(Costmap2DTest, IsLethalIncludes253) {
+  // Ruling #6: isLethal 必须把 253 (inscribed inflated) 判为 lethal,
+  // 否则膨胀带被误判为非致命。
+  EXPECT_TRUE(costmap_2d::isLethal(253));
+  EXPECT_TRUE(costmap_2d::isLethal(254));
+  EXPECT_FALSE(costmap_2d::isLethal(100));
+  EXPECT_FALSE(costmap_2d::isLethal(0));
+}
