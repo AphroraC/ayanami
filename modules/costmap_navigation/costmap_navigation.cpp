@@ -113,6 +113,12 @@ void CostmapNavigation::publishMapsForVisualization() {
     if (!wrapper) {
       return;
     }
+    // R1: 读 costmap master grid 前持 wrapper 的 recursive_mutex (与
+    // CostmapPlannerExecution::run 同款模式, costmap_planner_execution.hpp)。
+    // ROS host 接入后 handleObstaclePointCloud 并发写 SimpleObstacleLayer,
+    // 若 viz 线程无锁读 cellloop → data race。recursive_mutex 允许同线程
+    // 重入, 锁内不再嵌套加锁。
+    std::lock_guard<std::recursive_mutex> lock(wrapper->mutex());
     costmap_2d::Costmap2D* cm = wrapper->get().getCostmap();
     if (!cm) {
       return;
