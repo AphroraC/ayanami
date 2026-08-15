@@ -91,6 +91,20 @@ ayanami_add_module(costmap_pid_controller
   modules/costmap_pid_controller/costmap_pid_controller.cpp
   modules/costmap_pid_controller/module.cpp)
 
+# Task 24: modules/costmap_*_recovery (4 个恢复插件, spec §6.6 命名)
+ayanami_add_module(costmap_spin_recovery
+  modules/costmap_spin_recovery/costmap_spin_recovery.cpp
+  modules/costmap_spin_recovery/module.cpp)
+ayanami_add_module(costmap_back_up_recovery
+  modules/costmap_back_up_recovery/costmap_back_up_recovery.cpp
+  modules/costmap_back_up_recovery/module.cpp)
+ayanami_add_module(costmap_wait_recovery
+  modules/costmap_wait_recovery/costmap_wait_recovery.cpp
+  modules/costmap_wait_recovery/module.cpp)
+ayanami_add_module(costmap_clear_costmap_recovery
+  modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.cpp
+  modules/costmap_clear_costmap_recovery/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -260,6 +274,19 @@ if(BUILD_TESTING)
       ayanami costmap_pid_controller GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapPidControllerTest COMMAND costmap_pid_controller_test
       $<TARGET_FILE:costmap_pid_controller>)
+
+    # Task 24: modules/costmap_*_recovery (4 个恢复插件 + dlopen 工厂)
+    add_executable(costmap_recovery_modules_test
+      tests/costmap_recovery_modules_test.cpp)
+    target_link_libraries(costmap_recovery_modules_test PRIVATE
+      ayanami costmap_spin_recovery costmap_back_up_recovery
+      costmap_wait_recovery costmap_clear_costmap_recovery
+      costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapRecoveryModulesTest COMMAND costmap_recovery_modules_test
+      $<TARGET_FILE:costmap_spin_recovery>
+      $<TARGET_FILE:costmap_back_up_recovery>
+      $<TARGET_FILE:costmap_wait_recovery>
+      $<TARGET_FILE:costmap_clear_costmap_recovery>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
