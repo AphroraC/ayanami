@@ -81,6 +81,11 @@ ayanami_add_module(costmap_smac_planner
   modules/costmap_smac_planner/costmap_smac_planner.cpp
   modules/costmap_smac_planner/module.cpp)
 
+# Task 22: modules/costmap_savitzky_smoother (7 点 SG 路径平滑插件)
+ayanami_add_module(costmap_savitzky_smoother
+  modules/costmap_savitzky_smoother/costmap_savitzky_smoother.cpp
+  modules/costmap_savitzky_smoother/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -233,6 +238,15 @@ if(BUILD_TESTING)
       GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapSmacPlannerTest COMMAND costmap_smac_planner_test
       $<TARGET_FILE:costmap_smac_planner>)
+
+    # Task 22: modules/costmap_savitzky_smoother (7 点 SG 路径平滑插件)
+    add_executable(costmap_savitzky_smoother_test
+      tests/costmap_savitzky_smoother_test.cpp)
+    target_link_libraries(costmap_savitzky_smoother_test PRIVATE
+      ayanami costmap_savitzky_smoother costmap_2d_layers::costmap_2d_layers
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapSavitzkySmootherTest COMMAND
+      costmap_savitzky_smoother_test $<TARGET_FILE:costmap_savitzky_smoother>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

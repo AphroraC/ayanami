@@ -1,0 +1,6 @@
+{
+  "costmap_savitzky_smoother": {
+    "do_refinement": true,
+    "refinement_num": 2
+  }
+}
