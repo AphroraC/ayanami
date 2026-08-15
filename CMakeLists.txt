@@ -328,6 +328,39 @@ if(BUILD_TESTING)
       $<TARGET_FILE:costmap_back_up_recovery>
       $<TARGET_FILE:costmap_wait_recovery>
       $<TARGET_FILE:costmap_clear_costmap_recovery>)
+
+    # Task 27: 复刻 legacy 6 个 gtest 契约 (新接口等价改写断言)
+    add_executable(action_protocol_test tests/action_protocol_test.cpp)
+    target_link_libraries(action_protocol_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ActionProtocolTest COMMAND action_protocol_test)
+
+    add_executable(cancel_responsiveness_test tests/cancel_responsiveness_test.cpp)
+    target_link_libraries(cancel_responsiveness_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME CancelResponsivenessTest COMMAND cancel_responsiveness_test)
+
+    add_executable(continuous_goal_test tests/continuous_goal_test.cpp)
+    target_link_libraries(continuous_goal_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ContinuousGoalTest COMMAND continuous_goal_test)
+
+    add_executable(controller_session_test tests/controller_session_test.cpp)
+    target_link_libraries(controller_session_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ControllerSessionTest COMMAND controller_session_test)
+
+    add_executable(latest_wins_test tests/latest_wins_test.cpp)
+    target_link_libraries(latest_wins_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME LatestWinsTest COMMAND latest_wins_test)
+
+    if(BUILD_WITH_BT)
+      add_executable(recovery_exhaustion_test tests/recovery_exhaustion_test.cpp)
+      target_link_libraries(recovery_exhaustion_test PRIVATE
+        ayanami GTest::gtest GTest::gtest_main)
+      add_test(NAME RecoveryExhaustionTest COMMAND recovery_exhaustion_test)
+    endif()
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
