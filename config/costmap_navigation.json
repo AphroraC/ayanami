@@ -1,0 +1,21 @@
+{
+  "navigation": {
+    "behavior_tree_xml": "BT/navigation.xml",
+    "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
+    "planner_id": "costmap_smac",
+    "smoother_id": "costmap_savitzky",
+    "controller_id": "costmap_pid",
+    "recovery_id": "costmap_clear_costmap",
+    "clear_costmap_id": "costmap_clear_costmap",
+    "spin_id": "costmap_spin",
+    "wait_id": "costmap_wait",
+    "backup_id": "costmap_back_up",
+    "planner_frequency": -1.0,
+    "smoother_frequency": -1.0,
+    "controller_frequency": 20.0,
+    "goal_tolerance": 0.25,
+    "angle_tolerance": 0.20,
+    "robot_frame": "base_footprint",
+    "costmap_visualization_rate": 1.0
+  }
+}

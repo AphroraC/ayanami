@@ -1,0 +1,16 @@
+{
+  "global": {
+    "config_path": "",
+    "config_navigation": "costmap_navigation.json",
+    "config_costmap": "costmap.json",
+    "config_planner": "costmap_smac_planner.json",
+    "config_smoother": "costmap_savitzky_smoother.json",
+    "config_controller": "costmap_pid_controller.json",
+    "config_recovery": "costmap_clear_costmap_recovery.json",
+    "config_spin_recovery": "costmap_spin_recovery.json",
+    "config_back_up_recovery": "costmap_back_up_recovery.json",
+    "config_wait_recovery": "costmap_wait_recovery.json",
+    "config_clear_costmap_recovery": "costmap_clear_costmap_recovery.json",
+    "config_logging": "logging.json"
+  }
+}
