@@ -44,6 +44,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   include/ayanami/components/impl/plugin_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/impl/navigation_server_base_impl.cpp
+  src/costmap/components/costmap_navigation_server.cpp
   ${AYANAMI_BT_SOURCES}
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
@@ -51,6 +52,8 @@ target_include_directories(ayanami PUBLIC
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
+# Task 20: CostmapNavigationServer 公开头 include costmap_server/costmap_wrapper.hpp
+target_link_libraries(ayanami PUBLIC costmap_server::costmap_server)
 # src/utility/load_module.cpp uses dlfcn (dlopen/dlsym)
 target_link_libraries(ayanami PRIVATE ${CMAKE_DL_LIBS})
 # src/utility/config.cpp (via config_impl.hpp) 依赖 vendored nlohmann；
@@ -204,6 +207,19 @@ if(BUILD_TESTING)
     target_link_libraries(costmap_components_test PRIVATE
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapComponentsTest COMMAND costmap_components_test)
+
+    # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)
+    add_library(costmap_plugins SHARED tests/plugins/costmap_plugins.cpp)
+    target_link_libraries(costmap_plugins PRIVATE
+      ayanami costmap_server::costmap_server)
+    set_target_properties(costmap_plugins PROPERTIES PREFIX "lib")
+
+    add_executable(costmap_navigation_server_test
+      tests/costmap_navigation_server_test.cpp)
+    target_link_libraries(costmap_navigation_server_test PRIVATE
+      ayanami costmap_server::costmap_server GTest::gtest)
+    add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
+      $<TARGET_FILE:costmap_plugins>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
