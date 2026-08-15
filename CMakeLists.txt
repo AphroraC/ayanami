@@ -76,6 +76,11 @@ function(ayanami_add_module name)
   set(AYANAMI_INSTALL_TARGETS ${AYANAMI_INSTALL_TARGETS} PARENT_SCOPE)
 endfunction()
 
+# Task 21: modules/costmap_smac_planner (A* 全局路径规划插件)
+ayanami_add_module(costmap_smac_planner
+  modules/costmap_smac_planner/costmap_smac_planner.cpp
+  modules/costmap_smac_planner/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -220,6 +225,14 @@ if(BUILD_TESTING)
       ayanami costmap_server::costmap_server GTest::gtest)
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
       $<TARGET_FILE:costmap_plugins>)
+
+    # Task 21: modules/costmap_smac_planner (A* 全局路径规划插件)
+    add_executable(costmap_smac_planner_test tests/costmap_smac_planner_test.cpp)
+    target_link_libraries(costmap_smac_planner_test PRIVATE
+      ayanami costmap_smac_planner costmap_2d_layers::costmap_2d_layers
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapSmacPlannerTest COMMAND costmap_smac_planner_test
+      $<TARGET_FILE:costmap_smac_planner>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

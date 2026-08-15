@@ -1,0 +1,10 @@
+{
+  "costmap_smac_planner": {
+    "use_diagonal": true,
+    "tolerance": 0.0,
+    "cost_factor": 0.5,
+    "lethal_cost": 254,
+    "neutral_cost": 1.0,
+    "use_final_approach": false
+  }
+}
