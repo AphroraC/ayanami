@@ -86,6 +86,11 @@ ayanami_add_module(costmap_savitzky_smoother
   modules/costmap_savitzky_smoother/costmap_savitzky_smoother.cpp
   modules/costmap_savitzky_smoother/module.cpp)
 
+# Task 23: modules/costmap_pid_controller (3 轴 PID 局部控制器插件)
+ayanami_add_module(costmap_pid_controller
+  modules/costmap_pid_controller/costmap_pid_controller.cpp
+  modules/costmap_pid_controller/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -247,6 +252,14 @@ if(BUILD_TESTING)
       GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapSavitzkySmootherTest COMMAND
       costmap_savitzky_smoother_test $<TARGET_FILE:costmap_savitzky_smoother>)
+
+    # Task 23: modules/costmap_pid_controller (3 轴 PID 局部控制器插件)
+    add_executable(costmap_pid_controller_test
+      tests/costmap_pid_controller_test.cpp)
+    target_link_libraries(costmap_pid_controller_test PRIVATE
+      ayanami costmap_pid_controller GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapPidControllerTest COMMAND costmap_pid_controller_test
+      $<TARGET_FILE:costmap_pid_controller>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
