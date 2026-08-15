@@ -312,6 +312,22 @@ if(BUILD_TESTING)
       $<TARGET_FILE:navigation_test_controller>
       $<TARGET_FILE:costmap_spin_recovery>)
 
+    # Task 28 (M1 终止): headless E2E 全链路 (dlopen 宿主 + 模拟 robot pose/pointcloud
+    # + cmd_vel 旁路断言 + 析构不崩)。
+    if(BUILD_WITH_BT)
+      add_executable(headless_e2e_test tests/headless_e2e_test.cpp)
+      target_link_libraries(headless_e2e_test PRIVATE
+        ayanami costmap_navigation costmap_server::costmap_server
+        GTest::gtest GTest::gtest_main)
+      add_test(NAME HeadlessE2E COMMAND headless_e2e_test
+        $<TARGET_FILE:costmap_navigation>
+        $<TARGET_FILE:costmap_smac_planner>
+        $<TARGET_FILE:costmap_savitzky_smoother>
+        $<TARGET_FILE:navigation_test_controller>
+        $<TARGET_FILE:costmap_spin_recovery>
+        "${CMAKE_SOURCE_DIR}/tests/assets")
+    endif()
+
     # Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6/§9)。
     # 需要 host 模块 dlopen + 真实算法模块 .so 做反向解析断言。
     add_executable(config_consistency_test tests/config_consistency_test.cpp)
