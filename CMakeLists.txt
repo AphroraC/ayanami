@@ -105,6 +105,11 @@ ayanami_add_module(costmap_clear_costmap_recovery
   modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.cpp
   modules/costmap_clear_costmap_recovery/module.cpp)
 
+# Task 25: modules/costmap_navigation (AbstractNavigation 宿主插件)
+ayanami_add_module(costmap_navigation
+  modules/costmap_navigation/costmap_navigation.cpp
+  modules/costmap_navigation/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -287,6 +292,25 @@ if(BUILD_TESTING)
       $<TARGET_FILE:costmap_back_up_recovery>
       $<TARGET_FILE:costmap_wait_recovery>
       $<TARGET_FILE:costmap_clear_costmap_recovery>)
+
+    # Task 25: modules/costmap_navigation (AbstractNavigation 宿主 + BT 抢占零速度)
+    add_library(navigation_test_controller SHARED
+      tests/plugins/navigation_test_controller.cpp)
+    target_link_libraries(navigation_test_controller PRIVATE
+      ayanami costmap_server::costmap_server)
+    set_target_properties(navigation_test_controller PROPERTIES PREFIX "lib")
+
+    add_executable(costmap_navigation_test tests/costmap_navigation_test.cpp)
+    target_link_libraries(costmap_navigation_test PRIVATE
+      ayanami costmap_navigation costmap_server::costmap_server
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME CostmapNavigationTest COMMAND costmap_navigation_test
+      $<TARGET_FILE:costmap_navigation>
+      $<TARGET_FILE:costmap_smac_planner>
+      $<TARGET_FILE:costmap_savitzky_smoother>
+      $<TARGET_FILE:costmap_pid_controller>
+      $<TARGET_FILE:navigation_test_controller>
+      $<TARGET_FILE:costmap_spin_recovery>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()
