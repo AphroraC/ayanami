@@ -213,7 +213,9 @@ protected:
     }
   }
 
-private:
+// 成员 protected: 供派生 (如 CostmapControllerExecution) override run() 复刻
+// 循环以实施 per-cycle 锁 (BLOCK #1), 父类 run() 循环逻辑保持 intact。
+protected:
   ayanami::abstract::AbstractController::Ptr controller_;
   RobotStateProvider state_provider_ = [](geometry_msgs::PoseStamped& pose,
                                           geometry_msgs::TwistStamped& velocity) {

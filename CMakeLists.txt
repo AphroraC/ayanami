@@ -247,6 +247,15 @@ if(BUILD_TESTING)
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapComponentsTest COMMAND costmap_components_test)
 
+    # Task 1 (M2 阶段 A BLOCK #1): controller 整循环持锁 → per-cycle short lock,
+    # 防 obstacle feed 饿死 (并发 controller + 障碍回调饿死回归)。
+    add_executable(concurrent_controller_obstacle_test
+      tests/concurrent_controller_obstacle_test.cpp)
+    target_link_libraries(concurrent_controller_obstacle_test PRIVATE
+      ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME ConcurrentControllerObstacle COMMAND concurrent_controller_obstacle_test)
+    set_tests_properties(ConcurrentControllerObstacle PROPERTIES TIMEOUT 10)
+
     # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)
     add_library(costmap_plugins SHARED tests/plugins/costmap_plugins.cpp)
     target_link_libraries(costmap_plugins PRIVATE
