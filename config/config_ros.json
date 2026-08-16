@@ -1,0 +1,21 @@
+{
+  "ayanami_ros": {
+    "pointcloud_topic": "/velodyne_points",
+    "laserscan_topic": "/scan",
+    "odom_topic": "/odom",
+    "goal_topic": "/move_base_simple/goal",
+    "cmd_vel_topic": "/cmd_vel",
+    "planner_path_topic": "/ayanami/planner/path",
+    "smoother_path_topic": "/ayanami/smoother/path",
+    "global_costmap_topic": "/ayanami/global_costmap",
+    "local_costmap_topic": "/ayanami/local_costmap",
+    "static_map_topic": "/ayanami/map",
+    "map_frame": "map",
+    "odom_frame": "odom",
+    "robot_frame": "base_footprint",
+    "tf_sync_rate": 50.0,
+    "navigation_so_name": "libayanami_costmap_navigation.so",
+    "navigation_create_symbol": "create_navigation_module",
+    "extension_modules": ["librviz_viewer.so"]
+  }
+}
