@@ -20,6 +20,21 @@ find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(spdlog REQUIRED)  # 或 vendored
 
+# M2 Controller Ruling #M2-1: catkin 作构建系统 (不依赖 ROS 通信层)
+# 仅引入 catkin_package() 让 catkin workspace 识别 ayanami 为 catkin pkg
+# 并生成 devel/share/ayanami/cmake/ayanamiConfig.cmake 供下游 ayanami_ros
+# find_package(ayanami COMPONENTS) 解析 (catkin component 解析路径)。
+# M1 纯 CMake install export (lib/cmake/ayanami/) 与本 catkin_package 并存，
+# 不破坏外部 (非 catkin 环境) 的 find_package(ayanami CONFIG)。
+find_package(catkin QUIET)
+if(catkin_FOUND)
+  catkin_package(
+    INCLUDE_DIRS include
+    LIBRARIES ayanami
+    CFG_EXTRAS ""   # 不附加 catkin 自动 macros
+  )
+endif()
+
 # 第三方接口库 (新增 cmake/thirdparty.cmake 引入)
 include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
 
