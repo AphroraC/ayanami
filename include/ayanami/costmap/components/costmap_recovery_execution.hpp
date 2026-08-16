@@ -60,12 +60,25 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
 
  protected:
   void run() override {
-    if (global_costmap_) {
-      std::lock_guard<std::recursive_mutex> lock(global_costmap_->mutex());
+    // ★ 关键: 同时锁 global + local 防与 obstacle feed (handleObstaclePointCloud
+    // 走 local wrapper mutex) 死锁/竞态。锁顺序固定 global→local 避免死锁;
+    // std::scoped_lock 内部按声明顺序加锁 (C++17)。
+    if (global_costmap_ && local_costmap_) {
+      std::scoped_lock lk(global_costmap_->mutex(), local_costmap_->mutex());
       RecoveryExecution::run();
-    } else {
-      RecoveryExecution::run();
+      return;
     }
+    if (global_costmap_) {
+      std::lock_guard<std::recursive_mutex> lk(global_costmap_->mutex());
+      RecoveryExecution::run();
+      return;
+    }
+    if (local_costmap_) {
+      std::lock_guard<std::recursive_mutex> lk(local_costmap_->mutex());
+      RecoveryExecution::run();
+      return;
+    }
+    RecoveryExecution::run();
   }
 
  private:

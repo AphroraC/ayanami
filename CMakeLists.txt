@@ -256,6 +256,16 @@ if(BUILD_TESTING)
     add_test(NAME ConcurrentControllerObstacle COMMAND concurrent_controller_obstacle_test)
     set_tests_properties(ConcurrentControllerObstacle PROPERTIES TIMEOUT 10)
 
+    # Task 2 (M2 阶段 A BLOCK #3): recovery 锁 global+local (scoped_lock) 防
+    # clear_costmap 写 local master grid 与 handleObstaclePointCloud 并发竞态。
+    add_executable(recovery_vs_obstacle_test tests/recovery_vs_obstacle_test.cpp)
+    target_link_libraries(recovery_vs_obstacle_test PRIVATE
+      ayanami costmap_clear_costmap_recovery
+      costmap_2d_layers::costmap_2d_layers costmap_server::costmap_server
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME RecoveryVsObstacle COMMAND recovery_vs_obstacle_test)
+    set_tests_properties(RecoveryVsObstacle PROPERTIES TIMEOUT 10)
+
     # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)
     add_library(costmap_plugins SHARED tests/plugins/costmap_plugins.cpp)
     target_link_libraries(costmap_plugins PRIVATE
