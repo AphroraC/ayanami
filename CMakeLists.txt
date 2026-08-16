@@ -266,6 +266,16 @@ if(BUILD_TESTING)
     add_test(NAME RecoveryVsObstacle COMMAND recovery_vs_obstacle_test)
     set_tests_properties(RecoveryVsObstacle PROPERTIES TIMEOUT 10)
 
+    # Task 3 (M2 阶段 A 收尾): minor carry wiring 综合 5 项
+    # (smac start fallback / robot_frame 单一来源 / 二次 configureCoreMaps 守护 /
+    #  pid 粗签名 / cmake find_dependency)。
+    add_executable(minor_carry_wirings_test tests/minor_carry_wirings_test.cpp)
+    target_link_libraries(minor_carry_wirings_test PRIVATE
+      ayanami costmap_smac_planner costmap_pid_controller
+      costmap_2d_layers::costmap_2d_layers costmap_server::costmap_server
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME MinorCarryWiring COMMAND minor_carry_wirings_test)
+
     # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)
     add_library(costmap_plugins SHARED tests/plugins/costmap_plugins.cpp)
     target_link_libraries(costmap_plugins PRIVATE

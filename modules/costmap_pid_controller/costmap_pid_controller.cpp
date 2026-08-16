@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
 
@@ -54,29 +55,20 @@ double distance2d(const geometry_msgs::PoseStamped& a,
   return std::hypot(pa.x() - pb.x(), pa.y() - pb.y());
 }
 
-void mixBits(uint64_t& h, uint64_t bits) {
-  h ^= bits;
-  h *= 1099511628211ULL;
-}
-
-// 路径签名: size + 每个 pose 位置/朝向的位模式混合 (FNV-1a)。
-// 同 plan 重复 setPlan 得到相同签名 (不重置状态); 不同 goal 签名不同 (重置)。
-uint64_t planSignature(const nav_msgs::Path& plan) {
-  uint64_t h = 14695981039346656037ULL;
-  mixBits(h, static_cast<uint64_t>(plan.poses.size()));
-  for (const auto& p : plan.poses) {
-    const Eigen::Vector3d& t = p.pose.translation();
-    for (const double v : {t.x(), t.y(), t.z()}) {
-      uint64_t bits = 0;
-      std::memcpy(&bits, &v, sizeof(bits));
-      mixBits(h, bits);
-    }
-    const double yaw = yawOf(p);
-    uint64_t bits = 0;
-    std::memcpy(&bits, &yaw, sizeof(bits));
-    mixBits(h, bits);
+// 粗路径签名 (3.5 minor carry): 仅末位 goal (x, y) × 1000 + path size, 不逐
+// pose hash。re-smooth 后同 goal 同 size 的 plan 得到相同签名 → setPlan 不重置
+// PID 状态 (防止 re-smooth 触发 PID reset stutter); 不同 goal 签名不同 (重置)。
+uint64_t computePlanSignature(const nav_msgs::Path& plan) {
+  if (plan.poses.empty()) {
+    return 0;
   }
-  return h;
+  auto& goal = plan.poses.back();
+  int64_t gx =
+      static_cast<int64_t>(std::round(goal.pose.translation().x() * 1000.0));
+  int64_t gy =
+      static_cast<int64_t>(std::round(goal.pose.translation().y() * 1000.0));
+  return (std::hash<int64_t>()(gx) ^ std::hash<int64_t>()(gy)) ^
+         (static_cast<uint64_t>(plan.poses.size()) << 4);
 }
 
 }  // namespace
@@ -165,7 +157,7 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   if (plan.poses.empty()) {
     return false;
   }
-  const uint64_t signature = planSignature(plan);
+  const uint64_t signature = computePlanSignature(plan);
   plan_ = plan;
   goal_ = plan.poses.back();
   canceled_.store(false);

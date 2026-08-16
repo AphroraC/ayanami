@@ -21,6 +21,7 @@
 #include "ayanami/utility/config.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -64,6 +65,17 @@ CostmapNavigationServer::~CostmapNavigationServer() {
 }
 
 void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) {
+  // 3.3 minor carry: 二次 configureCoreMaps 守护。已有已构 context 时忽略重入:
+  // 重建会替换 costmap_context_, 使已注入插件的 wrapper 引用悬挂 (旧 context 被
+  // 新对象替换后, 插件仍指向旧 wrapper)。
+  if (costmap_context_ &&
+      (costmap_context_->global_costmap_ || costmap_context_->local_costmap_)) {
+    spdlog::warn(
+        "configureCoreMaps called twice, ignoring; existing plugins would be "
+        "orphaned by context replace");
+    return;
+  }
+
   GlobalConfig::instance(config_path, /*override_path=*/true);
   Config cfg(GlobalConfig::get_config_path("config_costmap"));
 
@@ -71,10 +83,25 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
       cfg.param<std::string>("costmap", "global_frame", "map");
   const std::string local_frame =
       cfg.param<std::string>("costmap", "local_frame", "odom");
+  // 3.2 minor carry (M2-P6): robot_frame 单一来源 = costmap_navigation.json
+  // 的 navigation::robot_frame; costmap.json 不再承载该字段。
+  Config nav_cfg(GlobalConfig::get_config_path("config_navigation"));
   const std::string robot_frame =
-      cfg.param<std::string>("costmap", "robot_frame", "base_link");
+      nav_cfg.param<std::string>("navigation", "robot_frame", "base_link");
   const double resolution =
       cfg.param<double>("costmap", "resolution", kDefaultResolution);
+
+  // 3.2 (T10 前瞻, 本 task 核心 scope): 与 config_ros.json::robot_frame 一致性
+  // 校验。config_ros 未载 (GlobalConfig 无 ayanami_ros 段) 时跳过。
+  const std::string ros_frame = GlobalConfig::instance()->param<std::string>(
+      "ayanami_ros", "robot_frame", std::string{});
+  if (!ros_frame.empty()) {
+    if (robot_frame != ros_frame) {
+      spdlog::error("robot_frame mismatch: navigation '{}' vs ayanami_ros '{}'",
+                    robot_frame, ros_frame);
+    }
+    assert(robot_frame == ros_frame);
+  }
 
   // ---- global: StaticLayer + InflationLayer ----
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -158,6 +185,9 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   costmap_context_->transform_store_ =
       &ayanami::interfaces::TransformStore::instance();
   map_context_ = costmap_context_;  // 注入 AbstractMapContext 层
+
+  // 3.2 minor carry: RobotStateProvider 也用同一 robot_frame (单一来源)。
+  robot_state_provider_.setFrames(global_frame, local_frame, robot_frame);
 
   planner_name_to_costmap_.clear();
   controller_name_to_costmap_.clear();

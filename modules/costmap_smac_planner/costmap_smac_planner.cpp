@@ -240,8 +240,19 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
     return ayanami::actions::GetPathResult::INTERNAL_ERROR;
   }
 
-  if (!start.header.frame_id.empty() && !goal.header.frame_id.empty() &&
-      start.header.frame_id != goal.header.frame_id) {
+  // 3.1 minor carry: start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
+  // context 的 robot pose (经注入的 TransformStore 查询 global ← robot)。
+  geometry_msgs::PoseStamped start_pose = start;
+  if (start_pose.pose.translation().norm() == 0.0 &&
+      start_pose.header.frame_id.empty() && costmap_context_) {
+    ayanami::geometry_msgs::PoseStamped robot;
+    if (costmap_context_->getRobotPose(robot)) {
+      start_pose = robot;
+    }
+  }
+
+  if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&
+      start_pose.header.frame_id != goal.header.frame_id) {
     message = "Start and goal frames do not match";
     return ayanami::actions::GetPathResult::TF_ERROR;
   }
@@ -250,8 +261,8 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   unsigned int sy = 0;
   unsigned int gx = 0;
   unsigned int gy = 0;
-  if (!cm->worldToMap(start.pose.translation().x(),
-                      start.pose.translation().y(), sx, sy)) {
+  if (!cm->worldToMap(start_pose.pose.translation().x(),
+                      start_pose.pose.translation().y(), sx, sy)) {
     message = "Start pose is outside the global costmap";
     return ayanami::actions::GetPathResult::OUT_OF_MAP;
   }
@@ -300,7 +311,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
 
   // 构建 plan: cell → world pose。
   plan.header.frame_id =
-      start.header.frame_id.empty() ? "map" : start.header.frame_id;
+      start_pose.header.frame_id.empty() ? "map" : start_pose.header.frame_id;
   plan.poses.reserve(result.cells.size());
   for (const auto& cell : result.cells) {
     double wx = 0.0;
@@ -313,7 +324,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   }
 
   if (!plan.poses.empty()) {
-    plan.poses.front().pose = start.pose;
+    plan.poses.front().pose = start_pose.pose;
     if (approximate) {
       // 近似 goal: 保持最近可行格位置, 只对齐朝向。
       plan.poses.back().pose.linear() = goal.pose.linear();
