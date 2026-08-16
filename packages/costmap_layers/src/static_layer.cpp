@@ -131,17 +131,28 @@ void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
   if (!enabled_ || !has_map_) {
     return;
   }
-  const int end_x = std::min(
-      {max_i, static_cast<int>(master_grid.getSizeInCellsX()),
-       static_cast<int>(map_.getSizeInCellsX())});
-  const int end_y = std::min(
-      {max_j, static_cast<int>(master_grid.getSizeInCellsY()),
-       static_cast<int>(map_.getSizeInCellsY())});
+  const int end_x = std::min(max_i, static_cast<int>(master_grid.getSizeInCellsX()));
+  const int end_y = std::min(max_j, static_cast<int>(master_grid.getSizeInCellsY()));
   for (int y = std::max(0, min_j); y < end_y; ++y) {
     for (int x = std::max(0, min_i); x < end_x; ++x) {
-      const auto mx = static_cast<unsigned int>(x);
-      const auto my = static_cast<unsigned int>(y);
-      master_grid.setCost(mx, my, map_.getCost(mx, my));
+      // Task 12 stage C: rolling global costmap (M2 Ruling #M2-4) 下 master
+      // grid 原点随机器人滚动, 不能按相同 cell 索引直拷; 改用 cell 中心世界
+      // 坐标在静态图上采样, 让窗口内正确渲染地图数据。
+      double wx = 0.0;
+      double wy = 0.0;
+      master_grid.mapToWorld(static_cast<unsigned int>(x),
+                             static_cast<unsigned int>(y), wx, wy);
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      if (map_.worldToMap(wx, wy, mx, my)) {
+        master_grid.setCost(static_cast<unsigned int>(x),
+                            static_cast<unsigned int>(y),
+                            map_.getCost(mx, my));
+      } else {
+        master_grid.setCost(static_cast<unsigned int>(x),
+                            static_cast<unsigned int>(y),
+                            costmap_2d::FREE_SPACE);
+      }
     }
   }
 }

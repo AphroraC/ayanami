@@ -307,7 +307,10 @@ bool CostmapPidController::isGoalReached(double dist_tol, double angle_tol) {
   const double dist = distance2d(last_pose_, goal_);
   const double angle = std::abs(
       shortestAngularDistance(yawOf(last_pose_), yawOf(goal_)));
-  const bool reached = (dist < dist_tol) || (angle < angle_tol);
+  // Task 12 stage C: 原 `||` 让"朝向已对齐但距离很远"即判到达 (identity
+  // last_pose_ yaw=0 == goal yaw=0 → 立即 ARRIVED_GOAL, 永不发速度)。
+  // 改为距离 AND 角度都满足才算到达 (nav2/MBF 语义)。
+  const bool reached = (dist < dist_tol) && (angle < angle_tol);
   goal_reached_.store(reached);
   return reached;
 }

@@ -24,8 +24,11 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <utility>
 
 namespace ayanami {
@@ -123,7 +126,68 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
       cfg.param<std::string>("costmap_global", "static_map", "");
   if (!static_map.empty()) {
     try {
-      static_layer->setMapPath(static_map, resolution, 0.0, 0.0);
+      // Task 12 stage C: 相对 static_map (assets/nav.pgm) 相对 package root
+      // (config/ 的上一级) 解析, 不再依赖节点 cwd (roslaunch 下是 ~/.ros)。
+      std::string map_path = static_map;
+      if (map_path.front() != '/' && map_path.find("://") == std::string::npos) {
+        map_path = std::filesystem::path(config_path).parent_path().string() +
+                   "/" + static_map;
+      }
+      // Task 12 stage C: 读 sibling .yaml 取真实 origin/resolution
+      // (nav_demo/map/nav.yaml origin=[-50,-50]); setMapPath 硬编码 (0,0) 会让
+      // 静态图整体偏移 50m, 与 amcl/map_server 使用的同一张图错位。
+      double map_origin_x = 0.0;
+      double map_origin_y = 0.0;
+      double map_resolution = resolution;
+      std::string yaml_path = map_path;
+      const std::string::size_type dot = yaml_path.rfind('.');
+      if (dot != std::string::npos) {
+        yaml_path = yaml_path.substr(0, dot) + ".yaml";
+      }
+      std::ifstream yaml_ifs(yaml_path);
+      std::string line;
+      while (std::getline(yaml_ifs, line)) {
+        auto parse_double = [&line](const char* key, double& out) {
+          const std::string::size_type pos = line.find(key);
+          if (pos == std::string::npos) {
+            return;
+          }
+          const std::string::size_type val = line.find(':', pos + 1);
+          if (val == std::string::npos) {
+            return;
+          }
+          try {
+            out = std::stod(line.substr(val + 1));
+          } catch (...) {
+          }
+        };
+        parse_double("resolution", map_resolution);
+        const std::string::size_type origin_pos = line.find("origin");
+        if (origin_pos != std::string::npos) {
+          const std::string::size_type lb = line.find('[', origin_pos);
+          const std::string::size_type rb = line.find(']', lb);
+          if (lb != std::string::npos && rb != std::string::npos &&
+              rb > lb) {
+            std::stringstream ss(line.substr(lb + 1, rb - lb - 1));
+            std::string tok;
+            int field = 0;
+            while (std::getline(ss, tok, ',')) {
+              try {
+                const double v = std::stod(tok);
+                if (field == 0) {
+                  map_origin_x = v;
+                } else if (field == 1) {
+                  map_origin_y = v;
+                }
+              } catch (...) {
+              }
+              ++field;
+            }
+          }
+        }
+      }
+      static_layer->setMapPath(map_path, map_resolution, map_origin_x,
+                               map_origin_y);
     } catch (const std::exception& e) {
       spdlog::error("CostmapNavigationServer::configureCoreMaps: {}", e.what());
     }
@@ -250,15 +314,13 @@ bool CostmapNavigationServer::initializeControllerPlugin(
         name);
     return false;
   }
-  auto cast = std::dynamic_pointer_cast<CostmapController>(ptr);
-  if (!cast) {
-    spdlog::error(
-        "CostmapNavigationServer::initializeControllerPlugin('{}'): plugin is "
-        "not a CostmapController (costmap 族接口 mismatch)",
-        name);
-    return false;
+  // Task 12 stage C: map-free 控制器 (costmap_pid 直接继承 AbstractController,
+  // spec §4.3 create_controller_module 契约返回 AbstractController*) 无需注入
+  // CostmapContext; 仍注册到 controller_name_to_costmap_ (local costmap), 让
+  // CostmapControllerExecution 做 obstacle safety check (BLOCK #1 语义不变)。
+  if (auto cast = std::dynamic_pointer_cast<CostmapController>(ptr)) {
+    cast->initialize(name, costmap_context_);
   }
-  cast->initialize(name, costmap_context_);
   controller_name_to_costmap_[name] = costmap_context_->local_costmap_;
   return true;
 }
@@ -311,8 +373,25 @@ CostmapNavigationServer::newControllerExecution(
   } else if (costmap_context_) {
     wrapper = costmap_context_->local_costmap_;
   }
-  return std::make_unique<CostmapControllerExecution>(name, std::move(ptr),
-                                                      std::move(wrapper));
+  auto exec = std::make_unique<CostmapControllerExecution>(
+      name, std::move(ptr), std::move(wrapper));
+  // Task 12 stage C: 控制器真实机器人位姿源 —— 默认 identity pose 会让 pid
+  // 从地图原点跟踪路径 (机器人实际在 (0.07,-0.14)), 且使 isGoalReached 误判。
+  // 经 CostmapContext 查 TransformStore map←robot_frame (与 planner fallback
+  // 同一来源); 速度暂缺, 返回零速度 (pid 以位姿为主)。
+  if (costmap_context_) {
+    auto ctx = costmap_context_;
+    exec->setRobotStateProvider(
+        [ctx](ayanami::geometry_msgs::PoseStamped& pose,
+              ayanami::geometry_msgs::TwistStamped& velocity) {
+          if (!ctx->getRobotPose(pose)) {
+            return false;
+          }
+          velocity = ayanami::geometry_msgs::TwistStamped{};
+          return true;
+        });
+  }
+  return exec;
 }
 
 std::unique_ptr<ayanami::components::RecoveryExecution>
@@ -502,6 +581,25 @@ void CostmapNavigationServer::markObstaclesInFrame(
         std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
   }
   costmap_context_->local_costmap_->updateMap(robot_x, robot_y, robot_yaw);
+
+  // Task 12 stage C (M2 Ruling #M2-4): global rolling costmap 也要周期性
+  // updateMap 驱动滚动窗口跟随机器人 (此前只有 local 更新, global 窗口永不
+  // 平移, 导致 start pose 落在窗口外 worldToMap 失败)。窗口中心用 global
+  // frame (map) 下的机器人位姿。
+  if (costmap_context_->global_costmap_) {
+    double gx = robot_x;
+    double gy = robot_y;
+    double gyaw = robot_yaw;
+    Eigen::Isometry3d T_global = Eigen::Isometry3d::Identity();
+    if (store->lookupTransform(costmap_context_->global_frame_,
+                               costmap_context_->robot_frame_, stamp,
+                               T_global)) {
+      gx = T_global.translation().x();
+      gy = T_global.translation().y();
+      gyaw = std::atan2(T_global.linear()(1, 0), T_global.linear()(0, 0));
+    }
+    costmap_context_->global_costmap_->updateMap(gx, gy, gyaw);
+  }
 }
 
 }  // namespace costmap

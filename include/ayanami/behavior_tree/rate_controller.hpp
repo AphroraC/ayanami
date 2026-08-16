@@ -44,8 +44,14 @@ class RateController : public BT::DecoratorNode {
     }
 
     if (hz_ <= 0.0) {
-      // 单次模式: 执行一次后缓存
+      // 单次模式: 终端结果 (SUCCESS/FAILURE) 缓存, RUNNING 的异步 child 持续
+      // re-tick 让 onRunning 轮询 (Task 12 stage C: hz=-1 下 ComputePathToPose
+      // 首次 tick 后返回 RUNNING, 若缓存 RUNNING 不再 re-tick, 结果永不就绪)。
       if (started_) {
+        if (last_status_ == BT::NodeStatus::RUNNING) {
+          last_status_ = child_node_->executeTick();
+          return last_status_;
+        }
         return last_status_;
       }
       started_ = true;

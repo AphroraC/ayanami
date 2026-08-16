@@ -14,6 +14,14 @@
     "odom_frame": "odom",
     "robot_frame": "base_footprint",
     "tf_sync_rate": 50.0,
+    "tf_sync_edges": [
+      ["map", "odom"],
+      ["odom", "base_footprint"],
+      ["map", "base_footprint"],
+      ["base_footprint", "base_link"],
+      ["base_link", "support"],
+      ["support", "laser"]
+    ],
     "navigation_so_name": "libayanami_costmap_navigation.so",
     "navigation_create_symbol": "create_navigation_module",
     "extension_modules": ["librviz_viewer.so"]
