@@ -10,11 +10,13 @@ namespace abstract {
 /**
  * @brief 恢复行为插件抽象 (spec §5.1)。
  *
- * 注意: 不叫 AbstractBehavior。MBF 语义: 恢复是插件化、可取消的动作。
+ * 注意: 恢复类命名一律 recovery。MBF 语义: 恢复是插件化、可取消的动作。
  */
 class AbstractRecovery {
 public:
   using Ptr = std::shared_ptr<AbstractRecovery>;
+
+  virtual ~AbstractRecovery() = default;
 
   /**
    * @brief 执行一次恢复动作。

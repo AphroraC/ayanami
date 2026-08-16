@@ -182,6 +182,11 @@ if(BUILD_TESTING)
     add_test(NAME PluginManagerTest COMMAND plugin_manager_test
       $<TARGET_FILE:dummy_planner_module>)
 
+    # Task 0: BLOCK #2 派生析构经 base ptr 可调 (abstract base virtual ~ 缺失 UB)
+    add_executable(plugin_teardown_no_ub_test tests/plugin_teardown_no_ub_test.cpp)
+    target_link_libraries(plugin_teardown_no_ub_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME PluginTeardownNoUB COMMAND plugin_teardown_no_ub_test)
+
     # Task 11: NavigationServerBase (4 族插件工厂在 navigation_plugins .so)
     add_library(navigation_plugins SHARED tests/plugins/navigation_plugins.cpp)
     target_link_libraries(navigation_plugins PRIVATE ayanami)

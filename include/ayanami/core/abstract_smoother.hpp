@@ -16,6 +16,8 @@ class AbstractSmoother {
 public:
   using Ptr = std::shared_ptr<AbstractSmoother>;
 
+  virtual ~AbstractSmoother() = default;
+
   /**
    * @brief 平滑给定路径。
    * @param[out] smoothed_path 平滑后的路径。

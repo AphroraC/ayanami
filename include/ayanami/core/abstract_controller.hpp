@@ -20,6 +20,8 @@ class AbstractController {
 public:
   using Ptr = std::shared_ptr<AbstractController>;
 
+  virtual ~AbstractController() = default;
+
   /**
    * @brief 计算速度命令。
    * @param[out] cmd_vel  体坐标系速度命令。
