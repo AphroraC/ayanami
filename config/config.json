@@ -1,20 +1,8 @@
 {
   "global": {
     "config_path": "",
-    "config_navigation": "costmap_navigation.json",
+    "config_navigation": "modules/costmap_navigation.json",
     "config_ros": "config_ros.json",
-    "config_costmap": "costmap.json",
-    "config_planner": "costmap_smac_planner.json",
-    "config_smoother": "costmap_savitzky_smoother.json",
-    "config_controller": "costmap_pid_controller.json",
-    "config_recovery": [
-      "costmap_clear_costmap_recovery.json",
-      "costmap_spin_recovery.json",
-      "costmap_wait_recovery.json",
-      "costmap_back_up_recovery.json"
-    ],
-    "config_goal_checker": "simple_goal_checker.json",
-    "config_progress_checker": "simple_progress_checker.json",
-    "config_logging": "logging.json"
+    "config_logging": "config_logging.json"
   }
 }

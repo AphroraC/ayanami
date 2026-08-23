@@ -38,9 +38,12 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
       cfg.param<double>(kSec, "controller_frequency", 20.0);
   tick_frequency_ = cfg.param<double>(kSec, "tick_frequency", 100.0);
 
-  Config planner_cfg(GlobalConfig::get_config_path("config_planner"));
-  Config smoother_cfg(GlobalConfig::get_config_path("config_smoother"));
-  Config controller_cfg(GlobalConfig::get_config_path("config_controller"));
+  Config planner_cfg(
+      GlobalConfig::get_config_path("config_navigation", "config_planner"));
+  Config smoother_cfg(
+      GlobalConfig::get_config_path("config_navigation", "config_smoother"));
+  Config controller_cfg(
+      GlobalConfig::get_config_path("config_navigation", "config_controller"));
   planner_id_ = planner_cfg.param<std::string>("planner", "name", "");
   smoother_id_ = smoother_cfg.param<std::string>("smoother", "name", "");
   controller_id_ = controller_cfg.param<std::string>("controller", "name", "");
@@ -50,7 +53,8 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   spin_id_.clear();
   wait_id_.clear();
   backup_id_.clear();
-  for (const auto& path : GlobalConfig::get_config_paths("config_recovery")) {
+  for (const auto& path : GlobalConfig::get_config_paths("config_navigation",
+                                                         "config_recovery")) {
     Config recovery_cfg(path);
     const std::string name =
         recovery_cfg.param<std::string>("recovery", "name", "");

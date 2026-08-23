@@ -42,7 +42,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   GlobalConfig::instance(config_path, /*override_path=*/true);
 
   {
-    Config cfg(GlobalConfig::get_config_path("config_planner"));
+    Config cfg(GlobalConfig::get_config_path("config_navigation", "config_planner"));
     default_planner_ = cfg.param<std::string>("planner", "name", "");
     planner_plugins_.loadSingleFromConfig(
         cfg, "planner", default_planner_,
@@ -51,7 +51,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   {
-    Config cfg(GlobalConfig::get_config_path("config_smoother"));
+    Config cfg(GlobalConfig::get_config_path("config_navigation", "config_smoother"));
     default_smoother_ = cfg.param<std::string>("smoother", "name", "");
     smoother_plugins_.loadSingleFromConfig(
         cfg, "smoother", default_smoother_,
@@ -60,7 +60,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   {
-    Config cfg(GlobalConfig::get_config_path("config_controller"));
+    Config cfg(GlobalConfig::get_config_path("config_navigation", "config_controller"));
     default_controller_ = cfg.param<std::string>("controller", "name", "");
     controller_plugins_.loadSingleFromConfig(
         cfg, "controller", default_controller_,
@@ -68,7 +68,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeControllerPlugin(name, std::move(plugin));
         });
   }
-  for (const auto& path : GlobalConfig::get_config_paths("config_recovery")) {
+  for (const auto& path : GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
     Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     const std::string role = cfg.param<std::string>("recovery", "role", "");
@@ -82,7 +82,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   {
-    Config cfg(GlobalConfig::get_config_path("config_goal_checker"));
+    Config cfg(GlobalConfig::get_config_path("config_navigation", "config_goal_checker"));
     default_goal_checker_ =
         cfg.param<std::string>("goal_checker", "name", "");
     goal_checker_plugins_.loadSingleFromConfig(
@@ -92,7 +92,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   {
-    Config cfg(GlobalConfig::get_config_path("config_progress_checker"));
+    Config cfg(GlobalConfig::get_config_path("config_navigation", "config_progress_checker"));
     default_progress_checker_ =
         cfg.param<std::string>("progress_checker", "name", "");
     progress_checker_plugins_.loadSingleFromConfig(

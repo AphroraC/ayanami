@@ -78,15 +78,16 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   }
 
   GlobalConfig::instance(config_path, /*override_path=*/true);
-  Config cfg(GlobalConfig::get_config_path("config_costmap"));
+  // costmap 参数已并入 config_navigation 文件 (原 costmap.json 移除)。
+  Config nav_cfg(GlobalConfig::get_config_path("config_navigation"));
+  const Config& cfg = nav_cfg;
 
   const std::string global_frame =
       cfg.param<std::string>("costmap", "global_frame", "map");
   const std::string local_frame =
       cfg.param<std::string>("costmap", "local_frame", "odom");
   // 3.2 minor carry (M2-P6): robot_frame 单一来源 = costmap_navigation.json
-  // 的 navigation::robot_frame; costmap.json 不再承载该字段。
-  Config nav_cfg(GlobalConfig::get_config_path("config_navigation"));
+  // 的 navigation::robot_frame。
   const std::string robot_frame =
       nav_cfg.param<std::string>("navigation", "robot_frame", "base_link");
   const double resolution =

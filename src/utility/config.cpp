@@ -53,6 +53,30 @@ bool Config::has_param(const std::string& module_name,
   return module->find(param_name) != module->end();
 }
 
+std::vector<std::string> Config::param_string_or_list(
+    const std::string& module_name, const std::string& param_name) const {
+  const auto& json = std::any_cast<const nlohmann::json&>(config_);
+  const auto module = json.find(module_name);
+  if (module == json.end()) {
+    return {};
+  }
+  const auto parameter = module->find(param_name);
+  if (parameter == module->end()) {
+    return {};
+  }
+  std::vector<std::string> out;
+  if (parameter->is_string()) {
+    out.push_back(parameter->get<std::string>());
+  } else if (parameter->is_array()) {
+    for (const auto& item : *parameter) {
+      if (item.is_string()) {
+        out.push_back(item.get<std::string>());
+      }
+    }
+  }
+  return out;
+}
+
 GlobalConfig::GlobalConfig(const std::string& config_path)
     : Config(config_path) {}
 
@@ -123,10 +147,44 @@ std::vector<std::string> GlobalConfig::get_config_paths(
   return paths;
 }
 
+std::vector<std::string> GlobalConfig::get_config_paths(
+    const std::string& owner_config, const std::string& config_name) {
+  const GlobalConfig* config = instance();
+  const std::filesystem::path directory =
+      config->param<std::string>("global", "config_path", ".");
+  const std::string owner_file =
+      config->param<std::string>("global", owner_config, "");
+
+  std::vector<std::string> entries;
+  if (!owner_file.empty()) {
+    const Config owner((directory / owner_file).string());
+    entries = owner.param_string_or_list("modules", config_name);
+  }
+  if (entries.empty()) {
+    // modules 段缺失/无条目: 回退 config 根下 <config_name>.json
+    entries.push_back(config_name + ".json");
+  }
+
+  std::vector<std::string> paths;
+  paths.reserve(entries.size());
+  for (const auto& entry : entries) {
+    const std::filesystem::path p(entry);
+    paths.push_back(p.is_absolute() ? entry : (directory / p).string());
+  }
+  return paths;
+}
+
+std::string GlobalConfig::get_config_path(const std::string& owner_config,
+                                          const std::string& config_name) {
+  const auto paths = get_config_paths(owner_config, config_name);
+  return paths.empty() ? std::string() : paths.front();
+}
+
 ComponentConfig::ComponentConfig(const std::string& config_key) {
   config_ = Config::active();
   if (!config_ && !config_key.empty()) {
-    owned_ = std::make_unique<Config>(GlobalConfig::get_config_path(config_key));
+    owned_ = std::make_unique<Config>(
+        GlobalConfig::get_config_path("config_navigation", config_key));
     config_ = owned_.get();
   }
   if (!config_) {
