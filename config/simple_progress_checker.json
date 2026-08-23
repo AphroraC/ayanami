@@ -1,0 +1,10 @@
+{
+  "progress_checker": {
+    "name": "simple_progress_checker",
+    "so_name": "libayanami_simple_progress_checker.so",
+    "create_symbol": "create_progress_checker_module",
+    "required_movement": 0.5,
+    "movement_angle_required": 0.2,
+    "time_period": 5.0
+  }
+}
