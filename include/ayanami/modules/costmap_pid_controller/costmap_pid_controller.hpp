@@ -5,7 +5,9 @@
 #include <memory>
 #include <string>
 
-#include <ayanami/core/abstract_controller.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -13,34 +15,40 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 3 轴 PID 局部控制器模块 (spec §5.1 controller 族)。
+ * @brief 3 轴 PID 局部控制器模块 (spec §5.5 controller costmap 族)。
  *
- * 纯 path tracker: 只读 robot pose + path, 不依赖 costmap (零地图类型,
- * 直接继承 abstract::AbstractController)。参考 _legacy pid_controller 重写。
+ * 纯 path tracker: 只读 robot pose + path, 算法本身不读图; 但按 costmap 族
+ * 严格约束继承 costmap::CostmapController 并实现 initialize(name,
+ * CostmapContext::Ptr) (costmap 宿主只接受 Costmap* 类型)。参考 _legacy
+ * pid_controller 重写。
  *
  * 历史五项控制修复收尾:
  * - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
  * - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
  * - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
  * - linear 按 max_acc/max_decel 分开限幅; angular 受 max_angular_accel 限幅
- * - distanceDecay 临近 goal 减速 + goal_tolerance 停止
+ * - distanceDecay 临近 goal 减速; 位置进入 goal_checker 的 XY 容差后线速度置零,
+ *   仅 angular PID 对齐 goal 朝向; 到达判定完全交给 goal_checker
+ *   (getTolerances 的 position/angle 字段), 控制器自身不再宣布到达。
  */
-class CostmapPidController : public ayanami::abstract::AbstractController {
+class CostmapPidController : public ayanami::costmap::CostmapController {
  public:
   using Ptr = std::shared_ptr<CostmapPidController>;
 
   CostmapPidController();
 
-  // Ruling #3: abstract::AbstractController 无虚析构 (spec verbatim 不改),
-  // 派生层补裸 virtual ~ (不加 override, 与 Task 18/22 裁决一致)。
   virtual ~CostmapPidController() = default;
 
-  uint32_t computeVelocityCommands(const geometry_msgs::PoseStamped& pose,
-                                   const geometry_msgs::TwistStamped& velocity,
-                                   geometry_msgs::TwistStamped& cmd_vel,
-                                   std::string& message) override;
+  /// @brief costmap 族初始化契约。算法不读图, 仅标记已注入 (配置仍在构造期
+  /// loadConfig)。@param ctx 经 costmap 宿主注入的 CostmapContext。
+  void initialize(const std::string& name,
+                  ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  bool isGoalReached(double dist_tol, double angle_tol) override;
+  FailureCode computeVelocityCommands(const geometry_msgs::PoseStamped& pose,
+                                      const geometry_msgs::TwistStamped& velocity,
+                                      geometry_msgs::TwistStamped& cmd_vel,
+                                      std::string& message,
+                                      const ayanami::abstract::AbstractGoalChecker::Ptr& goal_checker) override;
 
   bool setPlan(const nav_msgs::Path& plan) override;
 
@@ -100,7 +108,6 @@ class CostmapPidController : public ayanami::abstract::AbstractController {
   size_t last_track_idx_ = 1;
   uint64_t plan_signature_ = 0;
   std::atomic<bool> canceled_{false};
-  std::atomic<bool> goal_reached_{false};
 };
 
 }  // namespace modules

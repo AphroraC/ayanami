@@ -6,11 +6,12 @@
 
 #include <gtest/gtest.h>
 
-#include <ayanami/components/planner_action.hpp>
-#include <ayanami/components/recovery_action.hpp>
-#include <ayanami/core/abstract_planner.hpp>
-#include <ayanami/core/abstract_recovery.hpp>
+#include <ayanami/abstract/components/planner_action.hpp>
+#include <ayanami/abstract/components/recovery_action.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
+#include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -24,21 +25,20 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::actions::GetPathGoal;
-using ayanami::actions::GetPathResult;
 using ayanami::actions::GoalStatus;
 using ayanami::actions::RecoveryGoal;
-using ayanami::actions::RecoveryResult;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 // 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel() 立即释放使其
-// 快速返回。被取消时返回 NO_PATH_FOUND (planner 错误段 50+), 执行层经
-// cancel_ 置 CANCELED (outcome 保留插件返回码)。
+// 快速返回。被取消时返回 FailureCode::PathNotFound, 执行层经 cancel_
+// 置 CANCELED (failure 保留插件返回码)。
 class SlowPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped&, const PoseStamped&, double, Path&,
-                    double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path&,
+                       double&, std::string&) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -48,9 +48,9 @@ public:
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
     if (canceled.exchange(false)) {
-      return GetPathResult::NO_PATH_FOUND;
+      return FailureCode::PathNotFound;
     }
-    return GetPathResult::SUCCESS;
+    return FailureCode::None;
   }
 
   bool cancel() override {
@@ -70,7 +70,7 @@ public:
 // 慢 recovery: runRecovery 阻塞最多 200ms; cancel() 立即释放返回 CANCELED 码。
 class SlowRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  uint32_t runRecovery(std::string&) override {
+  FailureCode runRecovery(std::string&) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -80,9 +80,9 @@ public:
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
     if (canceled.exchange(false)) {
-      return RecoveryResult::CANCELED;
+      return FailureCode::Canceled;
     }
-    return RecoveryResult::SUCCESS;
+    return FailureCode::None;
   }
 
   bool cancel() override {
@@ -143,8 +143,8 @@ TEST(CancelResponsiveness, CancelDuringPlanningReadyWithinBudget) {
   ASSERT_TRUE(task.cancel());
   ASSERT_TRUE(readyWithin(task, 100));
   EXPECT_EQ(task.status(), GoalStatus::CANCELED);
-  // outcome 是插件返回码, finish 与插件线程存在竞态 (cancel 通知到插件线程
-  // 落地 outcome 之间 finish 已读); 稳定契约为 status==CANCELED。
+  // failure 是插件返回码, finish 与插件线程存在竞态 (cancel 通知到插件线程
+  // 落地 failure 之间 finish 已读); 稳定契约为 status==CANCELED。
 }
 
 TEST(CancelResponsiveness, CancelDuringRecoveryReadyWithinBudget) {

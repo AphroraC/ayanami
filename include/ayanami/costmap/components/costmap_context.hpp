@@ -8,7 +8,7 @@
 #include <costmap_2d/costmap_2d.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/core/map_context.hpp"
+#include "ayanami/abstract/core/map_context.hpp"
 #include "ayanami/interfaces/transform_store.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 
@@ -51,6 +51,11 @@ class CostmapContext : public ayanami::abstract::AbstractMapContext {
            (!local_costmap_ || local_costmap_->isCurrent());
   }
 
+  /// @brief costmap 族 capability: 仅声明 Costmap。
+  bool hasCapability(ayanami::abstract::MapCapability cap) const override {
+    return cap == ayanami::abstract::MapCapability::Costmap;
+  }
+
   void lock() override {
     if (global_costmap_) {
       global_costmap_->mutex().lock();
@@ -70,8 +75,7 @@ class CostmapContext : public ayanami::abstract::AbstractMapContext {
     }
     Eigen::Isometry3d T;
     if (!transform_store_->lookupTransform(
-            global_frame_, robot_frame_,
-            ayanami::interfaces::TransformStore::fromSeconds(0.0), T)) {
+            global_frame_, robot_frame_, ayanami::Timestamp::latest(), T)) {
       return false;
     }
     pose = ayanami::geometry_msgs::PoseStamped::fromIsometry(global_frame_, T);

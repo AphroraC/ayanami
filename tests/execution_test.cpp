@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
-#include <ayanami/components/controller_execution.hpp>
-#include <ayanami/components/planner_execution.hpp>
-#include <ayanami/components/recovery_execution.hpp>
-#include <ayanami/components/smoother_execution.hpp>
+#include <ayanami/abstract/components/controller_execution.hpp>
+#include <ayanami/abstract/components/planner_execution.hpp>
+#include <ayanami/abstract/components/recovery_execution.hpp>
+#include <ayanami/abstract/components/smoother_execution.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -18,6 +21,8 @@
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
+using ayanami::FailureCode;
+
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
@@ -25,10 +30,10 @@ using ayanami::nav_msgs::Path;
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped&, const PoseStamped&, double,
-                    Path&, double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double,
+                       Path&, double&, std::string&) override {
     calls_++;
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override {
     cancel_called_ = true;
@@ -40,14 +45,15 @@ public:
 
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     calls_++;
     // 插件只写 linear.x, 其余字段必须由 execution 在发布前 `= {}` 清零保证已初始化
     cmd_vel.twist.linear.x() = 0.5;
-    return 0;
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return calls_ >= 3; }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override {
     cancel_called_ = true;
@@ -57,16 +63,18 @@ public:
   std::atomic<bool> cancel_called_{false};
 };
 
-// 永不达目标: 用于观察 cancel → CANCELED (而非 STOPPED) 的退出语义
+// 永不达目标 (goal_checker 永不判到达): 用于观察 cancel → CANCELED
+// (而非 STOPPED) 的退出语义
 class NeverReachingController : public ayanami::abstract::AbstractController {
 public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     calls_++;
     cmd_vel.twist.linear.x() = 0.5;
-    return 0;
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return false; }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override {
     cancel_called_ = true;
@@ -74,12 +82,61 @@ public:
   }
   std::atomic<int> calls_{0};
   std::atomic<bool> cancel_called_{false};
+};
+
+// ---- checker 测试桩 ----
+
+// 目标检查: 自身第 N 次调用后才判到达 (check 先于 compute, N=4 ⇒ 至少 3 帧 compute)。
+class ReachAfterNChecksGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+public:
+  explicit ReachAfterNChecksGoalChecker(int threshold = 4)
+      : threshold_(threshold) {}
+  void reset() override { calls_ = 0; }
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return ++calls_ >= threshold_;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+
+private:
+  int threshold_;
+  int calls_{0};
+};
+
+// 永不到达。
+class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+public:
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return false;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+};
+
+// 恒有进展。
+class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
+// 恒无进展。
+class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return false; }
 };
 
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  uint32_t smoothPath(const Path&, Path&, double, bool, std::string&) override {
-    return 0;
+  FailureCode smoothPath(const Path&, Path&, double, bool,
+                         std::string&) override {
+    return FailureCode::None;
   }
   bool cancel() override {
     cancel_called_ = true;
@@ -90,7 +147,7 @@ public:
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  uint32_t runRecovery(std::string&) override { return 0; }
+  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
   bool cancel() override {
     cancel_called_ = true;
     return true;
@@ -101,11 +158,11 @@ public:
 // 阻塞直到被 cancel: 验证恢复执行取消后进入 CANCELED 且 cancel 透传到插件
 class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  uint32_t runRecovery(std::string&) override {
+  FailureCode runRecovery(std::string&) override {
     while (!cancel_requested_) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override {
     cancel_called_ = true;
@@ -135,7 +192,7 @@ TEST(ExecutionPlanner, StartGoalReachesFoundPlanAndOutcomeZero) {
   exec.start(start, goal, 0.1);
   ASSERT_TRUE(waitForState(exec, ayanami::components::PlannerExecution::FOUND_PLAN));
   EXPECT_EQ(exec.getState(), ayanami::components::PlannerExecution::FOUND_PLAN);
-  EXPECT_EQ(exec.getOutcome(), 0u);
+  EXPECT_EQ(exec.getFailure(), FailureCode::None);
   EXPECT_GE(planner->calls_, 1);
   exec.join();
 }
@@ -144,6 +201,9 @@ TEST(ExecutionController, LoopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   auto controller = std::make_shared<TestController>();
   ayanami::components::ControllerExecution exec(controller);
   exec.setControllerFrequency(500.0);
+  // 到达判定由 goal_checker 完成 (唯一到达判定, 不再经 controller)。
+  exec.setGoalChecker(std::make_shared<ReachAfterNChecksGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   bool received_cmd = false;
   int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
@@ -163,6 +223,7 @@ TEST(ExecutionController, LoopsAtFrequencyReachesGoalAndEmitsCmdVel) {
 
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::ARRIVED_GOAL));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::ARRIVED_GOAL);
+  EXPECT_EQ(exec.getFailure(), FailureCode::None);
   EXPECT_GE(controller->calls_, 3);
   EXPECT_TRUE(received_cmd);
 
@@ -198,7 +259,7 @@ TEST(ExecutionRecovery, RunRecoveryReachesDone) {
   exec.start();
   ASSERT_TRUE(waitForState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE));
   EXPECT_EQ(exec.getState(), ayanami::components::RecoveryExecution::RECOVERY_DONE);
-  EXPECT_EQ(exec.getOutcome(), 0u);
+  EXPECT_EQ(exec.getFailure(), FailureCode::None);
   exec.join();
 }
 
@@ -209,7 +270,7 @@ TEST(ExecutionSmoother, SmoothPathReachesSmoothed) {
   exec.smoothPath(path, 2.0, false);
   ASSERT_TRUE(waitForState(exec, ayanami::components::SmootherExecution::SMOOTHED_PATH));
   EXPECT_EQ(exec.getState(), ayanami::components::SmootherExecution::SMOOTHED_PATH);
-  EXPECT_EQ(exec.getOutcome(), 0u);
+  EXPECT_EQ(exec.getFailure(), FailureCode::None);
   exec.join();
 }
 
@@ -251,6 +312,8 @@ TEST(ExecutionController, CancelEndsInCanceledNotStoppedAndForwardsToPlugin) {
   auto controller = std::make_shared<NeverReachingController>();
   ayanami::components::ControllerExecution exec(controller);
   exec.setControllerFrequency(500.0);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   Path plan;
   plan.poses.resize(4);
@@ -270,5 +333,41 @@ TEST(ExecutionController, CancelEndsInCanceledNotStoppedAndForwardsToPlugin) {
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::CANCELED));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::CANCELED);
   EXPECT_NE(exec.getState(), ayanami::components::ControllerExecution::STOPPED);
+  exec.join();
+}
+
+TEST(ExecutionController, NoProgressMapsToNoProgressStateAndFailure) {
+  auto controller = std::make_shared<NeverReachingController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setControllerFrequency(500.0);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<FalseProgressChecker>());
+
+  Path plan;
+  plan.poses.resize(4);
+  exec.setNewPlan(plan);
+  exec.start();
+
+  ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::NO_PROGRESS));
+  EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::NO_PROGRESS);
+  EXPECT_EQ(exec.getFailure(), FailureCode::NoProgress);
+  EXPECT_EQ(controller->calls_, 0);  // 无进展即终止, controller 不被调用
+  exec.join();
+}
+
+TEST(ExecutionController, MissingCheckersIsInternalError) {
+  auto controller = std::make_shared<NeverReachingController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setControllerFrequency(500.0);
+
+  Path plan;
+  plan.poses.resize(4);
+  exec.setNewPlan(plan);
+  exec.start();
+
+  ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::INTERNAL_ERROR));
+  EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::INTERNAL_ERROR);
+  EXPECT_EQ(exec.getFailure(), FailureCode::InternalError);
+  EXPECT_EQ(controller->calls_, 0);
   exec.join();
 }

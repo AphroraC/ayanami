@@ -1,11 +1,7 @@
 #include <costmap_2d_layers/simple_obstacle_layer.hpp>
+#include <unordered_set>
 
 namespace costmap_2d_layers {
-
-void SimpleObstacleLayer::markObstacles(
-    double wx, double wy, costmap_2d::CostValue cost) {
-  marks_.push_back(Mark{wx, wy, cost});
-}
 
 void SimpleObstacleLayer::clearArea(double min_wx, double min_wy,
                                     double max_wx, double max_wy) {
@@ -20,6 +16,53 @@ void SimpleObstacleLayer::clearArea(double min_wx, double min_wy,
                    m.wy <= max_wy;
           }),
       marks_.end());
+  current_ = false;
+}
+
+void SimpleObstacleLayer::raytraceFreespace(
+    const costmap_2d::Costmap2D& grid, double origin_x, double origin_y,
+    double end_x, double end_y) {
+  unsigned int origin_mx = 0;
+  unsigned int origin_my = 0;
+  if (!grid.worldToMap(origin_x, origin_y, origin_mx, origin_my)) return;
+
+  const double dx = end_x - origin_x;
+  const double dy = end_y - origin_y;
+  const double map_min_x = grid.getOriginX();
+  const double map_min_y = grid.getOriginY();
+  const double epsilon = std::max(grid.getResolution() * 1e-6, 1e-9);
+  const double map_max_x =
+      map_min_x + grid.getSizeInMetersX() - epsilon;
+  const double map_max_y =
+      map_min_y + grid.getSizeInMetersY() - epsilon;
+  double scale = 1.0;
+  if (dx > 0.0) scale = std::min(scale, (map_max_x - origin_x) / dx);
+  if (dx < 0.0) scale = std::min(scale, (map_min_x - origin_x) / dx);
+  if (dy > 0.0) scale = std::min(scale, (map_max_y - origin_y) / dy);
+  if (dy < 0.0) scale = std::min(scale, (map_min_y - origin_y) / dy);
+  scale = std::clamp(scale, 0.0, 1.0);
+  end_x = origin_x + dx * scale;
+  end_y = origin_y + dy * scale;
+
+  unsigned int end_mx = 0;
+  unsigned int end_my = 0;
+  if (!grid.worldToMap(end_x, end_y, end_mx, end_my)) return;
+  std::unordered_set<unsigned int> ray_cells;
+  grid.raytraceLine(
+      [&](unsigned int index) { ray_cells.insert(index); }, origin_mx,
+      origin_my, end_mx, end_my);
+  marks_.erase(
+      std::remove_if(marks_.begin(), marks_.end(), [&](const Mark& mark) {
+        unsigned int mx = 0;
+        unsigned int my = 0;
+        return grid.worldToMap(mark.wx, mark.wy, mx, my) &&
+               ray_cells.count(grid.getIndex(mx, my)) != 0;
+      }),
+      marks_.end());
+  clear_regions_.push_back(ClearRegion{
+      std::min(origin_x, end_x), std::min(origin_y, end_y),
+      std::max(origin_x, end_x), std::max(origin_y, end_y)});
+  current_ = false;
 }
 
 void SimpleObstacleLayer::touch(double x, double y, double* min_x,
@@ -54,7 +97,11 @@ void SimpleObstacleLayer::applyCost(costmap_2d::Costmap2D& grid,
       grid.setCost(mx, my, cost);
       break;
     case CombinationMethod::MAXIMUM:
-      grid.setCost(mx, my, std::max(grid.getCost(mx, my), cost));
+      if (grid.getCost(mx, my) == costmap_2d::NO_INFORMATION) {
+        grid.setCost(mx, my, cost);
+      } else if (cost != costmap_2d::NO_INFORMATION) {
+        grid.setCost(mx, my, std::max(grid.getCost(mx, my), cost));
+      }
       break;
     case CombinationMethod::NONE:
       break;
@@ -75,23 +122,45 @@ void SimpleObstacleLayer::updateCosts(costmap_2d::Costmap2D& master_grid,
   const int window_x1 = std::min(size_x, max_i);
   const int window_y1 = std::min(size_y, max_j);
 
-  // 1) 清除区: 把区域内 cell 写回 FREE
-  for (const auto& region : clear_regions_) {
-    int cx0 = 0;
-    int cy0 = 0;
-    int cx1 = 0;
-    int cy1 = 0;
-    master_grid.worldToMapNoBounds(region.min_x, region.min_y, cx0, cy0);
-    master_grid.worldToMapNoBounds(region.max_x, region.max_y, cx1, cy1);
-    cx0 = std::max(cx0, window_x0);
-    cy0 = std::max(cy0, window_y0);
-    cx1 = std::min(cx1, window_x1);
-    cy1 = std::min(cy1, window_y1);
-    for (int y = cy0; y < cy1; ++y) {
-      for (int x = cx0; x < cx1; ++x) {
-        master_grid.setCost(static_cast<unsigned int>(x),
-                            static_cast<unsigned int>(y),
-                            costmap_2d::FREE_SPACE);
+  // Collapse repeated observations of the same map cell. This keeps layer
+  // state bounded by map area rather than sensor message count.
+  std::vector<Mark> unique_marks;
+  unique_marks.reserve(marks_.size());
+  std::unordered_set<unsigned int> occupied;
+  occupied.reserve(marks_.size());
+  for (auto iter = marks_.rbegin(); iter != marks_.rend(); ++iter) {
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!master_grid.worldToMap(iter->wx, iter->wy, mx, my)) continue;
+    const auto index = master_grid.getIndex(mx, my);
+    if (occupied.insert(index).second) {
+      unique_marks.push_back(*iter);
+    }
+  }
+  std::reverse(unique_marks.begin(), unique_marks.end());
+  marks_.swap(unique_marks);
+
+  // A global map can disable FREE writes because an earlier StaticLayer has
+  // already restored the underlying cost. The default preserves the layer's
+  // standalone/local-map clear contract.
+  if (clear_to_free_ && master_ == nullptr) {
+    for (const auto& region : clear_regions_) {
+      int cx0 = 0;
+      int cy0 = 0;
+      int cx1 = 0;
+      int cy1 = 0;
+      master_grid.worldToMapNoBounds(region.min_x, region.min_y, cx0, cy0);
+      master_grid.worldToMapNoBounds(region.max_x, region.max_y, cx1, cy1);
+      cx0 = std::max(cx0, window_x0);
+      cy0 = std::max(cy0, window_y0);
+      cx1 = std::min(cx1, window_x1);
+      cy1 = std::min(cy1, window_y1);
+      for (int y = cy0; y < cy1; ++y) {
+        for (int x = cx0; x < cx1; ++x) {
+          master_grid.setCost(static_cast<unsigned int>(x),
+                              static_cast<unsigned int>(y),
+                              costmap_2d::FREE_SPACE);
+        }
       }
     }
   }
@@ -111,6 +180,8 @@ void SimpleObstacleLayer::updateCosts(costmap_2d::Costmap2D& master_grid,
     }
     applyCost(master_grid, mx, my, mark.cost);
   }
+  clear_regions_.clear();
+  current_ = true;
 }
 
 }  // namespace costmap_2d_layers

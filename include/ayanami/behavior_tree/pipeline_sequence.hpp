@@ -3,15 +3,16 @@
 #include <behaviortree_cpp/control_node.h>
 
 #include <cstddef>
+#include <stdexcept>
 
 namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief nav2 风格 PipelineSequence: 带记忆的 Sequence。
+ * @brief nav2 风格 PipelineSequence。
  *
- * - child_i RUNNING 时下次 tick 仍 tick child_i;
- * - child_i SUCCESS 后在同一 tick 内继续向后推进 (child_{i+1} ...);
+ * - 每次从 child_0 开始，使规划分支在 controller RUNNING 时继续被 tick;
+ * - 前序 child RUNNING 且以前已推进到更后 child 时，继续 tick 后续流水线;
  * - 任一 child FAILURE -> halt 全部 children 并整体 FAILURE;
  * - 全部 SUCCESS -> 复位回开头并返回 SUCCESS。
  */
@@ -23,25 +24,25 @@ class PipelineSequence : public BT::ControlNode {
   static BT::PortsList providedPorts() { return {}; }
 
   BT::NodeStatus tick() override {
-    while (current_child_idx_ < childrenCount()) {
-      const BT::NodeStatus status = children_nodes_[current_child_idx_]->executeTick();
-      if (status == BT::NodeStatus::SUCCESS) {
-        ++current_child_idx_;
-        if (current_child_idx_ == childrenCount()) {
-          resetChildren();
-          current_child_idx_ = 0;
-          return BT::NodeStatus::SUCCESS;
-        }
-      } else if (status == BT::NodeStatus::FAILURE) {
+    for (std::size_t index = 0; index < childrenCount(); ++index) {
+      const BT::NodeStatus status = children_nodes_[index]->executeTick();
+      if (status == BT::NodeStatus::FAILURE) {
         haltChildren();
         current_child_idx_ = 0;
-        return BT::NodeStatus::FAILURE;
-      } else {
-        // RUNNING (或 SKIPPED): 停在当前 child, 下次 tick 继续
         return status;
       }
+      if (status == BT::NodeStatus::RUNNING) {
+        if (index >= current_child_idx_) {
+          current_child_idx_ = index;
+          return status;
+        }
+        continue;
+      }
+      if (status != BT::NodeStatus::SUCCESS) {
+        throw std::runtime_error("PipelineSequence child returned invalid status");
+      }
     }
-    resetChildren();
+    haltChildren();
     current_child_idx_ = 0;
     return BT::NodeStatus::SUCCESS;
   }

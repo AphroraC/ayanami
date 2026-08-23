@@ -24,7 +24,7 @@ class CostmapWaitRecovery : public ayanami::costmap::CostmapRecovery {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t runRecovery(std::string& message) override;
+  FailureCode runRecovery(std::string& message) override;
 
   bool cancel() override;
 

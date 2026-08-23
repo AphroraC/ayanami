@@ -2,13 +2,13 @@
 //
 // 纯 C++ (零 ROS): 继承 costmap::CostmapRecovery, 类似 spin 但逐帧 emit
 // 负向线速度建议 (vx=-max_v)。每帧 10ms + cancel 检查; 碰撞检测
-// (global costmap robot 附近 >= 253) → 300+ FAILED, message 含
+// (global costmap robot 附近 >= 253) → FailureCode::RecoveryFailed, message 含
 // "collision detected"。M1 headless 不依赖底盘实际运动, 发完时长即 SUCCESS。
 
 #include <ayanami/modules/costmap_back_up_recovery/costmap_back_up_recovery.hpp>
 
 #include <ayanami/interfaces/callbacks.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -21,16 +21,14 @@ namespace modules {
 
 namespace {
 constexpr int kLethalThreshold = 253;  // Ruling #6
-constexpr uint32_t kCollisionOutcome =
-    ayanami::actions::RecoveryResult::INTERNAL_ERROR;
 }
 
 CostmapBackUpRecovery::CostmapBackUpRecovery() { loadConfig(); }
 
 void CostmapBackUpRecovery::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_back_up_recovery"));
+    const ayanami::ComponentConfig holder;
+    const auto& file = holder.get();
     config_.backup_dist =
         file.param<double>("recovery", "backup_dist", config_.backup_dist);
     config_.max_v = file.param<double>("recovery", "max_v", config_.max_v);
@@ -50,15 +48,15 @@ void CostmapBackUpRecovery::initialize(
   canceled_.store(false);
 }
 
-uint32_t CostmapBackUpRecovery::runRecovery(std::string& message) {
+FailureCode CostmapBackUpRecovery::runRecovery(std::string& message) {
   message.clear();
   if (canceled_.load()) {
     message = "back up recovery canceled";
-    return ayanami::actions::RecoveryResult::CANCELED;
+    return FailureCode::Canceled;
   }
   if (!costmap_context_) {
     message = "back up recovery not initialized";
-    return ayanami::actions::RecoveryResult::INTERNAL_ERROR;
+    return FailureCode::InternalError;
   }
 
   const double dt = std::max(config_.sim_cycle_dt, 1e-6);
@@ -72,12 +70,12 @@ uint32_t CostmapBackUpRecovery::runRecovery(std::string& message) {
     if (canceled_.load()) {
       emitZeroVelocity();
       message = "back up recovery canceled";
-      return ayanami::actions::RecoveryResult::CANCELED;
+      return FailureCode::Canceled;
     }
     if (have_pose && collisionNearRobot(pose)) {
       emitZeroVelocity();
       message = "collision detected";
-      return kCollisionOutcome;
+      return FailureCode::RecoveryFailed;
     }
     ayanami::geometry_msgs::TwistStamped cmd;
     cmd.header.frame_id = costmap_context_->getGlobalFrame();
@@ -89,7 +87,7 @@ uint32_t CostmapBackUpRecovery::runRecovery(std::string& message) {
   }
 
   emitZeroVelocity();
-  return ayanami::actions::RecoveryResult::SUCCESS;
+  return FailureCode::None;
 }
 
 bool CostmapBackUpRecovery::cancel() {

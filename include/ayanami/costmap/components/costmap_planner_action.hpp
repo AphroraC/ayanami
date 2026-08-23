@@ -5,7 +5,7 @@
 
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/components/planner_action.hpp"
+#include "ayanami/abstract/components/planner_action.hpp"
 #include "ayanami/costmap/components/costmap_planner_execution.hpp"
 
 namespace ayanami {

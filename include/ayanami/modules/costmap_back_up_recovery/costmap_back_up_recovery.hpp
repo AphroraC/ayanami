@@ -15,7 +15,7 @@ namespace modules {
  *
  * 纯 C++ (零 ROS): 类似 spin, 但逐帧 emit 负向线速度建议 (vx=-max_v);
  * 每帧 10ms + cancel 检查; 碰撞检测 (global costmap robot 附近 cell >= 253)
- * → 300+ FAILED, message 含 "collision detected"。
+ * → FailureCode::RecoveryFailed, message 含 "collision detected"。
  */
 class CostmapBackUpRecovery : public ayanami::costmap::CostmapRecovery {
  public:
@@ -26,7 +26,7 @@ class CostmapBackUpRecovery : public ayanami::costmap::CostmapRecovery {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t runRecovery(std::string& message) override;
+  FailureCode runRecovery(std::string& message) override;
 
   bool cancel() override;
 

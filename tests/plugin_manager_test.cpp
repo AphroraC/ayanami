@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <ayanami/components/plugin_manager.hpp>
-#include <ayanami/components/robot_state_provider.hpp>
-#include <ayanami/core/abstract_planner.hpp>
+#include <ayanami/abstract/components/plugin_manager.hpp>
+#include <ayanami/abstract/components/robot_state_provider.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
 
 #include <Eigen/Geometry>
 

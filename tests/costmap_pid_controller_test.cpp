@@ -1,15 +1,17 @@
 // Task 23: modules/costmap_pid_controller (CostmapPidController: 3 轴 PID +
-// 加速度限制 + Twist 清零 + 同 goal 不重置)。
+// 加速度限制 + Twist 清零 + 同 goal 不重置 + goal_checker 对齐)。
 //
 // 覆盖:
 // - 首帧 linear.x 是 max_acc*dt 的小 ramp (不是脏内存/尖峰)
 // - 角速度 ramp: setPlan 后首帧 |angular.z| <= max_angular_accel*dt, 后续逐帧爬坡
 // - 同 plan 重复 setPlan 不重置 PID/last_vel 状态; 换不同 goal 才 reset
-// - isGoalReached: dist < dist_tol → true 且该帧 cmd_vel 零速度
-// - 多帧模拟 → 到达 goal → 零速度停止
-// - cancel() 中途 → 返回 100+ CANCELED outcome + 零速度
+// - 位置进入 goal_checker XY 容差 → linear=0 (distanceDecay 停止线上)
+// - 位置到但朝向未到 → linear=0 且 angular 非零 (仅 angular PID 对齐 goal yaw)
+// - 多帧模拟 → 到达 goal → 零速度停止; goal_checker 最终宣布到达
+// - cancel() 中途 → 返回 FailureCode::Canceled + 零速度
 // - Twist 清零: linear.z / angular.x / angular.y 恒 0, 无 NaN/脏内存
 // - module.cpp 导出 create_controller_module 符号 (dlopen 验证)
+// - 空 goal_checker 防御 (compute 直接传 nullptr 走 config goal_tolerance)
 
 #include <gtest/gtest.h>
 
@@ -23,20 +25,26 @@
 
 #include <Eigen/Geometry>
 
-#include <ayanami/core/abstract_controller.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/core/costmap_controller.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
+#include <ayanami/modules/simple_goal_checker/simple_goal_checker.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {
 
-using ayanami::abstract::AbstractController;
+using ayanami::abstract::AbstractGoalChecker;
 using ayanami::geometry_msgs::PoseStamped;
+using ayanami::FailureCode;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapPidController;
+using ayanami::modules::SimpleGoalChecker;
 using ayanami::nav_msgs::Path;
 
 std::string g_module_so;
@@ -70,11 +78,18 @@ std::shared_ptr<CostmapPidController> makeController() {
   return std::make_shared<CostmapPidController>();
 }
 
+// goal_checker 可选: 传 nullptr 触发 PID 空指针防御 (回退 config goal_tolerance)。
+std::shared_ptr<SimpleGoalChecker> makeGoalChecker() {
+  return std::make_shared<SimpleGoalChecker>();
+}
+
 TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
-                     const PoseStamped& robot, uint32_t& outcome,
-                     std::string& message) {
+                     const PoseStamped& robot, FailureCode& failure,
+                     std::string& message,
+                     const ayanami::abstract::AbstractGoalChecker::Ptr& goal_checker = nullptr) {
   TwistStamped cmd;
-  outcome = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
+  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
+                                         goal_checker);
   return cmd;
 }
 
@@ -117,11 +132,11 @@ TEST(CostmapPidControllerTest, FirstFrameLinearRampsNotSpike) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), outcome, message);
+  const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), failure, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  EXPECT_EQ(failure, FailureCode::None);
   // 必须是 max_acc*dt 的小 ramp 值, 不是脏内存大尖峰
   EXPECT_TRUE(std::isfinite(cmd.twist.linear.x()));
   EXPECT_GT(cmd.twist.linear.x(), 0.0);
@@ -137,12 +152,12 @@ TEST(CostmapPidControllerTest, AngularVelocityRampsWithMaxAngularAccel) {
 
   // 车体朝向 +Y (与 +X 路径成 90°), 需要大角速度纠偏 → 验证首帧被 ramp 限住。
   const PoseStamped robot = makePose(0.0, 0.0, kPi / 2.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
   double prev_mag = 0.0;
   for (int i = 0; i < 5; ++i) {
-    const TwistStamped cmd = compute(ctl, robot, outcome, message);
-    ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+    const TwistStamped cmd = compute(ctl, robot, failure, message);
+    ASSERT_EQ(failure, FailureCode::None);
     const double mag = std::abs(cmd.twist.angular.z());
     EXPECT_GT(mag, 0.0);
     if (i == 0) {
@@ -163,18 +178,18 @@ TEST(CostmapPidControllerTest, RepeatSetPlanDoesNotResetState) {
   ASSERT_TRUE(ctl->setPlan(plan));
 
   const PoseStamped robot = makePose(0.5, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped c1 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
-  const TwistStamped c2 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c1 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
+  const TwistStamped c2 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
   ASSERT_GT(c2.twist.linear.x(), c1.twist.linear.x());
 
   // 同 plan 重复 setPlan → 不重置: ramp 连续 0.05→0.10→0.15
   ASSERT_TRUE(ctl->setPlan(plan));
-  const TwistStamped c3 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c3 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
 
   EXPECT_NEAR(c1.twist.linear.x(), kMaxAcc * kDt, 1e-9);
   EXPECT_NEAR(c2.twist.linear.x(), 2.0 * kMaxAcc * kDt, 1e-9);
@@ -187,59 +202,90 @@ TEST(CostmapPidControllerTest, NewGoalSetPlanResetsState) {
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
   const PoseStamped robot = makePose(0.5, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped c1 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
-  const TwistStamped c2 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c1 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
+  const TwistStamped c2 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
   ASSERT_GT(c2.twist.linear.x(), c1.twist.linear.x());
 
   // 换不同 goal → 必须 reset: last_linear_vel_ 归零, 重新从 ramp 起步
   Path plan2 = makeXPath();
   plan2.poses.back() = makePose(12.0, 0.0);
   ASSERT_TRUE(ctl->setPlan(plan2));
-  const TwistStamped c3 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c3 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
 
   EXPECT_NEAR(c3.twist.linear.x(), kMaxAcc * kDt, 1e-9);
   EXPECT_LT(c3.twist.linear.x(), c2.twist.linear.x());
 }
 
-// ---------- isGoalReached + 零速度 ----------
+// ---------- 位置容差内停线速度 + goal_checker 判到达 ----------
 
-TEST(CostmapPidControllerTest, GoalReachedStopsWithZeroVelocity) {
+// robot 已进入 goal XY 容差 (但朝向一致): linear=0, angular=0 (纯静止),
+// goal_checker 完整条件满足 → 宣布到达。
+TEST(CostmapPidControllerTest, WithinXyToleranceStopsLinearAndCheckerReaches) {
   auto ctl = makeController();
+  auto checker = makeGoalChecker();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
-  // 直接放 robot 到接近 goal 处 (dist < goal_tolerance=0.1)。
+  // 直接放 robot 到接近 goal 处 (goal_checker 默认 position_tolerance=0.1 内)。
   const PoseStamped near_goal = makePose(8.95, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped cmd = compute(ctl, near_goal, outcome, message);
+  const TwistStamped cmd = compute(ctl, near_goal, failure, message, checker);
 
-  EXPECT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  EXPECT_EQ(failure, FailureCode::None);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.y(), 0.0, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.z(), 0.0, 1e-9);
   EXPECT_NEAR(cmd.twist.angular.z(), 0.0, 1e-9);
-  EXPECT_TRUE(ctl->isGoalReached(0.2, 0.2));
+  // 到达判定由 goal_checker 完成 (位置+朝向+速度全满足)。
+  EXPECT_TRUE(checker->isGoalReached(near_goal, makePose(9.0, 0.0),
+                                     TwistStamped{}));
+}
+
+// 位置到但朝向未到: linear=0, angular 非零 (仅 angular PID 对齐 goal yaw),
+// goal_checker 因朝向超差不宣布到达。
+TEST(CostmapPidControllerTest, PositionReachedHeadingNotYetSpinsInPlace) {
+  auto ctl = makeController();
+  auto checker = makeGoalChecker();
+  ASSERT_TRUE(ctl->setPlan(makeXPath()));
+
+  // robot 在 goal 位置但朝向 +Y (与 +X goal 成 90°): 距离容差内 → 停线,
+  // angular PID 对齐 goal yaw。
+  const PoseStamped at_goal_sideways = makePose(9.0, 0.0, kPi / 2.0);
+  FailureCode failure = FailureCode::None;
+  std::string message;
+  const TwistStamped cmd = compute(ctl, at_goal_sideways, failure, message,
+                                   checker);
+
+  EXPECT_EQ(failure, FailureCode::None);
+  EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
+  EXPECT_NEAR(cmd.twist.linear.y(), 0.0, 1e-9);
+  EXPECT_NEAR(cmd.twist.linear.z(), 0.0, 1e-9);
+  EXPECT_NE(std::abs(cmd.twist.angular.z()), 0.0);  // 原地旋转纠偏
+  // goal 位置已到, 但朝向 90° > angle_tolerance (0.2 rad) → 未到达。
+  EXPECT_FALSE(checker->isGoalReached(at_goal_sideways, makePose(9.0, 0.0),
+                                      TwistStamped{}));
 }
 
 // ---------- 多帧模拟收敛到 goal 停止 ----------
 
 TEST(CostmapPidControllerTest, MultiFrameReachesGoalAndStops) {
   auto ctl = makeController();
+  auto checker = makeGoalChecker();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
   PoseStamped robot = makePose(0.0, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
   double prev_x = 0.0;
   bool stopped = false;
   for (int i = 0; i < 2000 && !stopped; ++i) {
-    const TwistStamped cmd = compute(ctl, robot, outcome, message);
-    ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS) << message;
+    const TwistStamped cmd = compute(ctl, robot, failure, message, checker);
+    ASSERT_EQ(failure, FailureCode::None) << message;
     if (cmd.twist.linear.x() < 1e-6) {
       stopped = true;
       break;
@@ -252,7 +298,9 @@ TEST(CostmapPidControllerTest, MultiFrameReachesGoalAndStops) {
 
   EXPECT_TRUE(stopped);
   EXPECT_GT(robot.pose.translation().x(), 8.0);  // 已贴近 goal
-  EXPECT_TRUE(ctl->isGoalReached(0.2, 0.2));
+  // goal_checker (唯一到达判定) 在位置内且朝向一致 + 零速 → 到达。
+  EXPECT_TRUE(checker->isGoalReached(robot, makePose(9.0, 0.0),
+                                     TwistStamped{}));
 }
 
 // ---------- cancel ----------
@@ -262,14 +310,14 @@ TEST(CostmapPidControllerTest, CancelReturnsCanceledOutcomeAndZero) {
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
   const PoseStamped robot = makePose(0.0, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped c1 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c1 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
 
   ASSERT_TRUE(ctl->cancel());
-  const TwistStamped cmd = compute(ctl, robot, outcome, message);
-  EXPECT_GE(outcome, 100u);  // controller 错误段 100+
+  const TwistStamped cmd = compute(ctl, robot, failure, message);
+  EXPECT_EQ(failure, FailureCode::Canceled);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.y(), 0.0, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.z(), 0.0, 1e-9);
@@ -290,12 +338,13 @@ TEST(CostmapPidControllerTest, TwistClearedNoDirtyMemory) {
       std::numeric_limits<double>::infinity(), 7.5, 3.14);
   cmd.header.frame_id = "garbage";
 
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const uint32_t result =
-      ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
+  const FailureCode result =
+      ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
+                                   nullptr);
 
-  EXPECT_EQ(result, ayanami::actions::ExePathResult::SUCCESS);
+  EXPECT_EQ(result, FailureCode::None);
   EXPECT_TRUE(std::isfinite(cmd.twist.linear.x()));
   EXPECT_NEAR(cmd.twist.linear.z(), 0.0, 1e-12);
   EXPECT_NEAR(cmd.twist.angular.x(), 0.0, 1e-12);
@@ -318,14 +367,38 @@ TEST(CostmapPidControllerTest, OmniModeUsesLateralAxis) {
   }
   ASSERT_TRUE(ctl->setPlan(p));
 
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), outcome, message);
+  const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), failure, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  EXPECT_EQ(failure, FailureCode::None);
   // 全向: 横向轴 (linear.y) 承担前进, 首帧被 max_acc*dt ramp 限住。
   EXPECT_NEAR(cmd.twist.linear.y(), kMaxAcc * kDt, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
+}
+
+// ---------- costmap 族继承 + initialize ----------
+
+TEST(CostmapPidControllerTest, InheritsCostmapControllerAndInitializes) {
+  auto ctl = makeController();
+
+  // 现在属 costmap 族: 经 AbstractController 根可 dynamic_cast 到 CostmapController。
+  ayanami::abstract::AbstractController::Ptr base = ctl;
+  auto cm =
+      std::dynamic_pointer_cast<ayanami::costmap::CostmapController>(base);
+  ASSERT_NE(cm, nullptr);
+
+  // 算法不读图, 但按族契约可被注入 CostmapContext。
+  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  EXPECT_NO_THROW(cm->initialize("test_pid", ctx));
+
+  // initialize 后 PID 行为不受影响。
+  ASSERT_TRUE(ctl->setPlan(makeXPath()));
+  FailureCode failure = FailureCode::None;
+  std::string message;
+  const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), failure, message);
+  EXPECT_EQ(failure, FailureCode::None);
+  EXPECT_NEAR(cmd.twist.linear.x(), kMaxAcc * kDt, 1e-9);
 }
 
 // ---------- module.cpp 工厂符号 ----------
@@ -358,7 +431,7 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(g_config_dir);
   {
     std::ofstream ofs(g_config_dir / "config.json");
-    ofs << R"({"global": { "costmap_pid_controller": "costmap_pid_controller.json" }})";
+    ofs << R"({"global": { "config_controller": "costmap_pid_controller.json" }})";
   }
   writeConfig("diff");
   ayanami::GlobalConfig::instance(g_config_dir.string(), true);

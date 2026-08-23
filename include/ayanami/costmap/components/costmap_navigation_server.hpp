@@ -9,7 +9,7 @@
 
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/components/navigation_server_base.hpp"
+#include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/costmap/components/costmap_context.hpp"
 #include "ayanami/costmap/components/costmap_controller_execution.hpp"
 #include "ayanami/costmap/components/costmap_planner_execution.hpp"
@@ -22,6 +22,7 @@
 
 namespace costmap_2d_layers {
 class SimpleObstacleLayer;
+class StaticLayer;
 }
 
 namespace ayanami {
@@ -98,17 +99,28 @@ class CostmapNavigationServer
   }
 
  private:
-  /// @brief 把 frame_id 下的点经 TransformStore 落图 (handleObstacle* 共用)。
+  /// @brief 把 frame_id 下 (stamp 时刻) 的点经 TransformStore 落图
+  /// (handleObstacle* 共用)。stamp 用传感器消息 header.stamp 查询 TF。
   void markObstaclesInFrame(const std::string& frame_id,
-                            const std::vector<Eigen::Vector3d>& points);
+                            const ayanami::Timestamp& stamp,
+                            const std::vector<Eigen::Vector3d>& points,
+                            const std::vector<Eigen::Vector3d>& clearing_points = {});
 
   CostmapContext::Ptr costmap_context_;
-  // local wrapper 持有的 SimpleObstacleLayer (configureCoreMaps 注入)。
-  costmap_2d_layers::SimpleObstacleLayer* obstacle_layer_{nullptr};
+  // Each map owns an obstacle layer because observations must be transformed
+  // into that map's frame independently.
+  costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer_{nullptr};
+  costmap_2d_layers::SimpleObstacleLayer* local_obstacle_layer_{nullptr};
+  costmap_2d_layers::StaticLayer* global_static_layer_{nullptr};
+  double global_inflation_radius_{0.6};
   double local_inflation_radius_{0.6};
+  double global_resolution_{0.05};
   double local_resolution_{0.05};
-  // Ruling #7: 上一帧 local frame 障碍点 (用于动态更新前 clearArea)。
+  double local_raytrace_range_{3.0};
+  // Previous observations are stored in each map frame for bounded clearing.
+  std::vector<Eigen::Vector2d> prev_obstacles_global_;
   std::vector<Eigen::Vector2d> prev_obstacles_local_;
+  bool has_prev_obstacles_global_{false};
   bool has_prev_obstacles_{false};
   // 插件名 → 绑定 costmap wrapper (planner 绑 global / controller 绑 local)。
   std::map<std::string, costmap_2d::CostmapWrapper::Ptr>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -34,8 +35,9 @@ class Layer {
   virtual void deactivate() {}
   virtual void reset() {}
   virtual void matchSize() {}
+  virtual void onFootprintChanged() {}
 
-  bool isCurrent() const { return current_; }
+  bool isCurrent() const { return current_.load(); }
   bool isEnabled() const { return enabled_; }
   void setEnabled(bool enabled) { enabled_ = enabled; }
   const std::string& getName() const { return name_; }
@@ -45,7 +47,7 @@ class Layer {
 
   LayeredCostmap* master_{nullptr};
   bool enabled_{true};
-  bool current_{true};
+  std::atomic<bool> current_{false};
   std::string name_;
 };
 

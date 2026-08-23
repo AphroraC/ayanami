@@ -28,12 +28,13 @@
 
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/modules/costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::costmap::CostmapContext;
 using ayanami::modules::CostmapSavitzkySmoother;
 using ayanami::nav_msgs::Path;
@@ -129,10 +130,10 @@ TEST(CostmapSavitzkySmootherTest, SmoothsLShapedPath) {
   const Path in = makeLPath();
   Path out;
   std::string message;
-  const uint32_t outcome =
+  const FailureCode failure =
       smoother->smoothPath(in, out, 10.0, false, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::SmoothPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_EQ(out.poses.size(), in.poses.size());
   EXPECT_LT(pathLengthSum(out), pathLengthSum(in));
   // 两端点固定不动。
@@ -153,10 +154,10 @@ TEST(CostmapSavitzkySmootherTest, TinyMaxDurationReturnsSuccess) {
   const Path in = makeLPath();
   Path out;
   std::string message;
-  const uint32_t outcome =
+  const FailureCode failure =
       smoother->smoothPath(in, out, 0.001, false, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::SmoothPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_GE(out.poses.size(), in.poses.size());
   EXPECT_FALSE(out.poses.empty());
 }
@@ -171,10 +172,10 @@ TEST(CostmapSavitzkySmootherTest, EmptyPathReturnsSuccessWithEmptyOut) {
   Path out;
   out.poses.push_back(makePose(1.0, 1.0));  // 先污染, 验证被覆盖
   std::string message;
-  const uint32_t outcome =
+  const FailureCode failure =
       smoother->smoothPath(in, out, 10.0, false, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::SmoothPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_TRUE(out.poses.empty());
 }
 
@@ -188,10 +189,10 @@ TEST(CostmapSavitzkySmootherTest, ShortPathReturnsSuccessWithSamePath) {
   }
   Path out;
   std::string message;
-  const uint32_t outcome =
+  const FailureCode failure =
       smoother->smoothPath(in, out, 10.0, false, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::SmoothPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_TRUE(posesEqual(out, in));
 }
 
@@ -207,7 +208,7 @@ TEST(CostmapSavitzkySmootherTest, CollisionCheckRollsBackToOriginal) {
   Path smoothed;
   std::string message;
   ASSERT_EQ(smoother->smoothPath(in, smoothed, 10.0, false, message),
-            ayanami::actions::SmoothPathResult::SUCCESS);
+            FailureCode::None);
   ASSERT_FALSE(posesEqual(smoothed, in));  // 平滑确实移动了内部点
 
   // 找平滑后经过、但 original path 未经过的自由 cell, 置为 lethal。
@@ -242,10 +243,10 @@ TEST(CostmapSavitzkySmootherTest, CollisionCheckRollsBackToOriginal) {
   // 重平滑 + 碰撞检查 → 回滚到 original path。
   Path out;
   message.clear();
-  const uint32_t outcome =
+  const FailureCode failure =
       smoother->smoothPath(in, out, 10.0, true, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::SmoothPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_TRUE(posesEqual(out, in));  // 回滚到 original
   EXPECT_NE(message.find("collision"), std::string::npos);
 }

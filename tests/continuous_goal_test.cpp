@@ -6,9 +6,10 @@
 
 #include <gtest/gtest.h>
 
-#include <ayanami/components/planner_action.hpp>
-#include <ayanami/core/abstract_planner.hpp>
+#include <ayanami/abstract/components/planner_action.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -23,8 +24,8 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::actions::GetPathGoal;
-using ayanami::actions::GetPathResult;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
@@ -33,8 +34,8 @@ using ayanami::nav_msgs::Path;
 // cancel() 置 canceled 并唤醒; 每次调用后清零, 使抢占与释放语义可预测。
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                    Path& plan, double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
+                       Path& plan, double&, std::string&) override {
     ++calls;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -43,11 +44,11 @@ public:
                        [this] { return canceled.load() || released.load(); });
     }
     if (canceled.exchange(false)) {
-      return GetPathResult::NO_PATH_FOUND;
+      return FailureCode::PathNotFound;
     }
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return GetPathResult::SUCCESS;
+    return FailureCode::None;
   }
 
   bool cancel() override {

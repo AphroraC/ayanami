@@ -7,7 +7,8 @@
 // 并验证 setMapCallback 可视化旁路被触发。最后 stop()/析构必须不崩 (Ruling #3)。
 //
 // argv: 1=host.so, 2=smac.so, 3=savitzky.so, 4=test_controller.so,
-//       5=spin.so, 6=assets_dir (tests/assets, 含 headless_map.pgm)
+//       5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
+//       8=assets_dir (tests/assets, 含 headless_map.pgm)
 
 #include <gtest/gtest.h>
 
@@ -26,7 +27,7 @@
 
 #include <Eigen/Geometry>
 
-#include <ayanami/core/abstract_navigation.hpp>
+#include <ayanami/abstract/core/abstract_navigation.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
@@ -47,6 +48,8 @@ std::string g_smac_so;
 std::string g_savitzky_so;
 std::string g_test_controller_so;
 std::string g_spin_so;
+std::string g_goal_checker_so;
+std::string g_progress_checker_so;
 std::string g_assets_dir;
 
 // ---- 采集器 ----
@@ -95,10 +98,12 @@ ayanami::sensor_msgs::PointCloud2 makeFarPointCloud() {
 
 void setupTransforms() {
   auto& store = ayanami::interfaces::TransformStore::instance();
-  const auto t0 = ayanami::interfaces::TransformStore::fromSeconds(0.0);
-  store.setTransform("odom", "base_link", t0, Eigen::Isometry3d::Identity());
-  store.setTransform("map", "odom", t0, Eigen::Isometry3d::Identity());
-  store.setTransform("base_link", "lidar", t0, Eigen::Isometry3d::Identity());
+  store.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+                     Eigen::Isometry3d::Identity());
+  store.setTransform("map", "odom", ayanami::Timestamp::latest(),
+                     Eigen::Isometry3d::Identity());
+  store.setTransform("base_link", "lidar", ayanami::Timestamp::latest(),
+                     Eigen::Isometry3d::Identity());
 }
 
 void write_file(const std::filesystem::path& path,
@@ -131,10 +136,14 @@ std::filesystem::path make_config_dir() {
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": \"recovery.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\",\n"
              "    \"costmap_smac_planner\": \"costmap_smac_planner.json\",\n"
              "    \"costmap_savitzky_smoother\": \"costmap_savitzky_smoother.json\",\n"
-             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\"\n"
+             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\",\n"
+             "    \"simple_goal_checker\": \"costmap_simple_goal_checker.json\",\n"
+             "    \"simple_progress_checker\": \"costmap_simple_progress_checker.json\"\n"
              "  }\n}\n");
 
   write_file(dir / "costmap_navigation.json",
@@ -149,6 +158,8 @@ std::filesystem::path make_config_dir() {
              "    \"spin_id\": \"test_spin\",\n"
              "    \"wait_id\": \"test_spin\",\n"
              "    \"backup_id\": \"test_spin\",\n"
+             "    \"goal_checker_id\": \"simple_goal_checker\",\n"
+             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
              "    \"planner_frequency\": 100.0,\n"
              "    \"smoother_frequency\": -1.0,\n"
              "    \"controller_frequency\": 20.0,\n"
@@ -167,8 +178,33 @@ std::filesystem::path make_config_dir() {
                          g_test_controller_so,
                          "create_navigation_test_controller_plugin"));
   write_file(dir / "recovery.json",
-             plugin_json("recovery", "test_spin", g_spin_so,
-                         "create_costmap_recovery_module"));
+             "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
+             "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
+             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\"\n  }\n}\n");
+  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
+  write_file(dir / "goal_checker.json",
+             plugin_json("goal_checker", "simple_goal_checker",
+                         g_goal_checker_so, "create_goal_checker_module"));
+  write_file(dir / "progress_checker.json",
+             plugin_json("progress_checker", "simple_progress_checker",
+                         g_progress_checker_so,
+                         "create_progress_checker_module"));
+
+  // goal/progress checker 私有配置 (提供避免 spdlog 噪音; progress 的 required_movement
+  // 设小: 模拟 robot 需持续判有进展, 避免 5s 静止窗口误触发 NoProgress)。
+  write_file(dir / "costmap_simple_goal_checker.json",
+             "{\n  \"goal_checker\": {\n"
+             "    \"position_tolerance\": 0.10,\n"
+             "    \"angle_tolerance\": 0.20,\n"
+             "    \"linear_tolerance\": 0.10,\n"
+             "    \"angular_tolerance\": 0.10\n"
+             "  }\n}\n");
+  write_file(dir / "costmap_simple_progress_checker.json",
+             "{\n  \"progress_checker\": {\n"
+             "    \"required_movement\": 0.1,\n"
+             "    \"movement_angle_required\": 0.2,\n"
+             "    \"time_period\": 5.0\n"
+             "  }\n}\n");
 
   // static_map 指向 committed asset (tests/assets/headless_map.pgm)。
   write_file(dir / "costmap.json",
@@ -391,6 +427,8 @@ int main(int argc, char** argv) {
   if (argc > 3) g_savitzky_so = argv[3];
   if (argc > 4) g_test_controller_so = argv[4];
   if (argc > 5) g_spin_so = argv[5];
-  if (argc > 6) g_assets_dir = argv[6];
+  if (argc > 6) g_goal_checker_so = argv[6];
+  if (argc > 7) g_progress_checker_so = argv[7];
+  if (argc > 8) g_assets_dir = argv[8];
   return RUN_ALL_TESTS();
 }

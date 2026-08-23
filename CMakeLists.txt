@@ -3,9 +3,8 @@ project(ayanami VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
-endif()
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+
 option(BUILD_SHARED "Build libayanami as shared library" ON)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_WITH_BT "Build behavior tree component" ON)
@@ -55,8 +54,8 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
-  include/ayanami/components/impl/execution_base.cpp
-  include/ayanami/components/impl/plugin_manager.cpp
+  include/ayanami/abstract/components/impl/execution_base.cpp
+  include/ayanami/abstract/components/impl/plugin_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/impl/navigation_server_base_impl.cpp
   src/costmap/components/costmap_navigation_server.cpp
@@ -80,6 +79,8 @@ endif()
 install(TARGETS ayanami EXPORT ayanamiTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
+install(DIRECTORY config assets DESTINATION share/ayanami
+  PATTERN "*.yaml" EXCLUDE PATTERN "*.yml" EXCLUDE)
 
 # 模块宏
 function(ayanami_add_module name)
@@ -124,6 +125,15 @@ ayanami_add_module(costmap_clear_costmap_recovery
 ayanami_add_module(costmap_navigation
   modules/costmap_navigation/costmap_navigation.cpp
   modules/costmap_navigation/module.cpp)
+
+# Task 26+: modules/simple_goal_checker / simple_progress_checker
+# (目标检查 + 进展检查插件, abstract 族, 无地图依赖)
+ayanami_add_module(simple_goal_checker
+  modules/simple_goal_checker/simple_goal_checker.cpp
+  modules/simple_goal_checker/module.cpp)
+ayanami_add_module(simple_progress_checker
+  modules/simple_progress_checker/simple_progress_checker.cpp
+  modules/simple_progress_checker/module.cpp)
 
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
@@ -300,7 +310,9 @@ if(BUILD_TESTING)
     add_executable(costmap_navigation_server_test
       tests/costmap_navigation_server_test.cpp)
     target_link_libraries(costmap_navigation_server_test PRIVATE
-      ayanami costmap_server::costmap_server GTest::gtest)
+      ayanami costmap_smac_planner costmap_server::costmap_server GTest::gtest)
+    target_compile_definitions(costmap_navigation_server_test PRIVATE
+      AYANAMI_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
       $<TARGET_FILE:costmap_plugins>)
 
@@ -325,7 +337,7 @@ if(BUILD_TESTING)
     add_executable(costmap_pid_controller_test
       tests/costmap_pid_controller_test.cpp)
     target_link_libraries(costmap_pid_controller_test PRIVATE
-      ayanami costmap_pid_controller GTest::gtest GTest::gtest_main)
+      ayanami costmap_pid_controller simple_goal_checker GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapPidControllerTest COMMAND costmap_pid_controller_test
       $<TARGET_FILE:costmap_pid_controller>)
 
@@ -359,7 +371,9 @@ if(BUILD_TESTING)
       $<TARGET_FILE:costmap_savitzky_smoother>
       $<TARGET_FILE:costmap_pid_controller>
       $<TARGET_FILE:navigation_test_controller>
-      $<TARGET_FILE:costmap_spin_recovery>)
+      $<TARGET_FILE:costmap_spin_recovery>
+      $<TARGET_FILE:simple_goal_checker>
+      $<TARGET_FILE:simple_progress_checker>)
 
     # Task 28 (M1 终止): headless E2E 全链路 (dlopen 宿主 + 模拟 robot pose/pointcloud
     # + cmd_vel 旁路断言 + 析构不崩)。
@@ -374,8 +388,22 @@ if(BUILD_TESTING)
         $<TARGET_FILE:costmap_savitzky_smoother>
         $<TARGET_FILE:navigation_test_controller>
         $<TARGET_FILE:costmap_spin_recovery>
+        $<TARGET_FILE:simple_goal_checker>
+        $<TARGET_FILE:simple_progress_checker>
         "${CMAKE_SOURCE_DIR}/tests/assets")
     endif()
+
+    # Task 26 收尾: checker 单测 (AbstractGoalChecker/AbstractProgressChecker 抽象
+    # + SimpleGoalChecker/SimpleProgressChecker 模块 + PluginManager 装载 +
+    # NavigationServerBase createActions 注入 ControllerExecution)。
+    add_executable(checker_test tests/checker_test.cpp)
+    target_link_libraries(checker_test PRIVATE
+      ayanami simple_goal_checker simple_progress_checker
+      GTest::gtest GTest::gtest_main)
+    add_test(NAME CheckerTest COMMAND checker_test
+      $<TARGET_FILE:simple_goal_checker>
+      $<TARGET_FILE:simple_progress_checker>
+      $<TARGET_FILE:navigation_plugins>)
 
     # Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6/§9)。
     # 需要 host 模块 dlopen + 真实算法模块 .so 做反向解析断言。

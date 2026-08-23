@@ -4,6 +4,7 @@
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -13,7 +14,6 @@
 namespace {
 
 using ayanami::actions::ExePathGoal;
-using ayanami::actions::RecoveryResult;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
@@ -23,9 +23,30 @@ TEST(MessagesTest, PoseStampedHasHeaderAndIsometry) {
   PoseStamped p = PoseStamped::fromIsometry(
       "map", Eigen::Translation3d(1.0, 0.0, 0.0) * Eigen::Quaterniond::Identity());
   EXPECT_EQ(p.header.frame_id, "map");
+  EXPECT_TRUE(p.header.stamp.isLatest());
   EXPECT_DOUBLE_EQ(p.pose.translation().x(), 1.0);
   EXPECT_DOUBLE_EQ(p.pose.translation().y(), 0.0);
   EXPECT_EQ(p.toIsometry().matrix(), p.pose.matrix());
+}
+
+TEST(MessagesTest, HeaderStampDefaultsToLatestSentinel) {
+  ayanami::geometry_msgs::Header h;
+  EXPECT_TRUE(h.stamp.isLatest());
+  EXPECT_EQ(h.stamp.count(), 0);
+
+  ayanami::sensor_msgs::LaserScan scan;
+  EXPECT_TRUE(scan.header.stamp.isLatest());
+
+  ayanami::sensor_msgs::PointCloud2 cloud;
+  EXPECT_TRUE(cloud.header.stamp.isLatest());
+}
+
+TEST(MessagesTest, HeaderStampCarriesExplicitTimestamp) {
+  ayanami::geometry_msgs::PoseStamped p;
+  p.header.stamp = ayanami::timestampFromSeconds(12.5);
+  EXPECT_FALSE(p.header.stamp.isLatest());
+  EXPECT_EQ(p.header.stamp.count(), 12500000000LL);
+  EXPECT_NEAR(p.header.stamp.toSeconds(), 12.5, 1e-9);
 }
 
 TEST(MessagesTest, PathPosesIsPoseStampedVector) {
@@ -37,9 +58,53 @@ TEST(MessagesTest, PathPosesIsPoseStampedVector) {
   EXPECT_EQ(path.poses.size(), 1u);
 }
 
-TEST(MessagesTest, RecoveryResultErrorCodes) {
-  EXPECT_EQ(RecoveryResult::SUCCESS, 0u);
-  EXPECT_GE(RecoveryResult::INTERNAL_ERROR, 300u);
+TEST(MessagesTest, FailureCodeUnifiedEnumCoversRequiredCodes) {
+  // 统一失败码: None=0, 必须覆盖规定的全部分量。
+  EXPECT_EQ(static_cast<uint8_t>(ayanami::FailureCode::None), 0u);
+  EXPECT_NE(static_cast<uint8_t>(ayanami::FailureCode::Canceled), 0u);
+  static_assert(static_cast<int>(ayanami::FailureCode::None) <
+                static_cast<int>(ayanami::FailureCode::InternalError));
+  using FC = ayanami::FailureCode;
+  static_assert(static_cast<int>(FC::None) < static_cast<int>(FC::Canceled));
+  static_assert(static_cast<int>(FC::Canceled) < static_cast<int>(FC::Timeout));
+  static_assert(static_cast<int>(FC::Timeout) < static_cast<int>(FC::InvalidInput));
+  static_assert(static_cast<int>(FC::InvalidInput) <
+                static_cast<int>(FC::TransformUnavailable));
+  static_assert(static_cast<int>(FC::TransformUnavailable) <
+                static_cast<int>(FC::MapUnavailable));
+  static_assert(static_cast<int>(FC::MapUnavailable) <
+                static_cast<int>(FC::MapStale));
+  static_assert(static_cast<int>(FC::MapStale) < static_cast<int>(FC::StartInvalid));
+  static_assert(static_cast<int>(FC::StartInvalid) < static_cast<int>(FC::GoalInvalid));
+  static_assert(static_cast<int>(FC::GoalInvalid) < static_cast<int>(FC::PathNotFound));
+  static_assert(static_cast<int>(FC::PathNotFound) < static_cast<int>(FC::PathInvalid));
+  static_assert(static_cast<int>(FC::PathInvalid) <
+                static_cast<int>(FC::SmoothingFailed));
+  static_assert(static_cast<int>(FC::SmoothingFailed) <
+                static_cast<int>(FC::NoValidCommand));
+  static_assert(static_cast<int>(FC::NoValidCommand) < static_cast<int>(FC::NoProgress));
+  static_assert(static_cast<int>(FC::NoProgress) < static_cast<int>(FC::GoalNotReached));
+  static_assert(static_cast<int>(FC::GoalNotReached) <
+                static_cast<int>(FC::RecoveryFailed));
+  static_assert(static_cast<int>(FC::RecoveryFailed) <
+                static_cast<int>(FC::InternalError));
+  // 全部 17 个成员 (None + 16 失败码)。
+  static_assert(static_cast<int>(FC::InternalError) == 16);
+}
+
+TEST(MessagesTest, ActionResultsUseUniformFailureField) {
+  ayanami::actions::GetPathResult path;
+  ayanami::actions::SmoothPathResult smooth;
+  ayanami::actions::ExePathResult exe;
+  ayanami::actions::RecoveryResult recovery;
+  EXPECT_EQ(path.failure, ayanami::FailureCode::None);
+  EXPECT_EQ(smooth.failure, ayanami::FailureCode::None);
+  EXPECT_EQ(exe.failure, ayanami::FailureCode::None);
+  EXPECT_EQ(recovery.failure, ayanami::FailureCode::None);
+  EXPECT_TRUE(path.message.empty());
+  EXPECT_TRUE(smooth.message.empty());
+  EXPECT_TRUE(exe.message.empty());
+  EXPECT_TRUE(recovery.message.empty());
 }
 
 TEST(MessagesTest, ExePathGoalHasPathAndSessionFields) {

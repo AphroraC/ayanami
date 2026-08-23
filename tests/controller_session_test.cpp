@@ -1,21 +1,25 @@
 // Task 27: 复刻 legacy controller_session_test.cpp 契约 (新接口等价改写)。
 //
 // 契约: ControllerAction 一次 acceptGoal (携带 10-pose 路径) → 执行层持续
-// 多帧 computeVelocityCommands → isGoalReached 触发 ARRIVED_GOAL → result
+// 多帧 computeVelocityCommands → goal_checker 触发 ARRIVED_GOAL → result
 // SUCCEEDED + reached=true; 中间帧经 on_velocity_command 旁路发布 cmd_vel
 // (count>=1), setPlan 收到完整的 10-pose 路径。
 
 #include <gtest/gtest.h>
 
-#include <ayanami/components/controller_action.hpp>
-#include <ayanami/core/abstract_controller.hpp>
+#include <ayanami/abstract/components/controller_action.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,25 +28,25 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::actions::ExePathGoal;
-using ayanami::actions::ExePathResult;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
-// 记录型控制器: 3 帧 computeVelocityCommands 后 isGoalReached=true;
+// 记录型控制器: 到达判定交给 goal_checker (N 帧 compute 后触发);
 // setPlan 记录收到的路径尺寸 (验证 10-pose 路径被完整应用)。
 class RecordingController : public ayanami::abstract::AbstractController {
 public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     ++calls;
     cmd_vel.twist.linear.x() = 0.5;
-    return ExePathResult::SUCCESS;
+    return FailureCode::None;
   }
-
-  bool isGoalReached(double, double) override { return calls >= 3; }
 
   bool setPlan(const Path& plan) override {
     std::lock_guard<std::mutex> lock(mutex);
@@ -55,6 +59,56 @@ public:
   std::atomic<int> calls{0};
   std::mutex mutex;
   std::vector<std::size_t> applied_sizes;
+};
+
+// ---- checker 测试桩 ----
+
+class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  explicit LambdaGoalChecker(std::function<bool()> reached)
+      : reached_(std::move(reached)) {}
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return reached_();
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+
+ private:
+  std::function<bool()> reached_;
+};
+
+class AlwaysTrueProgressChecker
+    : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
+// ControllerAction 派生: createExecution 内注入 checker (NavigationServerBase
+// 生产路径注入, 直连 action 测试用此子类)。
+class TestControllerAction : public ayanami::components::ControllerAction {
+ public:
+  using ControllerAction::ControllerAction;
+  void initCheckers(ayanami::abstract::AbstractGoalChecker::Ptr goal,
+                    ayanami::abstract::AbstractProgressChecker::Ptr progress) {
+    goal_ = std::move(goal);
+    progress_ = std::move(progress);
+  }
+
+ protected:
+  ayanami::components::ControllerExecution::Ptr createExecution() override {
+    auto exec = ControllerAction::createExecution();
+    exec->setGoalChecker(goal_);
+    exec->setProgressChecker(progress_);
+    return exec;
+  }
+
+ private:
+  ayanami::abstract::AbstractGoalChecker::Ptr goal_;
+  ayanami::abstract::AbstractProgressChecker::Ptr progress_;
 };
 
 Path makePath(std::size_t size) {
@@ -86,7 +140,11 @@ bool waitReady(Task& t, int max_ms = 5000) {
 
 TEST(ControllerSession, TenPosePlanRunsFramesAndArrivesAtGoal) {
   auto controller = std::make_shared<RecordingController>();
-  ayanami::components::ControllerAction action(controller);
+  TestControllerAction action(controller);
+  action.initCheckers(
+      std::make_shared<LambdaGoalChecker>(
+          [&controller] { return controller->calls >= 3; }),
+      std::make_shared<AlwaysTrueProgressChecker>());
 
   // 捕获 on_velocity_command 旁路 (controller execution 每帧发布 cmd_vel)。
   std::atomic<int> cmd_count{0};
@@ -101,7 +159,7 @@ TEST(ControllerSession, TenPosePlanRunsFramesAndArrivesAtGoal) {
 
   EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   EXPECT_TRUE(task.result().reached);
-  EXPECT_EQ(task.result().outcome, ExePathResult::SUCCESS);
+  EXPECT_EQ(task.result().failure, FailureCode::None);
   // 持续多帧 computeVelocityCommands (至少 3 帧)
   EXPECT_GE(controller->calls.load(), 3);
   // 中间帧 cmd_vel 已经 on_velocity_command 旁路发布

@@ -1,13 +1,13 @@
 // Task 24: modules/costmap_*_recovery (CostmapRecovery 族 4 个恢复插件)。
 //
 // 覆盖:
-// - CostmapSpinRecovery::runRecovery 完成所设 spin_dist → SUCCESS(0),
+// - CostmapSpinRecovery::runRecovery 完成所设 spin_dist → None,
 //   期间经 on_velocity_command 发纯角速度, 结束发零速度
-// - spin 中途 cancel() → CANCELED(301) 且末帧零速度
-// - CostmapBackUpRecovery 倒车检测碰撞 (global costmap lethal) → 300+ FAILED,
+// - spin 中途 cancel() → FailureCode::Canceled 且末帧零速度
+// - CostmapBackUpRecovery 倒车检测碰撞 (global costmap lethal) → RecoveryFailed,
 //   message 含 "collision detected"
-// - CostmapWaitRecovery wait_duration 后 → SUCCESS(0); 中途 cancel 立即 CANCELED
-// - CostmapClearCostmapRecovery 清除 global+local 内 robot 附近 radius → SUCCESS,
+// - CostmapWaitRecovery wait_duration 后 → None; 中途 cancel 立即 Canceled
+// - CostmapClearCostmapRecovery 清除 global+local 内 robot 附近 radius → None,
 //   master grid 对应区域 = FREE_SPACE(0), 远处保持 lethal
 // - 4 个 module.cpp 统一导出 create_costmap_recovery_module (dlopen 验证正确类)
 
@@ -35,7 +35,7 @@
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/interfaces/transform_store.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/modules/costmap_back_up_recovery/costmap_back_up_recovery.hpp>
 #include <ayanami/modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
@@ -43,9 +43,11 @@
 #include <ayanami/modules/costmap_wait_recovery/costmap_wait_recovery.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
+#include <costmap_2d_layers/simple_obstacle_layer.hpp>
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::costmap::CostmapContext;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapBackUpRecovery;
@@ -88,7 +90,7 @@ std::shared_ptr<CostmapContext> makeContext(
 void setRobot(double wx, double wy) {
   auto& store = ayanami::interfaces::TransformStore::instance();
   store.setTransform(
-      "map", "base_link", ayanami::interfaces::TransformStore::fromSeconds(0.0),
+      "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(wx, wy, 0.0) * Eigen::Quaterniond::Identity());
 }
 
@@ -135,8 +137,8 @@ TEST(CostmapRecoveryModulesTest, SpinCompletesWithSuccess) {
   rec->initialize("costmap_spin_recovery", makeContext(makeWrapper(20, 0.5)));
 
   std::string message;
-  const uint32_t outcome = rec->runRecovery(message);
-  EXPECT_EQ(outcome, ayanami::actions::RecoveryResult::SUCCESS) << message;
+  const FailureCode failure = rec->runRecovery(message);
+  EXPECT_EQ(failure, FailureCode::None) << message;
 
   EXPECT_TRUE(anyNonZeroAngular());           // 发过纯角速度
   EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);  // 结束零速度
@@ -149,17 +151,17 @@ TEST(CostmapRecoveryModulesTest, SpinCancelEmitsZeroAndCanceled) {
   rec->initialize("costmap_spin_recovery", makeContext(makeWrapper(20, 0.5)));
 
   std::atomic<bool> done{false};
-  std::atomic<uint32_t> outcome{0};
+  std::atomic<FailureCode> failure{FailureCode::None};
   std::string message;
   std::thread worker([&] {
-    outcome.store(rec->runRecovery(message));
+    failure.store(rec->runRecovery(message));
     done.store(true);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(80));
   EXPECT_TRUE(rec->cancel());
   worker.join();
   EXPECT_TRUE(done.load());
-  EXPECT_EQ(outcome.load(), ayanami::actions::RecoveryResult::CANCELED);
+  EXPECT_EQ(failure.load(), FailureCode::Canceled);
   EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);
   detachVelocityCapture();
 }
@@ -183,8 +185,8 @@ TEST(CostmapRecoveryModulesTest, BackUpCollisionFailsWithMessage) {
   rec->initialize("costmap_back_up_recovery", ctx);
 
   std::string message;
-  const uint32_t outcome = rec->runRecovery(message);
-  EXPECT_GE(outcome, ayanami::actions::RecoveryResult::INTERNAL_ERROR);
+  const FailureCode failure = rec->runRecovery(message);
+  EXPECT_EQ(failure, FailureCode::RecoveryFailed);
   EXPECT_NE(message.find("collision detected"), std::string::npos) << message;
 }
 
@@ -195,8 +197,8 @@ TEST(CostmapRecoveryModulesTest, BackUpCompletesOnFreeMap) {
                   makeContext(makeWrapper(20, 0.5)));
 
   std::string message;
-  const uint32_t outcome = rec->runRecovery(message);
-  EXPECT_EQ(outcome, ayanami::actions::RecoveryResult::SUCCESS) << message;
+  const FailureCode failure = rec->runRecovery(message);
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);
   detachVelocityCapture();
 }
@@ -209,12 +211,12 @@ TEST(CostmapRecoveryModulesTest, WaitCompletesAfterDuration) {
 
   const auto start = std::chrono::steady_clock::now();
   std::string message;
-  const uint32_t outcome = rec->runRecovery(message);
+  const FailureCode failure = rec->runRecovery(message);
   const auto elapsed = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - start)
                            .count();
 
-  EXPECT_EQ(outcome, ayanami::actions::RecoveryResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   EXPECT_GE(elapsed, 0.09);  // wait_duration=0.1 基本等满
 }
 
@@ -223,17 +225,17 @@ TEST(CostmapRecoveryModulesTest, WaitCancelReturnsImmediately) {
   rec->initialize("costmap_wait_recovery", makeContext(makeWrapper(20, 0.5)));
 
   std::atomic<bool> done{false};
-  std::atomic<uint32_t> outcome{0};
+  std::atomic<FailureCode> failure{FailureCode::None};
   std::string message;
   std::thread worker([&] {
-    outcome.store(rec->runRecovery(message));
+    failure.store(rec->runRecovery(message));
     done.store(true);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   EXPECT_TRUE(rec->cancel());
   worker.join();
   EXPECT_TRUE(done.load());
-  EXPECT_EQ(outcome.load(), ayanami::actions::RecoveryResult::CANCELED);
+  EXPECT_EQ(failure.load(), FailureCode::Canceled);
 }
 
 // ---------- CostmapClearCostmapRecovery ----------
@@ -241,14 +243,22 @@ TEST(CostmapRecoveryModulesTest, WaitCancelReturnsImmediately) {
 TEST(CostmapRecoveryModulesTest, ClearCostmapClearsRadiusOnBothMaps) {
   auto global = makeWrapper(20, 0.5);
   auto local = makeWrapper(20, 0.5);
+  auto global_obstacles =
+      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto local_obstacles =
+      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  global->get().addLayer(global_obstacles);
+  local->get().addLayer(local_obstacles);
   costmap_2d::Costmap2D* gg = global->get().getCostmap();
   costmap_2d::Costmap2D* lg = local->get().getCostmap();
-  // robot 附近 (cell 4,4 / 5,5) 与远处 (cell 15,15) 都设 lethal。
-  for (auto* g : {gg, lg}) {
-    g->setCost(4, 4, costmap_2d::LETHAL_OBSTACLE);
-    g->setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
-    g->setCost(15, 15, costmap_2d::LETHAL_OBSTACLE);
+  // Mark dynamic obstacles near and far from the robot through the real layer.
+  for (auto* layer : {global_obstacles.get(), local_obstacles.get()}) {
+    layer->markObstacles(2.25, 2.25);
+    layer->markObstacles(2.75, 2.75);
+    layer->markObstacles(7.75, 7.75);
   }
+  global->updateMap(2.25, 2.25, 0.0);
+  local->updateMap(2.25, 2.25, 0.0);
   auto ctx = makeContext(global, local);
   ctx->transform_store_ = &ayanami::interfaces::TransformStore::instance();
   setRobot(2.25, 2.25);  // cell (4,4) 中心
@@ -257,8 +267,8 @@ TEST(CostmapRecoveryModulesTest, ClearCostmapClearsRadiusOnBothMaps) {
   rec->initialize("costmap_clear_costmap_recovery", ctx);
 
   std::string message;
-  const uint32_t outcome = rec->runRecovery(message);
-  EXPECT_EQ(outcome, ayanami::actions::RecoveryResult::SUCCESS) << message;
+  const FailureCode failure = rec->runRecovery(message);
+  EXPECT_EQ(failure, FailureCode::None) << message;
 
   // robot 附近 (半径内) → FREE_SPACE(0); 远处保持 lethal。
   for (auto* g : {gg, lg}) {

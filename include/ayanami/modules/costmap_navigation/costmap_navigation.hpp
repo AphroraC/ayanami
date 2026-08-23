@@ -7,7 +7,7 @@
 #include <thread>
 
 #include "ayanami/behavior_tree/pilot.hpp"
-#include "ayanami/core/abstract_navigation.hpp"
+#include "ayanami/abstract/core/abstract_navigation.hpp"
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 

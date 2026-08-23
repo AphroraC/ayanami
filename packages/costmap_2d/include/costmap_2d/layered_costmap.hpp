@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <cmath>
 
 #include <costmap_2d/layer.hpp>
 
@@ -24,9 +25,11 @@ class LayeredCostmap {
         track_unknown_(track_unknown) {}
 
   void resizeMap(unsigned int size_x, unsigned int size_y, double resolution,
-                 double origin_x, double origin_y) {
+                 double origin_x, double origin_y,
+                 bool size_locked = false) {
     costmap_.resizeMap(size_x, size_y, resolution, origin_x, origin_y,
                        track_unknown_ ? NO_INFORMATION : FREE_SPACE);
+    size_locked_ = size_locked;
     initialized_ = true;
     for (auto& plugin : plugins_) {
       plugin->matchSize();
@@ -74,6 +77,11 @@ class LayeredCostmap {
     max_i = std::min(max_i + 1, static_cast<int>(costmap_.getSizeInCellsX()));
     max_j = std::min(max_j + 1, static_cast<int>(costmap_.getSizeInCellsY()));
 
+    // Nav2 invariant: rebuild the dirty master window from layer state.
+    costmap_.resetMap(static_cast<unsigned int>(min_i),
+                      static_cast<unsigned int>(min_j),
+                      static_cast<unsigned int>(max_i),
+                      static_cast<unsigned int>(max_j));
     updateCostsForLayers(plugins_, costmap_, min_i, min_j, max_i, max_j);
   }
 
@@ -85,6 +93,40 @@ class LayeredCostmap {
     }
     return true;
   }
+
+  void setFootprint(const Footprint& footprint) {
+    footprint_ = footprint;
+    inscribed_radius_ = std::numeric_limits<double>::max();
+    circumscribed_radius_ = 0.0;
+    if (footprint_.size() > 2) {
+      auto distance_to_segment = [](const Point& first, const Point& second) {
+        const double dx = second.x - first.x;
+        const double dy = second.y - first.y;
+        const double length_sq = dx * dx + dy * dy;
+        if (length_sq <= 1e-18) return std::hypot(first.x, first.y);
+        const double t = std::clamp(
+            -(first.x * dx + first.y * dy) / length_sq, 0.0, 1.0);
+        return std::hypot(first.x + t * dx, first.y + t * dy);
+      };
+      for (std::size_t index = 0; index < footprint_.size(); ++index) {
+        const Point& point = footprint_[index];
+        const Point& next = footprint_[(index + 1) % footprint_.size()];
+        inscribed_radius_ = std::min(
+            inscribed_radius_,
+            std::min(std::hypot(point.x, point.y),
+                     distance_to_segment(point, next)));
+        circumscribed_radius_ =
+            std::max(circumscribed_radius_, std::hypot(point.x, point.y));
+      }
+    } else {
+      inscribed_radius_ = 0.0;
+    }
+    for (auto& plugin : plugins_) plugin->onFootprintChanged();
+  }
+
+  const Footprint& getFootprint() const { return footprint_; }
+  double getInscribedRadius() const { return inscribed_radius_; }
+  double getCircumscribedRadius() const { return circumscribed_radius_; }
 
   Costmap2D* getCostmap() { return &costmap_; }
   const Costmap2D* getCostmap() const { return &costmap_; }
@@ -101,6 +143,7 @@ class LayeredCostmap {
   bool isRolling() const { return rolling_window_; }
   bool isTrackingUnknown() const { return track_unknown_; }
   bool isInitialized() const { return initialized_; }
+  bool isSizeLocked() const { return size_locked_; }
 
   std::vector<Layer::Ptr>& getPlugins() { return plugins_; }
   const std::vector<Layer::Ptr>& getPlugins() const { return plugins_; }
@@ -134,11 +177,15 @@ class LayeredCostmap {
   bool rolling_window_{false};
   bool track_unknown_{false};
   bool initialized_{false};
+  bool size_locked_{false};
   double minx_{0.0};
   double miny_{0.0};
   double maxx_{0.0};
   double maxy_{0.0};
   std::vector<Layer::Ptr> plugins_;
+  Footprint footprint_;
+  double inscribed_radius_{0.0};
+  double circumscribed_radius_{0.0};
 };
 
 }  // namespace costmap_2d

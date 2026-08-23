@@ -45,13 +45,16 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 using ayanami::nav_msgs::Path;
 
-// argv: module .so + 5 插件 .so (smac/savitzky/pid/test_controller/spin)。
+// argv: module .so + 7 插件 .so (smac/savitzky/pid/test_controller/spin/
+// goal_checker/progress_checker)。
 std::string g_module_so;
 std::string g_smac_so;
 std::string g_savitzky_so;
 std::string g_pid_so;
 std::string g_test_controller_so;
 std::string g_spin_so;
+std::string g_goal_checker_so;
+std::string g_progress_checker_so;
 
 // 捕获 on_velocity_command 事件。
 std::vector<TwistStamped> g_cmds;
@@ -119,10 +122,14 @@ std::filesystem::path make_config_dir() {
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": \"recovery.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\",\n"
              "    \"costmap_smac_planner\": \"costmap_smac_planner.json\",\n"
              "    \"costmap_savitzky_smoother\": \"costmap_savitzky_smoother.json\",\n"
-             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\"\n"
+             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\",\n"
+             "    \"simple_goal_checker\": \"costmap_simple_goal_checker.json\",\n"
+             "    \"simple_progress_checker\": \"costmap_simple_progress_checker.json\"\n"
              "  }\n}\n");
 
   write_file(dir / "costmap_navigation.json",
@@ -137,6 +144,8 @@ std::filesystem::path make_config_dir() {
              "    \"spin_id\": \"test_spin\",\n"
              "    \"wait_id\": \"test_spin\",\n"
              "    \"backup_id\": \"test_spin\",\n"
+             "    \"goal_checker_id\": \"simple_goal_checker\",\n"
+             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
              "    \"planner_frequency\": 100.0,\n"
              "    \"smoother_frequency\": -1.0,\n"
              "    \"controller_frequency\": 20.0,\n"
@@ -155,8 +164,32 @@ std::filesystem::path make_config_dir() {
                          g_test_controller_so,
                          "create_navigation_test_controller_plugin"));
   write_file(dir / "recovery.json",
-             plugin_json("recovery", "test_spin", g_spin_so,
-                         "create_costmap_recovery_module"));
+             "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
+             "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
+             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\"\n  }\n}\n");
+  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
+  write_file(dir / "goal_checker.json",
+             plugin_json("goal_checker", "simple_goal_checker",
+                         g_goal_checker_so, "create_goal_checker_module"));
+  write_file(dir / "progress_checker.json",
+             plugin_json("progress_checker", "simple_progress_checker",
+                         g_progress_checker_so,
+                         "create_progress_checker_module"));
+
+  // goal/progress checker 私有配置 (缺省也能跑, 提供避免 spdlog 噪音)。
+  write_file(dir / "costmap_simple_goal_checker.json",
+             "{\n  \"goal_checker\": {\n"
+             "    \"position_tolerance\": 0.10,\n"
+             "    \"angle_tolerance\": 0.20,\n"
+             "    \"linear_tolerance\": 0.10,\n"
+             "    \"angular_tolerance\": 0.10\n"
+             "  }\n}\n");
+  write_file(dir / "costmap_simple_progress_checker.json",
+             "{\n  \"progress_checker\": {\n"
+             "    \"required_movement\": 0.1,\n"
+             "    \"movement_angle_required\": 0.2,\n"
+             "    \"time_period\": 5.0\n"
+             "  }\n}\n");
 
   // 20x20 @ 0.5 = 10m x 10m, origin (0,0); 全 FREE 静态地图 (A* 从 (0,0)
   // 到 (2,0) 可寻路)。
@@ -528,5 +561,7 @@ int main(int argc, char** argv) {
   if (argc > 4) g_pid_so = argv[4];
   if (argc > 5) g_test_controller_so = argv[5];
   if (argc > 6) g_spin_so = argv[6];
+  if (argc > 7) g_goal_checker_so = argv[7];
+  if (argc > 8) g_progress_checker_so = argv[8];
   return RUN_ALL_TESTS();
 }

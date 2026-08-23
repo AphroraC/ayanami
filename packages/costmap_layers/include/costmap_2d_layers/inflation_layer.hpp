@@ -4,6 +4,7 @@
 #include <cmath>
 #include <functional>
 #include <queue>
+#include <limits>
 #include <vector>
 
 #include <costmap_2d/costmap_2d.hpp>
@@ -19,16 +20,22 @@ class InflationLayer : public costmap_2d::Layer {
   void setInflationRadius(double radius) {
     inflation_radius_ = radius;
     caches_dirty_ = true;
+    need_reinflation_ = true;
+    current_ = false;
   }
 
   void setInscribedRadius(double radius) {
     inscribed_radius_ = radius;
     caches_dirty_ = true;
+    need_reinflation_ = true;
+    current_ = false;
   }
 
   void setCostScalingFactor(double factor) {
     weight_ = factor;
     caches_dirty_ = true;
+    need_reinflation_ = true;
+    current_ = false;
   }
 
   // 距离 (cells) -> cost: 0 -> LETHAL, 距障碍 <= inscribed -> 253,
@@ -49,9 +56,7 @@ class InflationLayer : public costmap_2d::Layer {
   }
 
   void updateBounds(double, double, double, double*, double*, double*,
-                    double*) override {
-    // 膨胀窗口在 updateCosts 内部按 cell_inflation_radius 扩展, 此处不改 bounds。
-  }
+                    double*) override;
 
   void updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j,
                    int max_i, int max_j) override;
@@ -60,6 +65,7 @@ class InflationLayer : public costmap_2d::Layer {
   void deactivate() override {}
   void reset() override {}
   void matchSize() override {}
+  void onFootprintChanged() override;
 
   unsigned int getCellInflationRadius() const { return cell_inflation_radius_; }
 
@@ -90,8 +96,15 @@ class InflationLayer : public costmap_2d::Layer {
   double weight_{10.0};
   unsigned int cell_inflation_radius_{0};
   bool caches_dirty_{true};
+  bool need_reinflation_{true};
+  bool has_last_bounds_{false};
+  double last_min_x_{std::numeric_limits<double>::max()};
+  double last_min_y_{std::numeric_limits<double>::max()};
+  double last_max_x_{std::numeric_limits<double>::lowest()};
+  double last_max_y_{std::numeric_limits<double>::lowest()};
   std::vector<std::vector<double>> cached_distances_;
   std::vector<std::vector<costmap_2d::CostValue>> cached_costs_;
+  std::vector<bool> seen_;
 };
 
 }  // namespace costmap_2d_layers

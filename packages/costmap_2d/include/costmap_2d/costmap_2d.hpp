@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <climits>
 #include <vector>
 
 #include <costmap_2d/cost_values.hpp>
@@ -101,9 +102,22 @@ class Costmap2D {
       my = 0;
       return;
     }
-    worldToMapNoBounds(wx, wy, mx, my);
-    mx = std::clamp(mx, 0, static_cast<int>(size_x_) - 1);
-    my = std::clamp(my, 0, static_cast<int>(size_y_) - 1);
+    // Compare in world space before converting to int. Layer bounds may use
+    // numeric_limits<double>::max()/lowest() for full reinflation.
+    if (wx < origin_x_) {
+      mx = 0;
+    } else if (wx > origin_x_ + resolution_ * size_x_) {
+      mx = static_cast<int>(size_x_) - 1;
+    } else {
+      mx = static_cast<int>((wx - origin_x_) / resolution_);
+    }
+    if (wy < origin_y_) {
+      my = 0;
+    } else if (wy > origin_y_ + resolution_ * size_y_) {
+      my = static_cast<int>(size_y_) - 1;
+    } else {
+      my = static_cast<int>((wy - origin_y_) / resolution_);
+    }
   }
 
   void mapToWorld(unsigned int mx, unsigned int my, double& wx,
@@ -151,6 +165,58 @@ class Costmap2D {
     return mx < size_x_ && my < size_y_;
   }
 
+  template <class Action>
+  void raytraceLine(Action action, unsigned int x0, unsigned int y0,
+                    unsigned int x1, unsigned int y1,
+                    unsigned int max_length = UINT_MAX,
+                    unsigned int min_length = 0) const {
+    if (!inBounds(x0, y0) || !inBounds(x1, y1)) return;
+    const int full_dx = static_cast<int>(x1) - static_cast<int>(x0);
+    const int full_dy = static_cast<int>(y1) - static_cast<int>(y0);
+    const double distance = std::hypot(full_dx, full_dy);
+    if (distance < min_length) return;
+    const unsigned int start_x = distance > 0.0
+                                     ? static_cast<unsigned int>(
+                                           x0 + full_dx / distance * min_length)
+                                     : x0;
+    const unsigned int start_y = distance > 0.0
+                                     ? static_cast<unsigned int>(
+                                           y0 + full_dy / distance * min_length)
+                                     : y0;
+    int dx = static_cast<int>(x1) - static_cast<int>(start_x);
+    int dy = static_cast<int>(y1) - static_cast<int>(start_y);
+    const unsigned int abs_dx = static_cast<unsigned int>(std::abs(dx));
+    const unsigned int abs_dy = static_cast<unsigned int>(std::abs(dy));
+    const int offset_dx = dx >= 0 ? 1 : -1;
+    const int offset_dy = (dy >= 0 ? 1 : -1) * static_cast<int>(size_x_);
+    unsigned int offset = getIndex(start_x, start_y);
+    const double scale = distance == 0.0
+                             ? 1.0
+                             : std::min(1.0, max_length / distance);
+    auto trace = [&](unsigned int abs_da, unsigned int abs_db, int offset_a,
+                     int offset_b) {
+      int error = static_cast<int>(abs_da / 2);
+      const unsigned int end =
+          std::min(static_cast<unsigned int>(scale * abs_da), abs_da);
+      for (unsigned int index = 0; index < end; ++index) {
+        action(offset);
+        offset = static_cast<unsigned int>(static_cast<int>(offset) + offset_a);
+        error += static_cast<int>(abs_db);
+        if (static_cast<unsigned int>(error) >= abs_da) {
+          offset =
+              static_cast<unsigned int>(static_cast<int>(offset) + offset_b);
+          error -= static_cast<int>(abs_da);
+        }
+      }
+      action(offset);
+    };
+    if (abs_dx >= abs_dy) {
+      trace(abs_dx, abs_dy, offset_dx, offset_dy);
+    } else {
+      trace(abs_dy, abs_dx, offset_dy, offset_dx);
+    }
+  }
+
   // 裁剪窗口复制：把 source 的 [sx0,sxn) x [sy0,syn) 区域拷到自身 [dx0,dx1)。
   // 返回是否整窗口在界内。Ruling #6 同款命名纪律：this->size_x_ 显式引用成员。
   bool copyWindow(const Costmap2D& source, unsigned int sx0, unsigned int sy0,
@@ -186,9 +252,9 @@ class Costmap2D {
         std::floor((new_origin_x - origin_x_) / resolution_));
     const int cell_oy = static_cast<int>(
         std::floor((new_origin_y - origin_y_) / resolution_));
+    const double aligned_origin_x = origin_x_ + cell_ox * resolution_;
+    const double aligned_origin_y = origin_y_ + cell_oy * resolution_;
     if (cell_ox == 0 && cell_oy == 0) {
-      origin_x_ = new_origin_x;
-      origin_y_ = new_origin_y;
       return;
     }
 
@@ -217,8 +283,8 @@ class Costmap2D {
       }
     }
     data_.swap(new_data);
-    origin_x_ = new_origin_x;
-    origin_y_ = new_origin_y;
+    origin_x_ = aligned_origin_x;
+    origin_y_ = aligned_origin_y;
   }
 
  private:

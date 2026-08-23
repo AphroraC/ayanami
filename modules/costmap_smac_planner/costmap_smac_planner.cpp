@@ -5,11 +5,12 @@
 // - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
 // - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
 // - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
-// - cancel(): 搜索循环逐节点检查, 打断后返回规划段 CANCELED=68
+// - cancel(): 搜索循环逐节点检查, 打断后返回统一失败码 FailureCode::Canceled
 
 #include <ayanami/modules/costmap_smac_planner/costmap_smac_planner.hpp>
 
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -25,8 +26,6 @@ namespace modules {
 namespace {
 
 constexpr double kDiagonalStep = std::sqrt(2.0);
-// 规划段错误 (spec §5.1 50+): CANCELED。
-constexpr uint32_t kCanceledOutcome = 68;
 
 struct Cell {
   unsigned int x{0};
@@ -196,8 +195,8 @@ CostmapSmacPlanner::CostmapSmacPlanner() { loadConfig(); }
 
 void CostmapSmacPlanner::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_smac_planner"));
+    const ayanami::ComponentConfig holder("config_planner");
+    const auto& file = holder.get();
     config_.use_diagonal = file.param<bool>(
         "costmap_smac_planner", "use_diagonal", config_.use_diagonal);
     config_.tolerance = file.param<double>(
@@ -224,10 +223,10 @@ bool CostmapSmacPlanner::cancel() {
   return true;
 }
 
-uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
-                                      const geometry_msgs::PoseStamped& goal,
-                                      double tolerance, nav_msgs::Path& plan,
-                                      double& cost, std::string& message) {
+FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
+                                         const geometry_msgs::PoseStamped& goal,
+                                         double tolerance, nav_msgs::Path& plan,
+                                         double& cost, std::string& message) {
   plan.poses.clear();
   cost = 0.0;
   message.clear();
@@ -237,7 +236,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
       costmap_context_ ? costmap_context_->globalCostmap2D() : nullptr;
   if (!cm) {
     message = "CostmapSmacPlanner is not initialized";
-    return ayanami::actions::GetPathResult::INTERNAL_ERROR;
+    return FailureCode::MapUnavailable;
   }
 
   // 3.1 minor carry: start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
@@ -254,7 +253,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&
       start_pose.header.frame_id != goal.header.frame_id) {
     message = "Start and goal frames do not match";
-    return ayanami::actions::GetPathResult::TF_ERROR;
+    return FailureCode::TransformUnavailable;
   }
 
   unsigned int sx = 0;
@@ -264,17 +263,17 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   if (!cm->worldToMap(start_pose.pose.translation().x(),
                       start_pose.pose.translation().y(), sx, sy)) {
     message = "Start pose is outside the global costmap";
-    return ayanami::actions::GetPathResult::OUT_OF_MAP;
+    return FailureCode::StartInvalid;
   }
   if (!cm->worldToMap(goal.pose.translation().x(), goal.pose.translation().y(),
                       gx, gy)) {
     message = "Goal pose is outside the global costmap";
-    return ayanami::actions::GetPathResult::OUT_OF_MAP;
+    return FailureCode::GoalInvalid;
   }
 
   if (isBlocked(cm, sx, sy)) {
     message = "Start pose is blocked";
-    return ayanami::actions::GetPathResult::INVALID_START;
+    return FailureCode::StartInvalid;
   }
 
   const double tolerance_m = tolerance > 0.0 ? tolerance : config_.tolerance;
@@ -288,7 +287,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   if (isBlocked(cm, gx, gy)) {
     if (!nearestValidGoal(cm, gx, gy, tolerance_cells, target_x, target_y)) {
       message = "Goal pose is blocked and no valid cell within tolerance";
-      return ayanami::actions::GetPathResult::NO_PATH_FOUND;
+      return FailureCode::GoalInvalid;
     }
     approximate = true;
   }
@@ -302,11 +301,11 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
       runAStar(cm, params, sx, sy, target_x, target_y, canceled_);
   if (canceled_.load()) {
     message = "Planning canceled";
-    return kCanceledOutcome;
+    return FailureCode::Canceled;
   }
   if (!result.found || result.cells.empty()) {
     message = "No path found";
-    return ayanami::actions::GetPathResult::NO_PATH_FOUND;
+    return FailureCode::PathNotFound;
   }
 
   // 构建 plan: cell → world pose。
@@ -343,7 +342,7 @@ uint32_t CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
   cost = result.cost;
   message = approximate ? "Smac planner found an approximate path"
                         : "Smac planner found a path";
-  return ayanami::actions::GetPathResult::SUCCESS;
+  return FailureCode::None;
 }
 
 }  // namespace modules

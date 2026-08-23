@@ -31,3 +31,47 @@ TEST(CallbackSlotTest, EmptySlotIsFalse) {
   slot.add([]{});
   EXPECT_TRUE(bool(slot));
 }
+
+TEST(CallbackSlotTest, CallbackCanRemoveItself) {
+  ayanami::CallbackSlot<void()> slot;
+  int calls = 0;
+  int id = -1;
+  id = slot.add([&] {
+    ++calls;
+    slot.remove(id);
+  });
+
+  slot();
+  slot();
+
+  EXPECT_EQ(calls, 1);
+  EXPECT_FALSE(bool(slot));
+}
+
+TEST(CallbackSlotTest, CallbackCanEmitRecursively) {
+  ayanami::CallbackSlot<void(int)> slot;
+  int calls = 0;
+  slot.add([&](int depth) {
+    ++calls;
+    if (depth > 0) {
+      slot(depth - 1);
+    }
+  });
+
+  slot(2);
+
+  EXPECT_EQ(calls, 3);
+}
+
+TEST(CallbackSlotTest, RemovalTakesEffectOnNextSnapshot) {
+  ayanami::CallbackSlot<void()> slot;
+  int second_calls = 0;
+  int second_id = -1;
+  slot.add([&] { slot.remove(second_id); });
+  second_id = slot.add([&] { ++second_calls; });
+
+  slot();
+  slot();
+
+  EXPECT_EQ(second_calls, 1);
+}

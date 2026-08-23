@@ -64,6 +64,48 @@ TEST(ConfigTest, LoadAndParamScalar) {
   EXPECT_EQ(cfg.param<int>("m", "missing", 7), 7);  // default
 }
 
+TEST(ConfigTest, VectorStringParam) {
+  // extension_modules 等字符串数组经 Config API 读取。
+  auto dir = make_temp_config_dir();
+  write_json(dir / "test.json",
+             R"({ "m": { "ext": ["librviz_viewer.so", "libecho.so"] } })");
+  ayanami::Config cfg((dir / "test.json").string());
+  const auto v = cfg.param<std::vector<std::string>>("m", "ext", {});
+  ASSERT_EQ(v.size(), 2u);
+  EXPECT_EQ(v[0], "librviz_viewer.so");
+  EXPECT_EQ(v[1], "libecho.so");
+  EXPECT_TRUE(cfg.param<std::vector<std::string>>("m", "missing", {}).empty());
+}
+
+TEST(ConfigTest, NestedVectorStringParam) {
+  // tf_sync_edges 所需 [[target, source], ...] (std::vector<std::vector<std::string>>)。
+  auto dir = make_temp_config_dir();
+  write_json(dir / "test.json",
+             R"({ "m": { "edges": [["map", "odom"], ["odom", "base_link"]] } })");
+  ayanami::Config cfg((dir / "test.json").string());
+  const auto v =
+      cfg.param<std::vector<std::vector<std::string>>>("m", "edges", {});
+  ASSERT_EQ(v.size(), 2u);
+  ASSERT_EQ(v[0].size(), 2u);
+  EXPECT_EQ(v[0][0], "map");
+  EXPECT_EQ(v[0][1], "odom");
+  ASSERT_EQ(v[1].size(), 2u);
+  EXPECT_EQ(v[1][0], "odom");
+  EXPECT_EQ(v[1][1], "base_link");
+}
+
+TEST(ConfigTest, Vector2dFootprintParam) {
+  auto dir = make_temp_config_dir();
+  write_json(dir / "test.json",
+             R"({ "costmap": { "footprint": [[-0.2,-0.1],[0.2,0.1]] } })");
+  ayanami::Config cfg((dir / "test.json").string());
+  const auto footprint = cfg.param<std::vector<Eigen::Vector2d>>(
+      "costmap", "footprint", {});
+  ASSERT_EQ(footprint.size(), 2u);
+  EXPECT_DOUBLE_EQ(footprint[0].x(), -0.2);
+  EXPECT_DOUBLE_EQ(footprint[1].y(), 0.1);
+}
+
 TEST(ConfigTest, EigenTrait) {
   // TUM 7 元 [x,y,z,qx,qy,qz,qw]; JSON 带注释验证 ignore_comments=true
   auto dir = make_temp_config_dir();

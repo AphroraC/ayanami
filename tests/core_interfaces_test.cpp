@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
-#include <ayanami/core/abstract_planner.hpp>
-#include <ayanami/core/abstract_controller.hpp>
-#include <ayanami/core/abstract_smoother.hpp>
-#include <ayanami/core/abstract_recovery.hpp>
-#include <ayanami/core/abstract_navigation.hpp>
-#include <ayanami/core/map_context.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_smoother.hpp>
+#include <ayanami/abstract/core/abstract_recovery.hpp>
+#include <ayanami/abstract/core/abstract_navigation.hpp>
+#include <ayanami/abstract/core/map_context.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -15,6 +17,7 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::OccupancyGrid;
@@ -24,32 +27,33 @@ using ayanami::nav_msgs::Path;
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped&, const PoseStamped&, double,
-                    Path&, double&, std::string&) override {
-    return 0;
+  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double,
+                       Path&, double&, std::string&) override {
+    return FailureCode::None;
   }
 };
 
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped&, std::string&) override {
-    return 0;
+  FailureCode computeVelocityCommands(const PoseStamped&, const TwistStamped&,
+                                      TwistStamped&, std::string&,
+                                      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return false; }
   bool setPlan(const Path&) override { return true; }
 };
 
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  uint32_t smoothPath(const Path&, Path&, double, bool, std::string&) override {
-    return 0;
+  FailureCode smoothPath(const Path&, Path&, double, bool,
+                         std::string&) override {
+    return FailureCode::None;
   }
 };
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  uint32_t runRecovery(std::string&) override { return 0; }
+  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
 };
 
 class TestNavigation : public ayanami::abstract::AbstractNavigation {
@@ -84,7 +88,7 @@ TEST(CoreAbstractPlanner, MakePlanCallableAndCancelDefaultsFalse) {
   Path plan;
   double cost = 0.0;
   std::string msg;
-  EXPECT_EQ(p.makePlan(start, goal, 0.1, plan, cost, msg), 0u);
+  EXPECT_EQ(p.makePlan(start, goal, 0.1, plan, cost, msg), FailureCode::None);
   EXPECT_FALSE(p.cancel());
 }
 
@@ -93,8 +97,9 @@ TEST(CoreAbstractController, ComputeGoalAndSetPlan) {
   PoseStamped pose;
   TwistStamped vel, cmd;
   std::string msg;
-  EXPECT_EQ(c.computeVelocityCommands(pose, vel, cmd, msg), 0u);
-  EXPECT_FALSE(c.isGoalReached(0.1, 0.1));
+  ayanami::abstract::AbstractGoalChecker::Ptr checker;
+  EXPECT_EQ(c.computeVelocityCommands(pose, vel, cmd, msg, checker),
+            FailureCode::None);
   Path plan;
   EXPECT_TRUE(c.setPlan(plan));
   EXPECT_FALSE(c.cancel());
@@ -104,14 +109,14 @@ TEST(CoreAbstractSmoother, SmoothPathCallableAndCancelDefaultsFalse) {
   TestSmoother s;
   Path path, out;
   std::string msg;
-  EXPECT_EQ(s.smoothPath(path, out, 2.0, true, msg), 0u);
+  EXPECT_EQ(s.smoothPath(path, out, 2.0, true, msg), FailureCode::None);
   EXPECT_FALSE(s.cancel());
 }
 
 TEST(CoreAbstractRecovery, RunRecoveryCallableAndCancelDefaultsFalse) {
   TestRecovery r;
   std::string msg;
-  EXPECT_EQ(r.runRecovery(msg), 0u);
+  EXPECT_EQ(r.runRecovery(msg), FailureCode::None);
   EXPECT_FALSE(r.cancel());
 }
 

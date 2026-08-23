@@ -98,13 +98,68 @@ TEST(CostmapLayersTest, StaticLayerLoadsPgm) {
 
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                     static_cast<int>(master.getSizeInCellsY()));
-  EXPECT_EQ(master.getCost(0, 0), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_EQ(master.getCost(1, 0), costmap_2d::FREE_SPACE);
-  EXPECT_EQ(master.getCost(2, 0), costmap_2d::NO_INFORMATION);
-  EXPECT_EQ(master.getCost(2, 2), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_EQ(master.getCost(1, 2), costmap_2d::NO_INFORMATION);
+  // PGM rows start at the image top; map rows start at world -Y. Match Nav2's
+  // height-y-1 conversion so the map is not mirrored across the X axis.
+  EXPECT_EQ(master.getCost(0, 0), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(master.getCost(1, 0), costmap_2d::NO_INFORMATION);
+  EXPECT_EQ(master.getCost(2, 0), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master.getCost(0, 2), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master.getCost(1, 2), costmap_2d::FREE_SPACE);
 
   std::remove(path);
+}
+
+TEST(CostmapLayersTest, StaticLayerResizesNonRollingMasterFromMap) {
+  auto layered =
+      std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
+  layered->resizeMap(3, 4, 1.0, 0.0, 0.0);
+  auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  layered->addLayer(layer);
+
+  costmap_2d::Costmap2D first(7, 5, 0.25, -1.0, -2.0,
+                              costmap_2d::FREE_SPACE);
+  first.setCost(6, 4, costmap_2d::LETHAL_OBSTACLE);
+  layer->setMap(first);
+  layered->updateMap(0.0, 0.0, 0.0);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsX(), 7u);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsY(), 5u);
+  EXPECT_DOUBLE_EQ(layered->getCostmap()->getResolution(), 0.25);
+  EXPECT_DOUBLE_EQ(layered->getCostmap()->getOriginX(), -1.0);
+  EXPECT_EQ(layered->getCostmap()->getCost(6, 4),
+            costmap_2d::LETHAL_OBSTACLE);
+
+  costmap_2d::Costmap2D replacement(2, 3, 0.5, 4.0, 5.0,
+                                    costmap_2d::FREE_SPACE);
+  replacement.setCost(1, 2, costmap_2d::LETHAL_OBSTACLE);
+  layer->setMap(replacement);
+  layered->updateMap(4.0, 5.0, 0.0);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsX(), 2u);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsY(), 3u);
+  EXPECT_DOUBLE_EQ(layered->getCostmap()->getOriginY(), 5.0);
+  EXPECT_EQ(layered->getCostmap()->getCost(1, 2),
+            costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CostmapLayersTest, StaticLayerQueuedMapAppliesInUpdateCycle) {
+  auto layered =
+      std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
+  auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  layered->addLayer(layer);
+  costmap_2d::Costmap2D first(2, 2, 1.0, 0.0, 0.0,
+                              costmap_2d::FREE_SPACE);
+  layer->setMap(first);
+  layered->updateMap(0.0, 0.0, 0.0);
+
+  costmap_2d::Costmap2D queued(4, 3, 0.25, -2.0, -1.0,
+                               costmap_2d::FREE_SPACE);
+  queued.setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
+  layer->queueMap(queued);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsX(), 2u);
+  layered->updateMap(0.0, 0.0, 0.0);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsX(), 4u);
+  EXPECT_EQ(layered->getCostmap()->getSizeInCellsY(), 3u);
+  EXPECT_EQ(layered->getCostmap()->getCost(3, 2),
+            costmap_2d::LETHAL_OBSTACLE);
 }
 
 // ---------- SimpleObstacleLayer ----------
@@ -174,6 +229,34 @@ TEST(CostmapLayersTest, InflationLayerInflatesAroundLethal) {
   EXPECT_GT(master.getCost(5, 7), 0);
   // 超过 inflation_radius (3 cells) 的 cell 保持默认 0
   EXPECT_EQ(master.getCost(5, 12), costmap_2d::FREE_SPACE);
+}
+
+TEST(CostmapLayersTest, InflationRadiusShrinkRemovesOldBand) {
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
+  lm->resizeMap(30, 30, 0.5, 0.0, 0.0);
+  auto obstacles =
+      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+  inflation->setInflationRadius(2.0);
+  inflation->setInscribedRadius(0.5);
+  lm->addLayer(obstacles);
+  lm->addLayer(inflation);
+  obstacles->markObstacles(7.75, 7.75);
+  lm->updateMap(0.0, 0.0, 0.0);
+  ASSERT_GT(lm->getCostmap()->getCost(17, 15), 0);
+
+  inflation->setInflationRadius(0.5);
+  lm->updateMap(0.0, 0.0, 0.0);
+  EXPECT_EQ(lm->getCostmap()->getCost(17, 15), costmap_2d::FREE_SPACE);
+}
+
+TEST(CostmapLayersTest, ObstacleMaximumOverridesUnknown) {
+  costmap_2d::Costmap2D master(10, 10, 1.0, 0.0, 0.0,
+                               costmap_2d::NO_INFORMATION);
+  costmap_2d_layers::SimpleObstacleLayer layer;
+  layer.markObstacles(2.5, 2.5);
+  layer.updateCosts(master, 0, 0, 10, 10);
+  EXPECT_EQ(master.getCost(2, 2), costmap_2d::LETHAL_OBSTACLE);
 }
 
 TEST(CostmapLayersTest, InflationLayerClipsRadiusTo1000) {

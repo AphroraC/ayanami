@@ -16,7 +16,7 @@ namespace modules {
  * 纯 C++ (零 ROS): 在注入的 CostmapContext 上按 spin_dist/max_w 时长逐帧
  * emit on_velocity_command 纯角速度建议 (M1 headless 无真底盘, 不依赖底盘
  * 实际运动, 发完时长即 SUCCESS); 每帧 10ms + cancel 检查; 碰撞检测
- * (global costmap robot 附近 cell >= 253) → CANCELED。
+ * (global costmap robot 附近 cell >= 253) → FailureCode::RecoveryFailed。
  */
 class CostmapSpinRecovery : public ayanami::costmap::CostmapRecovery {
  public:
@@ -28,7 +28,7 @@ class CostmapSpinRecovery : public ayanami::costmap::CostmapRecovery {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t runRecovery(std::string& message) override;
+  FailureCode runRecovery(std::string& message) override;
 
   bool cancel() override;
 

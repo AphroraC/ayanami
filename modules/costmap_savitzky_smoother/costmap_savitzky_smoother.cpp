@@ -10,7 +10,7 @@
 
 #include <ayanami/modules/costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
 
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -76,8 +76,8 @@ CostmapSavitzkySmoother::CostmapSavitzkySmoother() { loadConfig(); }
 
 void CostmapSavitzkySmoother::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_savitzky_smoother"));
+    const ayanami::ComponentConfig holder("config_smoother");
+    const auto& file = holder.get();
     config_.do_refinement = file.param<bool>(
         "costmap_savitzky_smoother", "do_refinement", config_.do_refinement);
     config_.refinement_num = file.param<int>(
@@ -96,7 +96,7 @@ bool CostmapSavitzkySmoother::cancel() {
   return true;
 }
 
-uint32_t CostmapSavitzkySmoother::smoothPath(
+FailureCode CostmapSavitzkySmoother::smoothPath(
     const ayanami::nav_msgs::Path& in, ayanami::nav_msgs::Path& out,
     double max_duration, bool check_for_collision, std::string& message) {
   out = in;
@@ -105,7 +105,7 @@ uint32_t CostmapSavitzkySmoother::smoothPath(
 
   // 空 path 或点数 < 7: 无窗口可平滑, 直接 SUCCESS, out=in。
   if (in.poses.size() < 7) {
-    return ayanami::actions::SmoothPathResult::SUCCESS;
+    return FailureCode::None;
   }
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -118,7 +118,7 @@ uint32_t CostmapSavitzkySmoother::smoothPath(
 
   // 预算耗尽仍未开始: SUCCESS + 部分平滑 (= 无)。
   if (timed && elapsed() > max_duration) {
-    return ayanami::actions::SmoothPathResult::SUCCESS;
+    return FailureCode::None;
   }
 
   // 名义一轮过滤 (核心平滑)。
@@ -156,13 +156,13 @@ uint32_t CostmapSavitzkySmoother::smoothPath(
       if (collision) {
         out = in;
         message = "collision detected";
-        return ayanami::actions::SmoothPathResult::SUCCESS;
+        return FailureCode::None;
       }
     }
   }
 
   // 与 original 完全一致时同样退化为 SUCCESS。
-  return ayanami::actions::SmoothPathResult::SUCCESS;
+  return FailureCode::None;
 }
 
 }  // namespace modules

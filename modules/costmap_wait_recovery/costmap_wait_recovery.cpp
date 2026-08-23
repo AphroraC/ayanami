@@ -5,7 +5,7 @@
 
 #include <ayanami/modules/costmap_wait_recovery/costmap_wait_recovery.hpp>
 
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -19,8 +19,8 @@ CostmapWaitRecovery::CostmapWaitRecovery() { loadConfig(); }
 
 void CostmapWaitRecovery::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_wait_recovery"));
+    const ayanami::ComponentConfig holder;
+    const auto& file = holder.get();
     config_.wait_duration =
         file.param<double>("recovery", "wait_duration", config_.wait_duration);
     config_.sim_cycle_dt =
@@ -37,15 +37,15 @@ void CostmapWaitRecovery::initialize(
   canceled_.store(false);
 }
 
-uint32_t CostmapWaitRecovery::runRecovery(std::string& message) {
+FailureCode CostmapWaitRecovery::runRecovery(std::string& message) {
   message.clear();
   if (canceled_.load()) {
     message = "wait recovery canceled";
-    return ayanami::actions::RecoveryResult::CANCELED;
+    return FailureCode::Canceled;
   }
   if (!costmap_context_) {
     message = "wait recovery not initialized";
-    return ayanami::actions::RecoveryResult::INTERNAL_ERROR;
+    return FailureCode::InternalError;
   }
 
   const double dt = std::max(config_.sim_cycle_dt, 1e-6);
@@ -55,14 +55,14 @@ uint32_t CostmapWaitRecovery::runRecovery(std::string& message) {
   for (int i = 0; i < static_cast<int>(std::ceil(total_frames)); ++i) {
     if (canceled_.load()) {
       message = "wait recovery canceled";
-      return ayanami::actions::RecoveryResult::CANCELED;
+      return FailureCode::Canceled;
     }
     std::this_thread::sleep_for(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::duration<double>(dt)));
   }
 
-  return ayanami::actions::RecoveryResult::SUCCESS;
+  return FailureCode::None;
 }
 
 bool CostmapWaitRecovery::cancel() {

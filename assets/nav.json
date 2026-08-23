@@ -1,13 +1,11 @@
 {
-  "image": "nav.pgm",
-  "resolution": 0.05,
-  "origin": [
-    -50.0,
-    -50.0,
-    0.0
-  ],
-  "negate": 0,
-  "occupied_thresh": 0.65,
-  "free_thresh": 0.196,
-  "mode": "trinary"
+  "map": {
+    "image": "nav.pgm",
+    "resolution": 0.05,
+    "origin": [-8.75, -3.85, 0.0],
+    "negate": 0,
+    "occupied_thresh": 0.65,
+    "free_thresh": 0.196,
+    "mode": "trinary"
+  }
 }

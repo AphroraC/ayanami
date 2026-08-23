@@ -25,10 +25,8 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <mutex>
-#include <sstream>
 #include <utility>
 
 namespace ayanami {
@@ -106,22 +104,13 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
     assert(robot_frame == ros_frame);
   }
 
-  // ---- global: StaticLayer + InflationLayer ----
+  // ---- global: StaticLayer + SimpleObstacleLayer + InflationLayer ----
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       global_frame,
       cfg.param<bool>("costmap_global", "rolling_window", false),
       cfg.param<bool>("costmap_global", "track_unknown", false));
-  const int global_size_x =
-      cfg.param<int>("costmap_global", "size_x", kDefaultSizeX);
-  const int global_size_y =
-      cfg.param<int>("costmap_global", "size_y", kDefaultSizeY);
-  if (global_size_x > 0 && global_size_y > 0) {
-    global_lm->resizeMap(static_cast<unsigned int>(global_size_x),
-                         static_cast<unsigned int>(global_size_y), resolution,
-                         0.0, 0.0);
-  }
-
   auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  global_lm->addLayer(static_layer);
   const std::string static_map =
       cfg.param<std::string>("costmap_global", "static_map", "");
   if (!static_map.empty()) {
@@ -133,78 +122,67 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
         map_path = std::filesystem::path(config_path).parent_path().string() +
                    "/" + static_map;
       }
-      // Task 12 stage C: 读 sibling .yaml 取真实 origin/resolution
-      // (nav_demo/map/nav.yaml origin=[-50,-50]); setMapPath 硬编码 (0,0) 会让
-      // 静态图整体偏移 50m, 与 amcl/map_server 使用的同一张图错位。
-      double map_origin_x = 0.0;
-      double map_origin_y = 0.0;
-      double map_resolution = resolution;
-      std::string yaml_path = map_path;
-      const std::string::size_type dot = yaml_path.rfind('.');
-      if (dot != std::string::npos) {
-        yaml_path = yaml_path.substr(0, dot) + ".yaml";
+      // Ayanami map metadata is JSON-only and loaded through the common Config
+      // API. Middleware adapters keep their deployment metadata outside this package.
+      std::filesystem::path metadata_path(map_path);
+      metadata_path.replace_extension(".json");
+      Config map_cfg(metadata_path.string());
+      const auto map_resolution = map_cfg.param<double>("map", "resolution");
+      const auto map_origin = map_cfg.param<Eigen::Vector3d>("map", "origin");
+      if (!map_resolution || !map_origin) {
+        throw std::runtime_error("invalid JSON map metadata: " +
+                                 metadata_path.string());
       }
-      std::ifstream yaml_ifs(yaml_path);
-      std::string line;
-      while (std::getline(yaml_ifs, line)) {
-        auto parse_double = [&line](const char* key, double& out) {
-          const std::string::size_type pos = line.find(key);
-          if (pos == std::string::npos) {
-            return;
-          }
-          const std::string::size_type val = line.find(':', pos + 1);
-          if (val == std::string::npos) {
-            return;
-          }
-          try {
-            out = std::stod(line.substr(val + 1));
-          } catch (...) {
-          }
-        };
-        parse_double("resolution", map_resolution);
-        const std::string::size_type origin_pos = line.find("origin");
-        if (origin_pos != std::string::npos) {
-          const std::string::size_type lb = line.find('[', origin_pos);
-          const std::string::size_type rb = line.find(']', lb);
-          if (lb != std::string::npos && rb != std::string::npos &&
-              rb > lb) {
-            std::stringstream ss(line.substr(lb + 1, rb - lb - 1));
-            std::string tok;
-            int field = 0;
-            while (std::getline(ss, tok, ',')) {
-              try {
-                const double v = std::stod(tok);
-                if (field == 0) {
-                  map_origin_x = v;
-                } else if (field == 1) {
-                  map_origin_y = v;
-                }
-              } catch (...) {
-              }
-              ++field;
-            }
-          }
-        }
-      }
-      static_layer->setMapPath(map_path, map_resolution, map_origin_x,
-                               map_origin_y);
+      static_layer->setMapPath(map_path, *map_resolution, map_origin->x(),
+                               map_origin->y());
     } catch (const std::exception& e) {
       spdlog::error("CostmapNavigationServer::configureCoreMaps: {}", e.what());
     }
   }
-  global_lm->addLayer(static_layer);
+  if (!static_layer->hasMap()) {
+    const int fallback_size_x =
+        cfg.param<int>("costmap_global", "size_x", kDefaultSizeX);
+    const int fallback_size_y =
+        cfg.param<int>("costmap_global", "size_y", kDefaultSizeY);
+    if (fallback_size_x > 0 && fallback_size_y > 0) {
+      global_lm->resizeMap(static_cast<unsigned int>(fallback_size_x),
+                           static_cast<unsigned int>(fallback_size_y),
+                           resolution, 0.0, 0.0);
+    } else {
+      throw std::runtime_error(
+          "static global map failed to load and no fallback size is configured");
+    }
+  }
+  {
+    const auto* global_master = global_lm->getCostmap();
+    if (!global_master || global_master->getSizeInCellsX() == 0 ||
+        global_master->getSizeInCellsY() == 0) {
+      throw std::runtime_error("static map loaded but global master geometry is empty");
+    }
+    spdlog::info(
+        "global costmap geometry from static map: {}x{} resolution={} "
+        "origin=({}, {})",
+        global_master->getSizeInCellsX(), global_master->getSizeInCellsY(),
+        global_master->getResolution(), global_master->getOriginX(),
+        global_master->getOriginY());
+  }
+
+  auto global_obstacle =
+      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  global_obstacle->setCombinationMethod(
+      costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::MAXIMUM);
+  global_obstacle->setClearToFree(false);
+  global_lm->addLayer(global_obstacle);
 
   auto global_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
-  global_inflation->setInflationRadius(cfg.param<double>(
-      "costmap_global", "inflation_radius", kDefaultInflationRadius));
+  const double global_inflation_radius = cfg.param<double>(
+      "costmap_global", "inflation_radius", kDefaultInflationRadius);
+  global_inflation->setInflationRadius(global_inflation_radius);
   global_inflation->setInscribedRadius(cfg.param<double>(
       "costmap_global", "inscribed_radius", kDefaultInscribedRadius));
   global_inflation->setCostScalingFactor(cfg.param<double>(
       "costmap_global", "cost_scaling_factor", kDefaultCostScalingFactor));
   global_lm->addLayer(global_inflation);
-
-  auto global_wrapper =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, global_frame);
 
   // ---- local: SimpleObstacleLayer + InflationLayer (rolling) ----
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -222,6 +200,8 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   }
 
   auto obstacle_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  obstacle_layer->setCombinationMethod(
+      costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::OVERWRITE);
   local_lm->addLayer(obstacle_layer);
 
   auto local_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
@@ -237,9 +217,35 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   auto local_wrapper =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
 
-  obstacle_layer_ = obstacle_layer.get();
+  const auto footprint_values = cfg.param<std::vector<Eigen::Vector2d>>(
+      "costmap", "footprint", {});
+  costmap_2d::Footprint footprint;
+  footprint.reserve(footprint_values.size());
+  for (const auto& point : footprint_values) {
+    footprint.push_back(costmap_2d::Point{point.x(), point.y(), 0.0});
+  }
+  if (!footprint.empty()) {
+    // Nav2 semantics: a configured footprint is the source of truth for the
+    // inscribed radius. The explicit radius above is only a fallback when no
+    // polygon is configured.
+    global_lm->setFootprint(footprint);
+    local_lm->setFootprint(footprint);
+  }
+
+  auto global_wrapper =
+      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, global_frame);
+  // Materialize once after footprint propagation, avoiding a second full-map
+  // reinflation during startup.
+  global_wrapper->updateMap(0.0, 0.0, 0.0);
+
+  global_obstacle_layer_ = global_obstacle.get();
+  local_obstacle_layer_ = obstacle_layer.get();
+  global_inflation_radius_ = global_inflation_radius;
   local_inflation_radius_ = local_inflation_radius;
+  global_resolution_ = resolution;
   local_resolution_ = resolution;
+  local_raytrace_range_ = cfg.param<double>(
+      "costmap_local", "raytrace_range", local_raytrace_range_);
 
   costmap_context_ = std::make_shared<CostmapContext>();
   costmap_context_->global_costmap_ = global_wrapper;
@@ -255,7 +261,9 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
 
   planner_name_to_costmap_.clear();
   controller_name_to_costmap_.clear();
+  prev_obstacles_global_.clear();
   prev_obstacles_local_.clear();
+  has_prev_obstacles_global_ = false;
   has_prev_obstacles_ = false;
 }
 
@@ -314,13 +322,17 @@ bool CostmapNavigationServer::initializeControllerPlugin(
         name);
     return false;
   }
-  // Task 12 stage C: map-free 控制器 (costmap_pid 直接继承 AbstractController,
-  // spec §4.3 create_controller_module 契约返回 AbstractController*) 无需注入
-  // CostmapContext; 仍注册到 controller_name_to_costmap_ (local costmap), 让
-  // CostmapControllerExecution 做 obstacle safety check (BLOCK #1 语义不变)。
-  if (auto cast = std::dynamic_pointer_cast<CostmapController>(ptr)) {
-    cast->initialize(name, costmap_context_);
+  // 严格 costmap 族约束: 只接受 CostmapController, 不再放行普通
+  // AbstractController (costmap_pid 已改继承 CostmapController)。
+  auto cast = std::dynamic_pointer_cast<CostmapController>(ptr);
+  if (!cast) {
+    spdlog::error(
+        "CostmapNavigationServer::initializeControllerPlugin('{}'): plugin is "
+        "not a CostmapController (costmap 族接口 mismatch)",
+        name);
+    return false;
   }
+  cast->initialize(name, costmap_context_);
   controller_name_to_costmap_[name] = costmap_context_->local_costmap_;
   return true;
 }
@@ -376,7 +388,7 @@ CostmapNavigationServer::newControllerExecution(
   auto exec = std::make_unique<CostmapControllerExecution>(
       name, std::move(ptr), std::move(wrapper));
   // Task 12 stage C: 控制器真实机器人位姿源 —— 默认 identity pose 会让 pid
-  // 从地图原点跟踪路径 (机器人实际在 (0.07,-0.14)), 且使 isGoalReached 误判。
+  // 从地图原点跟踪路径 (机器人实际在 (0.07,-0.14)), 且使 goal_checker 误判。
   // 经 CostmapContext 查 TransformStore map←robot_frame (与 planner fallback
   // 同一来源); 速度暂缺, 返回零速度 (pid 以位姿为主)。
   if (costmap_context_) {
@@ -417,13 +429,6 @@ void CostmapNavigationServer::handleObstaclePointCloud(
         "configured (call configureCoreMaps first)");
     return;
   }
-  // R1 (reviewer I1): 并发传感器回调串行化。局部 wrapper 的 recursive_mutex
-  // 保护 obstacle_layer_ 的 marks_/clear_regions_、prev_obstacles_local_ 与
-  // local master grid 的访问 (同一帧内只写 local costmap, global 不涉及)。
-  // recursive_mutex 允许同线程重入 (updateMap 内部再锁不重锁死)。
-  std::lock_guard<std::recursive_mutex> lock(
-      costmap_context_->local_costmap_->mutex());
-
   if (cloud.point_step == 0) {
     spdlog::warn("handleObstaclePointCloud: invalid point_step=0");
     return;
@@ -461,7 +466,7 @@ void CostmapNavigationServer::handleObstaclePointCloud(
                 sizeof(float));
     points.emplace_back(static_cast<double>(x), static_cast<double>(y), 0.0);
   }
-  markObstaclesInFrame(cloud.header.frame_id, points);
+  markObstaclesInFrame(cloud.header.frame_id, cloud.header.stamp, points);
 }
 
 void CostmapNavigationServer::handleObstacleLaserScan(
@@ -472,34 +477,37 @@ void CostmapNavigationServer::handleObstacleLaserScan(
         "configured (call configureCoreMaps first)");
     return;
   }
-  // R1 (reviewer I1): 与 handleObstaclePointCloud 同一把 local wrapper 锁。
-  std::lock_guard<std::recursive_mutex> lock(
-      costmap_context_->local_costmap_->mutex());
-
   if (scan.ranges.empty()) {
     return;
   }
   std::vector<Eigen::Vector3d> points;
+  std::vector<Eigen::Vector3d> clearing_points;
   points.reserve(scan.ranges.size());
+  clearing_points.reserve(scan.ranges.size());
   for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
     const double range = static_cast<double>(scan.ranges[i]);
-    // 过滤 NaN/Inf 与出界 range
-    if (!(range >= scan.range_min && range <= scan.range_max)) {
-      continue;
-    }
     const double angle = scan.angle_min + i * scan.angle_increment;
-    points.emplace_back(range * std::cos(angle), range * std::sin(angle), 0.0);
+    const double clear_range =
+        std::isfinite(range)
+            ? std::clamp(range, 0.0, local_raytrace_range_)
+            : local_raytrace_range_;
+    clearing_points.emplace_back(clear_range * std::cos(angle),
+                                 clear_range * std::sin(angle), 0.0);
+    if (range >= scan.range_min && range <= scan.range_max) {
+      points.emplace_back(range * std::cos(angle), range * std::sin(angle),
+                          0.0);
+    }
   }
-  markObstaclesInFrame(scan.header.frame_id, points);
+  markObstaclesInFrame(scan.header.frame_id, scan.header.stamp, points,
+                       clearing_points);
 }
 
 void CostmapNavigationServer::markObstaclesInFrame(
-    const std::string& frame_id, const std::vector<Eigen::Vector3d>& points) {
-  if (points.empty()) {
-    return;
-  }
+    const std::string& frame_id, const ayanami::Timestamp& stamp,
+    const std::vector<Eigen::Vector3d>& points,
+    const std::vector<Eigen::Vector3d>& clearing_points) {
   if (!costmap_context_ || !costmap_context_->local_costmap_ ||
-      !obstacle_layer_) {
+      !local_obstacle_layer_) {
     spdlog::warn(
         "CostmapNavigationServer::markObstaclesInFrame: costmap not "
         "configured (call configureCoreMaps first)");
@@ -513,13 +521,13 @@ void CostmapNavigationServer::markObstaclesInFrame(
   }
   const std::string& local_frame =
       costmap_context_->local_costmap_->getGlobalFrame();
-  const auto stamp = ayanami::interfaces::TransformStore::fromSeconds(0.0);
 
   Eigen::Isometry3d T_local = Eigen::Isometry3d::Identity();
-  if (!store->lookupTransform(local_frame, frame_id, stamp, T_local)) {
+  if ((!points.empty() || !clearing_points.empty()) &&
+      !store->lookupTransform(local_frame, frame_id, stamp, T_local)) {
     spdlog::warn("CostmapNavigationServer::markObstaclesInFrame: no transform "
-                 "{} <- {}",
-                 local_frame, frame_id);
+                 "{} <- {} (stamp={:f}s)",
+                 local_frame, frame_id, stamp.toSeconds());
     return;
   }
 
@@ -538,13 +546,42 @@ void CostmapNavigationServer::markObstaclesInFrame(
     max_y = std::max(max_y, w.y());
   }
 
+  // Resolve robot poses before taking either map lock. Each map update below
+  // owns only its own mutex, so obstacle ingestion never nests local->global.
+  double robot_x = 0.0;
+  double robot_y = 0.0;
+  double robot_yaw = 0.0;
+  Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
+  if (store->lookupTransform(local_frame, costmap_context_->robot_frame_, stamp,
+                             T_robot)) {
+    robot_x = T_robot.translation().x();
+    robot_y = T_robot.translation().y();
+    robot_yaw = std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
+  }
+
+  {
+    std::lock_guard<std::recursive_mutex> local_lock(
+        costmap_context_->local_costmap_->mutex());
+
+    if (!clearing_points.empty()) {
+      const Eigen::Vector3d sensor_origin = T_local.translation();
+      const auto* local_grid =
+          costmap_context_->local_costmap_->get().getCostmap();
+      for (const auto& point : clearing_points) {
+        const Eigen::Vector3d endpoint = T_local * point;
+        local_obstacle_layer_->raytraceFreespace(
+            *local_grid, sensor_origin.x(), sensor_origin.y(), endpoint.x(),
+            endpoint.y());
+      }
+    }
+
     // Ruling #7: 清上一帧 + 本帧观察窗口, 移除旧障碍标记并把旧膨胀带写回
     // FREE。外扩 margin 取 inflation radius + 一个 cell: 膨胀带最远可达
     // ceil(radius/res) 个 cell, 世界→cell 取整会把正好压在 radius 边界的
     // cell 排除, 故多扩一个 cell 保证边界带 cell 一并清掉。之后
     // InflationLayer 在 recompute window 内从 lethal 源全量重算, 障碍移走后
     // 无 stale 带。
-    if (has_prev_obstacles_) {
+    if (has_prev_obstacles_ && clearing_points.empty()) {
       double clear_min_x = min_x;
       double clear_min_y = min_y;
       double clear_max_x = max_x;
@@ -557,47 +594,100 @@ void CostmapNavigationServer::markObstaclesInFrame(
       }
       const double margin =
           local_inflation_radius_ + std::max(local_resolution_, 0.0);
-      obstacle_layer_->clearArea(clear_min_x - margin, clear_min_y - margin,
-                                 clear_max_x + margin, clear_max_y + margin);
+      local_obstacle_layer_->clearArea(clear_min_x - margin,
+                                       clear_min_y - margin,
+                                       clear_max_x + margin,
+                                       clear_max_y + margin);
     }
 
-  for (const auto& w : world) {
-    obstacle_layer_->markObstacles(w.x(), w.y());
-  }
+    for (const auto& w : world) {
+      local_obstacle_layer_->markObstacles(w.x(), w.y());
+    }
 
-  prev_obstacles_local_ = std::move(world);
-  has_prev_obstacles_ = true;
+    prev_obstacles_local_ = world;
+    has_prev_obstacles_ = true;
 
-  // 触发 local updateMap (rolling origin 平移 + 各层 updateBounds/updateCosts)。
-  double robot_x = 0.0;
-  double robot_y = 0.0;
-  double robot_yaw = 0.0;
-  Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
-  if (store->lookupTransform(local_frame, costmap_context_->robot_frame_, stamp,
-                             T_robot)) {
-    robot_x = T_robot.translation().x();
-    robot_y = T_robot.translation().y();
-    robot_yaw =
-        std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
+    // updateMap re-enters the wrapper's recursive mutex.
+    costmap_context_->local_costmap_->updateMap(robot_x, robot_y, robot_yaw);
   }
-  costmap_context_->local_costmap_->updateMap(robot_x, robot_y, robot_yaw);
 
   // Task 12 stage C (M2 Ruling #M2-4): global rolling costmap 也要周期性
   // updateMap 驱动滚动窗口跟随机器人 (此前只有 local 更新, global 窗口永不
   // 平移, 导致 start pose 落在窗口外 worldToMap 失败)。窗口中心用 global
   // frame (map) 下的机器人位姿。
-  if (costmap_context_->global_costmap_) {
-    double gx = robot_x;
-    double gy = robot_y;
-    double gyaw = robot_yaw;
-    Eigen::Isometry3d T_global = Eigen::Isometry3d::Identity();
-    if (store->lookupTransform(costmap_context_->global_frame_,
-                               costmap_context_->robot_frame_, stamp,
-                               T_global)) {
-      gx = T_global.translation().x();
-      gy = T_global.translation().y();
-      gyaw = std::atan2(T_global.linear()(1, 0), T_global.linear()(0, 0));
+  if (costmap_context_->global_costmap_ && global_obstacle_layer_) {
+    Eigen::Isometry3d T_global_sensor = Eigen::Isometry3d::Identity();
+    Eigen::Isometry3d T_global_robot = Eigen::Isometry3d::Identity();
+    const bool have_sensor_transform =
+        (points.empty() && clearing_points.empty()) ||
+        store->lookupTransform(costmap_context_->global_frame_, frame_id,
+                               stamp, T_global_sensor);
+    if (!have_sensor_transform ||
+        !store->lookupTransform(costmap_context_->global_frame_,
+                                costmap_context_->robot_frame_, stamp,
+                                T_global_robot)) {
+      spdlog::warn(
+          "CostmapNavigationServer::markObstaclesInFrame: no global "
+          "transform {} <- {}/{} (stamp={:f}s)",
+          costmap_context_->global_frame_, frame_id,
+          costmap_context_->robot_frame_, stamp.toSeconds());
+      return;
     }
+
+    std::vector<Eigen::Vector2d> global_points;
+    global_points.reserve(points.size());
+    double global_min_x = std::numeric_limits<double>::max();
+    double global_min_y = std::numeric_limits<double>::max();
+    double global_max_x = std::numeric_limits<double>::lowest();
+    double global_max_y = std::numeric_limits<double>::lowest();
+    for (const auto& point : points) {
+      const Eigen::Vector3d transformed = T_global_sensor * point;
+      global_points.emplace_back(transformed.x(), transformed.y());
+      global_min_x = std::min(global_min_x, transformed.x());
+      global_min_y = std::min(global_min_y, transformed.y());
+      global_max_x = std::max(global_max_x, transformed.x());
+      global_max_y = std::max(global_max_y, transformed.y());
+    }
+
+    const double gx = T_global_robot.translation().x();
+    const double gy = T_global_robot.translation().y();
+    const double gyaw = std::atan2(T_global_robot.linear()(1, 0),
+                                   T_global_robot.linear()(0, 0));
+    std::lock_guard<std::recursive_mutex> global_lock(
+        costmap_context_->global_costmap_->mutex());
+
+    if (!clearing_points.empty()) {
+      const Eigen::Vector3d sensor_origin = T_global_sensor.translation();
+      const auto* global_grid =
+          costmap_context_->global_costmap_->get().getCostmap();
+      for (const auto& point : clearing_points) {
+        const Eigen::Vector3d endpoint = T_global_sensor * point;
+        global_obstacle_layer_->raytraceFreespace(
+            *global_grid, sensor_origin.x(), sensor_origin.y(), endpoint.x(),
+            endpoint.y());
+      }
+    }
+
+    if (has_prev_obstacles_global_) {
+      for (const auto& old : prev_obstacles_global_) {
+        global_min_x = std::min(global_min_x, old.x());
+        global_min_y = std::min(global_min_y, old.y());
+        global_max_x = std::max(global_max_x, old.x());
+        global_max_y = std::max(global_max_y, old.y());
+      }
+      const double margin =
+          global_inflation_radius_ + std::max(global_resolution_, 0.0);
+      if (clearing_points.empty()) {
+        global_obstacle_layer_->clearArea(
+            global_min_x - margin, global_min_y - margin,
+            global_max_x + margin, global_max_y + margin);
+      }
+    }
+    for (const auto& point : global_points) {
+      global_obstacle_layer_->markObstacles(point.x(), point.y());
+    }
+    prev_obstacles_global_ = std::move(global_points);
+    has_prev_obstacles_global_ = true;
     costmap_context_->global_costmap_->updateMap(gx, gy, gyaw);
   }
 }

@@ -9,7 +9,7 @@
 
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/components/controller_execution.hpp"
+#include "ayanami/abstract/components/controller_execution.hpp"
 
 namespace ayanami {
 namespace costmap {
@@ -24,6 +24,8 @@ namespace costmap {
  * - run: 覆写为 per-cycle short lock —— 每 cycle 只在 safetyCheck +
  *   computeVelocityCommands 临界段短持 local wrapper recursive_mutex, 释锁后
  *   emit cmd_vel + sleep 均不持锁 (BLOCK #1, 防 obstacle feed 饿死)。
+ * goal/progress checker 语义与父类一致 (plan 更新后 reset; progress 无进展 →
+ * NO_PROGRESS; goal_checker 判定到达 → ARRIVED_GOAL; checker 缺失 → INTERNAL_ERROR)。
  */
 class CostmapControllerExecution : public ayanami::components::ControllerExecution {
  public:
@@ -72,7 +74,19 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
 
     nav_msgs::Path plan;
     if (!hasNewPlan()) {
+      failure_ = FailureCode::NoValidCommand;
+      message_ = "No plan was provided";
       setState(NO_PLAN, true);
+      return;
+    }
+
+    // goal/progress checker 必须注入 (与父类一致, 不回退 controller 自身判定)。
+    if (!goal_checker_ || !progress_checker_) {
+      failure_ = FailureCode::InternalError;
+      message_ = !goal_checker_ ? "Goal checker is not set"
+                                : "Progress checker is not set";
+      publishStopCommand();
+      setState(INTERNAL_ERROR, true);
       return;
     }
 
@@ -80,11 +94,13 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
     try {
       while (true) {
         if (cancel_) {
+          failure_ = FailureCode::Canceled;
           publishStopCommand();
           setState(CANCELED, true);
           return;
         }
         if (should_exit_) {
+          failure_ = FailureCode::Canceled;
           publishStopCommand();
           setState(STOPPED, true);
           return;
@@ -94,28 +110,49 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
         if (hasNewPlan()) {
           plan = takeNewPlan();
           if (plan.poses.empty()) {
+            failure_ = FailureCode::PathInvalid;
+            message_ = "The path is empty";
             setState(EMPTY_PLAN, true);
             return;
           }
           if (!controller_->setPlan(plan)) {
+            failure_ = FailureCode::PathInvalid;
+            message_ = "The controller rejected the path";
             setState(INVALID_PLAN, true);
             return;
           }
+          // 新 plan 成功应用后: 快照 goal + reset goal/progress 基线。
+          goal_ = plan.poses.back();
+          goal_checker_->reset();
+          progress_checker_->reset();
         }
 
         // 不持锁取机器人状态
         geometry_msgs::PoseStamped robot_pose;
         geometry_msgs::TwistStamped robot_velocity;
         if (!state_provider_(robot_pose, robot_velocity)) {
+          failure_ = FailureCode::InternalError;
           message_ = "Could not get the robot pose";
           publishStopCommand();
           setState(INTERNAL_ERROR, true);
           return;
         }
 
-        // 目标检查 (不持锁, 与父类一致)
-        if (controller_->isGoalReached(dist_tolerance_, angle_tolerance_)) {
+        // 目标检查 (不持锁): goal_checker 是唯一到达判定
+        if (goal_checker_->isGoalReached(robot_pose, goal_, robot_velocity)) {
+          failure_ = FailureCode::None;
+          message_ = "Reached the goal";
+          publishStopCommand();
           setState(ARRIVED_GOAL, true);
+          return;
+        }
+
+        // Only declare the robot stuck after ruling out successful arrival.
+        if (!progress_checker_->check(robot_pose)) {
+          failure_ = FailureCode::NoProgress;
+          message_ = "No progress made executing the path";
+          publishStopCommand();
+          setState(NO_PROGRESS, true);
           return;
         }
 
@@ -132,20 +169,22 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
             std::this_thread::sleep_for(period);
             continue;
           }
-          outcome_ = controller_->computeVelocityCommands(
-              robot_pose, robot_velocity, cmd_vel, message_);
+          failure_ = controller_->computeVelocityCommands(
+              robot_pose, robot_velocity, cmd_vel, message_, goal_checker_);
         }
 
         // 释锁后 emit cmd_vel + retry/patience 决策 (均不持锁)
-        if (outcome_ == 0) {
+        if (failure_ == FailureCode::None) {
           setState(GOT_LOCAL_CMD, false);
           ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd_vel);
           retries = 0;
         } else if (max_retries_ > 0 && ++retries > max_retries_) {
+          if (failure_ == FailureCode::None) failure_ = FailureCode::Timeout;
           publishStopCommand();
           setState(MAX_RETRIES, true);
           return;
         } else if (isPatienceExceeded()) {
+          failure_ = FailureCode::Timeout;
           publishStopCommand();
           setState(PAT_EXCEEDED, true);
           return;
@@ -158,6 +197,7 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
         std::this_thread::sleep_for(period);
       }
     } catch (...) {
+      failure_ = FailureCode::InternalError;
       message_ = "Unknown error occurred";
       publishStopCommand();
       setState(INTERNAL_ERROR, true);

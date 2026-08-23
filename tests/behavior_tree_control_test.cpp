@@ -116,6 +116,31 @@ TEST(BehaviorTreeControlTest, RecoveryNodeRecoveryChildFailsImmediately) {
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
+TEST(BehaviorTreeControlTest, PipelineSequenceReticksPlannerWhileControllerRuns) {
+  auto factory = makeFactory();
+  factory.registerNodeType<PipelineSequence>("PipelineSequence");
+  auto bb = BT::Blackboard::create();
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4">
+  <BehaviorTree ID="main">
+    <PipelineSequence name="seq">
+      <MockChild name="planner"/>
+      <MockChild name="controller"/>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>)", bb);
+
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 2u);
+  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[1]->status_fn_ = [] { return BT::NodeStatus::RUNNING; };
+
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(mocks[0]->tick_count, 2);
+  EXPECT_EQ(mocks[1]->tick_count, 2);
+}
+
 TEST(BehaviorTreeControlTest, RecoveryNodeResetsRetriesAfterSuccess) {
   auto factory = makeFactory();
   factory.registerNodeType<RecoveryNode>("RecoveryNode");

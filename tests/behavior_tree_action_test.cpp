@@ -3,8 +3,9 @@
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/navigation.hpp>
-#include <ayanami/components/navigation_server_base.hpp>
+#include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -17,6 +18,7 @@
 #include <vector>
 
 using namespace ayanami::behavior_tree;
+using ayanami::FailureCode;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::ExePathResult;
 using ayanami::actions::GetPathGoal;
@@ -114,7 +116,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_path_goal_ = goal;
     if (path_sync_) {
       GetPathResult r;
-      r.outcome = path_outcome_;
+      r.failure = path_failure_;
       r.path = path_result_;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -129,7 +131,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_smooth_goal_ = goal;
     if (smooth_sync_) {
       SmoothPathResult r;
-      r.outcome = smooth_outcome_;
+      r.failure = smooth_failure_;
       r.smoothed_path = smooth_result_;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -139,11 +141,12 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   }
 
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
+    ++exe_request_count_;
     auto task = exe_server_.acceptGoal(goal);
     last_exe_goal_ = goal;
     if (exe_sync_) {
       ExePathResult r;
-      r.outcome = exe_outcome_;
+      r.failure = exe_failure_;
       r.reached = exe_reached_;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -157,7 +160,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_recovery_goal_ = goal;
     if (recovery_sync_) {
       RecoveryResult r;
-      r.outcome = recovery_outcome_;
+      r.failure = recovery_failure_;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
       recovery_server_.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
@@ -168,22 +171,23 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   std::atomic<int> cancel_count{0};  // 先声明, 后析构 (servers 的 cancel 回调仍安全)
 
   bool path_sync_ = true;
-  uint32_t path_outcome_ = GetPathResult::SUCCESS;
+  FailureCode path_failure_ = FailureCode::None;
   Path path_result_;
   GetPathGoal last_path_goal_;
 
   bool smooth_sync_ = true;
-  uint32_t smooth_outcome_ = SmoothPathResult::SUCCESS;
+  FailureCode smooth_failure_ = FailureCode::None;
   Path smooth_result_;
   SmoothPathGoal last_smooth_goal_;
 
   bool exe_sync_ = true;
-  uint32_t exe_outcome_ = ExePathResult::SUCCESS;
+  FailureCode exe_failure_ = FailureCode::None;
   bool exe_reached_ = true;
   ExePathGoal last_exe_goal_;
+  int exe_request_count_ = 0;
 
   bool recovery_sync_ = true;
-  uint32_t recovery_outcome_ = RecoveryResult::SUCCESS;
+  FailureCode recovery_failure_ = FailureCode::None;
   RecoveryGoal last_recovery_goal_;
 
   PathServer path_server_;
@@ -244,7 +248,7 @@ TEST(BehaviorTreeActionTest, PipelineSequenceWritesPathsAndBumpsPlanVersion) {
 
   // onStart 已同步 publish -> RUNNING; 下次 onRunning 收结果
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // ComputePath onRunning 写 raw_path + 自增 plan_version; Smooth onStart -> RUNNING
+  // ComputePath onRunning 写 raw_path; Smooth onStart -> RUNNING
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   // Smooth onRunning 写 smoothed_path; 全 PipelineSequence SUCCESS
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
@@ -256,10 +260,56 @@ TEST(BehaviorTreeActionTest, PipelineSequenceWritesPathsAndBumpsPlanVersion) {
   ASSERT_TRUE(bb->get<Path>(kSmoothedPath, smooth));
   EXPECT_FALSE(smooth.poses.empty());
 
-  // plan_version 被 ComputePathToPose 自增; 请求时带当前 session/version
+  // Only the final smoothed path publishes a new controller plan version.
   EXPECT_EQ(server.currentPlanVersion(), 1u);
   EXPECT_EQ(server.last_path_goal_.session_id, server.currentSessionId());
   EXPECT_EQ(server.last_path_goal_.plan_version, 0u);
+}
+
+TEST(BehaviorTreeActionTest, FollowPathResubmitsWhenPlanVersionChanges) {
+  MockNavServer server;
+  server.exe_sync_ = false;
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, &server);
+  setRequiredEntries(bb);
+  bb->set<Path>(kSmoothedPath, makePath(2));
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(kFollowPathXml, bb);
+
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  ASSERT_EQ(server.exe_request_count_, 1);
+  EXPECT_EQ(server.last_exe_goal_.plan_version, 0u);
+
+  bb->set<Path>(kSmoothedPath, makePath(4));
+  server.incrementPlanVersion();
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(server.exe_request_count_, 2);
+  EXPECT_EQ(server.last_exe_goal_.plan_version, 1u);
+  EXPECT_GE(server.cancel_count.load(), 1);
+}
+
+TEST(BehaviorTreeActionTest, IdenticalSmoothedPathDoesNotBumpVersionTwice) {
+  MockNavServer server;
+  server.path_result_ = makePath(2);
+  server.smooth_result_ = makePath(3);
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, &server);
+  setRequiredEntries(bb);
+  bb->set<PoseStamped>(kGoal, makePose(1.0, 2.0));
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(kPipelineXml, bb);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  }
+  EXPECT_EQ(server.currentPlanVersion(), 1u);
 }
 
 TEST(BehaviorTreeActionTest, StaleSessionIsRejectedOnRunning) {
@@ -337,7 +387,7 @@ TEST(BehaviorTreeActionTest, HaltedNodeCancelsTask) {
 TEST(BehaviorTreeActionTest, FollowPathCompletesWhenControllerSucceeds) {
   MockNavServer server;
   server.exe_sync_ = true;
-  server.exe_outcome_ = ExePathResult::SUCCESS;
+  server.exe_failure_ = FailureCode::None;
   server.exe_reached_ = true;
 
   auto bb = BT::Blackboard::create();

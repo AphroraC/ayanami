@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
-#include <ayanami/components/navigation_server_base.hpp>
-#include <ayanami/core/map_context.hpp>
+#include <ayanami/abstract/components/navigation_server_base.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
+#include <ayanami/abstract/core/map_context.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 
 #include <Eigen/Geometry>
@@ -54,6 +56,26 @@ public:
   }
 };
 
+// checker 测试桩: 立即可达 + 恒有进展 (requestExecution 契约: 控制器成功即
+// goal_checker 判到达 → SUCCEEDED)。
+class ImmediateGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const ayanami::geometry_msgs::TwistStamped&) override {
+    return true;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+};
+
+class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
 // 派生 server: 覆写虚钩子以注入 TestMapContext、记录初始化/工厂调用、配置
 // planner execution 的终止性 (max_retries=0, 失败即放弃 → ABORTED)。
 class TestNavServer : public ayanami::components::NavigationServerBase {
@@ -95,7 +117,12 @@ public:
       const std::string& name,
       ayanami::abstract::AbstractController::Ptr p) override {
     factory_names_.push_back(name);
-    return NavigationServerBase::newControllerExecution(name, std::move(p));
+    auto exec =
+        NavigationServerBase::newControllerExecution(name, std::move(p));
+    // 注入 checker (生产路径由 createActions 按配置注入; 本测试配置无 checker ids)。
+    exec->setGoalChecker(std::make_shared<ImmediateGoalChecker>());
+    exec->setProgressChecker(std::make_shared<TrueProgressChecker>());
+    return exec;
   }
   std::unique_ptr<ayanami::components::RecoveryExecution> newRecoveryExecution(
       const std::string& name,
@@ -136,7 +163,7 @@ std::filesystem::path make_config_dir(const std::string& planner_symbol) {
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": \"recovery.json\"\n"
+             "    \"config_recovery\": [\"recovery.json\"]\n"
              "  }\n}\n");
   write_json(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
@@ -154,8 +181,10 @@ std::filesystem::path make_config_dir(const std::string& planner_symbol) {
              plugin_json("controller", "test_controller",
                          "create_test_controller_plugin"));
   write_json(dir / "recovery.json",
-             plugin_json("recovery", "test_recovery",
-                         "create_test_recovery_plugin"));
+             "{\n  \"recovery\": {\n    \"name\": \"test_recovery\",\n"
+             "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
+             g_plugins_so +
+             "\",\n    \"create_symbol\": \"create_test_recovery_plugin\"\n  }\n}\n");
   return dir;
 }
 

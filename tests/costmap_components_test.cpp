@@ -18,10 +18,14 @@
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>
 #include <ayanami/costmap/components/costmap_recovery_action.hpp>
 #include <ayanami/costmap/components/costmap_recovery_execution.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/messages/failure.hpp>
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
@@ -36,8 +40,8 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper() {
 // 阻塞直到被 cancel: 让执行停在 run 内, 便于观察 preRun/postRun 的激活状态。
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  uint32_t makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
-                    double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
+                       double&, std::string&) override {
     calls_++;
     {
       std::unique_lock<std::mutex> lock(mutex_);
@@ -46,10 +50,10 @@ class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
                         [this] { return canceled_.load(); });
     }
     if (canceled_.exchange(false)) {
-      return 0;
+      return FailureCode::None;
     }
     plan.poses.resize(2);
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override {
     canceled_ = true;
@@ -65,7 +69,7 @@ class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 
 class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
  public:
-  uint32_t runRecovery(std::string&) override {
+  FailureCode runRecovery(std::string&) override {
     calls_++;
     {
       std::unique_lock<std::mutex> lock(mutex_);
@@ -73,7 +77,7 @@ class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
       release_.wait_for(lock, std::chrono::milliseconds(2000),
                         [this] { return canceled_.load(); });
     }
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override {
     canceled_ = true;
@@ -89,21 +93,49 @@ class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
 
 class TestController : public ayanami::abstract::AbstractController {
  public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     calls_++;
     cmd_vel.twist.linear.x() = 0.5;
-    return 0;
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return calls_ >= 3; }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
   std::atomic<int> calls_{0};
 };
 
+// checker 测试桩: 永不到达 + 恒有进展 (controller 逻辑测试专用)。
+class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return false;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+};
+
+class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
+class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return false; }
+};
+
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
  public:
-  uint32_t runRecovery(std::string&) override { return 0; }
+  FailureCode runRecovery(std::string&) override {
+    return FailureCode::None;
+  }
   bool cancel() override { return true; }
 };
 
@@ -188,6 +220,9 @@ TEST(CostmapComponentsTest, ControllerSafetyCheckStopsWhenCostmapNotCurrent) {
   auto controller = std::make_shared<TestController>();
   ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
                                                     wrapper);
+  // checker 注入 (execution 要求 checker 存在; 本场景只验证 safetyCheck 不发速度)。
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   std::atomic<int> stop_cmds{0};
   int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
@@ -213,6 +248,36 @@ TEST(CostmapComponentsTest, ControllerSafetyCheckStopsWhenCostmapNotCurrent) {
   exec.cancel();
   exec.join();
   ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
+}
+
+// ---- CostmapControllerExecution: 无进展 → NO_PROGRESS (ABORTED 映射) ----
+
+TEST(CostmapComponentsTest, ControllerNoProgressMapsToNoProgressState) {
+  auto wrapper = makeWrapper();
+  auto controller = std::make_shared<TestController>();
+  ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
+                                                    wrapper);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<FalseProgressChecker>());
+
+  Path plan;
+  plan.poses.resize(4);
+  exec.setNewPlan(plan);
+  exec.setControllerFrequency(500.0);
+  exec.start();
+
+  for (int i = 0; i < 100 &&
+                  exec.getState() !=
+                      ayanami::components::ControllerExecution::NO_PROGRESS;
+       ++i) {
+    exec.waitForStateUpdate(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(exec.getState(),
+            ayanami::components::ControllerExecution::NO_PROGRESS);
+  EXPECT_EQ(exec.getFailure(), FailureCode::NoProgress);
+  EXPECT_EQ(controller->calls_, 0);
+
+  exec.join();
 }
 
 // ---- CostmapRecoveryExecution: 激活/停用 global+local 两 costmap ----

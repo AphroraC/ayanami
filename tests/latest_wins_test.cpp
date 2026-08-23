@@ -3,13 +3,15 @@
 // 契约 (latest_wins / 强抢占): 同槽 (PlannerAction 恒用 slot 0) 先 acceptGoal A
 // (阻塞, 等不到完成); 第二次 acceptGoal B 同槽抢占 A → A 立即被抢占, TaskHandle
 // 转 CANCELED (有界时间内), B 成为 ACTIVE RUNNING, 最终 SUCCEEDED。插件绝不
-// 并发运行 (max_running==1), 规划调用次数有界 (无 spin)。
+// 并发运行 (max_running==1), 且 B 的 makePlan 一定在 A 的 makePlan 退出之后才
+// 进入 (严格 join 后 start, 确定性无重入)。规划调用次数有界 (无 spin)。
 
 #include <gtest/gtest.h>
 
-#include <ayanami/components/planner_action.hpp>
-#include <ayanami/core/abstract_planner.hpp>
+#include <ayanami/abstract/components/planner_action.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -23,23 +25,28 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::actions::GetPathGoal;
-using ayanami::actions::GetPathResult;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 阻塞 planner: 记录并发运行数; makePlan 等 entered, 然后阻塞到 cancel() 或
-// release() 才返回。被取消时返回 NO_PATH_FOUND → 执行层 CANCELED。
+// 阻塞 planner: 记录并发运行数与进出场顺序; makePlan 等 entered, 然后阻塞到
+// cancel() 或 release() 才返回。被取消时返回 NO_PATH_FOUND → 执行层 CANCELED。
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                    Path& plan, double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
+                       Path& plan, double&, std::string&) override {
     ++calls;
+    const int seq = ++entered_calls;
     const int running_now = ++running;
     int observed = max_running.load();
     while (running_now > observed &&
            !max_running.compare_exchange_weak(observed, running_now)) {}
+    if (seq == 2) {
+      // 确定性断言的数据: 第二次 makePlan 进入时, 第一次必须已经退出插件。
+      exit_before_second_entry.store(exited_calls.load());
+    }
     {
       std::unique_lock<std::mutex> lock(mutex);
       entered.notify_all();
@@ -47,12 +54,13 @@ public:
                        [this] { return canceled.load() || released.load(); });
     }
     --running;
+    ++exited_calls;
     if (canceled.exchange(false)) {
-      return GetPathResult::NO_PATH_FOUND;
+      return FailureCode::PathNotFound;
     }
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return GetPathResult::SUCCESS;
+    return FailureCode::None;
   }
 
   bool cancel() override {
@@ -67,8 +75,11 @@ public:
   }
 
   std::atomic<int> calls{0};
+  std::atomic<int> entered_calls{0};
+  std::atomic<int> exited_calls{0};
   std::atomic<int> running{0};
   std::atomic<int> max_running{0};
+  std::atomic<int> exit_before_second_entry{-1};
   std::atomic<bool> canceled{false};
   std::atomic<bool> released{false};
   std::mutex mutex;
@@ -147,9 +158,14 @@ TEST(LatestWins, SameSlotSecondGoalEjectsFirstPromptly) {
   ASSERT_TRUE(readyWithin(second, 2000));
   EXPECT_EQ(second.status(), GoalStatus::SUCCEEDED);
 
-  // 无 spin: 调用次数有界 (线性于提交数, 远小于无限重试)。新接口 ActionBase::
-  // start 先起新槽线程再 cancel+join 旧槽, 抢占交接窗口内插件可能被新 goal
-  // 短暂重入 (共享 cancel 标志被误消费 → 一次额外重试), 故不要求 max_running==1
-  // (那是 legacy 串行执行器的保证, 非新接口契约)。
-  EXPECT_LE(planner->calls.load(), 4);
+  // 强串行 (latest_wins / MBF 抢占契约): 插件从不并发重入。
+  // ActionBase::start 严格先 cancel+join 旧槽线程, 等旧 execution 完全退出后才
+  // 启动新槽线程, 故同槽插件运行是确定性的串行: max_running 必为 1。
+  EXPECT_EQ(planner->max_running.load(), 1);
+  EXPECT_EQ(planner->running.load(), 0);
+  // 确定性进场顺序: 第二次 makePlan (B) 进入时, 第一次 (A) 必须已退出插件。
+  EXPECT_GE(planner->exit_before_second_entry.load(), 1);
+
+  // 无 spin: 调用次数有界 (线性于提交数, 远小于无限重试)。
+  EXPECT_LE(planner->calls.load(), 3);
 }

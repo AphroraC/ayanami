@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
-#include <ayanami/components/action_server.hpp>
-#include <ayanami/components/controller_action.hpp>
-#include <ayanami/components/planner_action.hpp>
-#include <ayanami/components/recovery_action.hpp>
-#include <ayanami/components/smoother_action.hpp>
+#include <ayanami/abstract/components/action_server.hpp>
+#include <ayanami/abstract/components/controller_action.hpp>
+#include <ayanami/abstract/components/planner_action.hpp>
+#include <ayanami/abstract/components/recovery_action.hpp>
+#include <ayanami/abstract/components/smoother_action.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
@@ -13,6 +16,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -21,14 +25,16 @@
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
+using ayanami::FailureCode;
+
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
 // 阻塞直到被 cancel: 验证取消/抢占中断 RUNNING 的 planner
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                    Path& plan, double&, std::string&) override {
+  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
+                       Path& plan, double&, std::string&) override {
     calls_++;
     {
       std::unique_lock<std::mutex> lock(mutex_);
@@ -37,11 +43,11 @@ public:
                         [this] { return canceled_.load(); });
     }
     if (canceled_.exchange(false)) {
-      return 0;  // 被取消: 让 execution 判 CANCELED
+      return FailureCode::None;  // 被取消: 让 execution 判 CANCELED
     }
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override {
     canceled_ = true;
@@ -58,47 +64,98 @@ public:
 // 即时成功的 planner: 填 path, 验 SUCCEEDED + path 非空
 class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  uint32_t makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
-                    double& cost, std::string&) override {
+  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
+                       double& cost, std::string&) override {
     calls_++;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
     cost = 1.5;
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override { return true; }
   std::atomic<int> calls_{0};
 };
 
-// controller: 3 次 computeVelocityCommands 后 isGoalReached
+// controller: 到达判定交给 goal_checker (完成后 N 帧 compute 触发到达)。
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     calls_++;
     cmd_vel.twist.linear.x() = 0.5;
-    return 0;
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return calls_ >= 3; }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
   std::atomic<int> calls_{0};
 };
 
+// ---- checker 测试桩 ----
+
+class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  explicit LambdaGoalChecker(std::function<bool()> reached)
+      : reached_(std::move(reached)) {}
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return reached_();
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+
+ private:
+  std::function<bool()> reached_;
+};
+
+class AlwaysTrueProgressChecker
+    : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
+// ControllerAction 派生: createExecution 内注入 checker (server 由
+// NavigationServerBase 注入, 直连 action 测试用此子类)。
+class TestControllerAction : public ayanami::components::ControllerAction {
+ public:
+  using ControllerAction::ControllerAction;
+  void initCheckers(ayanami::abstract::AbstractGoalChecker::Ptr goal,
+                    ayanami::abstract::AbstractProgressChecker::Ptr progress) {
+    goal_ = std::move(goal);
+    progress_ = std::move(progress);
+  }
+
+ protected:
+  ayanami::components::ControllerExecution::Ptr createExecution() override {
+    auto exec = ControllerAction::createExecution();
+    exec->setGoalChecker(goal_);
+    exec->setProgressChecker(progress_);
+    return exec;
+  }
+
+ private:
+  ayanami::abstract::AbstractGoalChecker::Ptr goal_;
+  ayanami::abstract::AbstractProgressChecker::Ptr progress_;
+};
+
 class FillingSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  uint32_t smoothPath(const Path& in, Path& out, double, bool,
-                      std::string&) override {
+  FailureCode smoothPath(const Path& in, Path& out, double, bool,
+                         std::string&) override {
     out.header.frame_id = "map";
     out.poses = in.poses;
-    return 0;
+    return FailureCode::None;
   }
   bool cancel() override { return true; }
 };
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  uint32_t runRecovery(std::string&) override { return 0; }
+  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
   bool cancel() override { return true; }
 };
 
@@ -125,14 +182,14 @@ TEST(ActionProtocol, CompletionCarriesResultAndCleansGoal) {
   EXPECT_EQ(server.activeGoalCount(), 1U);
 
   ayanami::actions::GetPathResult result;
-  result.outcome = ayanami::actions::GetPathResult::SUCCESS;
+  result.failure = FailureCode::None;
   result.path.poses.resize(2);
   ASSERT_TRUE(server.publishResult(
       task.goal_id(), ayanami::actions::GoalStatus::SUCCEEDED, result));
 
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::SUCCEEDED);
-  EXPECT_EQ(task.result().outcome, ayanami::actions::GetPathResult::SUCCESS);
+  EXPECT_EQ(task.result().failure, FailureCode::None);
   EXPECT_FALSE(task.result().path.poses.empty());
   EXPECT_EQ(server.activeGoalCount(), 0U);
   // 已完成的 goal 已清理, 不能再次 finish
@@ -148,7 +205,7 @@ TEST(ActionProtocol, CancelIsARequestUntilExecutionFinishes) {
   EXPECT_EQ(server.activeGoalCount(), 1U);
 
   ayanami::actions::GetPathResult result;
-  result.outcome = ayanami::actions::GetPathResult::SUCCESS;
+  result.failure = FailureCode::None;
   ASSERT_TRUE(server.publishResult(
       task.goal_id(), ayanami::actions::GoalStatus::CANCELED, result));
   ASSERT_TRUE(waitReady(task));
@@ -279,7 +336,11 @@ TEST(PlannerAction, ResultEmittedOnBypassSlotWhileTaskHandleIsMain) {
 
 TEST(ControllerAction, RunsOneCycleAndSucceeds) {
   auto controller = std::make_shared<TestController>();
-  ayanami::components::ControllerAction action(controller);
+  TestControllerAction action(controller);
+  action.initCheckers(
+      std::make_shared<LambdaGoalChecker>(
+          [&controller] { return controller->calls_ >= 3; }),
+      std::make_shared<AlwaysTrueProgressChecker>());
 
   ayanami::actions::ExePathGoal goal;
   goal.path.poses.resize(4);
@@ -287,6 +348,7 @@ TEST(ControllerAction, RunsOneCycleAndSucceeds) {
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::SUCCEEDED);
   EXPECT_TRUE(task.result().reached);
+  EXPECT_EQ(task.result().failure, FailureCode::None);
   EXPECT_GE(controller->calls_, 3);
 }
 
@@ -311,5 +373,5 @@ TEST(RecoveryAction, SingleRunDeliversResult) {
   auto task = action.acceptGoal(goal);
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::SUCCEEDED);
-  EXPECT_EQ(task.result().outcome, ayanami::actions::RecoveryResult::SUCCESS);
+  EXPECT_EQ(task.result().failure, FailureCode::None);
 }

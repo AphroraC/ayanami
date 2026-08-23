@@ -1,8 +1,9 @@
 #pragma once
 
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
-#include "ayanami/components/navigation_server_base.hpp"
+#include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/messages/actions.hpp"
+#include "ayanami/messages/failure.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
 
@@ -89,11 +90,10 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
         !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
-    if (r.outcome != actions::GetPathResult::SUCCESS) {
-      return BT::NodeStatus::FAILURE;
+    if (r.failure != FailureCode::None) {
+      return BT::NodeStatus::FAILURE;  // 只依据 failure 决策, 不解析 message
     }
     setOutput("path", r.path);
-    nav_server_->incrementPlanVersion();  // smoother/controller 据此识别新路径
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -152,18 +152,47 @@ class SmoothPathNode : public BT::StatefulActionNode {
         !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
-    if (r.outcome != actions::SmoothPathResult::SUCCESS) {
-      return BT::NodeStatus::FAILURE;
+    if (r.failure != FailureCode::None) {
+      return BT::NodeStatus::FAILURE;  // 只依据 failure 决策, 不解析 message
     }
+    const bool changed = !has_last_path_ ||
+                         !pathsEquivalent(last_path_, r.smoothed_path);
     setOutput("path", r.smoothed_path);
+    if (changed) {
+      last_path_ = r.smoothed_path;
+      has_last_path_ = true;
+      nav_server_->incrementPlanVersion();
+    }
     return BT::NodeStatus::SUCCESS;
   }
 
   void onHalted() override { task_.cancel(); }
 
  private:
+  static bool pathsEquivalent(const nav_msgs::Path& lhs,
+                              const nav_msgs::Path& rhs) {
+    if (lhs.header.frame_id != rhs.header.frame_id ||
+        lhs.poses.size() != rhs.poses.size()) {
+      return false;
+    }
+    constexpr double kPositionTolerance = 1e-3;
+    constexpr double kRotationTolerance = 1e-6;
+    for (std::size_t index = 0; index < lhs.poses.size(); ++index) {
+      const auto& left = lhs.poses[index].pose;
+      const auto& right = rhs.poses[index].pose;
+      if ((left.translation() - right.translation()).norm() >
+              kPositionTolerance ||
+          (left.linear() - right.linear()).norm() > kRotationTolerance) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   components::NavigationServerBase* nav_server_;
   components::TaskHandle<actions::SmoothPathResult> task_;
+  nav_msgs::Path last_path_;
+  bool has_last_path_{false};
 };
 
 /**
@@ -194,19 +223,22 @@ class FollowPathNode : public BT::StatefulActionNode {
     if (!getInput("path", path)) {
       return BT::NodeStatus::FAILURE;
     }
-    actions::ExePathGoal g;
-    g.path = path;
-    g.session_id = nav_server_->currentSessionId();
-    g.plan_version = nav_server_->currentPlanVersion();
-    task_ = nav_server_->requestExecution(g);
-    if (!task_.valid()) {
-      return BT::NodeStatus::FAILURE;
-    }
-    task_.onComplete([this] { emitWakeUpSignal(); });
-    return BT::NodeStatus::RUNNING;
+    return startExecution(path) ? BT::NodeStatus::RUNNING
+                                : BT::NodeStatus::FAILURE;
   }
 
   BT::NodeStatus onRunning() override {
+    if (nav_server_->currentPlanVersion() != submitted_plan_version_) {
+      nav_msgs::Path path;
+      if (!getInput("path", path)) {
+        return BT::NodeStatus::FAILURE;
+      }
+      task_.cancel();
+      if (!startExecution(path)) {
+        return BT::NodeStatus::FAILURE;
+      }
+      return BT::NodeStatus::RUNNING;
+    }
     if (!task_.ready()) {
       return BT::NodeStatus::RUNNING;
     }
@@ -215,8 +247,8 @@ class FollowPathNode : public BT::StatefulActionNode {
         !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
-    // controller 成功且到达目标才算完成 (ARRIVED_GOAL 语义)
-    if (r.outcome != actions::ExePathResult::SUCCESS || !r.reached) {
+    // controller 成功且到达目标才算完成 (ARRIVED_GOAL 语义); 只依据 failure, 不解析 message
+    if (r.failure != FailureCode::None || !r.reached) {
       return BT::NodeStatus::FAILURE;
     }
     return BT::NodeStatus::SUCCESS;
@@ -225,8 +257,23 @@ class FollowPathNode : public BT::StatefulActionNode {
   void onHalted() override { task_.cancel(); }
 
  private:
+  bool startExecution(const nav_msgs::Path& path) {
+    actions::ExePathGoal goal;
+    goal.path = path;
+    goal.session_id = nav_server_->currentSessionId();
+    goal.plan_version = nav_server_->currentPlanVersion();
+    submitted_plan_version_ = goal.plan_version;
+    task_ = nav_server_->requestExecution(goal);
+    if (!task_.valid()) {
+      return false;
+    }
+    task_.onComplete([this] { emitWakeUpSignal(); });
+    return true;
+  }
+
   components::NavigationServerBase* nav_server_;
   components::TaskHandle<actions::ExePathResult> task_;
+  uint64_t submitted_plan_version_{0};
 };
 
 /**
@@ -277,9 +324,8 @@ class RecoveryActionNode : public BT::StatefulActionNode {
         !nav_server_->planVersionIsCurrent(r.plan_version)) {
       return BT::NodeStatus::FAILURE;
     }
-    return r.outcome == actions::RecoveryResult::SUCCESS
-               ? BT::NodeStatus::SUCCESS
-               : BT::NodeStatus::FAILURE;
+    return r.failure == FailureCode::None ? BT::NodeStatus::SUCCESS
+                                          : BT::NodeStatus::FAILURE;
   }
 
   void onHalted() override { task_.cancel(); }

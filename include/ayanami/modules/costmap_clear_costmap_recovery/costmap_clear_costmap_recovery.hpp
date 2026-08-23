@@ -13,9 +13,8 @@ namespace modules {
 /**
  * @brief 清代价地图恢复模块 (spec §6.6 costmap_clear_costmap_recovery)。
  *
- * 纯 C++ (零 ROS): 清除 global/local (按 affected_maps) master grid 中
- * robot 附近 radius 范围内的 cell → FREE_SPACE(0)。经 CostmapContext 直接
- * 改 master grid (clearArea 语义), 不需要底盘。
+ * 纯 C++ (零 ROS): 在各地图自己的 frame 中清除机器人附近的动态障碍层。
+ * global 的静态底图由 StaticLayer 恢复，不直接把 master grid 墙体写成 FREE。
  */
 class CostmapClearCostmapRecovery : public ayanami::costmap::CostmapRecovery {
  public:
@@ -26,7 +25,7 @@ class CostmapClearCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t runRecovery(std::string& message) override;
+  FailureCode runRecovery(std::string& message) override;
 
   bool cancel() override;
 
@@ -37,8 +36,8 @@ class CostmapClearCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   };
 
   void loadConfig();
-  void clearCostmap(costmap_2d::Costmap2D* grid, double robot_x,
-                    double robot_y) const;
+  bool clearCostmap(const costmap_2d::CostmapWrapper::Ptr& wrapper,
+                    const std::string& frame) const;
 
   ayanami::costmap::CostmapContext::Ptr costmap_context_;
   std::atomic<bool> canceled_{false};

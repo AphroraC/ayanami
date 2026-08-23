@@ -28,9 +28,9 @@ class CostmapSavitzkySmoother : public ayanami::costmap::CostmapSmoother {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t smoothPath(const ayanami::nav_msgs::Path& in,
-                      ayanami::nav_msgs::Path& out, double max_duration,
-                      bool check_for_collision, std::string& message) override;
+FailureCode smoothPath(const ayanami::nav_msgs::Path& in,
+                        ayanami::nav_msgs::Path& out, double max_duration,
+                        bool check_for_collision, std::string& message) override;
 
   bool cancel() override;
 

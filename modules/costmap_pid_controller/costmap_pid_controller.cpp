@@ -1,16 +1,20 @@
 // Task 23: modules/costmap_pid_controller — 3 轴 PID 局部控制器模块。
 //
-// 纯 C++ (零 ROS): 继承 abstract::AbstractController (零地图, 只读 pose+path)。
+// 纯 C++ (零 ROS): 继承 costmap::CostmapController (costmap 族 controller,
+// 只读 pose+path, 算法不读图但按族契约实现 initialize)。
 // 参考 _legacy pid_controller 语义重写, 收尾历史五项控制修复:
 // - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
 // - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
 // - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
 // - linear 按 max_acc/max_decel 分开限幅; angular 受 max_angular_accel 限幅
-// - distanceDecay 临近 goal 减速 + goal_tolerance 停止
+// - distanceDecay 临近 goal 减速; 位置进入 goal_checker XY 容差后 linear=0,
+//   仅 angular PID 对齐 goal 朝向; 到达判定由 goal_checker 宣布 (isGoalReached
+//   已从接口移除, 控制器自身不判到达)。
 
 #include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
 
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -26,8 +30,6 @@ namespace modules {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-// controller 错误段 100+ (spec §5.1): CANCELED。
-constexpr uint32_t kCanceledOutcome = 104;
 
 double normalizeAngle(double angle) {
   while (angle > kPi) {
@@ -93,10 +95,18 @@ double CostmapPidController::PidAxis::compute(double error, double dt) {
 
 CostmapPidController::CostmapPidController() { loadConfig(); }
 
+void CostmapPidController::initialize(
+    const std::string& name, ayanami::costmap::CostmapContext::Ptr ctx) {
+  // 纯 path tracker 不读图: 满足 costmap 族契约 (spec §5.5) 但不持有地图。
+  // config 在构造函数 loadConfig 完成, name/ctx 无需持久化。
+  (void)name;
+  (void)ctx;
+}
+
 void CostmapPidController::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_pid_controller"));
+    const ayanami::ComponentConfig holder("config_controller");
+    const auto& file = holder.get();
     config_.max_v = file.param<double>("costmap_pid_controller", "max_v",
                                        config_.max_v);
     config_.max_w = file.param<double>("costmap_pid_controller", "max_w",
@@ -161,7 +171,6 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   plan_ = plan;
   goal_ = plan.poses.back();
   canceled_.store(false);
-  goal_reached_.store(false);
   if (signature != plan_signature_) {
     // 新 goal (或首帧): 重置跟踪状态, 确保 setPlan 首帧从 0 起步 (不携带旧速度)。
     plan_signature_ = signature;
@@ -171,10 +180,11 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   return true;
 }
 
-uint32_t CostmapPidController::computeVelocityCommands(
+FailureCode CostmapPidController::computeVelocityCommands(
     const geometry_msgs::PoseStamped& pose,
     const geometry_msgs::TwistStamped& velocity,
-    geometry_msgs::TwistStamped& cmd_vel, std::string& message) {
+    geometry_msgs::TwistStamped& cmd_vel, std::string& message,
+    const ayanami::abstract::AbstractGoalChecker::Ptr& goal_checker) {
   // 历史脏内存 bug: 入口强制清零后填充。
   cmd_vel = geometry_msgs::TwistStamped{};
   cmd_vel.twist = geometry_msgs::Twist{};
@@ -183,23 +193,42 @@ uint32_t CostmapPidController::computeVelocityCommands(
 
   if (plan_.poses.empty()) {
     message = "PID controller has no plan";
-    return ayanami::actions::ExePathResult::NO_VALID_COMMAND;
+    return FailureCode::NoValidCommand;
   }
   if (canceled_.load()) {
     resetTrackingState();
-    goal_reached_.store(true);
     message = "PID controller canceled";
-    return kCanceledOutcome;
+    return FailureCode::Canceled;
   }
 
   last_pose_ = pose;
   const double dt = std::max(config_.default_dt, 1e-6);
 
-  // 到达 goal (距离容差): 发零速度。
-  if (distance2d(last_pose_, goal_) < config_.goal_tolerance) {
-    goal_reached_.store(true);
-    message = "PID controller reached goal";
-    return ayanami::actions::ExePathResult::SUCCESS;
+  // 到达判定由 goal_checker 全权负责: PID 只读其容差 (position/angle 字段)。
+  // 空指针防御: 回退到 config 的 goal_tolerance (仅作停线速度的 XY 边界)。
+  const double xy_tol =
+      goal_checker ? goal_checker->getTolerances().pose.position
+                   : config_.goal_tolerance;
+
+  // ---- 位置已进入 goal XY 容差: 停止线速度, 仅 angular PID 对齐 goal 朝向 ----
+  // (goal_checker 在 execution 层最终宣布到达)
+  if (distance2d(last_pose_, goal_) < xy_tol) {
+    const double yaw_err =
+        shortestAngularDistance(yawOf(pose), yawOf(goal_));
+    const double target_theta =
+        std::abs(yaw_err) < config_.heading_deadband ? 0.0 : yaw_err;
+    double angular_w = pid_w_.compute(target_theta, dt);
+    angular_w = std::clamp(angular_w, -config_.max_w, config_.max_w);
+    angular_w = limitAcceleration(last_angular_vel_, angular_w,
+                                  config_.max_angular_accel,
+                                  config_.max_angular_accel, dt);
+    last_angular_vel_ = angular_w;
+    last_linear_vel_ = 0.0;
+    cmd_vel.twist.linear.x() = 0.0;
+    cmd_vel.twist.linear.y() = 0.0;
+    cmd_vel.twist.angular.z() = angular_w;
+    message = "PID controller reached goal position, aligning heading";
+    return FailureCode::None;
   }
 
   // ---- 选择局部跟踪目标 (最近点 + lookahead 窗口) ----
@@ -297,22 +326,7 @@ uint32_t CostmapPidController::computeVelocityCommands(
   cmd_vel.twist.angular.z() = angular_w;
 
   message = "PID controller generated velocity command";
-  return ayanami::actions::ExePathResult::SUCCESS;
-}
-
-bool CostmapPidController::isGoalReached(double dist_tol, double angle_tol) {
-  if (plan_.poses.empty()) {
-    return false;
-  }
-  const double dist = distance2d(last_pose_, goal_);
-  const double angle = std::abs(
-      shortestAngularDistance(yawOf(last_pose_), yawOf(goal_)));
-  // Task 12 stage C: 原 `||` 让"朝向已对齐但距离很远"即判到达 (identity
-  // last_pose_ yaw=0 == goal yaw=0 → 立即 ARRIVED_GOAL, 永不发速度)。
-  // 改为距离 AND 角度都满足才算到达 (nav2/MBF 语义)。
-  const bool reached = (dist < dist_tol) && (angle < angle_tol);
-  goal_reached_.store(reached);
-  return reached;
+  return FailureCode::None;
 }
 
 bool CostmapPidController::cancel() {

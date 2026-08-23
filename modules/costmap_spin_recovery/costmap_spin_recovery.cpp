@@ -2,13 +2,14 @@
 //
 // 纯 C++ (零 ROS): 继承 costmap::CostmapRecovery, 在注入的 CostmapContext 上
 // 按 spin_dist/max_w 时长逐帧 emit on_velocity_command 纯角速度建议。
-// M1 headless 无真底盘: 不依赖底盘实际运动, 发完时长即 SUCCESS(0)。
-// 每帧 10ms + cancel 检查; 碰撞检测 (global costmap robot 附近 >= 253) → CANCELED。
+// M1 headless 无真底盘: 不依赖底盘实际运动, 发完时长即 SUCCESS(None)。
+// 每帧 10ms + cancel 检查; 碰撞检测 (global costmap robot 附近 >= 253) →
+// FailureCode::RecoveryFailed。
 
 #include <ayanami/modules/costmap_spin_recovery/costmap_spin_recovery.hpp>
 
 #include <ayanami/interfaces/callbacks.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -27,8 +28,8 @@ CostmapSpinRecovery::CostmapSpinRecovery() { loadConfig(); }
 
 void CostmapSpinRecovery::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path("costmap_spin_recovery"));
+    const ayanami::ComponentConfig holder;
+    const auto& file = holder.get();
     config_.spin_dist = file.param<double>("recovery", "spin_dist",
                                            config_.spin_dist);
     config_.max_w = file.param<double>("recovery", "max_w", config_.max_w);
@@ -48,15 +49,15 @@ void CostmapSpinRecovery::initialize(const std::string& name,
   canceled_.store(false);
 }
 
-uint32_t CostmapSpinRecovery::runRecovery(std::string& message) {
+FailureCode CostmapSpinRecovery::runRecovery(std::string& message) {
   message.clear();
   if (canceled_.load()) {
     message = "spin recovery canceled";
-    return ayanami::actions::RecoveryResult::CANCELED;
+    return FailureCode::Canceled;
   }
   if (!costmap_context_) {
     message = "spin recovery not initialized";
-    return ayanami::actions::RecoveryResult::INTERNAL_ERROR;
+    return FailureCode::InternalError;
   }
 
   const double dt = std::max(config_.sim_cycle_dt, 1e-6);
@@ -71,12 +72,12 @@ uint32_t CostmapSpinRecovery::runRecovery(std::string& message) {
     if (canceled_.load()) {
       emitZeroVelocity();
       message = "spin recovery canceled";
-      return ayanami::actions::RecoveryResult::CANCELED;
+      return FailureCode::Canceled;
     }
     if (have_pose && collisionNearRobot(pose)) {
       emitZeroVelocity();
       message = "collision detected during spin";
-      return ayanami::actions::RecoveryResult::CANCELED;
+      return FailureCode::RecoveryFailed;
     }
     ayanami::geometry_msgs::TwistStamped cmd;
     cmd.header.frame_id = costmap_context_->getGlobalFrame();
@@ -88,7 +89,7 @@ uint32_t CostmapSpinRecovery::runRecovery(std::string& message) {
   }
 
   emitZeroVelocity();
-  return ayanami::actions::RecoveryResult::SUCCESS;
+  return FailureCode::None;
 }
 
 bool CostmapSpinRecovery::cancel() {

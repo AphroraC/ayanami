@@ -34,7 +34,7 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
 #include <ayanami/interfaces/transform_store.hpp>
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
@@ -43,6 +43,7 @@
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::costmap::CostmapContext;
 using ayanami::costmap::CostmapNavigationServer;
 using ayanami::geometry_msgs::PoseStamped;
@@ -184,10 +185,13 @@ std::shared_ptr<CostmapPidController> makeController() {
 }
 
 TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
-                     const PoseStamped& robot, uint32_t& outcome,
+                     const PoseStamped& robot, FailureCode& failure,
                      std::string& message) {
   TwistStamped cmd;
-  outcome = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
+  // goal_checker 传空: 触发 PID 空指针防御 (回退 config goal_tolerance), 控制器
+  // 只负责生成速度, 到达判定由 execution 层的 goal_checker 负责。
+  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
+                                         nullptr);
   return cmd;
 }
 
@@ -211,8 +215,7 @@ TEST(MinorCarryWiring, SmacPlannerFallsBackToRobotPose) {
   T_robot.translation() = Eigen::Vector3d(1.0, 2.0, 0.0);
   T_robot.linear() =
       Eigen::AngleAxisd(kPi / 4.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-  store.setTransform("map", "base_link",
-                     ayanami::interfaces::TransformStore::fromSeconds(0.0),
+  store.setTransform("map", "base_link", ayanami::Timestamp::latest(),
                      T_robot);
 
   auto planner = std::make_shared<CostmapSmacPlanner>();
@@ -224,10 +227,10 @@ TEST(MinorCarryWiring, SmacPlannerFallsBackToRobotPose) {
   Path plan;
   double cost = 0.0;
   std::string message;
-  const uint32_t outcome =
+  const FailureCode failure =
       planner->makePlan(start, goal, 0.1, plan, cost, message);
 
-  EXPECT_EQ(outcome, ayanami::actions::GetPathResult::SUCCESS) << message;
+  EXPECT_EQ(failure, FailureCode::None) << message;
   ASSERT_FALSE(plan.poses.empty());
   // 首位 pose == fallback 的 robot pose (1, 2, pi/4)。
   EXPECT_NEAR(plan.poses.front().pose.translation().x(), 1.0, 1e-6);
@@ -285,12 +288,12 @@ TEST(MinorCarryWiring, PidSignatureCoarseSameGoalNoReset) {
   ASSERT_TRUE(ctl->setPlan(plan1));
 
   const PoseStamped robot = makePose(0.5, 0.0);
-  uint32_t outcome = 0;
+  FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped c1 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
-  const TwistStamped c2 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c1 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
+  const TwistStamped c2 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
   ASSERT_GT(c2.twist.linear.x(), c1.twist.linear.x());
 
   // 同 goal (9,0) 同 size (10), 仅中间点稍移 y → 粗签名 (goal+size) 相同。
@@ -300,8 +303,8 @@ TEST(MinorCarryWiring, PidSignatureCoarseSameGoalNoReset) {
   }
   ASSERT_TRUE(ctl->setPlan(plan2));
 
-  const TwistStamped c3 = compute(ctl, robot, outcome, message);
-  ASSERT_EQ(outcome, ayanami::actions::ExePathResult::SUCCESS);
+  const TwistStamped c3 = compute(ctl, robot, failure, message);
+  ASSERT_EQ(failure, FailureCode::None);
 
   // 不重置: ramp 连续 (c3 ≈ 3*kMaxAcc*kDt), 而不是掉回 kMaxAcc*kDt。
   EXPECT_GT(c3.twist.linear.x(), c2.twist.linear.x());

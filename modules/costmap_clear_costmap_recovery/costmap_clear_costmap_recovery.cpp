@@ -1,13 +1,15 @@
 // Task 24: modules/costmap_clear_costmap_recovery — 清代价地图恢复模块。
 //
 // 纯 C++ (零 ROS): 继承 costmap::CostmapRecovery, 清除 global/local
-// (按 affected_maps) master grid 中 robot 附近 radius 范围内 cell →
-// FREE_SPACE(0)。直接改 master grid (clearArea 语义), 不需要底盘。
+// (按 affected_maps) 动态障碍层，不破坏 global 静态地图。
 
 #include <ayanami/modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
 
-#include <ayanami/messages/actions.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
+
+#include <costmap_2d_layers/simple_obstacle_layer.hpp>
+#include <costmap_2d_layers/static_layer.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -19,9 +21,8 @@ CostmapClearCostmapRecovery::CostmapClearCostmapRecovery() { loadConfig(); }
 
 void CostmapClearCostmapRecovery::loadConfig() {
   try {
-    const ayanami::Config file(
-        ayanami::GlobalConfig::get_config_path(
-            "costmap_clear_costmap_recovery"));
+    const ayanami::ComponentConfig holder;
+    const auto& file = holder.get();
     config_.clear_radius =
         file.param<double>("recovery", "clear_radius", config_.clear_radius);
     config_.affected_maps = file.param<std::string>(
@@ -38,21 +39,16 @@ void CostmapClearCostmapRecovery::initialize(
   canceled_.store(false);
 }
 
-uint32_t CostmapClearCostmapRecovery::runRecovery(std::string& message) {
+FailureCode CostmapClearCostmapRecovery::runRecovery(std::string& message) {
   message.clear();
   if (canceled_.load()) {
     message = "clear costmap recovery canceled";
-    return ayanami::actions::RecoveryResult::CANCELED;
+    return FailureCode::Canceled;
   }
   if (!costmap_context_) {
     message = "clear costmap recovery not initialized";
-    return ayanami::actions::RecoveryResult::INTERNAL_ERROR;
+    return FailureCode::InternalError;
   }
-
-  ayanami::geometry_msgs::PoseStamped pose;
-  const bool have_pose = costmap_context_->getRobotPose(pose);
-  const double robot_x = have_pose ? pose.pose.translation().x() : 0.0;
-  const double robot_y = have_pose ? pose.pose.translation().y() : 0.0;
 
   const bool clear_global =
       config_.affected_maps == "global" || config_.affected_maps == "both";
@@ -60,13 +56,23 @@ uint32_t CostmapClearCostmapRecovery::runRecovery(std::string& message) {
       config_.affected_maps == "local" || config_.affected_maps == "both";
 
   if (clear_global) {
-    clearCostmap(costmap_context_->globalCostmap2D(), robot_x, robot_y);
+    if (!clearCostmap(costmap_context_->global_costmap_,
+                      costmap_context_->global_frame_)) {
+      message = "clear costmap recovery could not resolve global robot pose";
+      return FailureCode::TransformUnavailable;
+    }
   }
   if (clear_local) {
-    clearCostmap(costmap_context_->localCostmap2D(), robot_x, robot_y);
+    const std::string local_frame = costmap_context_->local_costmap_
+                                        ? costmap_context_->local_costmap_->getGlobalFrame()
+                                        : std::string{};
+    if (!clearCostmap(costmap_context_->local_costmap_, local_frame)) {
+      message = "clear costmap recovery could not resolve local robot pose";
+      return FailureCode::TransformUnavailable;
+    }
   }
 
-  return ayanami::actions::RecoveryResult::SUCCESS;
+  return FailureCode::None;
 }
 
 bool CostmapClearCostmapRecovery::cancel() {
@@ -74,31 +80,52 @@ bool CostmapClearCostmapRecovery::cancel() {
   return true;
 }
 
-void CostmapClearCostmapRecovery::clearCostmap(
-    costmap_2d::Costmap2D* grid, double robot_x, double robot_y) const {
+bool CostmapClearCostmapRecovery::clearCostmap(
+    const costmap_2d::CostmapWrapper::Ptr& wrapper,
+    const std::string& frame) const {
+  if (!wrapper) {
+    return true;
+  }
+  if (!costmap_context_->transform_store_ || frame.empty()) {
+    return false;
+  }
+
+  Eigen::Isometry3d robot_pose = Eigen::Isometry3d::Identity();
+  if (!costmap_context_->transform_store_->lookupTransform(
+          frame, costmap_context_->robot_frame_, ayanami::Timestamp::latest(),
+          robot_pose)) {
+    return false;
+  }
+
+  auto* grid = wrapper->get().getCostmap();
   if (!grid) {
-    return;
+    return true;
   }
-  if (config_.clear_radius <= 0.0) {
-    grid->resetMap();
-    return;
+  const double robot_x = robot_pose.translation().x();
+  const double robot_y = robot_pose.translation().y();
+  const double radius = config_.clear_radius > 0.0
+                            ? config_.clear_radius
+                            : std::max(grid->getSizeInMetersX(),
+                                       grid->getSizeInMetersY());
+  const double min_x = robot_x - radius;
+  const double min_y = robot_y - radius;
+  const double max_x = robot_x + radius;
+  const double max_y = robot_y + radius;
+
+  for (const auto& layer : wrapper->get().getPlugins()) {
+    if (auto* static_layer =
+            dynamic_cast<costmap_2d_layers::StaticLayer*>(layer.get())) {
+      static_layer->addUpdateBounds(min_x, min_y, max_x, max_y);
+    }
+    if (auto* obstacle_layer =
+            dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(layer.get())) {
+      obstacle_layer->clearArea(min_x, min_y, max_x, max_y);
+    }
   }
-  unsigned int cx = 0;
-  unsigned int cy = 0;
-  if (!grid->worldToMap(robot_x, robot_y, cx, cy)) {
-    grid->resetMap();
-    return;
-  }
-  const unsigned int r = grid->cellDistance(config_.clear_radius);
-  const int sx = static_cast<int>(grid->getSizeInCellsX());
-  const int sy = static_cast<int>(grid->getSizeInCellsY());
-  const unsigned int x0 = std::max(0, static_cast<int>(cx) - static_cast<int>(r));
-  const unsigned int y0 = std::max(0, static_cast<int>(cy) - static_cast<int>(r));
-  const unsigned int x1 =
-      std::min(sx, static_cast<int>(cx) + static_cast<int>(r) + 1);
-  const unsigned int y1 =
-      std::min(sy, static_cast<int>(cy) + static_cast<int>(r) + 1);
-  grid->resetMapToValue(x0, y0, x1, y1, costmap_2d::FREE_SPACE);
+  const double yaw =
+      std::atan2(robot_pose.linear()(1, 0), robot_pose.linear()(0, 0));
+  wrapper->updateMap(robot_x, robot_y, yaw);
+  return true;
 }
 
 }  // namespace modules

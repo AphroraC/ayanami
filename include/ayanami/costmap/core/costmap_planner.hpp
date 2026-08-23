@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "ayanami/core/abstract_planner.hpp"
+#include "ayanami/abstract/core/abstract_planner.hpp"
 
 namespace ayanami {
 namespace costmap {

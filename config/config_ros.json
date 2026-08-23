@@ -22,6 +22,11 @@
       ["base_link", "support"],
       ["support", "laser"]
     ],
+    "tf_static_edges": [
+      ["base_footprint", "base_link"],
+      ["base_link", "support"],
+      ["support", "laser"]
+    ],
     "navigation_so_name": "libayanami_costmap_navigation.so",
     "navigation_create_symbol": "create_navigation_module",
     "extension_modules": ["librviz_viewer.so"]

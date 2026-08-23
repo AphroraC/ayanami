@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "ayanami/core/abstract_smoother.hpp"
+#include "ayanami/abstract/core/abstract_smoother.hpp"
 
 namespace ayanami {
 namespace costmap {

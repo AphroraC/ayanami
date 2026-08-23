@@ -23,9 +23,13 @@
 
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_progress_checker.hpp>
+#include <ayanami/messages/failure.hpp>
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
@@ -34,17 +38,37 @@ using ayanami::nav_msgs::Path;
 // (controller 持 local wrapper 锁内) sleep 5ms 模拟工作 (M2-P5 裁决)。
 class FakeController : public ayanami::abstract::AbstractController {
  public:
-  uint32_t computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                   TwistStamped& cmd_vel, std::string&) override {
+  FailureCode computeVelocityCommands(
+      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
+      std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
     ++cycles_;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     cmd_vel.twist.linear.x() = 0.5;
-    return 0;
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return false; }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
   std::atomic<int> cycles_{0};
+};
+
+// checker 测试桩: 永不到达 + 恒有进展。
+class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const TwistStamped&) override {
+    return false;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+};
+
+class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
 };
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeLocalWrapper() {
@@ -77,6 +101,8 @@ TEST(ConcurrentControllerObstacle, NoDeadlockNoStarvation) {
   auto controller = std::make_shared<FakeController>();
   ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
                                                     ctx->local_costmap_);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   Path plan;
   plan.poses.resize(4);

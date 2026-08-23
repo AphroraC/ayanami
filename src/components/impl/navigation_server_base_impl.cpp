@@ -7,7 +7,7 @@
 // 把每次 acceptGoal 的 Execution 创建转发给 server 的虚工厂。不改 Task 9 的 Action
 // 公共接口。Smoother 无地图工厂 (spec §5.3 无 newSmootherExecution), 用默认执行。
 
-#include "ayanami/components/navigation_server_base.hpp"
+#include "ayanami/abstract/components/navigation_server_base.hpp"
 
 #include <spdlog/spdlog.h>
 
@@ -22,7 +22,9 @@ namespace components {
 namespace {
 
 using ayanami::abstract::AbstractController;
+using ayanami::abstract::AbstractGoalChecker;
 using ayanami::abstract::AbstractPlanner;
+using ayanami::abstract::AbstractProgressChecker;
 using ayanami::abstract::AbstractRecovery;
 
 class ServerPlannerAction : public PlannerAction {
@@ -103,9 +105,26 @@ void NavigationServerBase::createActions() {
   if (auto controller = controller_plugins_.getPlugin(default_controller_)) {
     auto action = std::make_unique<ServerControllerAction>(controller);
     action->setExecutionFactory([this]() {
-      return std::shared_ptr<ControllerExecution>(newControllerExecution(
+      auto exec = std::shared_ptr<ControllerExecution>(newControllerExecution(
           default_controller_,
           controller_plugins_.getPlugin(default_controller_)));
+      // 目标/进展检查插件注入 (预留集成; run 现未消费 checker)。
+      if (auto checker = goal_checker_plugins_.getPlugin(default_goal_checker_)) {
+        exec->setGoalChecker(std::move(checker));
+      } else if (!default_goal_checker_.empty()) {
+        spdlog::warn("NavigationServerBase::createActions: goal checker '{}' "
+                     "not loaded",
+                     default_goal_checker_);
+      }
+      if (auto checker =
+              progress_checker_plugins_.getPlugin(default_progress_checker_)) {
+        exec->setProgressChecker(std::move(checker));
+      } else if (!default_progress_checker_.empty()) {
+        spdlog::warn("NavigationServerBase::createActions: progress checker "
+                     "'{}' not loaded",
+                     default_progress_checker_);
+      }
+      return exec;
     });
     controller_action_ = std::move(action);
   } else {

@@ -31,6 +31,21 @@ class TestLayer : public costmap_2d::Layer {
   }
 };
 
+class ToggleLayer : public costmap_2d::Layer {
+ public:
+  bool mark{true};
+  void updateBounds(double, double, double, double* min_x, double* min_y,
+                    double* max_x, double* max_y) override {
+    *min_x = 1.0;
+    *min_y = 1.0;
+    *max_x = 2.0;
+    *max_y = 2.0;
+  }
+  void updateCosts(costmap_2d::Costmap2D& master, int, int, int, int) override {
+    if (mark) master.setCost(1, 1, costmap_2d::LETHAL_OBSTACLE);
+  }
+};
+
 }  // namespace
 
 TEST(Costmap2DTest, ResizeMapPopulatesMembers) {
@@ -84,6 +99,48 @@ TEST(Costmap2DTest, LayeredCostmapInvokesLayer) {
   EXPECT_GT(layer->bounds_calls, 0);
   EXPECT_GT(layer->costs_calls, 0);
   EXPECT_EQ(lcm.getCostmap()->getCost(2, 3), costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(Costmap2DTest, LayeredCostmapRebuildsDirtyMasterWindow) {
+  costmap_2d::LayeredCostmap lcm("map", false, false);
+  lcm.resizeMap(10, 10, 1.0, 0.0, 0.0);
+  auto layer = std::make_shared<ToggleLayer>();
+  lcm.addLayer(layer);
+  lcm.updateMap(0.0, 0.0, 0.0);
+  ASSERT_EQ(lcm.getCostmap()->getCost(1, 1),
+            costmap_2d::LETHAL_OBSTACLE);
+  layer->mark = false;
+  lcm.updateMap(0.0, 0.0, 0.0);
+  EXPECT_EQ(lcm.getCostmap()->getCost(1, 1), costmap_2d::FREE_SPACE);
+}
+
+TEST(Costmap2DTest, RollingOriginStaysCellAligned) {
+  costmap_2d::Costmap2D map(10, 10, 0.5, 0.0, 0.0);
+  map.updateOrigin(0.24, 0.24);
+  EXPECT_DOUBLE_EQ(map.getOriginX(), 0.0);
+  EXPECT_DOUBLE_EQ(map.getOriginY(), 0.0);
+  map.updateOrigin(0.76, -0.26);
+  EXPECT_DOUBLE_EQ(map.getOriginX(), 0.5);
+  EXPECT_DOUBLE_EQ(map.getOriginY(), -0.5);
+}
+
+TEST(Costmap2DTest, FootprintComputesNav2Radii) {
+  costmap_2d::LayeredCostmap lcm("map", false, false);
+  lcm.setFootprint({{-0.2, -0.1, 0.0}, {-0.2, 0.1, 0.0},
+                    {0.2, 0.1, 0.0}, {0.2, -0.1, 0.0}});
+  EXPECT_NEAR(lcm.getInscribedRadius(), 0.1, 1e-9);
+  EXPECT_NEAR(lcm.getCircumscribedRadius(), std::hypot(0.2, 0.1), 1e-9);
+}
+
+TEST(Costmap2DTest, RaytraceLineUsesBresenhamCells) {
+  costmap_2d::Costmap2D map(10, 10, 1.0, 0.0, 0.0);
+  std::vector<unsigned int> cells;
+  map.raytraceLine([&](unsigned int index) { cells.push_back(index); },
+                   1, 1, 5, 3);
+  ASSERT_FALSE(cells.empty());
+  EXPECT_EQ(cells.front(), map.getIndex(1, 1));
+  EXPECT_EQ(cells.back(), map.getIndex(5, 3));
+  EXPECT_EQ(cells.size(), 5u);
 }
 
 TEST(Costmap2DTest, CostValuesMatchSpec) {

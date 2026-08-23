@@ -12,16 +12,19 @@
 #include <costmap_2d/layered_costmap.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include <ayanami/core/map_context.hpp>
+#include <ayanami/abstract/core/map_context.hpp>
+#include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/interfaces/transform_store.hpp>
+#include <ayanami/messages/failure.hpp>
 
 namespace {
 
+using ayanami::FailureCode;
 using ayanami::costmap::CostmapContext;
 
 std::shared_ptr<costmap_2d::LayeredCostmap> makeGrid() {
@@ -52,12 +55,12 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
     init_ctx_ = std::move(ctx);
   }
 
-  uint32_t makePlan(const ayanami::geometry_msgs::PoseStamped&,
-                    const ayanami::geometry_msgs::PoseStamped&, double,
-                    ayanami::nav_msgs::Path&, double&,
-                    std::string&) override {
+  FailureCode makePlan(const ayanami::geometry_msgs::PoseStamped&,
+                       const ayanami::geometry_msgs::PoseStamped&, double,
+                       ayanami::nav_msgs::Path&, double&,
+                       std::string&) override {
     ++plan_calls_;
-    return 0;
+    return FailureCode::None;
   }
 };
 
@@ -74,10 +77,10 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
     init_ctx_ = std::move(ctx);
   }
 
-  uint32_t smoothPath(const ayanami::nav_msgs::Path&,
-                      ayanami::nav_msgs::Path&, double, bool,
-                      std::string&) override {
-    return 0;
+  FailureCode smoothPath(const ayanami::nav_msgs::Path&,
+                         ayanami::nav_msgs::Path&, double, bool,
+                         std::string&) override {
+    return FailureCode::None;
   }
 };
 
@@ -94,13 +97,13 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
     init_ctx_ = std::move(ctx);
   }
 
-  uint32_t computeVelocityCommands(
+  FailureCode computeVelocityCommands(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
-    return 0;
+      ayanami::geometry_msgs::TwistStamped&, std::string&,
+      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+    return FailureCode::None;
   }
-  bool isGoalReached(double, double) override { return false; }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 };
 
@@ -117,10 +120,40 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
     init_ctx_ = std::move(ctx);
   }
 
-  uint32_t runRecovery(std::string&) override { return 0; }
+  FailureCode runRecovery(std::string&) override {
+    return FailureCode::None;
+  }
 };
 
 }  // namespace
+
+// ---------- capability 查询 ----------
+
+// 最小非 costmap 派生: 验证 AbstractMapContext 默认 capability 全不支持。
+class StubMapContext : public ayanami::abstract::AbstractMapContext {
+ public:
+  const std::string& getGlobalFrame() const override {
+    static const std::string frame = "map";
+    return frame;
+  }
+  const std::string& getRobotFrame() const override {
+    static const std::string frame = "base_link";
+    return frame;
+  }
+  bool getRobotPose(ayanami::geometry_msgs::PoseStamped&) const override {
+    return false;
+  }
+};
+
+TEST(MapCapabilityTest, AbstractContextRejectsCostmapByDefault) {
+  StubMapContext ctx;
+  EXPECT_FALSE(ctx.hasCapability(ayanami::abstract::MapCapability::Costmap));
+}
+
+TEST(MapCapabilityTest, CostmapContextDeclaresCostmapCapability) {
+  CostmapContext ctx;
+  EXPECT_TRUE(ctx.hasCapability(ayanami::abstract::MapCapability::Costmap));
+}
 
 // ---------- 帧名 getters ----------
 
@@ -212,7 +245,7 @@ TEST(CostmapContextTest, GetRobotPoseFailsWithoutTransformStore) {
 TEST(CostmapContextTest, GetRobotPoseUsesTransformStore) {
   auto& store = ayanami::interfaces::TransformStore::instance();
   store.setTransform(
-      "map", "base_link", ayanami::interfaces::TransformStore::fromSeconds(0.0),
+      "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
 
   CostmapContext ctx;
@@ -262,7 +295,8 @@ TEST(CostmapCoreTest, CostmapPlannerInitializeInjectsContext) {
   ayanami::nav_msgs::Path plan;
   double cost = 0.0;
   std::string message;
-  EXPECT_EQ(base->makePlan(start, goal, 0.1, plan, cost, message), 0u);
+  EXPECT_EQ(base->makePlan(start, goal, 0.1, plan, cost, message),
+            FailureCode::None);
   EXPECT_EQ(planner->plan_calls_, 1u);
 }
 

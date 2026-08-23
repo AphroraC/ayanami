@@ -35,12 +35,12 @@
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/navigation.hpp>
-#include <ayanami/components/plugin_manager.hpp>
-#include <ayanami/core/abstract_controller.hpp>
-#include <ayanami/core/abstract_navigation.hpp>
-#include <ayanami/core/abstract_planner.hpp>
-#include <ayanami/core/abstract_recovery.hpp>
-#include <ayanami/core/abstract_smoother.hpp>
+#include <ayanami/abstract/components/plugin_manager.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
+#include <ayanami/abstract/core/abstract_navigation.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
+#include <ayanami/abstract/core/abstract_recovery.hpp>
+#include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
@@ -86,16 +86,34 @@ struct NavIds {
 
 NavIds readNavIds() {
   NavIds ids;
-  ayanami::Config nav(ayanami::GlobalConfig::get_config_path("config_navigation"));
-  const std::string kSec = "navigation";
-  ids.planner_id = nav.param<std::string>(kSec, "planner_id", "");
-  ids.smoother_id = nav.param<std::string>(kSec, "smoother_id", "");
-  ids.controller_id = nav.param<std::string>(kSec, "controller_id", "");
-  ids.recovery_id = nav.param<std::string>(kSec, "recovery_id", "");
-  ids.clear_costmap_id = nav.param<std::string>(kSec, "clear_costmap_id", "");
-  ids.spin_id = nav.param<std::string>(kSec, "spin_id", "");
-  ids.wait_id = nav.param<std::string>(kSec, "wait_id", "");
-  ids.backup_id = nav.param<std::string>(kSec, "backup_id", "");
+  {
+    ayanami::Config cfg(
+        ayanami::GlobalConfig::get_config_path("config_planner"));
+    ids.planner_id = cfg.param<std::string>("planner", "name", "");
+  }
+  {
+    ayanami::Config cfg(
+        ayanami::GlobalConfig::get_config_path("config_smoother"));
+    ids.smoother_id = cfg.param<std::string>("smoother", "name", "");
+  }
+  {
+    ayanami::Config cfg(
+        ayanami::GlobalConfig::get_config_path("config_controller"));
+    ids.controller_id = cfg.param<std::string>("controller", "name", "");
+  }
+  for (const auto& path :
+       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+    ayanami::Config cfg(path);
+    const std::string name = cfg.param<std::string>("recovery", "name", "");
+    const std::string role = cfg.param<std::string>("recovery", "role", "");
+    if (ids.recovery_id.empty() || role == "clear_costmap") {
+      ids.recovery_id = name;
+    }
+    if (role == "clear_costmap") ids.clear_costmap_id = name;
+    if (role == "spin") ids.spin_id = name;
+    if (role == "wait") ids.wait_id = name;
+    if (role == "backup") ids.backup_id = name;
+  }
   return ids;
 }
 
@@ -110,6 +128,29 @@ std::string pluginSymbol(const std::string& config_key,
                          const std::string& module_section) {
   ayanami::Config cfg(ayanami::GlobalConfig::get_config_path(config_key));
   return cfg.param<std::string>(module_section, "create_symbol", "");
+}
+
+// config_recovery 数组按 role 定位插件 json, 读 name / create_symbol。
+std::string recoveryPluginName(const std::string& role) {
+  for (const auto& path :
+       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+    ayanami::Config cfg(path);
+    if (cfg.param<std::string>("recovery", "role", "") == role) {
+      return cfg.param<std::string>("recovery", "name", "");
+    }
+  }
+  return "";
+}
+
+std::string recoveryPluginSymbol(const std::string& role) {
+  for (const auto& path :
+       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+    ayanami::Config cfg(path);
+    if (cfg.param<std::string>("recovery", "role", "") == role) {
+      return cfg.param<std::string>("recovery", "create_symbol", "");
+    }
+  }
+  return "";
 }
 
 // dlopen host 模块 → create_navigation_module → CostmapNavigation*, 已 initialize。
@@ -174,20 +215,18 @@ TEST(ConfigConsistencyTest, IdsAreFullPluginNames) {
   // recovery: id 值直接 == 插件 name (full plugin name, 含 _recovery 后缀)。
   // BT `{spin_id}` 黑板书值 = costmap_spin_recovery → requestRecovery 直接命中。
   EXPECT_EQ(ids.spin_id, "costmap_spin_recovery");
-  EXPECT_EQ(pluginName("config_spin_recovery", "recovery"), ids.spin_id);
+  EXPECT_EQ(recoveryPluginName("spin"), ids.spin_id);
 
   EXPECT_EQ(ids.wait_id, "costmap_wait_recovery");
-  EXPECT_EQ(pluginName("config_wait_recovery", "recovery"), ids.wait_id);
+  EXPECT_EQ(recoveryPluginName("wait"), ids.wait_id);
 
   EXPECT_EQ(ids.backup_id, "costmap_back_up_recovery");
-  EXPECT_EQ(pluginName("config_back_up_recovery", "recovery"), ids.backup_id);
+  EXPECT_EQ(recoveryPluginName("backup"), ids.backup_id);
 
   // clear_costmap_id 与 recovery_id 指向同一插件 (full name)。
   EXPECT_EQ(ids.recovery_id, ids.clear_costmap_id);
   EXPECT_EQ(ids.clear_costmap_id, "costmap_clear_costmap_recovery");
-  EXPECT_EQ(pluginName("config_recovery", "recovery"), ids.recovery_id);
-  EXPECT_EQ(pluginName("config_clear_costmap_recovery", "recovery"),
-            ids.recovery_id);
+  EXPECT_EQ(recoveryPluginName("clear_costmap"), ids.recovery_id);
 }
 
 // ---- B. 真实 dlopen: PluginManager 装载名与 costmap_navigation.json 一致 ----
@@ -236,23 +275,25 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
   {
     // 4 个 recovery 全装载, 名必须 == id 值 (full plugin name)。
     PluginManager<AbstractRecovery> mgr;
-    const std::pair<const char*, const char*> kSecAndId[] = {
-        {"config_spin_recovery", ids.spin_id.c_str()},
-        {"config_back_up_recovery", ids.backup_id.c_str()},
-        {"config_wait_recovery", ids.wait_id.c_str()},
-        {"config_recovery", ids.clear_costmap_id.c_str()},
+    const struct {
+      const char* role;
+      const char* so;
+    } kRec[] = {
+        {"spin", g_spin_so.c_str()},
+        {"backup", g_backup_so.c_str()},
+        {"wait", g_wait_so.c_str()},
+        {"clear_costmap", g_clear_so.c_str()},
     };
-    const std::string so[] = {g_spin_so, g_backup_so, g_wait_so, g_clear_so};
-    for (int i = 0; i < 4; ++i) {
+    for (const auto& r : kRec) {
       ayanami::components::PluginSpec spec;
-      spec.name = pluginName(kSecAndId[i].first, "recovery");
-      spec.so_name = so[i];
-      spec.create_symbol = pluginSymbol(kSecAndId[i].first, "recovery");
+      spec.name = recoveryPluginName(r.role);
+      spec.so_name = r.so;
+      spec.create_symbol = recoveryPluginSymbol(r.role);
       ASSERT_TRUE(mgr.loadPlugin(
           spec, [](const std::string&, std::shared_ptr<AbstractRecovery>) {
             return true;
           }))
-          << kSecAndId[i].first;
+          << r.role;
     }
     EXPECT_TRUE(mgr.hasPlugin(ids.spin_id));
     EXPECT_TRUE(mgr.hasPlugin(ids.backup_id));
@@ -269,12 +310,11 @@ TEST(ConfigConsistencyTest, HostInitializeLoadsConsistentPlugins) {
   ASSERT_NE(host, nullptr);
 
   // loadPlugins 按 config_planner/.../config_recovery 装载 → createActions。
-  // 注意: 真实 pid 控制器是零地图 AbstractController (Task 23 设计),
-  // 无法注入 costmap 族 host, 其 id↔name 一致性在 PluginManager<AbstractController>
-  // 层单独验证 (PluginManagersLoadMatchingNames)。这里只断言 host 能装载的
-  // costmap 族插件。
+  // pid 已是 costmap 族 (CostmapController), 可被 costmap 宿主注入,
+  // controller action 一并创建 (四族 costmap 全接受)。
   ASSERT_NE(host->navigationServer().plannerAction(), nullptr);
   ASSERT_NE(host->navigationServer().smootherAction(), nullptr);
+  ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
 
   // recovery: config_recovery 指向的 clear_costmap 插件 action 已建
   // (装载名 = clear_costmap_id 值, 即 full plugin name)。
@@ -320,14 +360,16 @@ TEST(ConfigConsistencyTest, RequestRecoveryUsesFullPluginName) {
     auto task = host->navigationServer().requestRecovery(goal);
     EXPECT_FALSE(task.valid());
   }
-  // 同理 spin: full name 已装载? host 只装 config_recovery(clear), spin 未装载,
-  // 故 requestRecovery("costmap_spin_recovery") 应 invalid —— 一致性由 B 层
-  // PluginManager 全装载保证, 宿主仅装默认 recovery (spec §4.5 纪律)。
+  // config_recovery 数组现装载全部 4 个 recovery 插件 (WIP 一配多文件),
+  // spin full name 也已装载 → valid。
   {
     RecoveryGoal goal;
     goal.recovery_id = "costmap_spin_recovery";
     auto task = host->navigationServer().requestRecovery(goal);
-    EXPECT_FALSE(task.valid());
+    EXPECT_TRUE(task.valid());
+    if (task.valid()) {
+      task.cancel();
+    }
   }
 
   host->stop();
@@ -388,7 +430,7 @@ std::filesystem::path makeSpinConfigDir() {
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"costmap_navigation.json\",\n"
              "    \"config_costmap\": \"costmap.json\",\n"
-             "    \"config_recovery\": \"spin_recovery.json\",\n"
+             "    \"config_recovery\": [\"spin_recovery.json\"],\n"
              "    \"config_logging\": \"logging.json\"\n"
              "  }\n}\n");
 

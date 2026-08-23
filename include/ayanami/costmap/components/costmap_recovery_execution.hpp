@@ -7,7 +7,7 @@
 
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/components/recovery_execution.hpp"
+#include "ayanami/abstract/components/recovery_execution.hpp"
 
 namespace ayanami {
 namespace costmap {
@@ -18,7 +18,8 @@ namespace costmap {
  * 恢复行为同时操作 global + local 两个 costmap:
  * - preRun: 两者 checkActivate(); postRun: 两者 checkDeactivate();
  * - safetyCheck: 两个 wrapper 都 current 才返回 true;
- * - run: 覆写加 global wrapper 的 recursive_mutex scoped_lock 再调父。
+ * - run: 覆写为 scoped_lock(global, local) 临界段包住父 run (clear 直写
+ *   local master grid 与 obstacle feed 的 local 锁写串行化)。
  */
 class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
  public:
@@ -60,9 +61,12 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
 
  protected:
   void run() override {
-    // ★ 关键: 同时锁 global + local 防与 obstacle feed (handleObstaclePointCloud
-    // 走 local wrapper mutex) 死锁/竞态。锁顺序固定 global→local 避免死锁;
-    // std::scoped_lock 内部按声明顺序加锁 (C++17)。
+    // ★ 关键: 整个恢复 (含 clear 直写 local master grid) 在持 global+local
+    // 两把锁的临界段内执行, 防与 obstacle feed (markObstaclesInFrame 走 local
+    // wrapper mutex 写回同一 cell) 并发竞态。锁序 global→local 无 AB/BA:
+    // obstacle feed 严格"local 段写完释放才请求 global" (两段式锁作用域,
+    // 见 markObstaclesInFrame), 从不持 local 等 global; scoped_lock 内部
+    // std::lock 亦自带死锁回避, 双保险。
     if (global_costmap_ && local_costmap_) {
       std::scoped_lock lk(global_costmap_->mutex(), local_costmap_->mutex());
       RecoveryExecution::run();

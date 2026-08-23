@@ -28,10 +28,10 @@ class CostmapSmacPlanner : public ayanami::costmap::CostmapPlanner {
   void initialize(const std::string& name,
                   ayanami::costmap::CostmapContext::Ptr ctx) override;
 
-  uint32_t makePlan(const geometry_msgs::PoseStamped& start,
-                    const geometry_msgs::PoseStamped& goal, double tolerance,
-                    nav_msgs::Path& plan, double& cost,
-                    std::string& message) override;
+  FailureCode makePlan(const geometry_msgs::PoseStamped& start,
+                       const geometry_msgs::PoseStamped& goal, double tolerance,
+                       nav_msgs::Path& plan, double& cost,
+                       std::string& message) override;
 
   bool cancel() override;
 

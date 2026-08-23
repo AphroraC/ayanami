@@ -4,7 +4,7 @@
 // 再 reset 4 个 action, 再 clearPlugins 释放插件对象 (dlopen 句柄仍存活时析构),
 // 最后移除旁路 fallback 回调。零 ROS include (红线 §5.7)。
 
-#include "ayanami/components/navigation_server_base.hpp"
+#include "ayanami/abstract/components/navigation_server_base.hpp"
 
 #include "ayanami/utility/config.hpp"
 
@@ -14,7 +14,9 @@ namespace ayanami {
 namespace components {
 
 using ayanami::abstract::AbstractController;
+using ayanami::abstract::AbstractGoalChecker;
 using ayanami::abstract::AbstractPlanner;
+using ayanami::abstract::AbstractProgressChecker;
 using ayanami::abstract::AbstractRecovery;
 using ayanami::abstract::AbstractSmoother;
 
@@ -32,23 +34,16 @@ NavigationServerBase::~NavigationServerBase() {
   smoother_plugins_.clearPlugins();
   controller_plugins_.clearPlugins();
   recovery_plugins_.clearPlugins();
+  goal_checker_plugins_.clearPlugins();
+  progress_checker_plugins_.clearPlugins();
 }
 
 void NavigationServerBase::loadPlugins(const std::string& config_path) {
   GlobalConfig::instance(config_path, /*override_path=*/true);
 
-  Config nav_cfg(GlobalConfig::get_config_path("config_navigation"));
-  default_planner_ =
-      nav_cfg.param<std::string>("navigation", "planner_id", "");
-  default_smoother_ =
-      nav_cfg.param<std::string>("navigation", "smoother_id", "");
-  default_controller_ =
-      nav_cfg.param<std::string>("navigation", "controller_id", "");
-  default_recovery_ =
-      nav_cfg.param<std::string>("navigation", "recovery_id", "");
-
   {
     Config cfg(GlobalConfig::get_config_path("config_planner"));
+    default_planner_ = cfg.param<std::string>("planner", "name", "");
     planner_plugins_.loadSingleFromConfig(
         cfg, "planner", default_planner_,
         [this](const std::string& name, AbstractPlanner::Ptr plugin) {
@@ -57,6 +52,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   }
   {
     Config cfg(GlobalConfig::get_config_path("config_smoother"));
+    default_smoother_ = cfg.param<std::string>("smoother", "name", "");
     smoother_plugins_.loadSingleFromConfig(
         cfg, "smoother", default_smoother_,
         [this](const std::string& name, AbstractSmoother::Ptr plugin) {
@@ -65,18 +61,44 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   }
   {
     Config cfg(GlobalConfig::get_config_path("config_controller"));
+    default_controller_ = cfg.param<std::string>("controller", "name", "");
     controller_plugins_.loadSingleFromConfig(
         cfg, "controller", default_controller_,
         [this](const std::string& name, AbstractController::Ptr plugin) {
           return initializeControllerPlugin(name, std::move(plugin));
         });
   }
-  {
-    Config cfg(GlobalConfig::get_config_path("config_recovery"));
+  for (const auto& path : GlobalConfig::get_config_paths("config_recovery")) {
+    Config cfg(path);
+    const std::string name = cfg.param<std::string>("recovery", "name", "");
+    const std::string role = cfg.param<std::string>("recovery", "role", "");
+    if (default_recovery_.empty() || role == "clear_costmap") {
+      default_recovery_ = name;
+    }
     recovery_plugins_.loadSingleFromConfig(
-        cfg, "recovery", default_recovery_,
-        [this](const std::string& name, AbstractRecovery::Ptr plugin) {
-          return initializeRecoveryPlugin(name, std::move(plugin));
+        cfg, "recovery", name,
+        [this](const std::string& loaded_name, AbstractRecovery::Ptr plugin) {
+          return initializeRecoveryPlugin(loaded_name, std::move(plugin));
+        });
+  }
+  {
+    Config cfg(GlobalConfig::get_config_path("config_goal_checker"));
+    default_goal_checker_ =
+        cfg.param<std::string>("goal_checker", "name", "");
+    goal_checker_plugins_.loadSingleFromConfig(
+        cfg, "goal_checker", default_goal_checker_,
+        [this](const std::string& name, AbstractGoalChecker::Ptr plugin) {
+          return initializeGoalCheckerPlugin(name, std::move(plugin));
+        });
+  }
+  {
+    Config cfg(GlobalConfig::get_config_path("config_progress_checker"));
+    default_progress_checker_ =
+        cfg.param<std::string>("progress_checker", "name", "");
+    progress_checker_plugins_.loadSingleFromConfig(
+        cfg, "progress_checker", default_progress_checker_,
+        [this](const std::string& name, AbstractProgressChecker::Ptr plugin) {
+          return initializeProgressCheckerPlugin(name, std::move(plugin));
         });
   }
 
@@ -251,6 +273,18 @@ bool NavigationServerBase::initializeControllerPlugin(
 
 bool NavigationServerBase::initializeRecoveryPlugin(const std::string& name,
                                                     AbstractRecovery::Ptr) {
+  (void)name;
+  return true;
+}
+
+bool NavigationServerBase::initializeGoalCheckerPlugin(
+    const std::string& name, AbstractGoalChecker::Ptr) {
+  (void)name;
+  return true;
+}
+
+bool NavigationServerBase::initializeProgressCheckerPlugin(
+    const std::string& name, AbstractProgressChecker::Ptr) {
   (void)name;
   return true;
 }

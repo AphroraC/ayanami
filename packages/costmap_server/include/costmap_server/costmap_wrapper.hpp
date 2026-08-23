@@ -36,7 +36,10 @@ class CostmapWrapper {
 
   bool isActive() const { return active_.load(); }
 
-  bool isCurrent() const { return current_.load(); }
+  bool isCurrent() const {
+    return current_.load() &&
+           (!layered_costmap_ || layered_costmap_->isCurrent());
+  }
   void setCurrent(bool current) { current_.store(current); }
 
   std::recursive_mutex& mutex() { return mutex_; }

@@ -5,7 +5,7 @@
 
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/components/recovery_action.hpp"
+#include "ayanami/abstract/components/recovery_action.hpp"
 #include "ayanami/costmap/components/costmap_recovery_execution.hpp"
 
 namespace ayanami {
