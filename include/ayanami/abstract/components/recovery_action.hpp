@@ -1,9 +1,9 @@
 #pragma once
 
-#include "ayanami/components/action_base.hpp"
-#include "ayanami/components/action_server.hpp"
-#include "ayanami/components/controller_execution.hpp"
-#include "ayanami/core/abstract_controller.hpp"
+#include "ayanami/abstract/components/action_base.hpp"
+#include "ayanami/abstract/components/action_server.hpp"
+#include "ayanami/abstract/components/recovery_execution.hpp"
+#include "ayanami/abstract/core/abstract_recovery.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/messages/actions.hpp"
 
@@ -17,41 +17,40 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 局部控制 Action (对标 MBF ControllerAction, spec §5.1)。
+ * @brief 恢复行为 Action (对标 MBF RecoveryAction, spec §5.1)。
  *
- * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_exe_path_result。
- * cmd_vel 发布由 ControllerExecution 经 on_velocity_command 旁路完成。
- * 映射: ARRIVED_GOAL→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。
+ * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_recovery_result。
+ * 映射: RECOVERY_DONE→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。
  */
-class ControllerAction : public ActionBase<ayanami::actions::ExePathGoal,
-                                           ControllerExecution> {
+class RecoveryAction : public ActionBase<ayanami::actions::RecoveryGoal,
+                                         RecoveryExecution> {
 public:
-  using Base = ActionBase<ayanami::actions::ExePathGoal, ControllerExecution>;
-  using Goal = ayanami::actions::ExePathGoal;
-  using Result = ayanami::actions::ExePathResult;
-  using Feedback = ayanami::actions::ExePathFeedback;
+  using Base = ActionBase<ayanami::actions::RecoveryGoal, RecoveryExecution>;
+  using Goal = ayanami::actions::RecoveryGoal;
+  using Result = ayanami::actions::RecoveryResult;
+  using Feedback = ayanami::actions::RecoveryFeedback;
   using Server = ActionServer<Goal, Result, Feedback>;
   using ServerPtr = std::shared_ptr<Server>;
   using Task = Server::Task;
 
-  explicit ControllerAction(ayanami::abstract::AbstractController::Ptr controller)
-      : controller_(std::move(controller)),
+  explicit RecoveryAction(ayanami::abstract::AbstractRecovery::Ptr recovery)
+      : recovery_(std::move(recovery)),
         server_(std::make_shared<Server>()) {
     server_->setGoalCallback([](const Server::GoalHandleType& gh) {
-      ayanami::interfaces::NavigationCallbacks::on_exe_path_goal(gh.goal);
+      ayanami::interfaces::NavigationCallbacks::on_recovery_goal(gh.goal);
     });
     server_->setCancelCallback([this](uint64_t goal_id) {
       Base::cancelGoal(goal_id);
     });
     server_->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
-      ayanami::interfaces::NavigationCallbacks::on_exe_path_feedback(gf.feedback);
+      ayanami::interfaces::NavigationCallbacks::on_recovery_feedback(gf.feedback);
     });
     server_->setResultCallback([](const Server::GoalResultType& gr) {
-      ayanami::interfaces::NavigationCallbacks::on_exe_path_result(gr);
+      ayanami::interfaces::NavigationCallbacks::on_recovery_result(gr);
     });
   }
 
-  ~ControllerAction() override { cancelAll(); }
+  ~RecoveryAction() override { cancelAll(); }
 
   Task acceptGoal(const Goal& goal) {
     auto task = server_->acceptGoal(goal);
@@ -59,10 +58,10 @@ public:
     if (!gh) {
       return task;
     }
-    if (!controller_) {
+    if (!recovery_) {
       Result result;
-      result.outcome = Result::INTERNAL_ERROR;
-      result.message = "Controller plugin is null";
+      result.failure = FailureCode::InternalError;
+      result.message = "Recovery plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
       server_->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
@@ -83,36 +82,31 @@ public:
   ServerPtr server() const { return server_; }
 
 protected:
-  void runImpl(const GoalHandleType& gh, ControllerExecution& exec) override {
+  void runImpl(const GoalHandleType& gh, RecoveryExecution& exec) override {
     server_->setActive(gh.id);
-    exec.setNewPlan(gh.goal.path);
     exec.start();
     runImplCommon(
         gh, exec,
-        [this](const GoalHandleType& gh, ControllerExecution& exec) -> bool {
+        [this](const GoalHandleType& gh, RecoveryExecution& exec) -> bool {
           if (server_->isCancelRequested(gh.id)) {
             exec.cancel();
           }
           const bool canceled =
               server_->isCancelRequested(gh.id) ||
-              exec.getState() == ControllerExecution::CANCELED;
+              exec.getState() == RecoveryExecution::CANCELED;
           if (canceled) {
             finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
             return true;
           }
-          if (exec.getState() == ControllerExecution::ARRIVED_GOAL) {
+          if (exec.getState() == RecoveryExecution::RECOVERY_DONE) {
             finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
             return true;
           }
           switch (exec.getState()) {
-            case ControllerExecution::NO_PLAN:
-            case ControllerExecution::EMPTY_PLAN:
-            case ControllerExecution::INVALID_PLAN:
-            case ControllerExecution::MAX_RETRIES:
-            case ControllerExecution::PAT_EXCEEDED:
-            case ControllerExecution::STOPPED:
-            case ControllerExecution::INTERNAL_ERROR:
-            case ControllerExecution::ROBOT_DISABLED:
+            case RecoveryExecution::RECOVERY_FAILED:
+            case RecoveryExecution::PAT_EXCEEDED:
+            case RecoveryExecution::STOPPED:
+            case RecoveryExecution::INTERNAL_ERROR:
               finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
               return true;
             default:
@@ -122,20 +116,27 @@ protected:
         });
   }
 
-  virtual ControllerExecution::Ptr createExecution() {
-    return std::make_shared<ControllerExecution>(controller_);
+  virtual RecoveryExecution::Ptr createExecution() {
+    return std::make_shared<RecoveryExecution>(recovery_);
   }
 
 protected:
-  ayanami::abstract::AbstractController::Ptr controller_;
+  ayanami::abstract::AbstractRecovery::Ptr recovery_;
 
 private:
-  void finishResult(const GoalHandleType& gh, const ControllerExecution& exec,
+  void finishResult(const GoalHandleType& gh, const RecoveryExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
-    result.outcome = exec.getOutcome();
+    result.failure = exec.getFailure();
+    if (status == ayanami::actions::GoalStatus::CANCELED) {
+      result.failure = FailureCode::Canceled;
+    } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
+      result.failure = FailureCode::None;
+    } else if (result.failure == FailureCode::None ||
+               result.failure == FailureCode::Canceled) {
+      result.failure = FailureCode::InternalError;
+    }
     result.message = exec.getMessage();
-    result.reached = exec.getState() == ControllerExecution::ARRIVED_GOAL;
     result.session_id = gh.goal.session_id;
     result.plan_version = gh.goal.plan_version;
     server_->publishResult(gh.id, status, result);

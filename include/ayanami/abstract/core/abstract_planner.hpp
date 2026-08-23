@@ -1,9 +1,9 @@
 #pragma once
 
+#include "ayanami/messages/failure.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
 
-#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -26,13 +26,13 @@ public:
    * @brief 计算 start→goal 的全局路径。
    * @param[out] plan  生成的路径。
    * @param[out] cost  路径代价。
-   * @param[out] message 失败时的人类可读错误。
-   * @return 错误码: 0=SUCCESS, 50+ 为错误段 (NO_PATH_FOUND=58 等)。
+   * @param[out] message 失败时的人类可读诊断 (仅诊断, 决策只看 failure)。
+   * @return FailureCode: None=成功, 其余为统一失败码。
    */
-  virtual uint32_t makePlan(const ayanami::geometry_msgs::PoseStamped& start,
-                            const ayanami::geometry_msgs::PoseStamped& goal,
-                            double tolerance, ayanami::nav_msgs::Path& plan,
-                            double& cost, std::string& message) = 0;
+  virtual FailureCode makePlan(const ayanami::geometry_msgs::PoseStamped& start,
+                               const ayanami::geometry_msgs::PoseStamped& goal,
+                               double tolerance, ayanami::nav_msgs::Path& plan,
+                               double& cost, std::string& message) = 0;
 
   /// @brief 取消进行中的规划。默认不支持, 返回 false。
   virtual bool cancel() { return false; }

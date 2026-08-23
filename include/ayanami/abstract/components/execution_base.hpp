@@ -1,9 +1,10 @@
 #pragma once
 
+#include "ayanami/messages/failure.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -45,8 +46,8 @@ public:
   /// @brief 当前内部状态 (原子读)。
   int getState() const { return state_.load(); }
 
-  /// @brief 最近一次插件调用的结果码 (0=SUCCESS)。
-  uint32_t getOutcome() const { return outcome_; }
+  /// @brief 最近一次插件调用的统一失败码 (None=成功)。
+  FailureCode getFailure() const { return failure_; }
 
   /// @brief 最近一次的人类可读消息。
   std::string getMessage() const { return message_; }
@@ -79,7 +80,7 @@ protected:
   std::atomic<bool> should_exit_{false};
   std::atomic<bool> cancel_{false};
   std::atomic<int> state_{0};
-  uint32_t outcome_{0};
+  FailureCode failure_{FailureCode::None};
   std::string message_;
 };
 

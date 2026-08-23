@@ -1,20 +1,22 @@
 #pragma once
 
-#include "ayanami/components/controller_action.hpp"
-#include "ayanami/components/controller_execution.hpp"
-#include "ayanami/components/planner_action.hpp"
-#include "ayanami/components/planner_execution.hpp"
-#include "ayanami/components/plugin_manager.hpp"
-#include "ayanami/components/recovery_action.hpp"
-#include "ayanami/components/recovery_execution.hpp"
-#include "ayanami/components/robot_state_provider.hpp"
-#include "ayanami/components/smoother_action.hpp"
-#include "ayanami/components/smoother_execution.hpp"
-#include "ayanami/core/abstract_controller.hpp"
-#include "ayanami/core/abstract_planner.hpp"
-#include "ayanami/core/abstract_recovery.hpp"
-#include "ayanami/core/abstract_smoother.hpp"
-#include "ayanami/core/map_context.hpp"
+#include "ayanami/abstract/components/controller_action.hpp"
+#include "ayanami/abstract/components/controller_execution.hpp"
+#include "ayanami/abstract/components/planner_action.hpp"
+#include "ayanami/abstract/components/planner_execution.hpp"
+#include "ayanami/abstract/components/plugin_manager.hpp"
+#include "ayanami/abstract/components/recovery_action.hpp"
+#include "ayanami/abstract/components/recovery_execution.hpp"
+#include "ayanami/abstract/components/robot_state_provider.hpp"
+#include "ayanami/abstract/components/smoother_action.hpp"
+#include "ayanami/abstract/components/smoother_execution.hpp"
+#include "ayanami/abstract/core/abstract_controller.hpp"
+#include "ayanami/abstract/core/abstract_goal_checker.hpp"
+#include "ayanami/abstract/core/abstract_planner.hpp"
+#include "ayanami/abstract/core/abstract_progress_checker.hpp"
+#include "ayanami/abstract/core/abstract_recovery.hpp"
+#include "ayanami/abstract/core/abstract_smoother.hpp"
+#include "ayanami/abstract/core/map_context.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/messages/actions.hpp"
 
@@ -100,6 +102,11 @@ protected:
       const std::string& name, ayanami::abstract::AbstractController::Ptr);
   virtual bool initializeRecoveryPlugin(
       const std::string& name, ayanami::abstract::AbstractRecovery::Ptr);
+  // ★ checker 虚钩子: 无地图依赖, 默认 return true (spec §5.3 扩展族)。
+  virtual bool initializeGoalCheckerPlugin(
+      const std::string& name, ayanami::abstract::AbstractGoalChecker::Ptr);
+  virtual bool initializeProgressCheckerPlugin(
+      const std::string& name, ayanami::abstract::AbstractProgressChecker::Ptr);
 
   // ★ 工厂: 派生覆写返回带地图的 Execution。默认返回 abstract 版。
   virtual std::unique_ptr<PlannerExecution> newPlannerExecution(
@@ -113,6 +120,9 @@ protected:
   PluginManager<ayanami::abstract::AbstractSmoother> smoother_plugins_;
   PluginManager<ayanami::abstract::AbstractController> controller_plugins_;
   PluginManager<ayanami::abstract::AbstractRecovery> recovery_plugins_;
+  PluginManager<ayanami::abstract::AbstractGoalChecker> goal_checker_plugins_;
+  PluginManager<ayanami::abstract::AbstractProgressChecker>
+      progress_checker_plugins_;
   std::unique_ptr<PlannerAction> planner_action_;
   std::unique_ptr<SmootherAction> smoother_action_;
   std::unique_ptr<ControllerAction> controller_action_;
@@ -123,6 +133,8 @@ protected:
   std::string default_smoother_;
   std::string default_controller_;
   std::string default_recovery_;
+  std::string default_goal_checker_;
+  std::string default_progress_checker_;
   std::atomic<uint64_t> session_id_{0};
   std::atomic<uint64_t> plan_version_{0};
 

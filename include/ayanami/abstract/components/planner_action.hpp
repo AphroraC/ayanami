@@ -1,9 +1,9 @@
 #pragma once
 
-#include "ayanami/components/action_base.hpp"
-#include "ayanami/components/action_server.hpp"
-#include "ayanami/components/planner_execution.hpp"
-#include "ayanami/core/abstract_planner.hpp"
+#include "ayanami/abstract/components/action_base.hpp"
+#include "ayanami/abstract/components/action_server.hpp"
+#include "ayanami/abstract/components/planner_execution.hpp"
+#include "ayanami/abstract/core/abstract_planner.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/messages/actions.hpp"
 
@@ -64,7 +64,7 @@ public:
     }
     if (!planner_) {
       Result result;
-      result.outcome = Result::INTERNAL_ERROR;
+      result.failure = FailureCode::InternalError;
       result.message = "Planner plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
@@ -132,7 +132,15 @@ private:
   void finishResult(const GoalHandleType& gh, const PlannerExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
-    result.outcome = exec.getOutcome();
+    result.failure = exec.getFailure();
+    if (status == ayanami::actions::GoalStatus::CANCELED) {
+      result.failure = FailureCode::Canceled;
+    } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
+      result.failure = FailureCode::None;
+    } else if (result.failure == FailureCode::None ||
+               result.failure == FailureCode::Canceled) {
+      result.failure = FailureCode::InternalError;
+    }
     result.message = exec.getMessage();
     result.path.header = gh.goal.goal.header;
     result.path.poses = exec.getPlan().poses;

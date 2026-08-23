@@ -1,7 +1,9 @@
 #pragma once
 
-#include "ayanami/components/execution_base.hpp"
-#include "ayanami/core/abstract_controller.hpp"
+#include "ayanami/abstract/components/execution_base.hpp"
+#include "ayanami/abstract/core/abstract_controller.hpp"
+#include "ayanami/abstract/core/abstract_goal_checker.hpp"
+#include "ayanami/abstract/core/abstract_progress_checker.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 
 #include <chrono>
@@ -16,8 +18,13 @@ namespace components {
 /**
  * @brief 局部控制器执行 (对标 MBF AbstractControllerExecution, spec §5.1)。
  *
- * 按 controller_frequency 循环 computeVelocityCommands + isGoalReached;
- * cmd_vel 经 NavigationCallbacks::on_velocity_command 旁路发布。
+ * 按 controller_frequency 循环: progress_checker 判进展 →
+ * goal_checker 判到达 → computeVelocityCommands; cmd_vel 经
+ * NavigationCallbacks::on_velocity_command 旁路发布。
+ *
+ * goal/progress checker 由 NavigationServerBase::createActions 注入; checkers
+ * 缺失判 InternalError (不回退 controller 自身判定)。setPlan 成功后 reset
+ * goal/progress checker 基线并快照 goal 位姿 (新 plan/重规划)。
  *
  * 关键纪律 (spec Global Constraints): 每次发布前 `TwistStamped cmd_vel = {};`
  * 强制清零, 修脏内存历史 bug; publishStopCommand() 也显式清零。
@@ -38,6 +45,7 @@ public:
     NO_LOCAL_CMD,
     GOT_LOCAL_CMD,
     ARRIVED_GOAL,
+    NO_PROGRESS,
     CANCELED,
     STOPPED,
     INTERNAL_ERROR,
@@ -87,9 +95,23 @@ public:
     patience_ = std::chrono::duration<double>(seconds);
   }
 
-  void setTolerances(double dist, double angle) {
-    dist_tolerance_ = dist;
-    angle_tolerance_ = angle;
+  /// @brief 注入目标检查插件 (NavigationServerBase createActions 时 wired)。
+  void setGoalChecker(ayanami::abstract::AbstractGoalChecker::Ptr checker) {
+    goal_checker_ = std::move(checker);
+  }
+
+  ayanami::abstract::AbstractGoalChecker::Ptr getGoalChecker() const {
+    return goal_checker_;
+  }
+
+  /// @brief 注入进展检查插件 (同上, 运行时消费)。
+  void setProgressChecker(
+      ayanami::abstract::AbstractProgressChecker::Ptr checker) {
+    progress_checker_ = std::move(checker);
+  }
+
+  ayanami::abstract::AbstractProgressChecker::Ptr getProgressChecker() const {
+    return progress_checker_;
   }
 
   ControllerState getState() const {
@@ -127,7 +149,19 @@ protected:
 
     nav_msgs::Path plan;
     if (!hasNewPlan()) {
+      failure_ = FailureCode::NoValidCommand;
+      message_ = "No plan was provided";
       setState(NO_PLAN, true);
+      return;
+    }
+
+    // goal/progress checker 必须注入: 缺失为内部错误, 不回退 controller 自身判定。
+    if (!goal_checker_ || !progress_checker_) {
+      failure_ = FailureCode::InternalError;
+      message_ = !goal_checker_ ? "Goal checker is not set"
+                                : "Progress checker is not set";
+      publishStopCommand();
+      setState(INTERNAL_ERROR, true);
       return;
     }
 
@@ -135,11 +169,13 @@ protected:
     try {
       while (true) {
         if (cancel_) {
+          failure_ = FailureCode::Canceled;
           publishStopCommand();
           setState(CANCELED, true);
           return;
         }
         if (should_exit_) {
+          failure_ = FailureCode::Canceled;
           publishStopCommand();
           setState(STOPPED, true);
           return;
@@ -151,32 +187,53 @@ protected:
           continue;
         }
 
-        // 动态更新路径
+        // 动态更新路径 (连续重规划安全)
         if (hasNewPlan()) {
           plan = takeNewPlan();
           if (plan.poses.empty()) {
+            failure_ = FailureCode::PathInvalid;
+            message_ = "The path is empty";
             setState(EMPTY_PLAN, true);
             return;
           }
           if (!controller_->setPlan(plan)) {
+            failure_ = FailureCode::PathInvalid;
+            message_ = "The controller rejected the path";
             setState(INVALID_PLAN, true);
             return;
           }
+          // 新 plan 成功应用后: 快照 goal 位姿 + reset goal/progress 基线。
+          goal_ = plan.poses.back();
+          goal_checker_->reset();
+          progress_checker_->reset();
         }
 
         // 获取机器人状态
         geometry_msgs::PoseStamped robot_pose;
         geometry_msgs::TwistStamped robot_velocity;
         if (!state_provider_(robot_pose, robot_velocity)) {
+          failure_ = FailureCode::InternalError;
           message_ = "Could not get the robot pose";
           publishStopCommand();
           setState(INTERNAL_ERROR, true);
           return;
         }
 
-        // 检查是否到达目标
-        if (controller_->isGoalReached(dist_tolerance_, angle_tolerance_)) {
+        // 目标检查: goal_checker 是唯一到达判定
+        if (goal_checker_->isGoalReached(robot_pose, goal_, robot_velocity)) {
+          failure_ = FailureCode::None;
+          message_ = "Reached the goal";
+          publishStopCommand();
           setState(ARRIVED_GOAL, true);
+          return;
+        }
+
+        // Only declare the robot stuck after ruling out successful arrival.
+        if (!progress_checker_->check(robot_pose)) {
+          failure_ = FailureCode::NoProgress;
+          message_ = "No progress made executing the path";
+          publishStopCommand();
+          setState(NO_PROGRESS, true);
           return;
         }
 
@@ -184,18 +241,20 @@ protected:
 
         // 关键: 发布前清零 (Global Constraints, 修脏内存 bug)
         geometry_msgs::TwistStamped cmd_vel = {};
-        outcome_ = controller_->computeVelocityCommands(robot_pose, robot_velocity,
-                                                        cmd_vel, message_);
+        failure_ = controller_->computeVelocityCommands(
+            robot_pose, robot_velocity, cmd_vel, message_, goal_checker_);
 
-        if (outcome_ == 0) {
+        if (failure_ == FailureCode::None) {
           setState(GOT_LOCAL_CMD, false);
           ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd_vel);
           retries = 0;
         } else if (max_retries_ > 0 && ++retries > max_retries_) {
+          if (failure_ == FailureCode::None) failure_ = FailureCode::Timeout;
           publishStopCommand();
           setState(MAX_RETRIES, true);
           return;
         } else if (isPatienceExceeded()) {
+          failure_ = FailureCode::Timeout;
           publishStopCommand();
           setState(PAT_EXCEEDED, true);
           return;
@@ -207,6 +266,7 @@ protected:
         std::this_thread::sleep_for(period);
       }
     } catch (...) {
+      failure_ = FailureCode::InternalError;
       message_ = "Unknown error occurred";
       publishStopCommand();
       setState(INTERNAL_ERROR, true);
@@ -217,6 +277,9 @@ protected:
 // 循环以实施 per-cycle 锁 (BLOCK #1), 父类 run() 循环逻辑保持 intact。
 protected:
   ayanami::abstract::AbstractController::Ptr controller_;
+  ayanami::abstract::AbstractGoalChecker::Ptr goal_checker_;
+  ayanami::abstract::AbstractProgressChecker::Ptr progress_checker_;
+  ayanami::geometry_msgs::PoseStamped goal_;
   RobotStateProvider state_provider_ = [](geometry_msgs::PoseStamped& pose,
                                           geometry_msgs::TwistStamped& velocity) {
     pose = geometry_msgs::PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
@@ -229,8 +292,6 @@ protected:
   bool new_plan_{false};
 
   double controller_frequency_{20.0};
-  double dist_tolerance_{0.1};
-  double angle_tolerance_{0.1};
   int max_retries_{-1};
   std::chrono::duration<double> patience_{0};
   std::chrono::steady_clock::time_point start_time_;

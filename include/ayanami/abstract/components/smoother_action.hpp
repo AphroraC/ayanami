@@ -1,9 +1,9 @@
 #pragma once
 
-#include "ayanami/components/action_base.hpp"
-#include "ayanami/components/action_server.hpp"
-#include "ayanami/components/smoother_execution.hpp"
-#include "ayanami/core/abstract_smoother.hpp"
+#include "ayanami/abstract/components/action_base.hpp"
+#include "ayanami/abstract/components/action_server.hpp"
+#include "ayanami/abstract/components/smoother_execution.hpp"
+#include "ayanami/abstract/core/abstract_smoother.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/messages/actions.hpp"
 
@@ -60,7 +60,7 @@ public:
     }
     if (!smoother_) {
       Result result;
-      result.outcome = Result::INTERNAL_ERROR;
+      result.failure = FailureCode::InternalError;
       result.message = "Smoother plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
@@ -129,7 +129,15 @@ private:
   void finishResult(const GoalHandleType& gh, const SmootherExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
-    result.outcome = exec.getOutcome();
+    result.failure = exec.getFailure();
+    if (status == ayanami::actions::GoalStatus::CANCELED) {
+      result.failure = FailureCode::Canceled;
+    } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
+      result.failure = FailureCode::None;
+    } else if (result.failure == FailureCode::None ||
+               result.failure == FailureCode::Canceled) {
+      result.failure = FailureCode::InternalError;
+    }
     result.message = exec.getMessage();
     result.smoothed_path = exec.getSmoothedPath();
     result.session_id = gh.goal.session_id;

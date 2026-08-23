@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ayanami/components/execution_base.hpp"
-#include "ayanami/core/abstract_planner.hpp"
+#include "ayanami/abstract/components/execution_base.hpp"
+#include "ayanami/abstract/core/abstract_planner.hpp"
 
 #include <chrono>
 #include <memory>
@@ -82,30 +82,35 @@ protected:
     try {
       while (true) {
         if (cancel_) {
+          failure_ = FailureCode::Canceled;
           setState(CANCELED, true);
           return;
         }
         if (should_exit_) {
+          failure_ = FailureCode::Canceled;
           setState(STOPPED, true);
           return;
         }
         setState(PLANNING, false);
 
         double cost = 0.0;
-        outcome_ = planner_->makePlan(start_, goal_, tolerance_, plan_, cost, message_);
+        failure_ = planner_->makePlan(start_, goal_, tolerance_, plan_, cost, message_);
         cost_ = cost;
-        bool success = outcome_ == 0;
+        bool success = failure_ == FailureCode::None;
 
         if (cancel_ && !isPatienceExceeded()) {
+          failure_ = FailureCode::Canceled;
           setState(CANCELED, true);
           return;
         } else if (success) {
           setState(FOUND_PLAN, true);
           return;
         } else if (max_retries_ > 0 && ++retries > max_retries_) {
+          if (failure_ == FailureCode::None) failure_ = FailureCode::Timeout;
           setState(MAX_RETRIES, true);
           return;
         } else if (isPatienceExceeded()) {
+          failure_ = FailureCode::Timeout;
           setState(PAT_EXCEEDED, true);
           return;
         } else if (max_retries_ == 0) {
@@ -117,6 +122,7 @@ protected:
         }
       }
     } catch (...) {
+      failure_ = FailureCode::InternalError;
       message_ = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);
     }

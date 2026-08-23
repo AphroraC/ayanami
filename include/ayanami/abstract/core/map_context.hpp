@@ -9,6 +9,14 @@ namespace ayanami {
 namespace abstract {
 
 /**
+ * @brief 地图族 capability 枚举 (spec §5.2)。当前唯一实现族为 costmap;
+ * 后续新增地图表现 (gridmap 等) 时在此扩展枚举值。
+ */
+enum class MapCapability {
+  Costmap,  ///< costmap 族 (global/local LayeredCostmap 宿主)
+};
+
+/**
  * @brief 地图形式无关的上下文基类 (spec §5.2, 关键)。
  *
  * NavigationServerBase 持 AbstractMapContext::Ptr, 可做通用 safetyCheck
@@ -31,6 +39,15 @@ public:
 
   /// @brief 地图是否新鲜。默认恒真, costmap 派生覆写。
   virtual bool isCurrent() const { return true; }
+
+  /**
+   * @brief 查询本 context 是否具备指定地图族 capability。
+   * @return 默认全部 capability 不支持, 派生 (如 CostmapContext) 覆写声明。
+   */
+  virtual bool hasCapability(MapCapability cap) const {
+    (void)cap;
+    return false;
+  }
 
   /// @brief 写锁 (规划/控制加锁用)。默认空实现。
   virtual void lock() {}

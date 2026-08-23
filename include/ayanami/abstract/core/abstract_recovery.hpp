@@ -1,6 +1,7 @@
 #pragma once
 
-#include <cstdint>
+#include "ayanami/messages/failure.hpp"
+
 #include <memory>
 #include <string>
 
@@ -20,10 +21,10 @@ public:
 
   /**
    * @brief 执行一次恢复动作。
-   * @param[out] message 失败时的人类可读错误。
-   * @return 错误码: 0=SUCCESS, 300+ 为错误段。
+   * @param[out] message 失败时的人类可读诊断 (仅诊断, 决策只看 failure)。
+   * @return FailureCode: None=成功, 其余为统一失败码。
    */
-  virtual uint32_t runRecovery(std::string& message) = 0;
+  virtual FailureCode runRecovery(std::string& message) = 0;
 
   /// @brief 取消进行中的恢复。默认不支持, 返回 false。
   virtual bool cancel() { return false; }

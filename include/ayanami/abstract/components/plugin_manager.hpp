@@ -64,12 +64,13 @@ public:
   /// @brief 从子配置 json 读 name/so_name/create_symbol 后 loadPlugin。
   /// @param default_name 配置缺 name 时的回退逻辑名。
   bool loadSingleFromConfig(const Config& cfg, const std::string& module_name,
-                            const std::string& default_name, InitFn init_fn) {
+                             const std::string& default_name, InitFn init_fn) {
     PluginSpec spec;
     spec.name = cfg.param<std::string>(module_name, "name", default_name);
     spec.so_name = cfg.param<std::string>(module_name, "so_name", "");
     spec.create_symbol =
         cfg.param<std::string>(module_name, "create_symbol", "");
+    Config::Scope scope(cfg);
     return loadPlugin(spec, std::move(init_fn));
   }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ayanami/components/action_server.hpp"
+#include "ayanami/abstract/components/action_server.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -19,8 +19,16 @@ namespace components {
  *
  * 每个并发槽 (slot) 持一个 execution + 一个专用槽线程。槽线程在 run() 里
  * 驱动 runImpl() (子类配置 execution 并轮询其状态机分派到 finish), 之后
- * join execution 线程。同槽新 goal 到达时 preempt 旧 execution (cancel) →
- * join 旧槽线程 → 再起新线程 (MBF 抢占 / legacy latest_wins 语义)。
+ * join execution 线程。同槽新 goal 到达时必须先 preempt 旧 execution (cancel)
+ * 并完整 join 旧槽线程, 等旧 execution 完全退出后才允许启动新线程, 因此同槽
+ * 插件绝不会重入 (latest_wins 强串行 / max_running==1); 不同 slot 仍可并发。
+ *
+ * 并发控制: 每个 slot 一个独立的 per-slot handoff mutex (slot_handoffs_), 把
+ * start/cancel/cancelGoal 对同 slot 的 "cancel+join 旧 → 启动新" 事务串行化。
+ * handoff 锁只短暂持有 slots_mutex_ 取指针, 绝不在持 slots_mutex_ 时 join 旧
+ * 线程, 故旧线程收尾 (run() 末尾仍锁 slots_mutex_) 不会与 start 互相死锁。
+ * slot_handoffs_ 的 value 用 std::unique_ptr<std::mutex>: std::mutex 不可移动,
+ * 直接放进 map value 会破坏元素可移动性/可复制性, unique_ptr 则保持 value 安全。
  *
  * 主流控制流: 派生 Action::acceptGoal 返回 TaskHandle 直连调用者 (BT 节点),
  * 不走 NavigationCallbacks (spec §3.4)。
@@ -35,9 +43,10 @@ public:
   virtual ~ActionBase() { cancelAll(); }
 
   /**
-   * @brief 在指定并发槽启动一次执行。同槽已有 running 则 preempt(旧) +
-   * join(旧线程) 再起新线程。execution 用 shared_ptr 以匹配槽成员
-   * Execution::Ptr 类型 (createExecution 工厂返回 shared_ptr)。
+   * @brief 在指定并发槽启动一次执行。同槽已有 running 则先 preempt(旧) +
+   * join(旧线程) 至其完全退出, 之后才启动新线程; 不同 slot 互不影响可并发。
+   * execution 用 shared_ptr 以匹配槽成员 Execution::Ptr 类型 (createExecution
+   * 工厂返回 shared_ptr)。
    */
   void start(const GoalHandleType& goal_handle, ExecutionPtr exec,
              uint8_t slot = 0);
@@ -69,7 +78,7 @@ protected:
    * (lambda/functor, 捕获派生 server_/finishResult): 每轮由骨架先调 mapper,
    * 再 waitForStateUpdate(50ms) 等 execution 状态机推进。mapper 负责:
    *   - 透传 cancel (server_->isCancelRequested → exec.cancel()),
-   *   - 把 Execution 内部状态机枚举 + outcome + message 映射到 GoalStatus,
+   *   - 把 Execution 内部状态机枚举 + failure + message 映射到 GoalStatus,
    *   - 调 finish (server_->publishResult) 完成 goal,
    * 返回 true 表示已 finish (骨架退出), false 继续轮询。
    */
@@ -96,13 +105,30 @@ private:
     uint64_t goal_id{0};
   };
 
+  /// @brief per-slot handoff 锁: 串行化同 slot 的 start/cancel/cancelGoal，
+  /// value 用 unique_ptr 保持 map 元素可移动 (std::mutex 本身不可移动)。
+  std::map<uint8_t, std::unique_ptr<std::mutex>> slot_handoffs_;
   std::map<uint8_t, ConcurrencySlot> slots_;
   mutable std::mutex slots_mutex_;
+
+  /// @brief 取 slot 的 handoff 锁指针 (不存在则创建)。调用方必须已持 slots_mutex_。
+  std::mutex* handoffLockFor(uint8_t slot) {
+    auto iter = slot_handoffs_.emplace(slot, std::make_unique<std::mutex>()).first;
+    return iter->second.get();
+  }
 };
 
 template <typename Goal, typename Execution>
 void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
                                         ExecutionPtr exec, uint8_t slot) {
+  // 取 per-slot handoff 锁: 同 slot 的抢占事务严格串行, 不同 slot 不受影响。
+  std::mutex* handoff;
+  {
+    std::lock_guard<std::mutex> lock(slots_mutex_);
+    handoff = handoffLockFor(slot);
+  }
+  std::lock_guard<std::mutex> handoff_lock(*handoff);
+
   std::unique_ptr<std::thread> old_thread;
   ExecutionPtr old_exec;
   {
@@ -111,7 +137,21 @@ void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
     if (s.in_use) {
       old_exec = s.execution;
       old_thread = std::move(s.thread);
+      s.in_use = false;  // 占位移除: 抢占窗口内并发 cancel 不再命中旧 execution
     }
+  }
+  // 严格抢占: 先 cancel 旧 execution 并 join 旧槽线程至完全退出 (绝不持
+  // slots_mutex_ 时 join, 旧线程收尾要锁 slots_mutex_)。
+  if (old_exec) {
+    old_exec->cancel();
+  }
+  if (old_thread && old_thread->joinable()) {
+    old_thread->join();
+  }
+  // 旧 execution 已完全退出, 这时才允许新的进入插件 (同槽插件绝不重入)。
+  {
+    std::lock_guard<std::mutex> lock(slots_mutex_);
+    auto& s = slots_[slot];
     s.execution = exec;
     s.goal = goal_handle.goal;
     s.goal_id = goal_handle.id;
@@ -120,17 +160,16 @@ void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
       run(goal_handle, exec);
     });
   }
-  // 释放锁后再 preempt + join, 避免与旧槽线程的收尾锁交互死锁
-  if (old_exec) {
-    old_exec->cancel();
-  }
-  if (old_thread && old_thread->joinable()) {
-    old_thread->join();
-  }
 }
 
 template <typename Goal, typename Execution>
 void ActionBase<Goal, Execution>::cancel(uint8_t slot) {
+  std::mutex* handoff;
+  {
+    std::lock_guard<std::mutex> lock(slots_mutex_);
+    handoff = handoffLockFor(slot);
+  }
+  std::lock_guard<std::mutex> handoff_lock(*handoff);
   ExecutionPtr exec;
   {
     std::lock_guard<std::mutex> lock(slots_mutex_);
@@ -147,6 +186,22 @@ void ActionBase<Goal, Execution>::cancel(uint8_t slot) {
 
 template <typename Goal, typename Execution>
 bool ActionBase<Goal, Execution>::cancelGoal(uint64_t goal_id) {
+  // 先定位 goal 所属 slot 并取其 handoff 锁, 再在持锁下复核并 cancel。
+  std::mutex* handoff = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(slots_mutex_);
+    for (auto& kv : slots_) {
+      auto& s = kv.second;
+      if (s.in_use && s.goal_id == goal_id) {
+        handoff = handoffLockFor(kv.first);
+        break;
+      }
+    }
+  }
+  if (!handoff) {
+    return false;
+  }
+  std::lock_guard<std::mutex> handoff_lock(*handoff);
   ExecutionPtr exec;
   {
     std::lock_guard<std::mutex> lock(slots_mutex_);

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ayanami/components/execution_base.hpp"
-#include "ayanami/core/abstract_recovery.hpp"
+#include "ayanami/abstract/components/execution_base.hpp"
+#include "ayanami/abstract/core/abstract_recovery.hpp"
 
 #include <chrono>
 #include <memory>
@@ -24,6 +24,7 @@ public:
     STARTED,
     RECOVERING,
     RECOVERY_DONE,
+    RECOVERY_FAILED,
     CANCELED,
     STOPPED,
     INTERNAL_ERROR,
@@ -62,15 +63,20 @@ protected:
     start_time_ = std::chrono::steady_clock::now();
     setState(RECOVERING, false);
     try {
-      outcome_ = recovery_->runRecovery(message_);
+      failure_ = recovery_->runRecovery(message_);
       if (cancel_) {
+        failure_ = FailureCode::Canceled;
         setState(CANCELED, true);
       } else if (isPatienceExceeded()) {
+        failure_ = FailureCode::Timeout;
         setState(PAT_EXCEEDED, true);
+      } else if (failure_ != FailureCode::None) {
+        setState(RECOVERY_FAILED, true);
       } else {
         setState(RECOVERY_DONE, true);
       }
     } catch (...) {
+      failure_ = FailureCode::InternalError;
       message_ = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);
     }
