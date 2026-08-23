@@ -391,6 +391,23 @@ TEST(CostmapNavigationServerTest, DefaultConfigMatchesNavPgmGeometry) {
   EXPECT_DOUBLE_EQ(global->getOriginY(), -3.85);
 }
 
+TEST(CostmapNavigationServerTest, RobotRadiusBuildsCircularFootprint) {
+  // 真实 config: costmap::robot_radius=0.12 → 16 边形近似圆 (nav_demo 语义)。
+  CostmapNavigationServer server;
+  server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
+  const auto& footprint =
+      server.globalCostmap()->get().getFootprint();
+  ASSERT_EQ(footprint.size(), 16u);
+  for (const auto& point : footprint) {
+    EXPECT_NEAR(std::hypot(point.x, point.y), 0.12, 1e-9);
+  }
+  // 16 边形 inscribed = 0.12 * cos(pi/16) ≈ 0.1177。
+  EXPECT_NEAR(server.globalCostmap()->get().getInscribedRadius(),
+              0.12 * std::cos(M_PI / 16.0), 1e-6);
+  EXPECT_NEAR(server.localCostmap()->get().getInscribedRadius(),
+              0.12 * std::cos(M_PI / 16.0), 1e-6);
+}
+
 // ---------------- 虚 initialize*Plugin ----------------
 
 TEST(CostmapNavigationServerTest, InitializePlannerPluginInjectsContext) {

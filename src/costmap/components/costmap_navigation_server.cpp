@@ -221,12 +221,31 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   auto local_wrapper =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
 
+  // 车体 footprint 来源 (nav_demo 参数语义):
+  //   - costmap::footprint 多边形 (nav2 语义, 优先级最高)
+  //   - costmap::robot_radius > 0 → 生成 16 边形近似圆 (ROS1 robot_radius 语义)
+  //   - 两者都缺 → 不设置 (inscribed_radius 参数作为膨胀层 fallback)
+  costmap_2d::Footprint footprint;
   const auto footprint_values = cfg.param<std::vector<Eigen::Vector2d>>(
       "costmap", "footprint", {});
-  costmap_2d::Footprint footprint;
   footprint.reserve(footprint_values.size());
   for (const auto& point : footprint_values) {
     footprint.push_back(costmap_2d::Point{point.x(), point.y(), 0.0});
+  }
+  if (footprint.empty()) {
+    const double robot_radius =
+        cfg.param<double>("costmap", "robot_radius", 0.0);
+    if (robot_radius > 0.0) {
+      constexpr int kCircleSegments = 16;
+      footprint.reserve(kCircleSegments);
+      for (int i = 0; i < kCircleSegments; ++i) {
+        const double angle = 2.0 * M_PI * static_cast<double>(i) /
+                             static_cast<double>(kCircleSegments);
+        footprint.push_back(costmap_2d::Point{
+            robot_radius * std::cos(angle), robot_radius * std::sin(angle),
+            0.0});
+      }
+    }
   }
   if (!footprint.empty()) {
     // Nav2 semantics: a configured footprint is the source of truth for the

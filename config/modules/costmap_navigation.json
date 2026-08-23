@@ -24,19 +24,20 @@
   "costmap": {
     "global_frame": "map",
     "local_frame": "odom",
-    "resolution": 0.05
+    "resolution": 0.05,
+    "robot_radius": 0.12
   },
   "costmap_global": {
     "rolling_window": false,
     "track_unknown": false,
     "static_map": "assets/nav.pgm",
     "inflation_radius": 0.5,
-    "inscribed_radius": 0.3,
+    "inscribed_radius": 0.12,
     "cost_scaling_factor": 10.0
   },
   "costmap_local": {
-    "size_x": 100,
-    "size_y": 100,
+    "size_x": 60,
+    "size_y": 60,
     "resolution": 0.05,
     "origin": [
       0.0,
@@ -45,31 +46,13 @@
     ],
     "rolling_window": true,
     "track_unknown": false,
-    "inflation_radius": 0.5,
-    "inscribed_radius": 0.3,
-    "cost_scaling_factor": 10.0,
-    "obstacle_range": 2.5,
-    "raytrace_range": 3.0,
+    "inflation_radius": 0.2,
+    "inscribed_radius": 0.12,
+    "cost_scaling_factor": 3.0,
+    "obstacle_range": 3.0,
+    "raytrace_range": 3.5,
     "observation_sources": [
       "scan"
     ]
-  },
-  "footprint": [
-    [
-      -0.2,
-      -0.2
-    ],
-    [
-      -0.2,
-      0.2
-    ],
-    [
-      0.2,
-      0.2
-    ],
-    [
-      0.2,
-      -0.2
-    ]
-  ]
+  }
 }
