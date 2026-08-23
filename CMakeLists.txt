@@ -51,6 +51,7 @@ add_subdirectory(packages/costmap_server)
 # ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
+  src/utility/logging.cpp
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
@@ -156,6 +157,10 @@ if(BUILD_TESTING)
     add_executable(config_test tests/config_test.cpp)
     target_link_libraries(config_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME ConfigTest COMMAND config_test)
+
+    add_executable(logging_test tests/logging_test.cpp)
+    target_link_libraries(logging_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME LoggingTest COMMAND logging_test)
 
     add_executable(callback_slot_test tests/callback_slot_test.cpp)
     target_link_libraries(callback_slot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)

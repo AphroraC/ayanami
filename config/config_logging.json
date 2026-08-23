@@ -1,6 +1,12 @@
 {
   "logging": {
-    "log_dir": "logs",
-    "log_level": "info"
+    "console_output": true,
+    "console_level": "info",
+    "file_output": true,
+    "logging_dir": "logs",
+    "logging_level": "info",
+    "rotate_logs": true,
+    "max_file_size_kb": 8192,
+    "max_files": 10
   }
 }

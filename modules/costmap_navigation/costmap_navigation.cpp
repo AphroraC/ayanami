@@ -22,6 +22,7 @@
 
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/utility/config.hpp"
+#include "ayanami/utility/logging.hpp"
 
 namespace ayanami {
 namespace modules {
@@ -37,6 +38,7 @@ CostmapNavigation::~CostmapNavigation() { stop(); }
 
 void CostmapNavigation::initialize(const std::string& config_path) {
   GlobalConfig::instance(config_path, /*override_path=*/true);
+  ayanami::configure_logging();
 
   navigation_server_.configureCoreMaps(config_path);
   navigation_server_.loadPlugins(config_path);  // 触发 4 虚 initialize*Plugin
