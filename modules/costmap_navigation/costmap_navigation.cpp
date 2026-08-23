@@ -13,7 +13,7 @@
 // 先 clearActions 后 clearPlugins); BT 树 (pilot_ 成员, 声明在 server 之后) 先析构,
 // 故 BT 节点不再持有过期插件指针。
 
-#include "ayanami/modules/costmap_navigation/costmap_navigation.hpp"
+#include "costmap_navigation.hpp"
 
 #include <spdlog/spdlog.h>
 

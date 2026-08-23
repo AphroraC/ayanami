@@ -6,7 +6,7 @@
 // 每帧 10ms + cancel 检查; 碰撞检测 (global costmap robot 附近 >= 253) →
 // FailureCode::RecoveryFailed。
 
-#include <ayanami/modules/costmap_spin_recovery/costmap_spin_recovery.hpp>
+#include "costmap_spin_recovery.hpp"
 
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/failure.hpp>

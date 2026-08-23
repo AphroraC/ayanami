@@ -5,7 +5,7 @@
 // (global costmap robot 附近 >= 253) → FailureCode::RecoveryFailed, message 含
 // "collision detected"。M1 headless 不依赖底盘实际运动, 发完时长即 SUCCESS。
 
-#include <ayanami/modules/costmap_back_up_recovery/costmap_back_up_recovery.hpp>
+#include "costmap_back_up_recovery.hpp"
 
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/failure.hpp>

@@ -3,7 +3,7 @@
 // 纯 C++ (零 ROS): time_period 时间窗内从基线移动 required_movement 距离或
 // movement_angle_required 转角才判有进展, 否则无进展 (卡住)。
 
-#include <ayanami/modules/simple_progress_checker/simple_progress_checker.hpp>
+#include "simple_progress_checker.hpp"
 
 #include <ayanami/utility/config.hpp>
 

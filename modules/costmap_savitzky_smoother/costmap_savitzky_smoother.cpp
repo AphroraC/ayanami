@@ -8,7 +8,7 @@
 // - check_for_collision: 平滑后逐点查 costmap, 任一 cost >=
 //   INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal) 即回滚 original
 
-#include <ayanami/modules/costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
+#include "costmap_savitzky_smoother.hpp"
 
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>

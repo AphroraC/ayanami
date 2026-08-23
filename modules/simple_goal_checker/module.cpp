@@ -1,4 +1,4 @@
-#include <ayanami/modules/simple_goal_checker/simple_goal_checker.hpp>
+#include "simple_goal_checker.hpp"
 
 extern "C" ayanami::abstract::AbstractGoalChecker* create_goal_checker_module() {
   return new ayanami::modules::SimpleGoalChecker();

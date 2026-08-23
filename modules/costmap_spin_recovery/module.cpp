@@ -1,4 +1,4 @@
-#include <ayanami/modules/costmap_spin_recovery/costmap_spin_recovery.hpp>
+#include "costmap_spin_recovery.hpp"
 
 extern "C" ayanami::costmap::CostmapRecovery* create_costmap_recovery_module() {
   return new ayanami::modules::CostmapSpinRecovery();

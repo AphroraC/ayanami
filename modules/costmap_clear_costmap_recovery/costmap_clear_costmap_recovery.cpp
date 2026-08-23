@@ -3,7 +3,7 @@
 // 纯 C++ (零 ROS): 继承 costmap::CostmapRecovery, 清除 global/local
 // (按 affected_maps) 动态障碍层，不破坏 global 静态地图。
 
-#include <ayanami/modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
+#include "costmap_clear_costmap_recovery.hpp"
 
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>

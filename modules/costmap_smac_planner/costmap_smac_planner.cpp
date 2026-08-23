@@ -7,7 +7,7 @@
 // - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
 // - cancel(): 搜索循环逐节点检查, 打断后返回统一失败码 FailureCode::Canceled
 
-#include <ayanami/modules/costmap_smac_planner/costmap_smac_planner.hpp>
+#include "costmap_smac_planner.hpp"
 
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>

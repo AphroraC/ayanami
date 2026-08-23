@@ -3,7 +3,7 @@
 // 纯 C++ (零 ROS): 继承 costmap::CostmapRecovery, 循环 sleep 直到
 // wait_duration 或 cancel; 不发速度。M1 headless 用, 无真底盘依赖。
 
-#include <ayanami/modules/costmap_wait_recovery/costmap_wait_recovery.hpp>
+#include "costmap_wait_recovery.hpp"
 
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>

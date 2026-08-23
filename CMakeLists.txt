@@ -63,6 +63,7 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   thirdparty/fast_tf/fast_tf.cpp)
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/modules>
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
@@ -86,6 +87,7 @@ install(DIRECTORY config assets DESTINATION share/ayanami
 function(ayanami_add_module name)
   add_library(${name} SHARED ${ARGN})
   target_link_libraries(${name} PRIVATE ayanami)
+  target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/modules)
   set_target_properties(${name} PROPERTIES PREFIX "libayanami_" OUTPUT_NAME ${name})
   install(TARGETS ${name} LIBRARY DESTINATION lib)
   list(APPEND AYANAMI_INSTALL_TARGETS ${name})

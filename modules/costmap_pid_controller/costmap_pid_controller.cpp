@@ -11,7 +11,7 @@
 //   仅 angular PID 对齐 goal 朝向; 到达判定由 goal_checker 宣布 (isGoalReached
 //   已从接口移除, 控制器自身不判到达)。
 
-#include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
+#include "costmap_pid_controller.hpp"
 
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>

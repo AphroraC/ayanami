@@ -3,7 +3,7 @@
 // 纯 C++ (零 ROS): 位置 xy 差、相对转角差按 PoseTolerance 判; 静止速度阈值
 // 按 TwistTolerance 判。容差经 simple_goal_checker.json 配置。
 
-#include <ayanami/modules/simple_goal_checker/simple_goal_checker.hpp>
+#include "simple_goal_checker.hpp"
 
 #include <ayanami/utility/config.hpp>
 
