@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ayanami/messages/failure.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
 
@@ -10,9 +11,9 @@
 namespace ayanami {
 namespace actions {
 
-// 错误码段 (spec §5.1): 0=SUCCESS; Planner 50+; Controller 100+; Smoother 200+;
-// Recovery 300+。Result::outcome 存实际返回码，且每个 Goal/Result 带
-// session_id / plan_version 用于 BT 节点 onRunning 竞态校验。
+// 统一失败码: 四类 Result 都用 `failure` (FailureCode) 传达成败 (None=成功),
+// message 仅诊断 (BT 不解析)。每个 Goal/Result 带 session_id / plan_version
+// 用于 BT 节点 onRunning 竞态校验。
 
 struct GetPathGoal {
   ayanami::geometry_msgs::PoseStamped start;
@@ -25,16 +26,7 @@ struct GetPathGoal {
 };
 
 struct GetPathResult {
-  // planner 错误段 50+ (NO_PATH_FOUND=58 见 spec §5.1)
-  static constexpr uint32_t SUCCESS = 0;
-  static constexpr uint32_t INVALID_START = 51;
-  static constexpr uint32_t INVALID_GOAL = 52;
-  static constexpr uint32_t TF_ERROR = 53;
-  static constexpr uint32_t OUT_OF_MAP = 54;
-  static constexpr uint32_t NO_PATH_FOUND = 58;
-  static constexpr uint32_t INTERNAL_ERROR = 59;
-
-  uint32_t outcome = SUCCESS;
+  FailureCode failure = FailureCode::None;
   std::string message;
   ayanami::nav_msgs::Path path;
   double cost = 0.0;
@@ -61,14 +53,7 @@ struct SmoothPathGoal {
 };
 
 struct SmoothPathResult {
-  // smoother 错误段 200+
-  static constexpr uint32_t SUCCESS = 0;
-  static constexpr uint32_t EMPTY_PATH = 201;
-  static constexpr uint32_t NO_SMOOTHED_PATH = 202;
-  static constexpr uint32_t TIMEOUT = 203;
-  static constexpr uint32_t INTERNAL_ERROR = 299;
-
-  uint32_t outcome = SUCCESS;
+  FailureCode failure = FailureCode::None;
   std::string message;
   ayanami::nav_msgs::Path smoothed_path;
   uint64_t session_id = 0;
@@ -92,14 +77,7 @@ struct ExePathGoal {
 };
 
 struct ExePathResult {
-  // controller 错误段 100+
-  static constexpr uint32_t SUCCESS = 0;
-  static constexpr uint32_t NO_VALID_COMMAND = 101;
-  static constexpr uint32_t PAT_EXCEEDED = 102;
-  static constexpr uint32_t NOT_REACHED = 103;
-  static constexpr uint32_t INTERNAL_ERROR = 199;
-
-  uint32_t outcome = SUCCESS;
+  FailureCode failure = FailureCode::None;
   std::string message;
   bool reached = false;
   uint64_t session_id = 0;
@@ -123,13 +101,7 @@ struct RecoveryGoal {
 };
 
 struct RecoveryResult {
-  // recovery 错误段 300+
-  static constexpr uint32_t SUCCESS = 0;
-  static constexpr uint32_t INTERNAL_ERROR = 300;
-  static constexpr uint32_t CANCELED = 301;
-  static constexpr uint32_t PAT_EXCEEDED = 302;
-
-  uint32_t outcome = SUCCESS;
+  FailureCode failure = FailureCode::None;
   std::string message;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
@@ -156,7 +128,7 @@ enum class GoalStatus : uint8_t {
  * @brief 带状态的 action 结果聚合 (spec §3.3 槽签名用)。
  *
  * TaskHandle 完成时用 GoalResult<Result> 交付: status 描述整体目标状态,
- * result 携带各 action 族的 Result (含 outcome/session_id/plan_version)。
+ * result 携带各 action 族的 Result (含 failure/session_id/plan_version)。
  */
 template <typename Result>
 struct GoalResult {

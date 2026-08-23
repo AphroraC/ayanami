@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ayanami/messages/timestamp.hpp"
+
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
@@ -14,9 +16,12 @@ namespace geometry_msgs {
  * @brief 自研 std_msgs::Header 等价物。
  *
  * 帧名唯一来源为配置里的 robot_frame (spec Global Constraints)，核心内部不做 TF。
+ * stamp 为中间件无关 Timestamp (默认 latest 哨兵, 与旧行为 "无时间信息 → latest"
+ * 对齐)。
  */
 struct Header {
   uint32_t seq = 0;
+  ayanami::Timestamp stamp;
   std::string frame_id;
   using Ptr = std::shared_ptr<Header>;
   using ConstPtr = std::shared_ptr<const Header>;
