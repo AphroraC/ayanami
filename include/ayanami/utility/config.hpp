@@ -1,7 +1,9 @@
 #pragma once
 #include <any>
 #include <optional>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace ayanami {
 
@@ -14,6 +16,17 @@ namespace ayanami {
  */
 class Config {
 public:
+  class Scope {
+   public:
+    explicit Scope(const Config& config);
+    ~Scope();
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+   private:
+    const Config* previous_{nullptr};
+  };
+
   /**
    * @brief Load a configuration from a JSON file.
    * @param config_filename Path to the JSON file.
@@ -24,6 +37,9 @@ public:
    */
   explicit Config(const std::string& config_filename);
   virtual ~Config();
+
+  /// @brief 当前插件工厂调用所绑定的配置; 非插件装载上下文返回 nullptr。
+  static const Config* active();
 
   Config(const Config&) = delete;
   Config& operator=(const Config&) = delete;
@@ -98,6 +114,18 @@ public:
    *        directory + "/" + param("global", config_name, config_name + ".json")
    */
   static std::string get_config_path(const std::string& config_name);
+  static std::vector<std::string> get_config_paths(
+      const std::string& config_name);
+};
+
+class ComponentConfig {
+ public:
+  explicit ComponentConfig(const std::string& config_key = "");
+  const Config& get() const { return *config_; }
+
+ private:
+  std::unique_ptr<Config> owned_;
+  const Config* config_{nullptr};
 };
 
 } // namespace ayanami

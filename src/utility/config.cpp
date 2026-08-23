@@ -10,6 +10,7 @@ namespace {
 
 std::once_flag g_global_config_once;
 std::mutex g_global_config_mutex;
+thread_local const Config* g_active_config = nullptr;
 
 } // namespace
 
@@ -33,6 +34,14 @@ Config::Config(const std::string& config_filename) {
 }
 
 Config::~Config() {}
+
+Config::Scope::Scope(const Config& config) : previous_(g_active_config) {
+  g_active_config = &config;
+}
+
+Config::Scope::~Scope() { g_active_config = previous_; }
+
+const Config* Config::active() { return g_active_config; }
 
 bool Config::has_param(const std::string& module_name,
                        const std::string& param_name) const {
@@ -99,15 +108,45 @@ std::string GlobalConfig::get_config_path(const std::string& config_name) {
   return (directory / filename).string();
 }
 
+std::vector<std::string> GlobalConfig::get_config_paths(
+    const std::string& config_name) {
+  const GlobalConfig* config = instance();
+  const std::filesystem::path directory =
+      config->param<std::string>("global", "config_path", ".");
+  const auto filenames =
+      config->param<std::vector<std::string>>("global", config_name, {});
+  std::vector<std::string> paths;
+  paths.reserve(filenames.size());
+  for (const auto& filename : filenames) {
+    paths.push_back((directory / filename).string());
+  }
+  return paths;
+}
+
+ComponentConfig::ComponentConfig(const std::string& config_key) {
+  config_ = Config::active();
+  if (!config_ && !config_key.empty()) {
+    owned_ = std::make_unique<Config>(GlobalConfig::get_config_path(config_key));
+    config_ = owned_.get();
+  }
+  if (!config_) {
+    owned_ = std::make_unique<Config>("");
+    config_ = owned_.get();
+  }
+}
+
 DEFINE_CONFIG_IO_SPECIALIZATION(bool)
 DEFINE_CONFIG_IO_SPECIALIZATION(int)
 DEFINE_CONFIG_IO_SPECIALIZATION(long)
 DEFINE_CONFIG_IO_SPECIALIZATION(double)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::string)
+DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<std::string>)
+DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<std::vector<std::string>>)
 
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector2d)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector3d)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector4d)
+DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<Eigen::Vector2d>)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Quaterniond)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Isometry3d)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<Eigen::Isometry3d>)

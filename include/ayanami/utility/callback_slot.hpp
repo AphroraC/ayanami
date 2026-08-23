@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <functional>
 #include <shared_mutex>
 #include <utility>
@@ -23,6 +24,7 @@ template <typename Func>
 class CallbackSlot {
   std::vector<std::function<Func>> callbacks_;
   mutable std::shared_mutex mutex_;
+  std::atomic<std::size_t> subscriber_count_{0};
 
 public:
   /**
@@ -31,6 +33,7 @@ public:
   int add(std::function<Func> cb) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     callbacks_.push_back(std::move(cb));
+    subscriber_count_.fetch_add(1, std::memory_order_release);
     return static_cast<int>(callbacks_.size() - 1);
   }
 
@@ -40,7 +43,11 @@ public:
   void remove(int id) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     if (id >= 0 && id < static_cast<int>(callbacks_.size())) {
-      callbacks_[static_cast<std::size_t>(id)] = nullptr;
+      auto& callback = callbacks_[static_cast<std::size_t>(id)];
+      if (callback) {
+        callback = nullptr;
+        subscriber_count_.fetch_sub(1, std::memory_order_release);
+      }
     }
   }
 
@@ -49,11 +56,25 @@ public:
    */
   template <typename... Args>
   void call(Args&&... args) const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (const auto& cb : callbacks_) {
-      if (cb) {
-        cb(std::forward<Args>(args)...);
+    if (subscriber_count_.load(std::memory_order_acquire) == 0) {
+      return;
+    }
+
+    std::vector<std::function<Func>> callbacks;
+    {
+      std::shared_lock<std::shared_mutex> lock(mutex_);
+      callbacks.reserve(subscriber_count_.load(std::memory_order_relaxed));
+      for (const auto& cb : callbacks_) {
+        if (cb) {
+          callbacks.push_back(cb);
+        }
       }
+    }
+
+    // Invoke outside the lock so callbacks may add/remove subscriptions or
+    // emit the same slot recursively. The snapshot defines this emission.
+    for (const auto& cb : callbacks) {
+      cb(std::forward<Args>(args)...);
     }
   }
 
@@ -69,13 +90,7 @@ public:
    * @brief True if at least one non-null callback is registered.
    */
   explicit operator bool() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    for (const auto& cb : callbacks_) {
-      if (cb) {
-        return true;
-      }
-    }
-    return false;
+    return subscriber_count_.load(std::memory_order_acquire) != 0;
   }
 };
 

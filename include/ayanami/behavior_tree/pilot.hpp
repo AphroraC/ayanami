@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
-#include "ayanami/components/navigation_server_base.hpp"
+#include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>

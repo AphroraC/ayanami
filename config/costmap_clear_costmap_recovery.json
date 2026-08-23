@@ -3,6 +3,7 @@
     "name": "costmap_clear_costmap_recovery",
     "so_name": "libayanami_costmap_clear_costmap_recovery.so",
     "create_symbol": "create_costmap_recovery_module",
+    "role": "clear_costmap",
     "clear_radius": 1.0,
     "affected_maps": "both"
   }

@@ -3,6 +3,7 @@
     "name": "costmap_back_up_recovery",
     "so_name": "libayanami_costmap_back_up_recovery.so",
     "create_symbol": "create_costmap_recovery_module",
+    "role": "backup",
     "backup_dist": 0.2,
     "max_v": 0.2,
     "sim_cycle_dt": 0.01,

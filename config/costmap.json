@@ -5,13 +5,9 @@
     "resolution": 0.05
   },
   "costmap_global": {
-    "size_x": 200,
-    "size_y": 200,
-    "resolution": 0.05,
-    "origin": [0.0, 0.0, 0.0],
-    "rolling_window": true,
+    "rolling_window": false,
     "track_unknown": false,
-    "static_map": "../node/nav_demo/map/nav.pgm",
+    "static_map": "assets/nav.pgm",
     "inflation_radius": 0.5,
     "inscribed_radius": 0.3,
     "cost_scaling_factor": 3.0

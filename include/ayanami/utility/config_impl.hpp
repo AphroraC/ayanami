@@ -125,6 +125,28 @@ template <> struct traits<std::vector<Eigen::Isometry3d>> {
   }
 };
 
+template <> struct traits<std::vector<Eigen::Vector2d>> {
+  using InType = std::vector<std::vector<double>>;
+  using OutType = std::vector<Eigen::Vector2d>;
+
+  static std::optional<OutType> convert(const InType& input) {
+    OutType output;
+    output.reserve(input.size());
+    for (const auto& point : input) {
+      if (point.size() != 2) return std::nullopt;
+      output.emplace_back(point[0], point[1]);
+    }
+    return output;
+  }
+
+  static InType invert(const OutType& value) {
+    InType output;
+    output.reserve(value.size());
+    for (const auto& point : value) output.push_back({point.x(), point.y()});
+    return output;
+  }
+};
+
 } // namespace
 
 template <typename T>

@@ -37,14 +37,31 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   controller_frequency_ =
       cfg.param<double>(kSec, "controller_frequency", 20.0);
   tick_frequency_ = cfg.param<double>(kSec, "tick_frequency", 100.0);
-  planner_id_ = cfg.param<std::string>(kSec, "planner_id", "");
-  smoother_id_ = cfg.param<std::string>(kSec, "smoother_id", "");
-  controller_id_ = cfg.param<std::string>(kSec, "controller_id", "");
-  recovery_id_ = cfg.param<std::string>(kSec, "recovery_id", "");
-  clear_costmap_id_ = cfg.param<std::string>(kSec, "clear_costmap_id", "");
-  spin_id_ = cfg.param<std::string>(kSec, "spin_id", "");
-  wait_id_ = cfg.param<std::string>(kSec, "wait_id", "");
-  backup_id_ = cfg.param<std::string>(kSec, "backup_id", "");
+
+  Config planner_cfg(GlobalConfig::get_config_path("config_planner"));
+  Config smoother_cfg(GlobalConfig::get_config_path("config_smoother"));
+  Config controller_cfg(GlobalConfig::get_config_path("config_controller"));
+  planner_id_ = planner_cfg.param<std::string>("planner", "name", "");
+  smoother_id_ = smoother_cfg.param<std::string>("smoother", "name", "");
+  controller_id_ = controller_cfg.param<std::string>("controller", "name", "");
+
+  recovery_id_.clear();
+  clear_costmap_id_.clear();
+  spin_id_.clear();
+  wait_id_.clear();
+  backup_id_.clear();
+  for (const auto& path : GlobalConfig::get_config_paths("config_recovery")) {
+    Config recovery_cfg(path);
+    const std::string name =
+        recovery_cfg.param<std::string>("recovery", "name", "");
+    const std::string role =
+        recovery_cfg.param<std::string>("recovery", "role", "");
+    if (recovery_id_.empty() || role == "clear_costmap") recovery_id_ = name;
+    if (role == "clear_costmap") clear_costmap_id_ = name;
+    if (role == "spin") spin_id_ = name;
+    if (role == "wait") wait_id_ = name;
+    if (role == "backup") backup_id_ = name;
+  }
 }
 
 void BehaviorTreePilot::setNavigationServer(
