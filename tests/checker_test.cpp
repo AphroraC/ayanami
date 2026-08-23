@@ -20,8 +20,8 @@
 #include <ayanami/abstract/components/plugin_manager.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
-#include <ayanami/modules/simple_goal_checker/simple_goal_checker.hpp>
-#include <ayanami/modules/simple_progress_checker/simple_progress_checker.hpp>
+#include <simple_goal_checker/simple_goal_checker.hpp>
+#include <simple_progress_checker/simple_progress_checker.hpp>
 #include <ayanami/messages/actions.hpp>
 
 namespace {
@@ -76,6 +76,10 @@ std::filesystem::path make_module_config_dir() {
   std::filesystem::create_directories(dir);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
+             "  }\n}\n");
+  write_file(dir / "navigation.json",
+             "{\n  \"modules\": {\n"
              "    \"config_goal_checker\": \"simple_goal_checker.json\",\n"
              "    \"config_progress_checker\": \"simple_progress_checker.json\"\n"
              "  }\n}\n");
@@ -232,13 +236,7 @@ std::filesystem::path make_server_config_dir() {
   std::filesystem::create_directories(dir);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\"\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
   write_file(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
@@ -248,6 +246,14 @@ std::filesystem::path make_server_config_dir() {
              "    \"recovery_id\": \"test_recovery\",\n"
              "    \"goal_checker_id\": \"simple_goal_checker\",\n"
              "    \"progress_checker_id\": \"simple_progress_checker\"\n"
+             "  },\n"
+             "  \"modules\": {\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\"\n"
              "  }\n}\n");
 
   auto plugin_json = [](const std::string& module, const std::string& name,

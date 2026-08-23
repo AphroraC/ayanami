@@ -37,8 +37,8 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
-#include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
-#include <ayanami/modules/costmap_smac_planner/costmap_smac_planner.hpp>
+#include <costmap_pid_controller/costmap_pid_controller.hpp>
+#include <costmap_smac_planner/costmap_smac_planner.hpp>
 #include <ayanami/utility/config.hpp>
 
 namespace {
@@ -111,23 +111,20 @@ PoseStamped cellCenter(unsigned int mx, unsigned int my, double res = 0.5) {
 
 // ---------------- Test 2/3: configureCoreMaps ----------------
 
-// 临时配置目录: costmap_navigation.json 含 robot_frame; costmap.json 无该字段
-// (robot_frame 单一来源)。static_map 留空 (不需要真实地图文件)。
+// 临时配置目录: costmap_navigation.json 含 robot_frame + costmap 段 (原
+// costmap.json 参数已并入 navigation 文件)。static_map 留空 (不需要真实地图文件)。
 std::filesystem::path make_navigation_config_dir(
     const std::string& robot_frame) {
   auto dir = make_unique_dir("nav_cfg_" + robot_frame);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_costmap\": \"costmap.json\"\n"
+             "    \"config_navigation\": \"costmap_navigation.json\"\n"
              "  }\n}\n");
   write_file(dir / "costmap_navigation.json",
              "{\n  \"navigation\": {\n"
              "    \"robot_frame\": \"" + robot_frame + "\"\n"
-             "  }\n}\n");
-  // costmap.json: 不含 robot_frame (从 costmap_navigation.json 单一来源)。
-  write_file(dir / "costmap.json",
-             "{\n  \"costmap\": {\n"
+             "  },\n"
+             "  \"costmap\": {\n"
              "    \"global_frame\": \"map\",\n"
              "    \"local_frame\": \"odom\",\n"
              "    \"resolution\": 0.5\n"
@@ -318,8 +315,12 @@ int main(int argc, char** argv) {
   g_module_dir = make_unique_dir("modules");
   write_file(g_module_dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"costmap_pid_controller\": \"costmap_pid_controller.json\",\n"
-             "    \"costmap_smac_planner\": \"costmap_smac_planner.json\"\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
+             "  }\n}\n");
+  write_file(g_module_dir / "navigation.json",
+             "{\n  \"modules\": {\n"
+             "    \"config_controller\": \"costmap_pid_controller.json\",\n"
+             "    \"config_planner\": \"costmap_smac_planner.json\"\n"
              "  }\n}\n");
   write_file(g_module_dir / "costmap_pid_controller.json", pidConfigContent());
   write_file(g_module_dir / "costmap_smac_planner.json",

@@ -37,10 +37,10 @@
 #include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
-#include <ayanami/modules/costmap_back_up_recovery/costmap_back_up_recovery.hpp>
-#include <ayanami/modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
-#include <ayanami/modules/costmap_spin_recovery/costmap_spin_recovery.hpp>
-#include <ayanami/modules/costmap_wait_recovery/costmap_wait_recovery.hpp>
+#include <costmap_back_up_recovery/costmap_back_up_recovery.hpp>
+#include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
+#include <costmap_spin_recovery/costmap_spin_recovery.hpp>
+#include <costmap_wait_recovery/costmap_wait_recovery.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
 #include <costmap_2d_layers/simple_obstacle_layer.hpp>

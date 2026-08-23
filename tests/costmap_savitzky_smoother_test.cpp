@@ -29,7 +29,7 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
-#include <ayanami/modules/costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
+#include <costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {

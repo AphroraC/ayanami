@@ -44,7 +44,7 @@
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
-#include <ayanami/modules/costmap_navigation/costmap_navigation.hpp>
+#include <costmap_navigation/costmap_navigation.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
 
@@ -88,21 +88,21 @@ NavIds readNavIds() {
   NavIds ids;
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_planner"));
+        ayanami::GlobalConfig::get_config_path("config_navigation", "config_planner"));
     ids.planner_id = cfg.param<std::string>("planner", "name", "");
   }
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_smoother"));
+        ayanami::GlobalConfig::get_config_path("config_navigation", "config_smoother"));
     ids.smoother_id = cfg.param<std::string>("smoother", "name", "");
   }
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_controller"));
+        ayanami::GlobalConfig::get_config_path("config_navigation", "config_controller"));
     ids.controller_id = cfg.param<std::string>("controller", "name", "");
   }
   for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     const std::string role = cfg.param<std::string>("recovery", "role", "");
@@ -120,20 +120,22 @@ NavIds readNavIds() {
 // 读某插件 json 的 name 字段。module_section 为 json 顶层段名。
 std::string pluginName(const std::string& config_key,
                        const std::string& module_section) {
-  ayanami::Config cfg(ayanami::GlobalConfig::get_config_path(config_key));
+  ayanami::Config cfg(
+      ayanami::GlobalConfig::get_config_path("config_navigation", config_key));
   return cfg.param<std::string>(module_section, "name", "");
 }
 
 std::string pluginSymbol(const std::string& config_key,
                          const std::string& module_section) {
-  ayanami::Config cfg(ayanami::GlobalConfig::get_config_path(config_key));
+  ayanami::Config cfg(
+      ayanami::GlobalConfig::get_config_path("config_navigation", config_key));
   return cfg.param<std::string>(module_section, "create_symbol", "");
 }
 
 // config_recovery 数组按 role 定位插件 json, 读 name / create_symbol。
 std::string recoveryPluginName(const std::string& role) {
   for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
     ayanami::Config cfg(path);
     if (cfg.param<std::string>("recovery", "role", "") == role) {
       return cfg.param<std::string>("recovery", "name", "");
@@ -144,7 +146,7 @@ std::string recoveryPluginName(const std::string& role) {
 
 std::string recoveryPluginSymbol(const std::string& role) {
   for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_recovery")) {
+       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
     ayanami::Config cfg(path);
     if (cfg.param<std::string>("recovery", "role", "") == role) {
       return cfg.param<std::string>("recovery", "create_symbol", "");
@@ -429,9 +431,7 @@ std::filesystem::path makeSpinConfigDir() {
   writeFile(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_costmap\": \"costmap.json\",\n"
-             "    \"config_recovery\": [\"spin_recovery.json\"],\n"
-             "    \"config_logging\": \"logging.json\"\n"
+             "    \"config_logging\": \"config_logging.json\"\n"
              "  }\n}\n");
 
   writeFile(dir / "costmap_navigation.json",
@@ -447,7 +447,10 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"smoother_frequency\": -1.0,\n"
              "    \"controller_frequency\": 20.0,\n"
              "    \"tick_frequency\": 100.0\n"
-             "  }\n}\n");
+             "  },\n"
+             "  \"modules\": {\n"
+             "    \"config_recovery\": [\"spin_recovery.json\"]\n"
+             "  }\n");
 
   // spin 恢复插件: full name + 真实 .so。spin_dist 设小以缩短测试时长。
   writeFile(dir / "spin_recovery.json",
@@ -461,27 +464,30 @@ std::filesystem::path makeSpinConfigDir() {
                  "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
                  "  }\n}\n");
 
-  // 最小 global/local costmap (configureCoreMaps 需要)。
-  writeFile(dir / "costmap.json",
-             "{\n  \"costmap\": {\n"
-             "    \"global_frame\": \"map\",\n"
-             "    \"local_frame\": \"odom\",\n"
-             "    \"robot_frame\": \"base_link\",\n"
-             "    \"resolution\": 0.5\n"
-             "  },\n"
-             "  \"costmap_global\": {\n"
-             "    \"size_x\": 20, \"size_y\": 20,\n"
-             "    \"rolling_window\": false, \"track_unknown\": false,\n"
-             "    \"static_map\": \"\",\n"
-             "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
-             "    \"cost_scaling_factor\": 3.0\n"
-             "  },\n"
-             "  \"costmap_local\": {\n"
-             "    \"size_x\": 20, \"size_y\": 20,\n"
-             "    \"rolling_window\": true, \"track_unknown\": false,\n"
-             "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
-             "    \"cost_scaling_factor\": 3.0\n"
-             "  }\n}\n");
+  // 最小 global/local costmap (configureCoreMaps 需要; 已并入 navigation 文件)。
+  {
+    std::ofstream nav(dir / "costmap_navigation.json", std::ios::app);
+    nav << ",\n  \"costmap\": {\n"
+        << "    \"global_frame\": \"map\",\n"
+        << "    \"local_frame\": \"odom\",\n"
+        << "    \"robot_frame\": \"base_link\",\n"
+        << "    \"resolution\": 0.5\n"
+        << "  },\n"
+        << "  \"costmap_global\": {\n"
+        << "    \"size_x\": 20, \"size_y\": 20,\n"
+        << "    \"rolling_window\": false, \"track_unknown\": false,\n"
+        << "    \"static_map\": \"\",\n"
+        << "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
+        << "    \"cost_scaling_factor\": 3.0\n"
+        << "  },\n"
+        << "  \"costmap_local\": {\n"
+        << "    \"size_x\": 20, \"size_y\": 20,\n"
+        << "    \"rolling_window\": true, \"track_unknown\": false,\n"
+        << "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
+        << "    \"cost_scaling_factor\": 3.0\n"
+        << "  }\n"
+        << "}\n";
+  }
 
   // pilot.loadFromFile 需要 BT/navigation.xml (id 用默认树名)。
   writeFile(dir / "BT" / "navigation.xml",
@@ -497,7 +503,7 @@ std::filesystem::path makeSpinConfigDir() {
   </BehaviorTree>
 </root>)");
 
-  writeFile(dir / "logging.json",
+  writeFile(dir / "config_logging.json",
              "{\n  \"logging\": { \"log_dir\": \"logs\", \"log_level\": \"info\" }\n}\n");
 
   return dir;

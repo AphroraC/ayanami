@@ -131,41 +131,39 @@ std::filesystem::path make_config_dir() {
 
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_costmap\": \"costmap.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\",\n"
-             "    \"costmap_smac_planner\": \"costmap_smac_planner.json\",\n"
-             "    \"costmap_savitzky_smoother\": \"costmap_savitzky_smoother.json\",\n"
-             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\",\n"
-             "    \"simple_goal_checker\": \"costmap_simple_goal_checker.json\",\n"
-             "    \"simple_progress_checker\": \"costmap_simple_progress_checker.json\"\n"
+             "    \"config_navigation\": \"costmap_navigation.json\"\n"
              "  }\n}\n");
 
-  write_file(dir / "costmap_navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
-             "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
-             "    \"planner_id\": \"test_planner\",\n"
-             "    \"smoother_id\": \"test_smoother\",\n"
-             "    \"controller_id\": \"test_controller\",\n"
-             "    \"recovery_id\": \"test_spin\",\n"
-             "    \"clear_costmap_id\": \"test_spin\",\n"
-             "    \"spin_id\": \"test_spin\",\n"
-             "    \"wait_id\": \"test_spin\",\n"
-             "    \"backup_id\": \"test_spin\",\n"
-             "    \"goal_checker_id\": \"simple_goal_checker\",\n"
-             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
-             "    \"planner_frequency\": 100.0,\n"
-             "    \"smoother_frequency\": -1.0,\n"
-             "    \"controller_frequency\": 20.0,\n"
-             "    \"tick_frequency\": 100.0,\n"
-             "    \"costmap_visualization_rate\": 100.0\n"
-             "  }\n}\n");
+  {
+    std::ofstream nav(dir / "costmap_navigation.json");
+    nav << "{\n  \"navigation\": {\n"
+        << "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
+        << "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
+        << "    \"planner_id\": \"test_planner\",\n"
+        << "    \"smoother_id\": \"test_smoother\",\n"
+        << "    \"controller_id\": \"test_controller\",\n"
+        << "    \"recovery_id\": \"test_spin\",\n"
+        << "    \"clear_costmap_id\": \"test_spin\",\n"
+        << "    \"spin_id\": \"test_spin\",\n"
+        << "    \"wait_id\": \"test_spin\",\n"
+        << "    \"backup_id\": \"test_spin\",\n"
+        << "    \"goal_checker_id\": \"simple_goal_checker\",\n"
+        << "    \"progress_checker_id\": \"simple_progress_checker\",\n"
+        << "    \"planner_frequency\": 100.0,\n"
+        << "    \"smoother_frequency\": -1.0,\n"
+        << "    \"controller_frequency\": 20.0,\n"
+        << "    \"tick_frequency\": 100.0,\n"
+        << "    \"costmap_visualization_rate\": 100.0\n"
+        << "  },\n"
+        << "  \"modules\": {\n"
+        << "    \"config_planner\": \"planner.json\",\n"
+        << "    \"config_smoother\": \"smoother.json\",\n"
+        << "    \"config_controller\": \"controller.json\",\n"
+        << "    \"config_recovery\": [\"recovery.json\"],\n"
+        << "    \"config_goal_checker\": \"goal_checker.json\",\n"
+        << "    \"config_progress_checker\": \"progress_checker.json\"\n"
+        << "  }\n";
+  }
 
   write_file(dir / "planner.json",
              plugin_json("planner", "test_planner", g_smac_so,
@@ -207,39 +205,37 @@ std::filesystem::path make_config_dir() {
              "  }\n}\n");
 
   // static_map 指向 committed asset (tests/assets/headless_map.pgm)。
-  write_file(dir / "costmap.json",
-             "{\n  \"costmap\": {\n"
-             "    \"global_frame\": \"map\",\n"
-             "    \"local_frame\": \"odom\",\n"
-             "    \"robot_frame\": \"base_link\",\n"
-             "    \"resolution\": 0.5\n"
-             "  },\n"
-             "  \"costmap_global\": {\n"
-             "    \"size_x\": 20,\n    \"size_y\": 20,\n"
-             "    \"rolling_window\": false,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"static_map\": \"" +
-             (std::filesystem::path(g_assets_dir) / "headless_map.pgm").string() +
-             "\",\n"
-             "    \"inflation_radius\": 1.0,\n"
-             "    \"inscribed_radius\": 0.8,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  },\n"
-             "  \"costmap_local\": {\n"
-             "    \"size_x\": 20,\n    \"size_y\": 20,\n"
-             "    \"rolling_window\": true,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"inflation_radius\": 1.0,\n"
-             "    \"inscribed_radius\": 0.8,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  }\n}\n");
+  {
+    // costmap 参数并入 costmap_navigation.json (原 costmap.json 移除)。
+    std::ofstream nav(dir / "costmap_navigation.json", std::ios::app);
+    nav << ",\n  \"costmap\": {\n"
+        << "    \"global_frame\": \"map\",\n"
+        << "    \"local_frame\": \"odom\",\n"
+        << "    \"robot_frame\": \"base_link\",\n"
+        << "    \"resolution\": 0.5\n"
+        << "  },\n"
+        << "  \"costmap_global\": {\n"
+        << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
+        << "    \"rolling_window\": false,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"static_map\": \""
+        << (std::filesystem::path(g_assets_dir) / "headless_map.pgm").string()
+        << "\",\n"
+        << "    \"inflation_radius\": 1.0,\n"
+        << "    \"inscribed_radius\": 0.8,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  },\n"
+        << "  \"costmap_local\": {\n"
+        << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
+        << "    \"rolling_window\": true,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"inflation_radius\": 1.0,\n"
+        << "    \"inscribed_radius\": 0.8,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  }\n"
+        << "}\n";
+  }
 
-  write_file(dir / "costmap_smac_planner.json",
-             "{\n  \"costmap_smac_planner\": {\n"
-             "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
-             "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
-             "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
-             "  }\n}\n");
   write_file(dir / "costmap_savitzky_smoother.json",
              "{\n  \"costmap_savitzky_smoother\": {\n"
              "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"

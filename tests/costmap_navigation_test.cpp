@@ -32,7 +32,7 @@
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
-#include <ayanami/modules/costmap_navigation/costmap_navigation.hpp>
+#include <costmap_navigation/costmap_navigation.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {
@@ -108,6 +108,15 @@ std::string plugin_json(const std::string& module, const std::string& name,
          "\",\n    \"create_symbol\": \"" + symbol + "\"\n  }\n}\n";
 }
 
+// 未闭合版 (供与模块参数段拼接成单文件)。
+std::string plugin_json_open(const std::string& module, const std::string& name,
+                             const std::string& so_name,
+                             const std::string& symbol) {
+  return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
+         "\",\n    \"so_name\": \"" + so_name +
+         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  },\n";
+}
+
 // 生成临时 config 目录。so_name 用 argv 注入的真实模块绝对路径。
 std::filesystem::path make_config_dir() {
   const auto dir = make_temp_dir() / "cfg";
@@ -117,48 +126,23 @@ std::filesystem::path make_config_dir() {
 
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_costmap\": \"costmap.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\",\n"
-             "    \"costmap_smac_planner\": \"costmap_smac_planner.json\",\n"
-             "    \"costmap_savitzky_smoother\": \"costmap_savitzky_smoother.json\",\n"
-             "    \"costmap_spin_recovery\": \"costmap_spin_recovery.json\",\n"
-             "    \"simple_goal_checker\": \"costmap_simple_goal_checker.json\",\n"
-             "    \"simple_progress_checker\": \"costmap_simple_progress_checker.json\"\n"
-             "  }\n}\n");
-
-  write_file(dir / "costmap_navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
-             "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
-             "    \"planner_id\": \"test_planner\",\n"
-             "    \"smoother_id\": \"test_smoother\",\n"
-             "    \"controller_id\": \"test_controller\",\n"
-             "    \"recovery_id\": \"test_spin\",\n"
-             "    \"clear_costmap_id\": \"test_spin\",\n"
-             "    \"spin_id\": \"test_spin\",\n"
-             "    \"wait_id\": \"test_spin\",\n"
-             "    \"backup_id\": \"test_spin\",\n"
-             "    \"goal_checker_id\": \"simple_goal_checker\",\n"
-             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
-             "    \"planner_frequency\": 100.0,\n"
-             "    \"smoother_frequency\": -1.0,\n"
-             "    \"controller_frequency\": 20.0,\n"
-             "    \"tick_frequency\": 100.0,\n"
-             "    \"costmap_visualization_rate\": 100.0\n"
+             "    \"config_navigation\": \"costmap_navigation.json\"\n"
              "  }\n}\n");
 
   write_file(dir / "planner.json",
-             plugin_json("planner", "test_planner", g_smac_so,
-                         "create_costmap_planner_module"));
+             plugin_json_open("planner", "test_planner", g_smac_so,
+                         "create_costmap_planner_module") +
+             "  \"costmap_smac_planner\": {\n"
+             "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
+             "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
+             "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
+             "  }\n}\n");
   write_file(dir / "smoother.json",
-             plugin_json("smoother", "test_smoother", g_savitzky_so,
-                         "create_costmap_smoother_module"));
+             plugin_json_open("smoother", "test_smoother", g_savitzky_so,
+                         "create_costmap_smoother_module") +
+             "  \"costmap_savitzky_smoother\": {\n"
+             "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"
+             "  }\n}\n");
   write_file(dir / "controller.json",
              plugin_json("controller", "test_controller",
                          g_test_controller_so,
@@ -166,26 +150,25 @@ std::filesystem::path make_config_dir() {
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
-             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\"\n  }\n}\n");
+             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\",\n"
+             "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
+             "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
+             "  }\n}\n");
   // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
   write_file(dir / "goal_checker.json",
-             plugin_json("goal_checker", "simple_goal_checker",
-                         g_goal_checker_so, "create_goal_checker_module"));
-  write_file(dir / "progress_checker.json",
-             plugin_json("progress_checker", "simple_progress_checker",
-                         g_progress_checker_so,
-                         "create_progress_checker_module"));
-
-  // goal/progress checker 私有配置 (缺省也能跑, 提供避免 spdlog 噪音)。
-  write_file(dir / "costmap_simple_goal_checker.json",
-             "{\n  \"goal_checker\": {\n"
+             plugin_json_open("goal_checker", "simple_goal_checker",
+                         g_goal_checker_so, "create_goal_checker_module") +
+             "  \"goal_checker\": {\n"
              "    \"position_tolerance\": 0.10,\n"
              "    \"angle_tolerance\": 0.20,\n"
              "    \"linear_tolerance\": 0.10,\n"
              "    \"angular_tolerance\": 0.10\n"
              "  }\n}\n");
-  write_file(dir / "costmap_simple_progress_checker.json",
-             "{\n  \"progress_checker\": {\n"
+  write_file(dir / "progress_checker.json",
+             plugin_json_open("progress_checker", "simple_progress_checker",
+                         g_progress_checker_so,
+                         "create_progress_checker_module") +
+             "  \"progress_checker\": {\n"
              "    \"required_movement\": 0.1,\n"
              "    \"movement_angle_required\": 0.2,\n"
              "    \"time_period\": 5.0\n"
@@ -202,49 +185,61 @@ std::filesystem::path make_config_dir() {
     }
   }
 
-  write_file(dir / "costmap.json",
-             "{\n  \"costmap\": {\n"
-             "    \"global_frame\": \"map\",\n"
-             "    \"local_frame\": \"odom\",\n"
-             "    \"robot_frame\": \"base_link\",\n"
-             "    \"resolution\": 0.5\n"
-             "  },\n"
-             "  \"costmap_global\": {\n"
-             "    \"size_x\": 20,\n    \"size_y\": 20,\n"
-             "    \"rolling_window\": false,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"static_map\": \"" +
-             pgm_path +
-             "\",\n"
-             "    \"inflation_radius\": 1.0,\n"
-             "    \"inscribed_radius\": 0.8,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  },\n"
-             "  \"costmap_local\": {\n"
-             "    \"size_x\": 20,\n    \"size_y\": 20,\n"
-             "    \"rolling_window\": true,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"inflation_radius\": 1.0,\n"
-             "    \"inscribed_radius\": 0.8,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  }\n}\n");
-
-  // 各模块私有配置 (缺失也能跑, 提供则避免 spdlog 报错噪音)。
-  write_file(dir / "costmap_smac_planner.json",
-             "{\n  \"costmap_smac_planner\": {\n"
-             "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
-             "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
-             "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
-             "  }\n}\n");
-  write_file(dir / "costmap_savitzky_smoother.json",
-             "{\n  \"costmap_savitzky_smoother\": {\n"
-             "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"
-             "  }\n}\n");
-  write_file(dir / "costmap_spin_recovery.json",
-             "{\n  \"recovery\": {\n"
-             "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
-             "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
-             "  }\n}\n");
+  // costmap 参数并入 costmap_navigation.json (原 costmap.json 移除)。
+  {
+    std::ofstream nav(dir / "costmap_navigation.json");
+    nav << "{\n  \"navigation\": {\n"
+        << "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
+        << "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
+        << "    \"planner_id\": \"test_planner\",\n"
+        << "    \"smoother_id\": \"test_smoother\",\n"
+        << "    \"controller_id\": \"test_controller\",\n"
+        << "    \"recovery_id\": \"test_spin\",\n"
+        << "    \"clear_costmap_id\": \"test_spin\",\n"
+        << "    \"spin_id\": \"test_spin\",\n"
+        << "    \"wait_id\": \"test_spin\",\n"
+        << "    \"backup_id\": \"test_spin\",\n"
+        << "    \"goal_checker_id\": \"simple_goal_checker\",\n"
+        << "    \"progress_checker_id\": \"simple_progress_checker\",\n"
+        << "    \"planner_frequency\": 100.0,\n"
+        << "    \"smoother_frequency\": -1.0,\n"
+        << "    \"controller_frequency\": 20.0,\n"
+        << "    \"tick_frequency\": 100.0,\n"
+        << "    \"costmap_visualization_rate\": 100.0\n"
+        << "  },\n"
+        << "  \"modules\": {\n"
+        << "    \"config_planner\": \"planner.json\",\n"
+        << "    \"config_smoother\": \"smoother.json\",\n"
+        << "    \"config_controller\": \"controller.json\",\n"
+        << "    \"config_recovery\": [\"recovery.json\"],\n"
+        << "    \"config_goal_checker\": \"goal_checker.json\",\n"
+        << "    \"config_progress_checker\": \"progress_checker.json\"\n"
+        << "  },\n"
+        << "  \"costmap\": {\n"
+        << "    \"global_frame\": \"map\",\n"
+        << "    \"local_frame\": \"odom\",\n"
+        << "    \"robot_frame\": \"base_link\",\n"
+        << "    \"resolution\": 0.5\n"
+        << "  },\n"
+        << "  \"costmap_global\": {\n"
+        << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
+        << "    \"rolling_window\": false,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"static_map\": \"" << pgm_path << "\",\n"
+        << "    \"inflation_radius\": 1.0,\n"
+        << "    \"inscribed_radius\": 0.8,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  },\n"
+        << "  \"costmap_local\": {\n"
+        << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
+        << "    \"rolling_window\": true,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"inflation_radius\": 1.0,\n"
+        << "    \"inscribed_radius\": 0.8,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  }\n"
+        << "}\n";
+  }
 
   write_file(dir / "BT" / "navigation.xml",
              R"(<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">

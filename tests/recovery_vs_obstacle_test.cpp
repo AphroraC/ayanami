@@ -43,7 +43,7 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/components/costmap_recovery_execution.hpp>
 #include <ayanami/interfaces/transform_store.hpp>
-#include <ayanami/modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
+#include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
 
 namespace {
 

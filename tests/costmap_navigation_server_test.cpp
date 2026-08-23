@@ -44,7 +44,7 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
-#include <ayanami/modules/costmap_smac_planner/costmap_smac_planner.hpp>
+#include <costmap_smac_planner/costmap_smac_planner.hpp>
 
 namespace {
 
@@ -90,20 +90,9 @@ std::filesystem::path make_config_dir(
 
   write_json(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-              "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_costmap\": \"costmap.json\"\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
-  write_json(dir / "navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"planner_id\": \"test_costmap_planner\",\n"
-             "    \"smoother_id\": \"test_costmap_smoother\",\n"
-             "    \"controller_id\": \"test_costmap_controller\",\n"
-             "    \"recovery_id\": \"test_costmap_recovery\"\n"
-             "  }\n}\n");
+
   write_json(dir / "planner.json",
              plugin_json("planner", "test_costmap_planner", planner_symbol));
   write_json(dir / "smoother.json",
@@ -133,33 +122,46 @@ std::filesystem::path make_config_dir(
   }
 
   // 20x20 @ 0.5m → 10m x 10m。local inflation_radius=1.5 → 3 cells。
-  write_json(dir / "costmap.json",
-             "{\n  \"costmap\": {\n"
-             "    \"global_frame\": \"map\",\n"
-             "    \"local_frame\": \"odom\",\n"
-             "    \"robot_frame\": \"base_link\",\n"
-             "    \"resolution\": 0.5\n"
-             "  },\n"
-             "  \"costmap_global\": {\n"
-              "    \"size_x\": 7,\n    \"size_y\": 9,\n"
-             "    \"rolling_window\": false,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"static_map\": \"" +
-             pgm_path +
-             "\",\n"
-             "    \"inflation_radius\": 1.5,\n"
-             "    \"inscribed_radius\": 1.0,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  },\n"
-             "  \"costmap_local\": {\n"
-             "    \"size_x\": 20,\n    \"size_y\": 20,\n"
-             "    \"rolling_window\": true,\n"
-             "    \"track_unknown\": false,\n"
-             "    \"inflation_radius\": 1.5,\n"
-             "    \"inscribed_radius\": 1.0,\n"
-             "    \"cost_scaling_factor\": 2.0\n"
-             "  }\n"
-             "}\n");
+  // costmap 参数并入 navigation.json (原 costmap.json 移除)。
+  {
+    std::ofstream nav(dir / "navigation.json");
+    nav << "{\n  \"navigation\": {\n"
+        << "    \"planner_id\": \"test_costmap_planner\",\n"
+        << "    \"smoother_id\": \"test_costmap_smoother\",\n"
+        << "    \"controller_id\": \"test_costmap_controller\",\n"
+        << "    \"recovery_id\": \"test_costmap_recovery\"\n"
+        << "  },\n"
+        << "  \"modules\": {\n"
+        << "    \"config_planner\": \"planner.json\",\n"
+        << "    \"config_smoother\": \"smoother.json\",\n"
+        << "    \"config_controller\": \"controller.json\",\n"
+        << "    \"config_recovery\": [\"recovery.json\"]\n"
+        << "  },\n"
+        << "  \"costmap\": {\n"
+        << "    \"global_frame\": \"map\",\n"
+        << "    \"local_frame\": \"odom\",\n"
+        << "    \"robot_frame\": \"base_link\",\n"
+        << "    \"resolution\": 0.5\n"
+        << "  },\n"
+        << "  \"costmap_global\": {\n"
+        << "    \"size_x\": 7,\n    \"size_y\": 9,\n"
+        << "    \"rolling_window\": false,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"static_map\": \"" << pgm_path << "\",\n"
+        << "    \"inflation_radius\": 1.5,\n"
+        << "    \"inscribed_radius\": 1.0,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  },\n"
+        << "  \"costmap_local\": {\n"
+        << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
+        << "    \"rolling_window\": true,\n"
+        << "    \"track_unknown\": false,\n"
+        << "    \"inflation_radius\": 1.5,\n"
+        << "    \"inscribed_radius\": 1.0,\n"
+        << "    \"cost_scaling_factor\": 2.0\n"
+        << "  }\n"
+        << "}\n";
+  }
   return dir;
 }
 

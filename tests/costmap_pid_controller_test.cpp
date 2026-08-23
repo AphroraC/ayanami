@@ -32,8 +32,8 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
-#include <ayanami/modules/costmap_pid_controller/costmap_pid_controller.hpp>
-#include <ayanami/modules/simple_goal_checker/simple_goal_checker.hpp>
+#include <costmap_pid_controller/costmap_pid_controller.hpp>
+#include <simple_goal_checker/simple_goal_checker.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
 
@@ -431,7 +431,9 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(g_config_dir);
   {
     std::ofstream ofs(g_config_dir / "config.json");
-    ofs << R"({"global": { "config_controller": "costmap_pid_controller.json" }})";
+    ofs << R"({"global": { "config_navigation": "navigation.json" }})";
+    std::ofstream nav(g_config_dir / "navigation.json");
+    nav << R"({"modules": { "config_controller": "costmap_pid_controller.json" }})";
   }
   writeConfig("diff");
   ayanami::GlobalConfig::instance(g_config_dir.string(), true);

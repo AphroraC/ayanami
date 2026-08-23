@@ -159,11 +159,7 @@ std::filesystem::path make_config_dir(const std::string& planner_symbol) {
 
   write_json(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"]\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
   write_json(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
@@ -171,6 +167,12 @@ std::filesystem::path make_config_dir(const std::string& planner_symbol) {
              "    \"smoother_id\": \"test_smoother\",\n"
              "    \"controller_id\": \"test_controller\",\n"
              "    \"recovery_id\": \"test_recovery\"\n"
+             "  },\n"
+             "  \"modules\": {\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"]\n"
              "  }\n}\n");
   write_json(dir / "planner.json",
              plugin_json("planner", "test_planner", planner_symbol));

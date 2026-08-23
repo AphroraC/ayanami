@@ -27,7 +27,7 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
-#include <ayanami/modules/costmap_smac_planner/costmap_smac_planner.hpp>
+#include <costmap_smac_planner/costmap_smac_planner.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {
