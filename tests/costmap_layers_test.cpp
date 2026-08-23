@@ -231,6 +231,44 @@ TEST(CostmapLayersTest, InflationLayerInflatesAroundLethal) {
   EXPECT_EQ(master.getCost(5, 12), costmap_2d::FREE_SPACE);
 }
 
+TEST(CostmapLayersTest, InflationLayerSmoothGradientWithRealisticParams) {
+  // 真实 config 参数 (costmap_navigation.json): res 0.05, inflation 0.5,
+  // inscribed 0.3, csf 10.0。断言 inscribed 带外代价严格递减且末端平滑趋零
+  // (可视化上呈现渐变而非单一颜色)。
+  constexpr double res = 0.05;
+  auto master = makeGrid(60, 60, res);
+  master.setCost(30, 30, costmap_2d::LETHAL_OBSTACLE);
+
+  costmap_2d_layers::InflationLayer layer;
+  layer.setInflationRadius(0.5);
+  layer.setInscribedRadius(0.3);
+  layer.setCostScalingFactor(10.0);
+
+  layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
+                    static_cast<int>(master.getSizeInCellsY()));
+
+  // inscribed 带 (< 0.3m) 恒 253; 边界 cell (6*0.05 浮点略超 0.3) 允许 252。
+  for (int d = 1; d <= 5; ++d) {
+    EXPECT_EQ(master.getCost(30 + d, 30),
+              costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+        << "d=" << d;
+  }
+  EXPECT_GE(master.getCost(36, 30), 252);
+  // 衰减带 (0.3m~0.5m) 严格递减。
+  int prev = costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  for (int d = 7; d <= 10; ++d) {
+    const int cost = master.getCost(30 + d, 30);
+    EXPECT_LT(cost, prev) << "d=" << d << " cost=" << cost;
+    prev = cost;
+  }
+  // 末端 (0.5m) 平滑趋零: csf=10 → 252*e^-2 ≈ 34。
+  const int edge_cost = master.getCost(30 + 10, 30);
+  EXPECT_GT(edge_cost, 0);
+  EXPECT_LT(edge_cost, 60);
+  // 半径外保持 free。
+  EXPECT_EQ(master.getCost(30 + 11, 30), costmap_2d::FREE_SPACE);
+}
+
 TEST(CostmapLayersTest, InflationRadiusShrinkRemovesOldBand) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   lm->resizeMap(30, 30, 0.5, 0.0, 0.0);
