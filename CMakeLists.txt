@@ -88,7 +88,8 @@ install(DIRECTORY config assets DESTINATION share/ayanami
 function(ayanami_add_module name)
   add_library(${name} SHARED ${ARGN})
   target_link_libraries(${name} PRIVATE ayanami)
-  target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/modules)
+  target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/modules
+    ${CMAKE_SOURCE_DIR}/modules/${name})
   set_target_properties(${name} PROPERTIES PREFIX "libayanami_" OUTPUT_NAME ${name})
   install(TARGETS ${name} LIBRARY DESTINATION lib)
   list(APPEND AYANAMI_INSTALL_TARGETS ${name})
@@ -109,6 +110,34 @@ ayanami_add_module(costmap_savitzky_smoother
 ayanami_add_module(costmap_pid_controller
   modules/costmap_pid_controller/costmap_pid_controller.cpp
   modules/costmap_pid_controller/module.cpp)
+
+# modules/costmap_dwb_controller (DWB 局部控制器, 迁移自 nav2_dwb_controller;
+# 零 ROS: pluginlib→静态注册表 / tf2→TransformStore / rclcpp→Config)
+ayanami_add_module(costmap_dwb_controller
+  modules/costmap_dwb_controller/costmap_dwb_controller.cpp
+  modules/costmap_dwb_controller/module.cpp
+  modules/costmap_dwb_controller/exceptions.cpp
+  modules/costmap_dwb_controller/trajectory_utils.cpp
+  modules/costmap_dwb_controller/path_ops.cpp
+  modules/costmap_dwb_controller/registration.cpp
+  modules/costmap_dwb_controller/costmap_queue/costmap_queue.cpp
+  modules/costmap_dwb_controller/costmap_queue/limited_costmap_queue.cpp
+  modules/costmap_dwb_controller/plugins/kinematic_parameters.cpp
+  modules/costmap_dwb_controller/plugins/xy_theta_iterator.cpp
+  modules/costmap_dwb_controller/plugins/standard_traj_generator.cpp
+  modules/costmap_dwb_controller/plugins/limited_accel_generator.cpp
+  modules/costmap_dwb_controller/critics/alignment_util.cpp
+  modules/costmap_dwb_controller/critics/map_grid.cpp
+  modules/costmap_dwb_controller/critics/base_obstacle.cpp
+  modules/costmap_dwb_controller/critics/obstacle_footprint.cpp
+  modules/costmap_dwb_controller/critics/goal_dist.cpp
+  modules/costmap_dwb_controller/critics/path_dist.cpp
+  modules/costmap_dwb_controller/critics/goal_align.cpp
+  modules/costmap_dwb_controller/critics/path_align.cpp
+  modules/costmap_dwb_controller/critics/oscillation.cpp
+  modules/costmap_dwb_controller/critics/prefer_forward.cpp
+  modules/costmap_dwb_controller/critics/rotate_to_goal.cpp
+  modules/costmap_dwb_controller/critics/twirling.cpp)
 
 # Task 24: modules/costmap_*_recovery (4 个恢复插件, spec §6.6 命名)
 ayanami_add_module(costmap_spin_recovery
@@ -322,6 +351,17 @@ if(BUILD_TESTING)
       AYANAMI_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
       $<TARGET_FILE:costmap_plugins>)
+
+    # modules/costmap_dwb_controller (DWB, 迁移自 nav2_dwb_controller)
+    add_executable(costmap_dwb_controller_test
+      tests/costmap_dwb_controller_test.cpp)
+    target_link_libraries(costmap_dwb_controller_test PRIVATE
+      ayanami costmap_dwb_controller costmap_server::costmap_server
+      costmap_2d::costmap_2d GTest::gtest GTest::gtest_main)
+    target_include_directories(costmap_dwb_controller_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/modules/costmap_dwb_controller)
+    add_test(NAME CostmapDwBControllerTest COMMAND costmap_dwb_controller_test
+      ${CMAKE_SOURCE_DIR}/config/modules/costmap_dwb_controller.json)
 
     # Task 21: modules/costmap_smac_planner (A* 全局路径规划插件)
     add_executable(costmap_smac_planner_test tests/costmap_smac_planner_test.cpp)
