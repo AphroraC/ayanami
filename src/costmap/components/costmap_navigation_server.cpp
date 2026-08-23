@@ -94,9 +94,12 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
       cfg.param<double>("costmap", "resolution", kDefaultResolution);
 
   // 3.2 (T10 前瞻, 本 task 核心 scope): 与 config_ros.json::robot_frame 一致性
-  // 校验。config_ros 未载 (GlobalConfig 无 ayanami_ros 段) 时跳过。
-  const std::string ros_frame = GlobalConfig::instance()->param<std::string>(
-      "ayanami_ros", "robot_frame", std::string{});
+  // 校验。config_ros 未载 (GlobalConfig 无 config_ros 映射) 时跳过。
+  const std::string ros_config =
+      GlobalConfig::get_config_path("config_ros");
+  Config ros_cfg(ros_config);
+  const std::string ros_frame =
+      ros_cfg.param<std::string>("ayanami_ros", "robot_frame", std::string{});
   if (!ros_frame.empty()) {
     if (robot_frame != ros_frame) {
       spdlog::error("robot_frame mismatch: navigation '{}' vs ayanami_ros '{}'",
