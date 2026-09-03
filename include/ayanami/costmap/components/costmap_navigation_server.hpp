@@ -120,6 +120,13 @@ class CostmapNavigationServer
   // 5.5Hz 激光每帧刷屏)。同一链路 (local/global) 缺 TF 持续超过间隔才再告警。
   std::atomic<std::chrono::steady_clock::time_point> local_tf_warn_at{};
   std::atomic<std::chrono::steady_clock::time_point> global_tf_warn_at{};
+
+  // 机器人位姿缓存 (local rolling 窗口滚动用): 位姿查询短暂失败时用最后
+  // 一次成功值滚动窗口, 绝不回退到 (0,0,0) —— 否则滚动代价地图窗口会被锚
+  // 回世界原点, 机器人走出窗口后 dwb 无路可走 (原地卡顿)。
+  bool has_last_local_robot{false};
+  double last_local_robot_x{0.0}, last_local_robot_y{0.0};
+  double last_local_robot_yaw{0.0};
   // Each map owns an obstacle layer because observations must be transformed
   // into that map's frame independently.
   costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer{nullptr};

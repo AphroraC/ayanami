@@ -636,6 +636,8 @@ void CostmapNavigationServer::markObstaclesInFrame(
 
   // Resolve robot poses before taking either map lock. Each map update below
   // owns only its own mutex, so obstacle ingestion never nests local->global.
+  // 查询失败 (TF 短暂缺失) 时使用最后一次成功位姿滚动窗口 —— 绝不回退
+  // (0,0,0), 否则滚动窗口被锚回世界原点, 机器人走出窗口后 dwb 无路可走。
   double robot_x = 0.0;
   double robot_y = 0.0;
   double robot_yaw = 0.0;
@@ -646,6 +648,14 @@ void CostmapNavigationServer::markObstaclesInFrame(
     robot_x = T_robot.translation().x();
     robot_y = T_robot.translation().y();
     robot_yaw = std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
+    has_last_local_robot = true;
+    last_local_robot_x = robot_x;
+    last_local_robot_y = robot_y;
+    last_local_robot_yaw = robot_yaw;
+  } else if (has_last_local_robot) {
+    robot_x = last_local_robot_x;
+    robot_y = last_local_robot_y;
+    robot_yaw = last_local_robot_yaw;
   }
 
   {
