@@ -58,10 +58,21 @@ constexpr double k_global_tf_tolerance_s = 0.5;
 // k_tf_warn_interval_s 最多输出一条, 避免 5.5Hz 激光每帧刷屏。返回 true 表示
 // 本次应输出。
 constexpr double k_tf_warn_interval_s = 5.0;
+constexpr double k_robot_diag_interval_s = 60.0;
 bool tfWarnDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
   const auto now = std::chrono::steady_clock::now();
   auto prev = last.load();
   if (now - prev < std::chrono::duration<double>(k_tf_warn_interval_s)) {
+    return false;
+  }
+  return last.compare_exchange_strong(prev, now);
+}
+
+// 机器人位姿/滚动诊断节流 (60s 一条, 供排障; 失败时提示 TF 链缺失)。
+bool robotDiagDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
+  const auto now = std::chrono::steady_clock::now();
+  auto prev = last.load();
+  if (now - prev < std::chrono::duration<double>(k_robot_diag_interval_s)) {
     return false;
   }
   return last.compare_exchange_strong(prev, now);
@@ -653,10 +664,24 @@ void CostmapNavigationServer::markObstaclesInFrame(
     last_local_robot_x = robot_x;
     last_local_robot_y = robot_y;
     last_local_robot_yaw = robot_yaw;
-  } else if (has_last_local_robot) {
-    robot_x = last_local_robot_x;
-    robot_y = last_local_robot_y;
-    robot_yaw = last_local_robot_yaw;
+    if (robotDiagDue(local_robot_diag_at)) {
+      spdlog::debug("markObstacles: robot pose OK {}<-(robot_frame={}) "
+                    "trans=({:.3f},{:.3f})",
+                   local_frame, costmap_context->getRobotFrame(), robot_x,
+                   robot_y);
+    }
+  } else {
+    if (robotDiagDue(local_robot_diag_at)) {
+      spdlog::warn("markObstacles: robot pose FAIL {}<-(robot_frame={}); "
+                   "has_last={} (滚动窗口将保持上次位姿)",
+                   local_frame, costmap_context->getRobotFrame(),
+                   has_last_local_robot);
+    }
+    if (has_last_local_robot) {
+      robot_x = last_local_robot_x;
+      robot_y = last_local_robot_y;
+      robot_yaw = last_local_robot_yaw;
+    }
   }
 
   {
@@ -708,6 +733,11 @@ void CostmapNavigationServer::markObstaclesInFrame(
     has_prev_obstacles = true;
 
     costmap_context->localCostmap()->updateMapUnlocked(robot_x, robot_y, robot_yaw);
+    if (robotDiagDue(local_robot_diag_at)) {
+      spdlog::debug("roll updateMap robot=({:.3f},{:.3f}) rolling={}", robot_x,
+                    robot_y,
+                    costmap_context->localCostmap()->isRollingWindow() ? 1 : 0);
+    }
   }
 
   // Task 12 stage C (M2 Ruling #M2-4): global rolling costmap 也要周期性

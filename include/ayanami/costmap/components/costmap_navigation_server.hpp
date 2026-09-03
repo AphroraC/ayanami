@@ -120,6 +120,8 @@ class CostmapNavigationServer
   // 5.5Hz 激光每帧刷屏)。同一链路 (local/global) 缺 TF 持续超过间隔才再告警。
   std::atomic<std::chrono::steady_clock::time_point> local_tf_warn_at{};
   std::atomic<std::chrono::steady_clock::time_point> global_tf_warn_at{};
+  std::atomic<std::chrono::steady_clock::time_point> local_robot_diag_at{};
+  int tf_robot_diag_count{0};
 
   // 机器人位姿缓存 (local rolling 窗口滚动用): 位姿查询短暂失败时用最后
   // 一次成功值滚动窗口, 绝不回退到 (0,0,0) —— 否则滚动代价地图窗口会被锚
