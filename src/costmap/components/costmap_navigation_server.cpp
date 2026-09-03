@@ -55,6 +55,19 @@ constexpr int k_default_size_y = 0;
 constexpr double k_local_tf_tolerance_s = 0.2;
 constexpr double k_global_tf_tolerance_s = 0.5;
 
+// TF 链路缺失告警节流: 同一链路 (local/global) 的 "no transform" 每
+// k_tf_warn_interval_s 最多输出一条, 避免 5.5Hz 激光每帧刷屏。返回 true 表示
+// 本次应输出。
+constexpr double k_tf_warn_interval_s = 5.0;
+bool tfWarnDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
+  const auto now = std::chrono::steady_clock::now();
+  auto prev = last.load();
+  if (now - prev < std::chrono::duration<double>(k_tf_warn_interval_s)) {
+    return false;
+  }
+  return last.compare_exchange_strong(prev, now);
+}
+
 // 命令端口实现: 把类型化写命令转交唯一写者 (本 server) 执行。恢复插件只
 // 持 CostmapCommandPort 接口, 不接触可变 wrapper/layer。
 class CommandPortImpl : public CostmapCommandPort {
@@ -595,9 +608,14 @@ void CostmapNavigationServer::markObstaclesInFrame(
       !robot_state_controller.lookupTransform(local_frame, frame_id, stamp,
                                               T_local,
                                               k_local_tf_tolerance_s)) {
-    spdlog::warn("CostmapNavigationServer::markObstaclesInFrame: no transform "
-                 "{} <- {} (stamp={:f}s)",
-                 local_frame, frame_id, stamp.toSeconds());
+    if (tfWarnDue(local_tf_warn_at)) {
+      spdlog::warn("CostmapNavigationServer::markObstaclesInFrame: no "
+                   "transform {} <- {} (stamp={:f}s); 障碍落图暂停。检查 TF "
+                   "生产者 (gazebo 差速 odom->base_footprint、robot_state_"
+                   "publisher) 是否存活, 以及是否存在残留的多个仿真实例同时"
+                   "发布同名 TF",
+                   local_frame, frame_id, stamp.toSeconds());
+    }
     return;
   }
 
@@ -697,11 +715,14 @@ void CostmapNavigationServer::markObstaclesInFrame(
         !robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), costmap_context->getRobotFrame(),
             stamp, T_global_robot, k_global_tf_tolerance_s)) {
-      spdlog::warn(
-          "CostmapNavigationServer::markObstaclesInFrame: no global "
-          "transform {} <- {}/{} (stamp={:f}s)",
-          costmap_context->getGlobalFrame(), frame_id,
-          costmap_context->getRobotFrame(), stamp.toSeconds());
+      if (tfWarnDue(global_tf_warn_at)) {
+        spdlog::warn(
+            "CostmapNavigationServer::markObstaclesInFrame: no global "
+            "transform {} <- {}/{} (stamp={:f}s); 全局障碍落图暂停。检查 "
+            "AMCL map->odom 与 gazebo 差速 odom->base_footprint 是否存活",
+            costmap_context->getGlobalFrame(), frame_id,
+            costmap_context->getRobotFrame(), stamp.toSeconds());
+      }
       return;
     }
 

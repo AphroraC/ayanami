@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -113,6 +115,11 @@ class CostmapNavigationServer
 
   CostmapContext::Ptr costmap_context;
   CostmapCommandPort::Ptr command_port;
+
+  // TF 链路缺失告警节流 (每次传感器回调都可能失败; 只按固定间隔提示, 避免
+  // 5.5Hz 激光每帧刷屏)。同一链路 (local/global) 缺 TF 持续超过间隔才再告警。
+  std::atomic<std::chrono::steady_clock::time_point> local_tf_warn_at{};
+  std::atomic<std::chrono::steady_clock::time_point> global_tf_warn_at{};
   // Each map owns an obstacle layer because observations must be transformed
   // into that map's frame independently.
   costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer{nullptr};
