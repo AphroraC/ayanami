@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <string>
 
 #include <Eigen/Core>
@@ -19,6 +18,9 @@ namespace interfaces {
  * Holds the transform tree (static + timed dynamic links) in one global
  * buffer. Written by the ROS sync layer (periodic + sensor callbacks), read by
  * the pure C++ core (frame transforms, costmap frame, BT robot pose).
+ *
+ * 跨 DSO 单例纪律: instance() 与所有成员定义在 src/interfaces/
+ * transform_store.cpp (非 inline), 保证多 .so 解析到同一实例。
  *
  * 时间语义 (Header timestamp / TF 时间通语义):
  * - 对外统一用中间件无关 ayanami::Timestamp (纳秒), 内部转 fast_tf::time_t;
@@ -55,50 +57,8 @@ private:
   TransformStore(const TransformStore&) = delete;
   TransformStore& operator=(const TransformStore&) = delete;
 
-  fast_tf::detail::transform_buffer buffer_;
+  fast_tf::detail::transform_buffer buffer;
 };
-
-namespace {
-
-/// @brief ayanami::Timestamp (纳秒) → fast_tf::detail::time_t。
-inline fast_tf::detail::time_t toFastTfTime(const ayanami::Timestamp& stamp) {
-  return fast_tf::detail::time_t{
-      std::chrono::duration_cast<fast_tf::detail::duration_t>(stamp.ns)};
-}
-
-}  // namespace
-
-inline TransformStore&
-TransformStore::instance() {
-  static TransformStore store;
-  return store;
-}
-
-inline void
-TransformStore::setTransform(const std::string& parent,
-                             const std::string& child, Timestamp stamp,
-                             const Eigen::Isometry3d& T, bool is_static) {
-  buffer_.set(parent, child, toFastTfTime(stamp), T, is_static);
-}
-
-inline bool
-TransformStore::lookupTransform(const std::string& target,
-                                const std::string& source, Timestamp stamp,
-                                Eigen::Isometry3d& out, double timeout) const {
-  const auto tolerance = std::chrono::duration_cast<fast_tf::detail::duration_t>(
-      std::chrono::duration<double>(timeout));
-  try {
-    out = buffer_.get(target, source, toFastTfTime(stamp), tolerance);
-    return true;
-  } catch (const std::exception&) {
-    return false;
-  }
-}
-
-inline TransformStore::Timestamp
-TransformStore::fromSeconds(double s) {
-  return timestampFromSeconds(s);
-}
 
 }  // namespace interfaces
 }  // namespace ayanami

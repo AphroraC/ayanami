@@ -14,68 +14,68 @@ namespace dwb_plugins {
 
 void StandardTrajectoryGenerator::initialize(const ayanami::Config& cfg,
                                              const std::string& plugin_name) {
-  plugin_name_ = plugin_name;
-  kinematics_handler_ = std::make_shared<KinematicsHandler>();
-  kinematics_handler_->initialize(cfg, plugin_name_);
+  this->plugin_name = plugin_name;
+  kinematics_handler = std::make_shared<KinematicsHandler>();
+  kinematics_handler->initialize(cfg, plugin_name);
   initializeIterator(cfg);
 
-  sim_time_ = cfg.param<double>(plugin_name, "sim_time", 1.7);
-  discretize_by_time_ =
+  sim_time = cfg.param<double>(plugin_name, "sim_time", 1.7);
+  discretize_by_time =
       cfg.param<bool>(plugin_name, "discretize_by_time", false);
-  time_granularity_ = cfg.param<double>(plugin_name, "time_granularity", 0.5);
-  linear_granularity_ =
+  time_granularity = cfg.param<double>(plugin_name, "time_granularity", 0.5);
+  linear_granularity =
       cfg.param<double>(plugin_name, "linear_granularity", 0.5);
-  angular_granularity_ =
+  angular_granularity =
       cfg.param<double>(plugin_name, "angular_granularity", 0.025);
-  include_last_point_ =
+  include_last_point =
       cfg.param<bool>(plugin_name, "include_last_point", true);
-  limit_vel_cmd_in_traj_ =
+  limit_vel_cmd_in_traj =
       cfg.param<bool>(plugin_name, "limit_vel_cmd_in_traj", false);
 }
 
 void StandardTrajectoryGenerator::initializeIterator(const ayanami::Config& cfg) {
-  velocity_iterator_ = std::make_shared<XYThetaIterator>();
-  velocity_iterator_->initialize(cfg, kinematics_handler_, plugin_name_);
+  velocity_iterator = std::make_shared<XYThetaIterator>();
+  velocity_iterator->initialize(cfg, kinematics_handler, plugin_name);
 }
 
 void StandardTrajectoryGenerator::startNewIteration(
     const nav_2d_msgs::Twist2D& current_velocity) {
-  velocity_iterator_->startNewIteration(current_velocity, sim_time_);
+  velocity_iterator->startNewIteration(current_velocity, sim_time);
 }
 
 bool StandardTrajectoryGenerator::hasMoreTwists() {
-  return velocity_iterator_->hasMoreTwists();
+  return velocity_iterator->hasMoreTwists();
 }
 
 nav_2d_msgs::Twist2D StandardTrajectoryGenerator::nextTwist() {
-  return velocity_iterator_->nextTwist();
+  return velocity_iterator->nextTwist();
 }
 
 std::vector<double> StandardTrajectoryGenerator::getTimeSteps(
     const nav_2d_msgs::Twist2D& cmd_vel) {
   std::vector<double> steps;
-  if (discretize_by_time_) {
-    steps.resize(ceil(sim_time_ / time_granularity_));
+  if (discretize_by_time) {
+    steps.resize(ceil(sim_time / time_granularity));
   } else {  // discretize by distance
     double vmag = hypot(cmd_vel.x, cmd_vel.y);
 
     // the distance the robot would travel in sim_time if it did not change
     // velocity
-    double projected_linear_distance = vmag * sim_time_;
+    double projected_linear_distance = vmag * sim_time;
 
     // the angle the robot would rotate in sim_time
-    double projected_angular_distance = fabs(cmd_vel.theta) * sim_time_;
+    double projected_angular_distance = fabs(cmd_vel.theta) * sim_time;
 
     // Pick the maximum of the two
     int num_steps = ceil(
-        std::max(projected_linear_distance / linear_granularity_,
-                 projected_angular_distance / angular_granularity_));
+        std::max(projected_linear_distance / linear_granularity,
+                 projected_angular_distance / angular_granularity));
     steps.resize(num_steps);
   }
   if (steps.size() == 0) {
     steps.resize(1);
   }
-  std::fill(steps.begin(), steps.end(), sim_time_ / steps.size());
+  std::fill(steps.begin(), steps.end(), sim_time / steps.size());
   return steps;
 }
 
@@ -95,7 +95,7 @@ dwb_msgs::Trajectory2D StandardTrajectoryGenerator::generateTrajectory(
   for (double dt : steps) {
     //  calculate velocities
     vel = computeNewVelocity(cmd_vel, vel, dt);
-    if (!first_vel && limit_vel_cmd_in_traj_) {
+    if (!first_vel && limit_vel_cmd_in_traj) {
       traj.velocity = vel;
       first_vel = true;
     }
@@ -108,7 +108,7 @@ dwb_msgs::Trajectory2D StandardTrajectoryGenerator::generateTrajectory(
     running_time += dt;
   }  //  end for simulation steps
 
-  if (include_last_point_) {
+  if (include_last_point) {
     traj.poses.push_back(pose);
     traj.time_offsets.push_back(running_time);
   }
@@ -122,7 +122,7 @@ dwb_msgs::Trajectory2D StandardTrajectoryGenerator::generateTrajectory(
 nav_2d_msgs::Twist2D StandardTrajectoryGenerator::computeNewVelocity(
     const nav_2d_msgs::Twist2D& cmd_vel,
     const nav_2d_msgs::Twist2D& start_vel, const double dt) {
-  KinematicParameters kinematics = kinematics_handler_->getKinematics();
+  KinematicParameters kinematics = kinematics_handler->getKinematics();
   nav_2d_msgs::Twist2D new_vel;
   new_vel.x = projectVelocity(start_vel.x, kinematics.getAccX(),
                               kinematics.getDecelX(), dt, cmd_vel.x);

@@ -30,7 +30,7 @@ public:
   virtual double scorePose(const geometry_msgs::Pose2D& pose,
                            const Footprint& oriented_footprint);
   double getScale() const override {
-    return costmap_->getResolution() * scale_;
+    return costmap->getResolution() * scale;
   }
 
 protected:
@@ -44,6 +44,6 @@ protected:
    */
   double pointCost(int x, int y);
 
-  Footprint footprint_spec_;
+  Footprint footprint_spec;
 };
 }  // namespace dwb_critics

@@ -20,11 +20,14 @@ public:
   // Standard TrajectoryCritic Interface
   void onInit() override;
   double scoreTrajectory(const dwb_msgs::Trajectory2D& traj) override;
+  void setCostmap(const costmap_2d::Costmap2D* costmap) override;
   void addCriticVisualization(
       std::vector<std::pair<std::string, std::vector<float>>>&
           cost_channels) override;
   double getScale() const override {
-    return costmap_->getResolution() * 0.5 * scale_;
+    // 快照纪律: 未绑定网格 (setPlan 先于首次 computeVelocityCommands 绑定) 时
+    // 返回 0.0, 使打分循环把该 critic 视为无贡献 (cs.scale==0 跳过), 不崩。
+    return costmap ? costmap->getResolution() * 0.5 * scale : 0.0;
   }
 
   // Helper Functions
@@ -37,7 +40,7 @@ public:
    * @brief Retrieve the score for a particular cell of the costmap
    */
   inline double getScore(unsigned int x, unsigned int y) {
-    return cell_values_[costmap_->getIndex(x, y)];
+    return cell_values[costmap->getIndex(x, y)];
   }
 
   /**
@@ -58,17 +61,17 @@ protected:
    */
   class MapGridQueue : public costmap_queue::CostmapQueue {
 public:
-    MapGridQueue(costmap_2d::Costmap2D& costmap, MapGridCritic& parent)
-    : costmap_queue::CostmapQueue(costmap, true), parent_(parent) {}
+    MapGridQueue(const costmap_2d::Costmap2D& costmap, MapGridCritic& parent)
+    : costmap_queue::CostmapQueue(costmap, true), parent(parent) {}
     virtual ~MapGridQueue() = default;
     bool validCellToQueue(const costmap_queue::CellData& cell) override;
 
 protected:
-    MapGridCritic& parent_;
+    MapGridCritic& parent;
   };
 
   /**
-   * @brief Clear the queue and set cell_values_ to the appropriate number of
+   * @brief Clear the queue and set cell_values to the appropriate number of
    * unreachableCellScore
    */
   void reset() override;
@@ -79,10 +82,10 @@ protected:
    */
   void propogateManhattanDistances();
 
-  std::shared_ptr<MapGridQueue> queue_;
-  std::vector<double> cell_values_;
-  double obstacle_score_, unreachable_score_;  ///< Special cell_values
-  bool stop_on_failure_;
-  ScoreAggregationType aggregationType_;
+  std::shared_ptr<MapGridQueue> queue;
+  std::vector<double> cell_values;
+  double obstacle_score, unreachable_score;  ///< Special cell_values
+  bool stop_on_failure;
+  ScoreAggregationType aggregation_type;
 };
 }  // namespace dwb_critics

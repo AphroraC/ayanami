@@ -14,7 +14,7 @@ namespace dwb_critics {
  */
 class PathAlignCritic : public PathDistCritic {
 public:
-  PathAlignCritic() : zero_scale_(false), forward_point_distance_(0.0) {}
+  PathAlignCritic() : zero_scale(false), forward_point_distance(0.0) {}
   void onInit() override;
   bool prepare(const geometry_msgs::Pose2D& pose,
                const nav_2d_msgs::Twist2D& vel,
@@ -24,8 +24,8 @@ public:
   double scorePose(const geometry_msgs::Pose2D& pose) override;
 
 protected:
-  bool zero_scale_;
-  double forward_point_distance_;
+  bool zero_scale;
+  double forward_point_distance;
 };
 
 }  // namespace dwb_critics

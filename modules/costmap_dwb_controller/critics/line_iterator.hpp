@@ -8,91 +8,91 @@ namespace dwb_critics {
 class LineIterator {
 public:
   LineIterator(int x0, int y0, int x1, int y1)
-  : x0_(x0),
-    y0_(y0),
-    x1_(x1),
-    y1_(y1),
-    x_(x0),    // X and Y start of at first endpoint.
-    y_(y0),
-    deltax_(abs(x1 - x0)),
-    deltay_(abs(y1 - y0)),
-    curpixel_(0)
+  : x0(x0),
+    y0(y0),
+    x1(x1),
+    y1(y1),
+    x(x0),    // X and Y start of at first endpoint.
+    y(y0),
+    deltax(abs(x1 - x0)),
+    deltay(abs(y1 - y0)),
+    curpixel(0)
   {
-    if (x1_ >= x0_) {                // The x-values are increasing
-      xinc1_ = 1;
-      xinc2_ = 1;
+    if (x1 >= x0) {                // The x-values are increasing
+      xinc1 = 1;
+      xinc2 = 1;
     } else {                      // The x-values are decreasing
-      xinc1_ = -1;
-      xinc2_ = -1;
+      xinc1 = -1;
+      xinc2 = -1;
     }
 
-    if (y1_ >= y0_) {               // The y-values are increasing
-      yinc1_ = 1;
-      yinc2_ = 1;
+    if (y1 >= y0) {               // The y-values are increasing
+      yinc1 = 1;
+      yinc2 = 1;
     } else {                      // The y-values are decreasing
-      yinc1_ = -1;
-      yinc2_ = -1;
+      yinc1 = -1;
+      yinc2 = -1;
     }
 
-    if (deltax_ >= deltay_) {        // There is at least one x-value for every y-value
-      xinc1_ = 0;                  // Don't change the x when numerator >= denominator
-      yinc2_ = 0;                  // Don't change the y for every iteration
-      den_ = deltax_;
-      num_ = deltax_ / 2;
-      numadd_ = deltay_;
-      numpixels_ = deltax_;         // There are more x-values than y-values
+    if (deltax >= deltay) {        // There is at least one x-value for every y-value
+      xinc1 = 0;                  // Don't change the x when numerator >= denominator
+      yinc2 = 0;                  // Don't change the y for every iteration
+      den = deltax;
+      num = deltax / 2;
+      numadd = deltay;
+      numpixels = deltax;         // There are more x-values than y-values
     } else {                      // There is at least one y-value for every x-value
-      xinc2_ = 0;                  // Don't change the x for every iteration
-      yinc1_ = 0;                  // Don't change the y when numerator >= denominator
-      den_ = deltay_;
-      num_ = deltay_ / 2;
-      numadd_ = deltax_;
-      numpixels_ = deltay_;         // There are more y-values than x-values
+      xinc2 = 0;                  // Don't change the x for every iteration
+      yinc1 = 0;                  // Don't change the y when numerator >= denominator
+      den = deltay;
+      num = deltay / 2;
+      numadd = deltax;
+      numpixels = deltay;         // There are more y-values than x-values
     }
   }
 
   bool isValid() const
   {
-    return curpixel_ <= numpixels_;
+    return curpixel <= numpixels;
   }
 
   void advance()
   {
-    num_ += numadd_;              // Increase the numerator by the top of the fraction
-    if (num_ >= den_) {           // Check if numerator >= denominator
-      num_ -= den_;               // Calculate the new numerator value
-      x_ += xinc1_;               // Change the x as appropriate
-      y_ += yinc1_;               // Change the y as appropriate
+    num += numadd;              // Increase the numerator by the top of the fraction
+    if (num >= den) {           // Check if numerator >= denominator
+      num -= den;               // Calculate the new numerator value
+      x += xinc1;               // Change the x as appropriate
+      y += yinc1;               // Change the y as appropriate
     }
-    x_ += xinc2_;                 // Change the x as appropriate
-    y_ += yinc2_;                 // Change the y as appropriate
+    x += xinc2;                 // Change the x as appropriate
+    y += yinc2;                 // Change the y as appropriate
 
-    curpixel_++;
+    curpixel++;
   }
 
-  int getX() const { return x_; }
-  int getY() const { return y_; }
-  int getX0() const { return x0_; }
-  int getY0() const { return y0_; }
-  int getX1() const { return x1_; }
-  int getY1() const { return y1_; }
+  int getX() const { return x; }
+  int getY() const { return y; }
+  int getX0() const { return x0; }
+  int getY0() const { return y0; }
+  int getX1() const { return x1; }
+  int getY1() const { return y1; }
 
 private:
-  int x0_;  ///< X coordinate of first end point.
-  int y0_;  ///< Y coordinate of first end point.
-  int x1_;  ///< X coordinate of second end point.
-  int y1_;  ///< Y coordinate of second end point.
+  int x0;  ///< X coordinate of first end point.
+  int y0;  ///< Y coordinate of first end point.
+  int x1;  ///< X coordinate of second end point.
+  int y1;  ///< Y coordinate of second end point.
 
-  int x_;  ///< X coordinate of current point.
-  int y_;  ///< Y coordinate of current point.
+  int x;  ///< X coordinate of current point.
+  int y;  ///< Y coordinate of current point.
 
-  int deltax_;  ///< Difference between Xs of endpoints.
-  int deltay_;  ///< Difference between Ys of endpoints.
+  int deltax;  ///< Difference between Xs of endpoints.
+  int deltay;  ///< Difference between Ys of endpoints.
 
-  int curpixel_;  ///< index of current point in line loop.
+  int curpixel;  ///< index of current point in line loop.
 
-  int xinc1_, xinc2_, yinc1_, yinc2_;
-  int den_, num_, numadd_, numpixels_;
+  int xinc1, xinc2, yinc1, yinc2;
+  int den, num, numadd, numpixels;
 };
 
 }  // end namespace dwb_critics

@@ -23,7 +23,7 @@ std::shared_ptr<costmap_2d::LayeredCostmap> makeRollingGrid(
 
 // ---------- 构造 ----------
 
-TEST(CostmapServerTest, ConstructionHoldsLayeredCostmapWithStaticLayer) {
+TEST(CostmapServerTest, constructionHoldsLayeredCostmapWithStaticLayer) {
   auto lm = makeRollingGrid(20, 0.5);
   auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
   costmap_2d::Costmap2D layer_map(10, 10, 0.5, 0.0, 0.0);
@@ -40,7 +40,7 @@ TEST(CostmapServerTest, ConstructionHoldsLayeredCostmapWithStaticLayer) {
 
 // ---------- 生命周期 ----------
 
-TEST(CostmapServerTest, CheckActivateIsIdempotent) {
+TEST(CostmapServerTest, checkActivateIsIdempotent) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
@@ -53,7 +53,7 @@ TEST(CostmapServerTest, CheckActivateIsIdempotent) {
   EXPECT_TRUE(wrapper.isActive());
 }
 
-TEST(CostmapServerTest, CheckDeactivateIsIdempotent) {
+TEST(CostmapServerTest, checkDeactivateIsIdempotent) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
@@ -69,26 +69,29 @@ TEST(CostmapServerTest, CheckDeactivateIsIdempotent) {
 
 // ---------- 线程安全 ----------
 
-TEST(CostmapServerTest, MutexIsRecursivelyLockable) {
+TEST(CostmapServerTest, mutexIsSharedExclusive) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
   auto& m = wrapper.mutex();
-  m.lock();
-  m.lock();  // 同一线程二次 lock: recursive_mutex 允许
-  m.unlock();
-  m.unlock();
-
-  // 递归锁在 updateMap 内部被再次加锁 (wrapper.updateMap -> 内部 lock) 也不死锁
+  // 读者可并发持 shared 锁。
   {
-    std::lock_guard<std::recursive_mutex> outer(wrapper.mutex());
-    wrapper.updateMap(1.0, 2.0, 0.0);
+    std::shared_lock<std::shared_mutex> r1(m);
+    std::shared_lock<std::shared_mutex> r2(m);
   }
+  // 写者 unique 锁期间读者不可进入 (语义由 shared_mutex 保证)。
+  {
+    std::unique_lock<std::shared_mutex> w(m);
+    // 同一线程内 updateMap 会再次取 unique 锁 -> shared_mutex 非递归, 写者
+    // 复合更新应使用 updateMapUnlocked (与 clearCostmapArea 一致)。
+    wrapper.updateMapUnlocked(1.0, 2.0, 0.0);
+  }
+  wrapper.updateMap(1.0, 2.0, 0.0);
 }
 
 // ---------- updateMap / rolling window ----------
 
-TEST(CostmapServerTest, UpdateMapRollingWindowPreservesOverlap) {
+TEST(CostmapServerTest, updateMapRollingWindowPreservesOverlap) {
   auto lm = makeRollingGrid(10, 0.5);  // 10x10 cells, 覆盖 [0,5) x [0,5)
   lm->getCostmap()->setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
 
@@ -107,7 +110,7 @@ TEST(CostmapServerTest, UpdateMapRollingWindowPreservesOverlap) {
 
 // ---------- isCurrent / getGlobalFrame ----------
 
-TEST(CostmapServerTest, IsCurrentAndGetGlobalFrame) {
+TEST(CostmapServerTest, isCurrentAndGetGlobalFrame) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 

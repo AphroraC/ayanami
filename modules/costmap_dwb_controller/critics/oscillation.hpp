@@ -17,7 +17,7 @@ namespace dwb_critics {
  */
 class OscillationCritic : public dwb_core::TrajectoryCritic {
 public:
-  OscillationCritic() : oscillation_reset_time_(-1.0) {}
+  OscillationCritic() : oscillation_reset_time(-1.0) {}
   void onInit() override;
   bool prepare(const geometry_msgs::Pose2D& pose,
                const nav_2d_msgs::Twist2D& vel,
@@ -58,8 +58,8 @@ private:
     // Simple Enum for Tracking
     enum class Sign { ZERO, POSITIVE, NEGATIVE };
 
-    Sign sign_;
-    bool positive_only_, negative_only_;
+    Sign sign;
+    bool positive_only, negative_only;
   };
 
   /**
@@ -74,17 +74,17 @@ private:
    */
   bool resetAvailable();
 
-  CommandTrend x_trend_, y_trend_, theta_trend_;
-  double oscillation_reset_dist_, oscillation_reset_angle_, x_only_threshold_;
-  double oscillation_reset_time_;
+  CommandTrend x_trend, y_trend, theta_trend;
+  double oscillation_reset_dist, oscillation_reset_angle, x_only_threshold;
+  double oscillation_reset_time;
 
   // Cached square parameter
-  double oscillation_reset_dist_sq_;
+  double oscillation_reset_dist_sq;
 
   // Saved positions
-  geometry_msgs::Pose2D pose_, prev_stationary_pose_;
+  geometry_msgs::Pose2D pose, prev_stationary_pose;
   // Saved timestamp (steady_clock 等价 rclcpp::Clock)
-  std::chrono::steady_clock::time_point prev_reset_time_;
+  std::chrono::steady_clock::time_point prev_reset_time;
 };
 
 }  // namespace dwb_critics

@@ -1,5 +1,5 @@
 // geometry_utils.hpp — nav2_util/geometry_utils.hpp 中 DWB 用到的纯几何函数
-// (euclidean_distance / first_after_integrated_distance, 迁移自 nav2)。
+// (euclideanDistance / first_after_integrated_distance, 迁移自 nav2)。
 #pragma once
 
 #include <cmath>
@@ -12,7 +12,7 @@ namespace geometry_utils {
 /**
  * @brief Get the L2 distance between 2 geometry_msgs::Pose2D
  */
-inline double euclidean_distance(const geometry_msgs::Pose2D& pos1,
+inline double euclideanDistance(const geometry_msgs::Pose2D& pos1,
                                  const geometry_msgs::Pose2D& pos2) {
   double dx = pos1.x - pos2.x;
   double dy = pos1.y - pos2.y;
@@ -31,7 +31,7 @@ inline Iter first_after_integrated_distance(Iter begin, Iter end,
   }
   Getter dist = 0.0;
   for (Iter it = begin; it != end - 1; it++) {
-    dist += euclidean_distance(*it, *(it + 1));
+    dist += euclideanDistance(*it, *(it + 1));
     if (dist > getCompareVal) {
       return it + 1;
     }

@@ -20,9 +20,9 @@ class RecoveryNode : public BT::ControlNode {
  public:
   RecoveryNode(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config),
-      max_retries_(1),
-      retry_count_(0),
-      recovering_(false) {}
+      max_retries(1),
+      retry_count(0),
+      recovering(false) {}
 
   static BT::PortsList providedPorts() {
     return {
@@ -31,14 +31,14 @@ class RecoveryNode : public BT::ControlNode {
   }
 
   BT::NodeStatus tick() override {
-    if (!getInput("number_of_retries", max_retries_)) {
+    if (!getInput("number_of_retries", max_retries)) {
       return BT::NodeStatus::FAILURE;
     }
 
-    if (!recovering_) {
+    if (!recovering) {
       const BT::NodeStatus status = children_nodes_[0]->executeTick();
       if (status == BT::NodeStatus::SUCCESS) {
-        retry_count_ = 0;
+        retry_count = 0;
         resetChildren();
         return BT::NodeStatus::SUCCESS;
       }
@@ -46,19 +46,19 @@ class RecoveryNode : public BT::ControlNode {
         return BT::NodeStatus::RUNNING;
       }
       // child0 FAILURE
-      if (retry_count_ >= max_retries_) {
+      if (retry_count >= max_retries) {
         haltChildren();
-        retry_count_ = 0;
+        retry_count = 0;
         return BT::NodeStatus::FAILURE;
       }
       haltChild(0);
-      recovering_ = true;
+      recovering = true;
     }
 
     const BT::NodeStatus status = children_nodes_[1]->executeTick();
     if (status == BT::NodeStatus::SUCCESS) {
-      ++retry_count_;
-      recovering_ = false;
+      ++retry_count;
+      recovering = false;
       resetChildren();
       return BT::NodeStatus::RUNNING;
     }
@@ -67,21 +67,21 @@ class RecoveryNode : public BT::ControlNode {
     }
     // child1 FAILURE
     haltChildren();
-    retry_count_ = 0;
-    recovering_ = false;
+    retry_count = 0;
+    recovering = false;
     return BT::NodeStatus::FAILURE;
   }
 
   void halt() override {
     BT::ControlNode::halt();
-    retry_count_ = 0;
-    recovering_ = false;
+    retry_count = 0;
+    recovering = false;
   }
 
  private:
-  uint32_t max_retries_;
-  uint32_t retry_count_;
-  bool recovering_;
+  uint32_t max_retries;
+  uint32_t retry_count;
+  bool recovering;
 };
 
 } // namespace behavior_tree

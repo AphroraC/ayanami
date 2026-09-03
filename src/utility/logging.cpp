@@ -44,7 +44,7 @@ bool is_file_sink(const spdlog::sink_ptr& sink) {
 
 }  // namespace
 
-spdlog::level::level_enum log_level_from_string(const std::string& level) {
+spdlog::level::level_enum logLevelFromString(const std::string& level) {
   std::string normalized = level;
   std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -60,12 +60,12 @@ spdlog::level::level_enum log_level_from_string(const std::string& level) {
   return spdlog::level::info;
 }
 
-void configure_logging() {
-  const Config config(GlobalConfig::get_config_path("config_logging"));
+void configureLogging() {
+  const Config config(GlobalConfig::getConfigPath("config_logging"));
 
-  const auto logging_level = log_level_from_string(
+  const auto logging_level = logLevelFromString(
       config.param<std::string>("logging", "logging_level", std::string("info")));
-  const auto console_level = log_level_from_string(
+  const auto console_level = logLevelFromString(
       config.param<std::string>("logging", "console_level", std::string("info")));
   const bool console_output =
       config.param<bool>("logging", "console_output", true);

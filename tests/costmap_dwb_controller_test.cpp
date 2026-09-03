@@ -28,7 +28,6 @@
 #include <costmap_2d/layered_costmap.hpp>
 
 #include <ayanami/costmap/components/costmap_context.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/utility/config.hpp>
@@ -58,14 +57,14 @@ std::string g_config_json;
 
 // ---------- A. 上游断言移植 ----------
 
-void letter_test(MapBasedQueue<char>& q, const char test_letter) {
+void letterTest(MapBasedQueue<char>& q, const char test_letter) {
   ASSERT_FALSE(q.isEmpty());
   char c = q.front();
   EXPECT_EQ(c, test_letter);
   q.pop();
 }
 
-TEST(DwbMapBasedQueue, CheckOrdering) {
+TEST(DwbMapBasedQueue, checkOrdering) {
   MapBasedQueue<char> q;
   q.enqueue(1.0, 'A');
   q.enqueue(3.0, 'B');
@@ -75,12 +74,12 @@ TEST(DwbMapBasedQueue, CheckOrdering) {
 
   std::string expected = "EACBD";
   for (unsigned int i = 0; i < expected.size(); i++) {
-    letter_test(q, expected[i]);
+    letterTest(q, expected[i]);
   }
   EXPECT_TRUE(q.isEmpty());
 }
 
-TEST(DwbMapBasedQueue, CheckDynamicOrdering) {
+TEST(DwbMapBasedQueue, checkDynamicOrdering) {
   MapBasedQueue<char> q;
   q.enqueue(1.0, 'A');
   q.enqueue(3.0, 'B');
@@ -89,26 +88,26 @@ TEST(DwbMapBasedQueue, CheckDynamicOrdering) {
 
   std::string expected = "ACB";
   for (unsigned int i = 0; i < expected.size(); i++) {
-    letter_test(q, expected[i]);
+    letterTest(q, expected[i]);
   }
 
   q.enqueue(0.0, 'E');
-  letter_test(q, 'E');
+  letterTest(q, 'E');
 }
 
-TEST(DwbMapBasedQueue, CheckDynamicOrdering3) {
+TEST(DwbMapBasedQueue, checkDynamicOrdering3) {
   MapBasedQueue<char> q;
   q.enqueue(1.0, 'A');
   q.enqueue(2.0, 'B');
   q.enqueue(5.0, 'D');
-  letter_test(q, 'A');
-  letter_test(q, 'B');
+  letterTest(q, 'A');
+  letterTest(q, 'B');
   q.enqueue(1.0, 'C');
-  letter_test(q, 'C');
-  letter_test(q, 'D');
+  letterTest(q, 'C');
+  letterTest(q, 'D');
 }
 
-TEST(DwbTrajectoryUtils, ClosestPose) {
+TEST(DwbTrajectoryUtils, closestPose) {
   dwb_msgs::Trajectory2D traj;
   traj.poses.resize(4);
   traj.time_offsets.resize(4);
@@ -130,7 +129,7 @@ TEST(DwbTrajectoryUtils, ClosestPose) {
   EXPECT_DOUBLE_EQ(getClosestPose(traj, 3.5).x, traj.poses[3].x);
 }
 
-TEST(DwbTrajectoryUtils, ProjectPose) {
+TEST(DwbTrajectoryUtils, projectPose) {
   dwb_msgs::Trajectory2D traj;
   traj.poses.resize(4);
   traj.time_offsets.resize(4);
@@ -167,7 +166,7 @@ TEST(DwbTrajectoryUtils, ProjectPose) {
 
 // ---------- B. 数值快照 ----------
 
-TEST(DwbOneDVelocity, ProjectVelocity) {
+TEST(DwbOneDVelocity, projectVelocity) {
   // 加速: v0 < target → min(target, v0 + accel*dt)
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(0.0, 1.0, -1.0, 1.0, 2.0), 1.0);
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(1.5, 1.0, -1.0, 1.0, 2.0), 2.0);
@@ -177,7 +176,7 @@ TEST(DwbOneDVelocity, ProjectVelocity) {
                    0.0);
 }
 
-TEST(DwbOneDVelocity, IteratorSamples) {
+TEST(DwbOneDVelocity, iteratorSamples) {
   // current=2, min=0, max=3, acc=1, decel=-1, dt=1, samples=5
   // max_vel = project(2 → 3) = 3; min_vel = project(2 → 0) = 1
   dwb_plugins::OneDVelocityIterator it(2.0, 0.0, 3.0, 1.0, -1.0, 1.0, 5);
@@ -194,7 +193,7 @@ TEST(DwbOneDVelocity, IteratorSamples) {
   EXPECT_DOUBLE_EQ(samples[4], 3.0);
 }
 
-TEST(DwbOneDVelocity, IteratorInsertsZeroOnCross) {
+TEST(DwbOneDVelocity, iteratorInsertsZeroOnCross) {
   // current=-0.5, min=-1, max=1, acc=1, decel=-1, dt=1, samples=2
   // max_vel = project(-0.5 → 1) = 0.5; min_vel = project(-0.5 → -1) = -1
   dwb_plugins::OneDVelocityIterator it(-0.5, -1.0, 1.0, 1.0, -1.0, 1.0, 2);
@@ -210,7 +209,7 @@ TEST(DwbOneDVelocity, IteratorInsertsZeroOnCross) {
   EXPECT_DOUBLE_EQ(samples[2], 0.5);
 }
 
-TEST(DwbKinematics, SpeedLimitPercentage) {
+TEST(DwbKinematics, speedLimitPercentage) {
   dwb_plugins::KinematicsHandler handler;
   ayanami::Config cfg("");
   // 空配置下初始化 (默认 0), 再手工注参走 setSpeedLimit 纯逻辑:
@@ -221,7 +220,7 @@ TEST(DwbKinematics, SpeedLimitPercentage) {
   EXPECT_DOUBLE_EQ(handler.getKinematics().getMaxSpeedXY(), 0.0);
 }
 
-TEST(DwbPathOps, AdjustPlanResolution) {
+TEST(DwbPathOps, adjustPlanResolution) {
   nav_2d_msgs::Path2D plan;
   plan.poses.push_back(Pose2D{0.0, 0.0, 0.0});
   plan.poses.push_back(Pose2D{1.0, 0.0, 0.0});
@@ -258,7 +257,7 @@ void writeTempConfig(const std::string& content) {
   ofs << content;
 }
 
-TEST(DwbCritic, PreferForwardScores) {
+TEST(DwbCritic, preferForwardScores) {
   writeTempConfig(makeCriticConfigJson());
   ayanami::Config cfg("/tmp/opencode/dwb_critic_test.json");
   costmap_2d::Costmap2D costmap(10, 10, 0.05, 0.0, 0.0,
@@ -282,7 +281,7 @@ TEST(DwbCritic, PreferForwardScores) {
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 0.0);
 }
 
-TEST(DwbCritic, TwirlingScores) {
+TEST(DwbCritic, twirlingScores) {
   writeTempConfig(makeCriticConfigJson());
   ayanami::Config cfg("/tmp/opencode/dwb_critic_test.json");
   costmap_2d::Costmap2D costmap(10, 10, 0.05, 0.0, 0.0,
@@ -296,7 +295,7 @@ TEST(DwbCritic, TwirlingScores) {
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 1.5);
 }
 
-TEST(DwbCritic, BaseObstacleScoresAndThrows) {
+TEST(DwbCritic, baseObstacleScoresAndThrows) {
   writeTempConfig(makeCriticConfigJson());
   ayanami::Config cfg("/tmp/opencode/dwb_critic_test.json");
   // 20x20 @ 0.05: (10,10) 放 lethal
@@ -330,7 +329,7 @@ TEST(DwbCritic, BaseObstacleScoresAndThrows) {
                dwb_core::IllegalTrajectoryException);
 }
 
-TEST(DwbCritic, OscillationDetectsSignFlips) {
+TEST(DwbCritic, oscillationDetectsSignFlips) {
   writeTempConfig(makeCriticConfigJson());
   ayanami::Config cfg("/tmp/opencode/dwb_critic_test.json");
   costmap_2d::Costmap2D costmap(10, 10, 0.05, 0.0, 0.0,
@@ -358,19 +357,19 @@ TEST(DwbCritic, OscillationDetectsSignFlips) {
 
 // ---------- C. headless 集成 ----------
 
-TEST(DwbController, InitializeLoadsCriticsAndScoresTrajectory) {
-  // 临时 config 目录: config.json → nav.json (modules 块) → dwb.json, 使
-  // ComponentConfig("config_controller") 走双参查找链命中 dwb 配置。
-  ASSERT_FALSE(g_config_json.empty());
+// 构造 headless 配置目录 (config.json global 单层索引 → dwb.json),
+// 使模块构造时经 GlobalConfig::getConfigPath("config_dwb_controller") 命中
+// dwb 配置 (glim 式显式读取, 无 thread_local 注入)。
+std::string setupHeadlessConfigDir() {
+  if (g_config_json.empty()) {
+    throw std::runtime_error("setupHeadlessConfigDir: missing config argv[1]");
+  }
   const std::string dir = "/tmp/opencode/dwb_headless_cfg";
+  std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   {
     std::ofstream ofs(dir + "/config.json");
-    ofs << "{\"global\": {\"config_navigation\": \"nav.json\"}}";
-  }
-  {
-    std::ofstream ofs(dir + "/nav.json");
-    ofs << "{\"modules\": {\"config_controller\": \"dwb.json\"}}";
+    ofs << "{\"global\": {\"config_dwb_controller\": \"dwb.json\"}}";
   }
   {
     std::ifstream src(g_config_json);
@@ -378,23 +377,77 @@ TEST(DwbController, InitializeLoadsCriticsAndScoresTrajectory) {
     dst << src.rdbuf();
   }
   ayanami::GlobalConfig::instance(dir, /*override_path=*/true);
+  return dir;
+}
 
+// 回归 (review finding #2): setPlan 可能先于首次快照绑定 (执行路径:
+// ControllerExecution::run 先 controller->setPlan 再 computeVelocityCommands,
+// 首次 compute 前 critic 的 costmap/queue 均未绑定)。MapGridCritic::reset 在
+// null map/queue 下必须安全, 之后 binding + 打分不崩。
+TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
+  const std::string dir = setupHeadlessConfigDir();
   ayanami::Config cfg(g_config_json);
 
-  // 20x20 @ 0.05 costmap 注入
+  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>("odom", true,
+                                                               false);
+  local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
+  auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
+  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  ctx->setLocalCostmap(wrapper);
+  ctx->setFrames("map", "base_link");
+
+  ayanami::modules::CostmapDwBLocalPlanner planner;
+  ASSERT_NO_THROW(planner.initialize("dwb_local", ctx->getSharedConstPtr()));
+
+  // 高保真执行路径: 首次 compute 之前先 setPlan (critics 尚未绑定 costmap)。
+  ayanami::nav_msgs::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i < 5; ++i) {
+    path.poses.push_back(ayanami::geometry_msgs::PoseStamped::fromIsometry(
+        "map", Eigen::Translation3d(static_cast<double>(i) * 0.2, 0.0, 0.0) *
+                   Eigen::Quaterniond::Identity()));
+  }
+  ASSERT_NO_THROW(planner.setPlan(path));
+
+  // 之后 computeVelocityCommands: 周期内 lockLocal() 读图 → 打分路径 (受控失败而非崩)。
+  ayanami::geometry_msgs::PoseStamped pose =
+      ayanami::geometry_msgs::PoseStamped::fromIsometry(
+          "odom", Eigen::Isometry3d::Identity());
+  ayanami::geometry_msgs::TwistStamped vel, cmd;
+  std::string message;
+  const auto failure =
+      planner.computeVelocityCommands(pose, vel, cmd, message);
+  // pose 帧 (odom) ≠ local 帧 (map) 且无 TF → 受控 TransformUnavailable, 不是内部错误/崩。
+  EXPECT_EQ(failure, ayanami::FailureCode::TransformUnavailable);
+}
+
+TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
+  const std::string dir = setupHeadlessConfigDir();
+  ayanami::Config cfg(g_config_json);
+
+  // 20x20 @ 0.05 costmap 注入 → 本地图。
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>("odom", true,
                                                                false);
   local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
 
   auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
-  ctx->global_frame_ = "map";
-  ctx->robot_frame_ = "base_link";
-  ctx->local_costmap_ = wrapper;
-  ctx->transform_store_ = &ayanami::interfaces::TransformStore::instance();
+  ctx->setLocalCostmap(wrapper);
+  ctx->setFrames("map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
-  EXPECT_NO_THROW(planner.initialize("dwb_local", ctx));
+  EXPECT_NO_THROW(planner.initialize("dwb_local", ctx->getSharedConstPtr()));
+
+  // compute 经 lockLocal() 绑定当前 grid → 打分路径 (受控失败而非崩)。
+  ayanami::geometry_msgs::PoseStamped pose =
+      ayanami::geometry_msgs::PoseStamped::fromIsometry(
+          "map", Eigen::Isometry3d::Identity());
+  ayanami::geometry_msgs::TwistStamped vel, cmd;
+  std::string message;
+  const auto failure =
+      planner.computeVelocityCommands(pose, vel, cmd, message);
+  // 无 plan → transformGlobalPlan 抛 PlannerException → NoValidCommand (受控)。
+  EXPECT_EQ(failure, ayanami::FailureCode::NoValidCommand);
 }
 
 }  // namespace

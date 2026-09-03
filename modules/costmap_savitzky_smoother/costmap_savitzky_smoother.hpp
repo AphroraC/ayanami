@@ -4,7 +4,6 @@
 #include <memory>
 #include <string>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 
 namespace ayanami {
@@ -16,35 +15,36 @@ namespace modules {
  *
  * 系数 [-2, 3, 6, 7, 6, 3, -2] / 21。首尾端点固定, 内部点按窗口卷积
  * (边界用重复填充 clamp)。可选 refinement 轮次做二次平滑 (受 max_duration
- * 时间预算约束)。check_for_collision 时逐点查询 global costmap, 命中
- * inscribed-inflated (>=253, Ruling #6) 即回滚到 original path。
+ * 时间预算约束)。check_for_collision 时对地图模块加锁直读 (shared 锁) 逐点查询
+ * global grid, 命中 inscribed-inflated (>=253, Ruling #6) 即回滚到 original
+ * path。不持有 context / wrapper / 可变 grid。
  */
-class CostmapSavitzkySmoother : public ayanami::costmap::CostmapSmoother {
+class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
  public:
   CostmapSavitzkySmoother();
   // Ruling #3: smoother 族基类无虚析构, 派生类补虚拟析构 (不加 override)。
   virtual ~CostmapSavitzkySmoother() = default;
 
   void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::Ptr ctx) override;
+                  ayanami::costmap::CostmapContext::ConstPtr map) override;
 
-FailureCode smoothPath(const ayanami::nav_msgs::Path& in,
-                        ayanami::nav_msgs::Path& out, double max_duration,
-                        bool check_for_collision, std::string& message) override;
+  FailureCode smoothPath(const ayanami::nav_msgs::Path& in,
+                         ayanami::nav_msgs::Path& out, double max_duration,
+                         bool check_for_collision, std::string& message) override;
 
   bool cancel() override;
 
  private:
-  struct Config {
+  struct CostmapSavitzkySmootherParam {
     bool do_refinement = true;
     int refinement_num = 2;
   };
 
-  void loadConfig();
+  CostmapSavitzkySmootherParam param;
 
-  ayanami::costmap::CostmapContext::Ptr costmap_context_;
-  std::atomic<bool> canceled_{false};
-  Config config_;
+  ayanami::costmap::CostmapContext::ConstPtr map_;
+
+  std::atomic<bool> canceled{false};
 };
 
 }  // namespace modules

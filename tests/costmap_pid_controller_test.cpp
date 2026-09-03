@@ -1,5 +1,5 @@
 // Task 23: modules/costmap_pid_controller (CostmapPidController: 3 轴 PID +
-// 加速度限制 + Twist 清零 + 同 goal 不重置 + goal_checker 对齐)。
+// 加速度限制 + Twist 清零 + 同 goal 不重置 + goal_tolerance 对齐)。
 //
 // 覆盖:
 // - 首帧 linear.x 是 max_acc*dt 的小 ramp (不是脏内存/尖峰)
@@ -10,8 +10,9 @@
 // - 多帧模拟 → 到达 goal → 零速度停止; goal_checker 最终宣布到达
 // - cancel() 中途 → 返回 FailureCode::Canceled + 零速度
 // - Twist 清零: linear.z / angular.x / angular.y 恒 0, 无 NaN/脏内存
-// - module.cpp 导出 create_controller_module 符号 (dlopen 验证)
-// - 空 goal_checker 防御 (compute 直接传 nullptr 走 config goal_tolerance)
+// - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
+// - 停线速度的 XY 边界固定来自 config 的 goal_tolerance (自身 param, 不再
+//   接收 goal_checker; 到达判定由 execution 层 goal_checker 负责)
 
 #include <gtest/gtest.h>
 
@@ -25,6 +26,9 @@
 
 #include <Eigen/Geometry>
 
+#include <costmap_2d/layered_costmap.hpp>
+#include <costmap_server/costmap_wrapper.hpp>
+
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
@@ -35,11 +39,12 @@
 #include <costmap_pid_controller/costmap_pid_controller.hpp>
 #include <simple_goal_checker/simple_goal_checker.hpp>
 #include <ayanami/utility/config.hpp>
-#include <ayanami/utility/load_module.hpp>
+#include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
 using ayanami::abstract::AbstractGoalChecker;
+using ayanami::costmap::CostmapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::FailureCode;
 using ayanami::geometry_msgs::TwistStamped;
@@ -51,16 +56,16 @@ std::string g_module_so;
 std::filesystem::path g_config_dir;
 
 // 与 tests/main 写入的临时 costmap_pid_controller.json 数值一致。
-constexpr double kMaxAcc = 1.0;
-constexpr double kMaxAngAccel = 1.0;
-constexpr double kDt = 0.05;
-constexpr double kPi = 3.14159265358979323846;
+constexpr double k_max_acc = 1.0;
+constexpr double k_max_ang_accel = 1.0;
+constexpr double k_dt = 0.05;
+constexpr double k_pi = 3.14159265358979323846;
 
 PoseStamped makePose(double x, double y, double yaw = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
-  p.pose.linear() =
-      Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
+  p.pose.orientation =
+      Eigen::Quaterniond(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
   return p;
 }
 
@@ -78,29 +83,42 @@ std::shared_ptr<CostmapPidController> makeController() {
   return std::make_shared<CostmapPidController>();
 }
 
-// goal_checker 可选: 传 nullptr 触发 PID 空指针防御 (回退 config goal_tolerance)。
+std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper() {
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  lm->resizeMap(20, 20, 0.5, 0.0, 0.0);
+  return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
+}
+
+std::shared_ptr<CostmapContext> makeContext() {
+  auto ctx = std::make_shared<CostmapContext>();
+  ctx->setGlobalCostmap(makeWrapper());
+  ctx->setLocalCostmap(makeWrapper());
+  return ctx;
+}
+
+// goal_checker 仅用于测试中的到达判定断言; computeVelocityCommands 不再接收
+// goal_checker (PID 停线 XY 边界固定用 config.goal_tolerance)。
 std::shared_ptr<SimpleGoalChecker> makeGoalChecker() {
   return std::make_shared<SimpleGoalChecker>();
 }
 
 TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
                      const PoseStamped& robot, FailureCode& failure,
-                     std::string& message,
-                     const ayanami::abstract::AbstractGoalChecker::Ptr& goal_checker = nullptr) {
+                     std::string& message) {
   TwistStamped cmd;
-  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
-                                         goal_checker);
+  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
   return cmd;
 }
 
 std::string configContent(const std::string& mode) {
   std::string content = "{\n";
   content += "  \"costmap_pid_controller\": {\n";
-  content += "    \"max_v\": 2.0,\n";
-  content += "    \"max_w\": 1.0,\n";
-  content += "    \"max_acc\": 1.0,\n";
-  content += "    \"max_decel\": 1.0,\n";
-  content += "    \"max_angular_accel\": 1.0,\n";
+  content += "    \"max_vel_x\": 2.0,\n";
+  content += "    \"max_vel_theta\": 1.0,\n";
+  content += "    \"max_acc_x\": 1.0,\n";
+  content += "    \"max_decel_x\": 1.0,\n";
+  content += "    \"max_acc_theta\": 1.0,\n";
   content += "    \"kp_v\": 1.0,\n";
   content += "    \"ki_v\": 0.0,\n";
   content += "    \"kd_v\": 0.0,\n";
@@ -128,7 +146,7 @@ void writeConfig(const std::string& mode) {
 
 // ---------- 首帧 ramp (Twist 清零 + 加速度限制) ----------
 
-TEST(CostmapPidControllerTest, FirstFrameLinearRampsNotSpike) {
+TEST(CostmapPidControllerTest, firstFrameLinearRampsNotSpike) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
@@ -140,18 +158,18 @@ TEST(CostmapPidControllerTest, FirstFrameLinearRampsNotSpike) {
   // 必须是 max_acc*dt 的小 ramp 值, 不是脏内存大尖峰
   EXPECT_TRUE(std::isfinite(cmd.twist.linear.x()));
   EXPECT_GT(cmd.twist.linear.x(), 0.0);
-  EXPECT_NEAR(cmd.twist.linear.x(), kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(cmd.twist.linear.x(), k_max_acc * k_dt, 1e-9);
   EXPECT_LT(cmd.twist.linear.x(), 0.2);
 }
 
 // ---------- 角速度 ramp ----------
 
-TEST(CostmapPidControllerTest, AngularVelocityRampsWithMaxAngularAccel) {
+TEST(CostmapPidControllerTest, angularVelocityRampsWithMaxAngularAccel) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
   // 车体朝向 +Y (与 +X 路径成 90°), 需要大角速度纠偏 → 验证首帧被 ramp 限住。
-  const PoseStamped robot = makePose(0.0, 0.0, kPi / 2.0);
+  const PoseStamped robot = makePose(0.0, 0.0, k_pi / 2.0);
   FailureCode failure = FailureCode::None;
   std::string message;
   double prev_mag = 0.0;
@@ -162,7 +180,7 @@ TEST(CostmapPidControllerTest, AngularVelocityRampsWithMaxAngularAccel) {
     EXPECT_GT(mag, 0.0);
     if (i == 0) {
       // 首帧必须受 max_angular_accel 限幅, 不是 PID 全值 (≈ kp_w*error ≈ π/2)
-      EXPECT_LE(mag, kMaxAngAccel * kDt + 1e-9);
+      EXPECT_LE(mag, k_max_ang_accel * k_dt + 1e-9);
     }
     // 逐帧单调爬坡 → 证明是 ramping 而不是一次性大角速度
     EXPECT_GT(mag, prev_mag);
@@ -172,7 +190,7 @@ TEST(CostmapPidControllerTest, AngularVelocityRampsWithMaxAngularAccel) {
 
 // ---------- 同 goal 不重置 / 新 goal 重置 ----------
 
-TEST(CostmapPidControllerTest, RepeatSetPlanDoesNotResetState) {
+TEST(CostmapPidControllerTest, repeatSetPlanDoesNotResetState) {
   auto ctl = makeController();
   const Path plan = makeXPath();
   ASSERT_TRUE(ctl->setPlan(plan));
@@ -191,13 +209,13 @@ TEST(CostmapPidControllerTest, RepeatSetPlanDoesNotResetState) {
   const TwistStamped c3 = compute(ctl, robot, failure, message);
   ASSERT_EQ(failure, FailureCode::None);
 
-  EXPECT_NEAR(c1.twist.linear.x(), kMaxAcc * kDt, 1e-9);
-  EXPECT_NEAR(c2.twist.linear.x(), 2.0 * kMaxAcc * kDt, 1e-9);
-  EXPECT_NEAR(c3.twist.linear.x(), 3.0 * kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(c1.twist.linear.x(), k_max_acc * k_dt, 1e-9);
+  EXPECT_NEAR(c2.twist.linear.x(), 2.0 * k_max_acc * k_dt, 1e-9);
+  EXPECT_NEAR(c3.twist.linear.x(), 3.0 * k_max_acc * k_dt, 1e-9);
   EXPECT_GT(c3.twist.linear.x(), c1.twist.linear.x());
 }
 
-TEST(CostmapPidControllerTest, NewGoalSetPlanResetsState) {
+TEST(CostmapPidControllerTest, newGoalSetPlanResetsState) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
@@ -210,14 +228,14 @@ TEST(CostmapPidControllerTest, NewGoalSetPlanResetsState) {
   ASSERT_EQ(failure, FailureCode::None);
   ASSERT_GT(c2.twist.linear.x(), c1.twist.linear.x());
 
-  // 换不同 goal → 必须 reset: last_linear_vel_ 归零, 重新从 ramp 起步
+  // 换不同 goal → 必须 reset: last_linear_vel 归零, 重新从 ramp 起步
   Path plan2 = makeXPath();
   plan2.poses.back() = makePose(12.0, 0.0);
   ASSERT_TRUE(ctl->setPlan(plan2));
   const TwistStamped c3 = compute(ctl, robot, failure, message);
   ASSERT_EQ(failure, FailureCode::None);
 
-  EXPECT_NEAR(c3.twist.linear.x(), kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(c3.twist.linear.x(), k_max_acc * k_dt, 1e-9);
   EXPECT_LT(c3.twist.linear.x(), c2.twist.linear.x());
 }
 
@@ -225,7 +243,7 @@ TEST(CostmapPidControllerTest, NewGoalSetPlanResetsState) {
 
 // robot 已进入 goal XY 容差 (但朝向一致): linear=0, angular=0 (纯静止),
 // goal_checker 完整条件满足 → 宣布到达。
-TEST(CostmapPidControllerTest, WithinXyToleranceStopsLinearAndCheckerReaches) {
+TEST(CostmapPidControllerTest, withinXyToleranceStopsLinearAndCheckerReaches) {
   auto ctl = makeController();
   auto checker = makeGoalChecker();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
@@ -234,7 +252,7 @@ TEST(CostmapPidControllerTest, WithinXyToleranceStopsLinearAndCheckerReaches) {
   const PoseStamped near_goal = makePose(8.95, 0.0);
   FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped cmd = compute(ctl, near_goal, failure, message, checker);
+  const TwistStamped cmd = compute(ctl, near_goal, failure, message);
 
   EXPECT_EQ(failure, FailureCode::None);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
@@ -248,18 +266,17 @@ TEST(CostmapPidControllerTest, WithinXyToleranceStopsLinearAndCheckerReaches) {
 
 // 位置到但朝向未到: linear=0, angular 非零 (仅 angular PID 对齐 goal yaw),
 // goal_checker 因朝向超差不宣布到达。
-TEST(CostmapPidControllerTest, PositionReachedHeadingNotYetSpinsInPlace) {
+TEST(CostmapPidControllerTest, positionReachedHeadingNotYetSpinsInPlace) {
   auto ctl = makeController();
   auto checker = makeGoalChecker();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
   // robot 在 goal 位置但朝向 +Y (与 +X goal 成 90°): 距离容差内 → 停线,
   // angular PID 对齐 goal yaw。
-  const PoseStamped at_goal_sideways = makePose(9.0, 0.0, kPi / 2.0);
+  const PoseStamped at_goal_sideways = makePose(9.0, 0.0, k_pi / 2.0);
   FailureCode failure = FailureCode::None;
   std::string message;
-  const TwistStamped cmd = compute(ctl, at_goal_sideways, failure, message,
-                                   checker);
+  const TwistStamped cmd = compute(ctl, at_goal_sideways, failure, message);
 
   EXPECT_EQ(failure, FailureCode::None);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
@@ -273,7 +290,7 @@ TEST(CostmapPidControllerTest, PositionReachedHeadingNotYetSpinsInPlace) {
 
 // ---------- 多帧模拟收敛到 goal 停止 ----------
 
-TEST(CostmapPidControllerTest, MultiFrameReachesGoalAndStops) {
+TEST(CostmapPidControllerTest, multiFrameReachesGoalAndStops) {
   auto ctl = makeController();
   auto checker = makeGoalChecker();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
@@ -284,20 +301,20 @@ TEST(CostmapPidControllerTest, MultiFrameReachesGoalAndStops) {
   double prev_x = 0.0;
   bool stopped = false;
   for (int i = 0; i < 2000 && !stopped; ++i) {
-    const TwistStamped cmd = compute(ctl, robot, failure, message, checker);
+    const TwistStamped cmd = compute(ctl, robot, failure, message);
     ASSERT_EQ(failure, FailureCode::None) << message;
     if (cmd.twist.linear.x() < 1e-6) {
       stopped = true;
       break;
     }
     // 手动 simulate: 沿车体 x 前进。
-    robot.pose.translation().x() += cmd.twist.linear.x() * kDt;
-    EXPECT_GT(robot.pose.translation().x(), prev_x);
-    prev_x = robot.pose.translation().x();
+    robot.pose.position.x() += cmd.twist.linear.x() * k_dt;
+    EXPECT_GT(robot.pose.position.x(), prev_x);
+    prev_x = robot.pose.position.x();
   }
 
   EXPECT_TRUE(stopped);
-  EXPECT_GT(robot.pose.translation().x(), 8.0);  // 已贴近 goal
+  EXPECT_GT(robot.pose.position.x(), 8.0);  // 已贴近 goal
   // goal_checker (唯一到达判定) 在位置内且朝向一致 + 零速 → 到达。
   EXPECT_TRUE(checker->isGoalReached(robot, makePose(9.0, 0.0),
                                      TwistStamped{}));
@@ -305,7 +322,7 @@ TEST(CostmapPidControllerTest, MultiFrameReachesGoalAndStops) {
 
 // ---------- cancel ----------
 
-TEST(CostmapPidControllerTest, CancelReturnsCanceledOutcomeAndZero) {
+TEST(CostmapPidControllerTest, cancelReturnsCanceledOutcomeAndZero) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
@@ -326,7 +343,7 @@ TEST(CostmapPidControllerTest, CancelReturnsCanceledOutcomeAndZero) {
 
 // ---------- Twist 清零 (脏内存防护) ----------
 
-TEST(CostmapPidControllerTest, TwistClearedNoDirtyMemory) {
+TEST(CostmapPidControllerTest, twistClearedNoDirtyMemory) {
   auto ctl = makeController();
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
 
@@ -341,8 +358,7 @@ TEST(CostmapPidControllerTest, TwistClearedNoDirtyMemory) {
   FailureCode failure = FailureCode::None;
   std::string message;
   const FailureCode result =
-      ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
-                                   nullptr);
+      ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
 
   EXPECT_EQ(result, FailureCode::None);
   EXPECT_TRUE(std::isfinite(cmd.twist.linear.x()));
@@ -355,7 +371,7 @@ TEST(CostmapPidControllerTest, TwistClearedNoDirtyMemory) {
 
 // ---------- 全向模式使用横向轴 ----------
 
-TEST(CostmapPidControllerTest, OmniModeUsesLateralAxis) {
+TEST(CostmapPidControllerTest, omniModeUsesLateralAxis) {
   writeConfig("omni");
   auto ctl = makeController();
   writeConfig("diff");  // 恢复, 不影响后续测试
@@ -373,13 +389,13 @@ TEST(CostmapPidControllerTest, OmniModeUsesLateralAxis) {
 
   EXPECT_EQ(failure, FailureCode::None);
   // 全向: 横向轴 (linear.y) 承担前进, 首帧被 max_acc*dt ramp 限住。
-  EXPECT_NEAR(cmd.twist.linear.y(), kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(cmd.twist.linear.y(), k_max_acc * k_dt, 1e-9);
   EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
 }
 
 // ---------- costmap 族继承 + initialize ----------
 
-TEST(CostmapPidControllerTest, InheritsCostmapControllerAndInitializes) {
+TEST(CostmapPidControllerTest, inheritsCostmapControllerAndInitializes) {
   auto ctl = makeController();
 
   // 现在属 costmap 族: 经 AbstractController 根可 dynamic_cast 到 CostmapController。
@@ -388,9 +404,8 @@ TEST(CostmapPidControllerTest, InheritsCostmapControllerAndInitializes) {
       std::dynamic_pointer_cast<ayanami::costmap::CostmapController>(base);
   ASSERT_NE(cm, nullptr);
 
-  // 算法不读图, 但按族契约可被注入 CostmapContext。
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
-  EXPECT_NO_THROW(cm->initialize("test_pid", ctx));
+  // 算法不读图, 但按族契约实现 initialize(name, map)。
+  EXPECT_NO_THROW(cm->initialize("test_pid", makeContext()->getSharedConstPtr()));
 
   // initialize 后 PID 行为不受影响。
   ASSERT_TRUE(ctl->setPlan(makeXPath()));
@@ -398,24 +413,17 @@ TEST(CostmapPidControllerTest, InheritsCostmapControllerAndInitializes) {
   std::string message;
   const TwistStamped cmd = compute(ctl, makePose(0.0, 0.0), failure, message);
   EXPECT_EQ(failure, FailureCode::None);
-  EXPECT_NEAR(cmd.twist.linear.x(), kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(cmd.twist.linear.x(), k_max_acc * k_dt, 1e-9);
 }
 
 // ---------- module.cpp 工厂符号 ----------
 
-TEST(CostmapPidControllerTest, ModuleFactoryCreatesDerivedController) {
+TEST(CostmapPidControllerTest, moduleFactoryCreatesDerivedController) {
   ASSERT_FALSE(g_module_so.empty());
-  void* handle = ayanami::open_so(g_module_so);
-  ASSERT_NE(handle, nullptr);
-  using Factory = ayanami::abstract::AbstractController* (*)();
-  void* symbol = ayanami::load_symbol(handle, "create_controller_module");
-  ASSERT_NE(symbol, nullptr);
-  auto factory = reinterpret_cast<Factory>(symbol);
-  ayanami::abstract::AbstractController* controller = factory();
+  // 公共工厂 + 类型化 cast: 返回真实派生实例。
+  auto controller = std::dynamic_pointer_cast<CostmapPidController>(
+      ayanami::ExtensionModule::load_module(g_module_so));
   ASSERT_NE(controller, nullptr);
-  // 返回真实派生实例。
-  EXPECT_NE(dynamic_cast<CostmapPidController*>(controller), nullptr);
-  delete controller;
 }
 
 int main(int argc, char** argv) {
@@ -424,16 +432,16 @@ int main(int argc, char** argv) {
     g_module_so = argv[1];
   }
 
-  // 临时 config 目录: 控制模块参数 (与测试常量一致)。
+  // 临时 config 目录 (严格单层索引): 模块构造时经
+  // GlobalConfig::getConfigPath("config_pid_controller") 显式读取 (无
+  // thread_local 注入)。
   g_config_dir =
       std::filesystem::temp_directory_path() / "ayanami_costmap_pid_test";
   std::filesystem::remove_all(g_config_dir);
   std::filesystem::create_directories(g_config_dir);
   {
     std::ofstream ofs(g_config_dir / "config.json");
-    ofs << R"({"global": { "config_navigation": "navigation.json" }})";
-    std::ofstream nav(g_config_dir / "navigation.json");
-    nav << R"({"modules": { "config_controller": "costmap_pid_controller.json" }})";
+    ofs << R"({"global": { "config_pid_controller": "costmap_pid_controller.json" }})";
   }
   writeConfig("diff");
   ayanami::GlobalConfig::instance(g_config_dir.string(), true);

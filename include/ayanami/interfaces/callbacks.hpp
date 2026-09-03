@@ -4,7 +4,6 @@
 
 #include "ayanami/messages/actions.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
-#include "ayanami/messages/sensor_msgs.hpp"
 #include "ayanami/utility/callback_slot.hpp"
 
 namespace ayanami {
@@ -20,6 +19,11 @@ namespace interfaces {
  * 分工 (spec §3.4): 主流控制流走 BT 节点直接调 NavigationServerBase 的
  * TaskHandle 直连, 不走这里; 本组槽供旁路 (ROS 扩展 / 可视化 / 回退 /
  * 外部监控) 订阅。
+ *
+ * 输入/输出的纪律: 本组全局槽只承载**输出/观测** (goal/feedback/result,
+ * velocity command, costmap 可视化)。障碍观测 (pointcloud/laserscan) 这类
+ * **输入**不走全局槽 —— 由 ROS 侧直接调 AbstractNavigation::setPointcloud /
+ * setLaserScan → CostmapNavigationServer::handleObstacle* 落图 (宿主直递)。
  */
 struct NavigationCallbacks {
   // ---- 四组件 action 流 (goal / feedback / result) ----
@@ -35,12 +39,10 @@ struct NavigationCallbacks {
   static CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> on_recovery_goal;
   static CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> on_recovery_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> on_recovery_result;
-  // ---- 状态 / 输入 (spec §3.3 其余 5 个) ----
-  static CallbackSlot<void(const ayanami::geometry_msgs::PoseStamped&, const ayanami::geometry_msgs::TwistStamped&)> on_robot_state_updated;
+  // ---- 状态 / 输出 / 观测 (spec §3.3 其余 4 个; on_robot_state_updated 无
+  // 生产发射点, 已删除) ----
   static CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> on_velocity_command;
   static CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> on_costmap_visualization;
-  static CallbackSlot<void(const ayanami::sensor_msgs::PointCloud2&)> on_obstacle_pointcloud;
-  static CallbackSlot<void(const ayanami::sensor_msgs::LaserScan&)> on_obstacle_laserscan;
 };
 
 } // namespace interfaces

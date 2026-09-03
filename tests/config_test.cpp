@@ -8,7 +8,7 @@
 
 namespace {
 
-std::filesystem::path make_temp_config_dir() {
+std::filesystem::path makeTempConfigDir() {
   std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "ayanami_config_test";
   std::filesystem::remove_all(dir);
@@ -16,7 +16,7 @@ std::filesystem::path make_temp_config_dir() {
   return dir;
 }
 
-void write_json(const std::filesystem::path& path,
+void writeJson(const std::filesystem::path& path,
                 const std::string& content) {
   std::ofstream ofs(path);
   ofs << content;
@@ -24,27 +24,27 @@ void write_json(const std::filesystem::path& path,
 
 } // namespace
 
-TEST(ConfigTest, EmptyFileGracefulReturn) {
+TEST(ConfigTest, emptyFileGracefulReturn) {
   // 文件打不开 -> spdlog::error + 空 json，param 回退 default
-  auto dir = make_temp_config_dir();
+  auto dir = makeTempConfigDir();
   ayanami::Config cfg((dir / "nonexistent.json").string());
   EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
 }
 
-TEST(ConfigTest, EmptyOrInvalidJsonGracefulReturn) {
+TEST(ConfigTest, emptyOrInvalidJsonGracefulReturn) {
   // 文件存在但内容非法 JSON -> nlohmann parse_error 被捕获 -> spdlog::error +
   // 空 json，param 回退 default（不 abort）
-  auto dir = make_temp_config_dir();
-  write_json(dir / "invalid_config.json", R"({ "unclosed": )");
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "invalid_config.json", R"({ "unclosed": )");
   ayanami::Config cfg((dir / "invalid_config.json").string());
   EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
-  EXPECT_FALSE(cfg.has_param("any", "any"));
+  EXPECT_FALSE(cfg.hasParam("any", "any"));
 }
 
-TEST(ConfigTest, EigenIsometry3dVector) {
+TEST(ConfigTest, eigenIsometry3dVector) {
   // TUM 7 元 x2: [x,y,z,qx,qy,qz,qw] * 2
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json",
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json",
              R"({ "p": { "vec": [1,2,3,0,0,0,1, 4,5,6,0,0,0,1] } })");
   ayanami::Config cfg((dir / "test.json").string());
   auto vec = cfg.param<std::vector<Eigen::Isometry3d>>(
@@ -55,32 +55,32 @@ TEST(ConfigTest, EigenIsometry3dVector) {
   EXPECT_NEAR(vec[1].translation().y(), 5.0, 1e-6);
 }
 
-TEST(ConfigTest, LoadAndParamScalar) {
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json", R"({ "m": { "k": 42, "v": "hello" } })");
+TEST(ConfigTest, loadAndParamScalar) {
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json", R"({ "m": { "k": 42, "v": "hello" } })");
   ayanami::Config cfg((dir / "test.json").string());
   EXPECT_EQ(cfg.param<int>("m", "k", 0), 42);
   EXPECT_EQ(cfg.param<std::string>("m", "v", ""), "hello");
   EXPECT_EQ(cfg.param<int>("m", "missing", 7), 7);  // default
 }
 
-TEST(ConfigTest, VectorStringParam) {
+TEST(ConfigTest, vectorStringParam) {
   // extension_modules 等字符串数组经 Config API 读取。
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json",
-             R"({ "m": { "ext": ["librviz_viewer.so", "libecho.so"] } })");
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json",
+             R"({ "m": { "ext": ["libayanami_rviz_viewer.so", "libecho.so"] } })");
   ayanami::Config cfg((dir / "test.json").string());
   const auto v = cfg.param<std::vector<std::string>>("m", "ext", {});
   ASSERT_EQ(v.size(), 2u);
-  EXPECT_EQ(v[0], "librviz_viewer.so");
+  EXPECT_EQ(v[0], "libayanami_rviz_viewer.so");
   EXPECT_EQ(v[1], "libecho.so");
   EXPECT_TRUE(cfg.param<std::vector<std::string>>("m", "missing", {}).empty());
 }
 
-TEST(ConfigTest, NestedVectorStringParam) {
+TEST(ConfigTest, nestedVectorStringParam) {
   // tf_sync_edges 所需 [[target, source], ...] (std::vector<std::vector<std::string>>)。
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json",
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json",
              R"({ "m": { "edges": [["map", "odom"], ["odom", "base_link"]] } })");
   ayanami::Config cfg((dir / "test.json").string());
   const auto v =
@@ -94,9 +94,9 @@ TEST(ConfigTest, NestedVectorStringParam) {
   EXPECT_EQ(v[1][1], "base_link");
 }
 
-TEST(ConfigTest, Vector2dFootprintParam) {
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json",
+TEST(ConfigTest, vector2dFootprintParam) {
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json",
              R"({ "costmap": { "footprint": [[-0.2,-0.1],[0.2,0.1]] } })");
   ayanami::Config cfg((dir / "test.json").string());
   const auto footprint = cfg.param<std::vector<Eigen::Vector2d>>(
@@ -106,10 +106,10 @@ TEST(ConfigTest, Vector2dFootprintParam) {
   EXPECT_DOUBLE_EQ(footprint[1].y(), 0.1);
 }
 
-TEST(ConfigTest, EigenTrait) {
+TEST(ConfigTest, eigenTrait) {
   // TUM 7 元 [x,y,z,qx,qy,qz,qw]; JSON 带注释验证 ignore_comments=true
-  auto dir = make_temp_config_dir();
-  write_json(dir / "test.json",
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "test.json",
              R"({ "p": { "t": [1,2,3,0,0,0,1] } }  // TUM 7 元
 )");
   ayanami::Config cfg((dir / "test.json").string());
@@ -120,30 +120,30 @@ TEST(ConfigTest, EigenTrait) {
   EXPECT_NEAR(t.translation().z(), 3.0, 1e-6);
 }
 
-TEST(GlobalConfigTest, ConfigsSubdirFallback) {
+TEST(GlobalConfigTest, configsSubdirFallback) {
   // §2.2 branch ④: 目录下无 config.json 但 configs/config.json 存在 -> 切到 configs/
-  auto dir = make_temp_config_dir();
+  auto dir = makeTempConfigDir();
   std::filesystem::create_directories(dir / "configs");
-  write_json(dir / "configs" / "config.json", R"({ "global": {} })");
+  writeJson(dir / "configs" / "config.json", R"({ "global": {} })");
   ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance(dir.string(), true);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->param<std::string>("global", "config_path", ""),
             (dir / "configs").string());
 }
 
-TEST(GlobalConfigTest, InstanceOnce) {
-  auto dir = make_temp_config_dir();
-  write_json(dir / "config.json", R"({ "global": { "config_path": "" } })");
+TEST(GlobalConfigTest, instanceOnce) {
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "config.json", R"({ "global": { "config_path": "" } })");
   ayanami::GlobalConfig* a = ayanami::GlobalConfig::instance(dir.string());
   ayanami::GlobalConfig* b = ayanami::GlobalConfig::instance();
   EXPECT_EQ(a, b);
-  EXPECT_FALSE(ayanami::GlobalConfig::get_config_path("config_xyz").empty());
+  EXPECT_FALSE(ayanami::GlobalConfig::getConfigPath("config_xyz").empty());
 }
 
-TEST(GlobalConfigTest, PathResolution) {
+TEST(GlobalConfigTest, pathResolution) {
   // config_path 是文件 -> 取父目录; override 重建 + config_path 写回
-  auto dir = make_temp_config_dir();
-  write_json(dir / "config.json", R"({ "global": { "config_path": "" } })");
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "config.json", R"({ "global": { "config_path": "" } })");
   ayanami::GlobalConfig* g =
       ayanami::GlobalConfig::instance((dir / "config.json").string(), true);
   ASSERT_NE(g, nullptr);

@@ -32,6 +32,6 @@ public:
   virtual bool isValidCost(const unsigned char cost);
 
 protected:
-  bool sum_scores_;
+  bool sum_scores;
 };
 }  // namespace dwb_critics

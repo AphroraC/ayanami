@@ -1,6 +1,6 @@
 #include "simple_progress_checker.hpp"
+#include <ayanami/utility/extension_module.hpp>
 
-extern "C" ayanami::abstract::AbstractProgressChecker*
-create_progress_checker_module() {
+extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new ayanami::modules::SimpleProgressChecker();
 }

@@ -10,23 +10,17 @@ namespace ayanami {
 /**
  * @brief JSON-based configuration loader.
  *
- * The underlying document is stored as `std::any` holding an
- * `nlohmann::json` so that the public header never depends on the heavy
+ * Mirrors glim's Config value object: constructed from a JSON file path
+ * (empty string => empty document), holds the parsed document as `std::any`
+ * hiding `nlohmann::json` so the public header never depends on the heavy
  * JSON header (kept private in config_impl.hpp / src/utility/config.cpp).
+ *
+ * Params are addressed as `module_name / param_name` (top-level JSON object
+ * keys). No thread-local "active config", no Scope, no injection: each user
+ * explicitly constructs its own Config from GlobalConfig::getConfigPath().
  */
 class Config {
 public:
-  class Scope {
-   public:
-    explicit Scope(const Config& config);
-    ~Scope();
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-
-   private:
-    const Config* previous_{nullptr};
-  };
-
   /**
    * @brief Load a configuration from a JSON file.
    * @param config_filename Path to the JSON file.
@@ -38,24 +32,14 @@ public:
   explicit Config(const std::string& config_filename);
   virtual ~Config();
 
-  /// @brief 当前插件工厂调用所绑定的配置; 非插件装载上下文返回 nullptr。
-  static const Config* active();
-
   Config(const Config&) = delete;
   Config& operator=(const Config&) = delete;
 
   /**
    * @brief Check if a parameter exists.
    */
-  bool has_param(const std::string& module_name,
+  bool hasParam(const std::string& module_name,
                  const std::string& param_name) const;
-
-  /**
-   * @brief Get a required parameter (aborts if not found).
-   */
-  template <typename T>
-  T param_cast(const std::string& module_name,
-               const std::string& param_name) const;
 
   /**
    * @brief Get an optional parameter (std::nullopt if not found).
@@ -72,30 +56,31 @@ public:
           const T& default_value) const;
 
   /**
-   * @brief Read a parameter that is either a single string or an array of
-   *        strings (modules 块条目: 单文件族用 string, 多文件族如 recovery 用
-   *        array)。不存在或类型不符返回空。
+   * @brief Get a required parameter (aborts if not found).
    */
-  std::vector<std::string> param_string_or_list(
-      const std::string& module_name, const std::string& param_name) const;
+  template <typename T>
+  T param_cast(const std::string& module_name,
+               const std::string& param_name) const;
 
   /**
    * @brief Override a parameter value in memory (does not touch the file).
    */
   template <typename T>
-  void override_param(const std::string& module_name,
+  void overrideParam(const std::string& module_name,
                       const std::string& param_name, const T& value);
 
 protected:
-  std::any config_;
+  std::any config;
 };
 
 /**
  * @brief Process-wide singleton bootstrap for the root config directory.
  *
- * Resolves the config directory (see spec §2.2) and writes the resolved
- * directory back into the `global.config_path` parameter, forming a
- * self-bootstrapping loop. Initialization is protected by `std::once_flag`;
+ * Mirrors glim's GlobalConfig: holds the main `config.json` document and is
+ * the single entry point to resolve sub-config file paths via a flat
+ * single-level index in the `global` section
+ * (`getConfigPath(name) = directory + "/" + global[name]`, defaulting to
+ * `name + ".json"`). Initialization is protected by `std::once_flag`;
  * `override_path=true` explicitly rebuilds the instance (single-threaded
  * lifecycle operation).
  */
@@ -118,38 +103,10 @@ public:
                                 bool override_path = false);
 
   /**
-   * @brief Resolve a named sub-config's file path.
+   * @brief Resolve a named sub-config's file path (single-level index).
    *        directory + "/" + param("global", config_name, config_name + ".json")
    */
-  static std::string get_config_path(const std::string& config_name);
-  static std::vector<std::string> get_config_paths(
-      const std::string& config_name);
-
-  /**
-   * @brief 从 owner_config 指向的配置文件的 "modules" 段解析 config_name 指向
-   *        的模块 json 路径。
-   *
-   * 查找链:
-   *   1. global[owner_config] 解析宿主配置文件 (如 config_navigation →
-   *      modules/costmap_navigation.json)
-   *   2. 宿主文件的 "modules" 段读 config_name (值可为 string 或 string 数组)
-   *   3. 条目相对 config_path (config 根目录) 解析
-   *   4. modules 段缺失/无条目时回退 config_path/<config_name>.json
-   */
-  static std::string get_config_path(const std::string& owner_config,
-                                     const std::string& config_name);
-  static std::vector<std::string> get_config_paths(
-      const std::string& owner_config, const std::string& config_name);
-};
-
-class ComponentConfig {
- public:
-  explicit ComponentConfig(const std::string& config_key = "");
-  const Config& get() const { return *config_; }
-
- private:
-  std::unique_ptr<Config> owned_;
-  const Config* config_{nullptr};
+  static std::string getConfigPath(const std::string& config_name);
 };
 
 } // namespace ayanami

@@ -1,8 +1,7 @@
 {
   "planner": {
     "name": "costmap_smac",
-    "so_name": "libayanami_costmap_smac_planner.so",
-    "create_symbol": "create_costmap_planner_module"
+    "so_name": "libayanami_costmap_smac_planner.so"
   },
   "costmap_smac_planner": {
     "use_diagonal": true,

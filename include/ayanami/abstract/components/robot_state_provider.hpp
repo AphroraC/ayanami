@@ -35,52 +35,52 @@ public:
   const std::string& getRobotFrame() const;
 
 private:
-  mutable std::mutex mutex_;
-  geometry_msgs::PoseStamped pose_;
-  geometry_msgs::TwistStamped velocity_;
-  std::string global_frame_, odom_frame_, robot_frame_;
+  mutable std::mutex mutex;
+  geometry_msgs::PoseStamped pose;
+  geometry_msgs::TwistStamped velocity;
+  std::string global_frame, odom_frame, robot_frame;
 };
 
 inline void RobotStateProvider::setFrames(const std::string& global,
                                           const std::string& odom,
                                           const std::string& robot) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  global_frame_ = global;
-  odom_frame_ = odom;
-  robot_frame_ = robot;
+  std::lock_guard<std::mutex> lock(mutex);
+  global_frame = global;
+  odom_frame = odom;
+  robot_frame = robot;
 }
 
 inline void RobotStateProvider::setRobotState(
     const geometry_msgs::PoseStamped& pose,
     const geometry_msgs::TwistStamped& velocity) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pose_ = pose;
-  velocity_ = velocity;
+  std::lock_guard<std::mutex> lock(mutex);
+  this->pose = pose;
+  this->velocity = velocity;
 }
 
 inline geometry_msgs::PoseStamped RobotStateProvider::getRobotPose() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return pose_;
+  std::lock_guard<std::mutex> lock(mutex);
+  return pose;
 }
 
 inline geometry_msgs::TwistStamped RobotStateProvider::getRobotVelocity() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return velocity_;
+  std::lock_guard<std::mutex> lock(mutex);
+  return velocity;
 }
 
 inline const std::string& RobotStateProvider::getGlobalFrame() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return global_frame_;
+  std::lock_guard<std::mutex> lock(mutex);
+  return global_frame;
 }
 
 inline const std::string& RobotStateProvider::getOdomFrame() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return odom_frame_;
+  std::lock_guard<std::mutex> lock(mutex);
+  return odom_frame;
 }
 
 inline const std::string& RobotStateProvider::getRobotFrame() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return robot_frame_;
+  std::lock_guard<std::mutex> lock(mutex);
+  return robot_frame;
 }
 
 } // namespace components

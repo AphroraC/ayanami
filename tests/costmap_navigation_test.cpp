@@ -2,12 +2,12 @@
 //
 // M1 关键里程碑: 把核心库全部组件 (CostmapNavigationServer + 4 族插件 +
 // BehaviorTreePilot) 组装为 dlopen 入口插件。本测试:
-// - dlopen libayanami_costmap_navigation.so → create_navigation_module
+// - ExtensionModule 加载 libayanami_costmap_navigation.so
 // - initialize: configureCoreMaps + loadPlugins (dlopen smac/savitzky/spin
 //   真实算法模块 + test controller) + createActions + pilot wiring (Ruling #5:
-//   configure → loadFromFile → setNavigationServer)
+//   configure → loadFromFile → setNavigationRuntime)
 // - start() 首发可视化 (on_costmap_visualization 旁路被捕获)
-// - setGoal → navigation_thread_ 跑 BT → raw_path/smoothed_path 入黑板 +
+// - setGoal → navigation_thread 跑 BT → raw_path/smoothed_path 入黑板 +
 //   on_velocity_command 收到非零速度 (首帧 cmd_vel.linear 已初始化非 NaN)
 // - 抢占: 第二次 setGoal → 先发零速度 + session_id 自增 + BT 树不重建
 // - 析构顺序不崩 (Ruling #3)
@@ -33,13 +33,19 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <costmap_navigation/costmap_navigation.hpp>
-#include <ayanami/utility/load_module.hpp>
+#include <ayanami/abstract/core/abstract_navigation.hpp>
+#include <ayanami/costmap/core/costmap_planner.hpp>
+#include <ayanami/costmap/core/costmap_smoother.hpp>
+#include <ayanami/costmap/core/costmap_controller.hpp>
+#include <ayanami/costmap/core/costmap_recovery.hpp>
+#include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::behavior_tree::kRawPath;
-using ayanami::behavior_tree::kSessionId;
-using ayanami::behavior_tree::kSmoothedPath;
+using ayanami::behavior_tree::k_raw_path;
+using ayanami::behavior_tree::k_goal_revision;
+using ayanami::behavior_tree::k_session_id;
+using ayanami::behavior_tree::k_smoothed_path;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
@@ -82,11 +88,11 @@ bool allFinite(const TwistStamped& t) {
 
 PoseStamped makePose(double x, double y = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
-std::filesystem::path make_temp_dir() {
+std::filesystem::path makeTempDir() {
   std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "ayanami_costmap_navigation_test";
   std::filesystem::remove_all(dir);
@@ -100,64 +106,65 @@ void write_file(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::string plugin_json(const std::string& module, const std::string& name,
-                        const std::string& so_name,
-                        const std::string& symbol) {
+std::string pluginJson(const std::string& module, const std::string& name,
+                        const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name +
-         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
 // 未闭合版 (供与模块参数段拼接成单文件)。
-std::string plugin_json_open(const std::string& module, const std::string& name,
-                             const std::string& so_name,
-                             const std::string& symbol) {
+std::string pluginJsonOpen(const std::string& module, const std::string& name,
+                             const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name +
-         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  },\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n";
 }
 
 // 生成临时 config 目录。so_name 用 argv 注入的真实模块绝对路径。
-std::filesystem::path make_config_dir() {
-  const auto dir = make_temp_dir() / "cfg";
+std::filesystem::path makeConfigDir() {
+  const auto dir = makeTempDir() / "cfg";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   std::filesystem::create_directories(dir / "BT");
 
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\"\n"
+             "    \"config_navigation\": \"costmap_navigation.json\",\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\",\n"
+             "    \"config_smac_planner\": \"planner.json\",\n"
+             "    \"config_savitzky_smoother\": \"smoother.json\",\n"
+             "    \"config_spin_recovery\": \"recovery.json\"\n"
              "  }\n}\n");
 
   write_file(dir / "planner.json",
-             plugin_json_open("planner", "test_planner", g_smac_so,
-                         "create_costmap_planner_module") +
+             pluginJsonOpen("planner", "test_planner", g_smac_so) +
              "  \"costmap_smac_planner\": {\n"
              "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
              "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
              "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
              "  }\n}\n");
   write_file(dir / "smoother.json",
-             plugin_json_open("smoother", "test_smoother", g_savitzky_so,
-                         "create_costmap_smoother_module") +
+             pluginJsonOpen("smoother", "test_smoother", g_savitzky_so) +
              "  \"costmap_savitzky_smoother\": {\n"
              "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"
              "  }\n}\n");
   write_file(dir / "controller.json",
-             plugin_json("controller", "test_controller",
-                         g_test_controller_so,
-                         "create_navigation_test_controller_plugin"));
+             pluginJson("controller", "test_controller", g_test_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
-             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\",\n"
+             "\",\n"
              "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
              "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
              "  }\n}\n");
   // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
   write_file(dir / "goal_checker.json",
-             plugin_json_open("goal_checker", "simple_goal_checker",
-                         g_goal_checker_so, "create_goal_checker_module") +
+             pluginJsonOpen("goal_checker", "simple_goal_checker",
+                         g_goal_checker_so) +
              "  \"goal_checker\": {\n"
              "    \"position_tolerance\": 0.10,\n"
              "    \"angle_tolerance\": 0.20,\n"
@@ -165,9 +172,8 @@ std::filesystem::path make_config_dir() {
              "    \"angular_tolerance\": 0.10\n"
              "  }\n}\n");
   write_file(dir / "progress_checker.json",
-             plugin_json_open("progress_checker", "simple_progress_checker",
-                         g_progress_checker_so,
-                         "create_progress_checker_module") +
+             pluginJsonOpen("progress_checker", "simple_progress_checker",
+                         g_progress_checker_so) +
              "  \"progress_checker\": {\n"
              "    \"required_movement\": 0.1,\n"
              "    \"movement_angle_required\": 0.2,\n"
@@ -189,6 +195,7 @@ std::filesystem::path make_config_dir() {
   {
     std::ofstream nav(dir / "costmap_navigation.json");
     nav << "{\n  \"navigation\": {\n"
+        << "    \"behavior_tree_extension\": \"" AYANAMI_TEST_BT_EXT_SO "\",\n"
         << "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
         << "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
         << "    \"planner_id\": \"test_planner\",\n"
@@ -206,14 +213,6 @@ std::filesystem::path make_config_dir() {
         << "    \"controller_frequency\": 20.0,\n"
         << "    \"tick_frequency\": 100.0,\n"
         << "    \"costmap_visualization_rate\": 100.0\n"
-        << "  },\n"
-        << "  \"modules\": {\n"
-        << "    \"config_planner\": \"planner.json\",\n"
-        << "    \"config_smoother\": \"smoother.json\",\n"
-        << "    \"config_controller\": \"controller.json\",\n"
-        << "    \"config_recovery\": [\"recovery.json\"],\n"
-        << "    \"config_goal_checker\": \"goal_checker.json\",\n"
-        << "    \"config_progress_checker\": \"progress_checker.json\"\n"
         << "  },\n"
         << "  \"costmap\": {\n"
         << "    \"global_frame\": \"map\",\n"
@@ -351,23 +350,24 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
   return fn();
 }
 
-// dlopen 模块 → create_navigation_module → CostmapNavigation* (测试访问 pilot)。
+// 公共工厂装载 host 模块 → AbstractNavigation::Ptr → dynamic_cast<CostmapNavigation*>。
+// 亲引用: 组件寿命 = 进程 (spec §4.1, 不 dlclose), 宿主 shared_ptr 特意泄漏保值,
+// 测试仍负责 delete host。
 CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
-  void* handle = ayanami::open_so(g_module_so);
-  EXPECT_NE(handle, nullptr);
-  using Factory = ayanami::abstract::AbstractNavigation* (*)();
-  void* symbol = ayanami::load_symbol(handle, "create_navigation_module");
-  EXPECT_NE(symbol, nullptr);
-  auto factory = reinterpret_cast<Factory>(symbol);
-  ayanami::abstract::AbstractNavigation* nav = factory();
+  auto nav = std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(
+      ayanami::ExtensionModule::load_module(g_module_so));
   EXPECT_NE(nav, nullptr);
-  auto* host = dynamic_cast<CostmapNavigation*>(nav);
+  if (!nav) {
+    return nullptr;
+  }
+  auto* host = dynamic_cast<CostmapNavigation*>(nav.get());
   EXPECT_NE(host, nullptr);
   if (host == nullptr) {
-    delete nav;
     return nullptr;
   }
   host->initialize(config_dir.string());
+  (void)new std::shared_ptr<ayanami::abstract::AbstractNavigation>(
+      std::move(nav));  // leak-persist
   return host;
 }
 
@@ -375,29 +375,25 @@ CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
 
 // ---------------- 宿主组装 (configureCoreMaps + loadPlugins + Ruling #5) ----------------
 
-TEST(CostmapNavigationTest, DlopenAllAlgorithmModulesLoad) {
-  // 4 个真实算法模块 .so 必须都能 dlopen 且导出 spec §4.3 工厂符号
-  // (pid 是 AbstractController 族, 工厂返回 abstract::AbstractController*)。
-  struct Symbol {
-    const std::string& so;
-    const char* sym;
-  };
-  const Symbol checks[] = {
-      {g_smac_so, "create_costmap_planner_module"},
-      {g_savitzky_so, "create_costmap_smoother_module"},
-      {g_pid_so, "create_controller_module"},
-      {g_spin_so, "create_costmap_recovery_module"},
-  };
-  for (const auto& c : checks) {
-    void* h = ayanami::open_so(c.so);
-    ASSERT_NE(h, nullptr) << "dlopen failed: " << c.so;
-    void* s = ayanami::load_symbol(h, c.sym);
-    ASSERT_NE(s, nullptr) << "symbol missing: " << c.sym;
-  }
+TEST(CostmapNavigationTest, dlopenAllAlgorithmModulesLoad) {
+  // 4 个真实算法模块 .so 都走公共工厂 create_extension_module, 且经类型化
+  // dynamic_pointer_cast 得到正确的插件族类型。
+  EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapPlanner>(
+                ayanami::ExtensionModule::load_module(g_smac_so)),
+            nullptr);
+  EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapSmoother>(
+                ayanami::ExtensionModule::load_module(g_savitzky_so)),
+            nullptr);
+  EXPECT_NE(std::dynamic_pointer_cast<ayanami::abstract::AbstractController>(
+                ayanami::ExtensionModule::load_module(g_pid_so)),
+            nullptr);
+  EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapRecovery>(
+                ayanami::ExtensionModule::load_module(g_spin_so)),
+            nullptr);
 }
 
-TEST(CostmapNavigationTest, InitializeBuildsFullStack) {
-  const auto dir = make_config_dir();
+TEST(CostmapNavigationTest, initializeBuildsFullStack) {
+  const auto dir = makeConfigDir();
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
 
@@ -412,8 +408,8 @@ TEST(CostmapNavigationTest, InitializeBuildsFullStack) {
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
   ASSERT_NE(host->navigationServer().recoveryAction("test_spin"), nullptr);
 
-  // Ruling #5: pilot 已 configure + loadFromFile + setNavigationServer
-  // (loadFromFile 校验 16 板项通过 → 树已建)
+  // Ruling #5: pilot 已 configure + loadFromFile + setNavigationRuntime
+  // (loadFromFile 校验 17 板项通过 → 树已建)
   ASSERT_NE(host->pilot().blackboard(), nullptr);
 
   host->stop();
@@ -422,9 +418,9 @@ TEST(CostmapNavigationTest, InitializeBuildsFullStack) {
 
 // ---------------- start / spinOnce 可视化旁路 ----------------
 
-TEST(CostmapNavigationTest, StartPublishesVisualizationAndSpinOnceRepeats) {
+TEST(CostmapNavigationTest, startPublishesVisualizationAndSpinOnceRepeats) {
   attachObservers();
-  const auto dir = make_config_dir();
+  const auto dir = makeConfigDir();
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
 
@@ -461,9 +457,9 @@ TEST(CostmapNavigationTest, StartPublishesVisualizationAndSpinOnceRepeats) {
 
 // ---------------- setGoal: BT 真跑通 path→cmd_vel ----------------
 
-TEST(CostmapNavigationTest, SetGoalRunsBtAndEmitsVelocity) {
+TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
   attachObservers();
-  const auto dir = make_config_dir();
+  const auto dir = makeConfigDir();
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
   host->start();
@@ -476,11 +472,11 @@ TEST(CostmapNavigationTest, SetGoalRunsBtAndEmitsVelocity) {
   // 100ms 内 raw_path / smoothed_path 写入 pilot 黑板
   EXPECT_TRUE(waitUntil([&] {
     Path raw;
-    if (!bb->get<Path>(kRawPath, raw) || raw.poses.empty()) {
+    if (!bb->get<Path>(k_raw_path, raw) || raw.poses.empty()) {
       return false;
     }
     Path smoothed;
-    return bb->get<Path>(kSmoothedPath, smoothed) && !smoothed.poses.empty();
+    return bb->get<Path>(k_smoothed_path, smoothed) && !smoothed.poses.empty();
   }, 2000));
 
   // BT 主流程推进 → controller 经 on_velocity_command 旁路发非零速度
@@ -494,11 +490,11 @@ TEST(CostmapNavigationTest, SetGoalRunsBtAndEmitsVelocity) {
   detachObservers();
 }
 
-// ---------------- 抢占: 零速度 + session_id 自增 + BT 树不重建 ----------------
+// ---------------- Goal revision: controller keeps running + same session/tree ----------------
 
-TEST(CostmapNavigationTest, NewGoalPreemptsWithZeroVelocityAndSameTree) {
+TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   attachObservers();
-  const auto dir = make_config_dir();
+  const auto dir = makeConfigDir();
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
   host->start();
@@ -510,20 +506,24 @@ TEST(CostmapNavigationTest, NewGoalPreemptsWithZeroVelocityAndSameTree) {
   ASSERT_TRUE(waitUntil([&] { return nonZeroCmdCount() >= 1; }, 2000));
 
   uint64_t sid_before = 0;
-  ASSERT_TRUE(bb->get<uint64_t>(kSessionId, sid_before));
+  ASSERT_TRUE(bb->get<uint64_t>(k_session_id, sid_before));
   const void* tree_addr = &host->pilot().tree();
 
-  // 新 goal 抢占: 先发零速度
+  uint64_t revision_before = 0;
+  ASSERT_TRUE(bb->get<uint64_t>(k_goal_revision, revision_before));
   g_preempt_armed.store(true);
   host->setGoal(makePose(0.5, 0.5));
-  EXPECT_TRUE(waitUntil([&] { return g_zero_after_preempt.load() >= 1; }, 1000));
-  g_preempt_armed.store(false);
-
-  // session_id 自增 (pilot.beginNavigation 内 session_id_++)
   EXPECT_TRUE(waitUntil([&] {
-    uint64_t sid = 0;
-    return bb->get<uint64_t>(kSessionId, sid) && sid > sid_before;
+    uint64_t revision = 0;
+    return bb->get<uint64_t>(k_goal_revision, revision) &&
+           revision > revision_before;
   }, 1000));
+  g_preempt_armed.store(false);
+  EXPECT_TRUE(waitUntil([&] { return nonZeroCmdCount() >= 1; }, 1000));
+
+  uint64_t sid_after = 0;
+  ASSERT_TRUE(bb->get<uint64_t>(k_session_id, sid_after));
+  EXPECT_EQ(sid_after, sid_before);
 
   // BT 树不重建: 同一 tree 实例
   EXPECT_EQ(&host->pilot().tree(), tree_addr);
@@ -535,8 +535,8 @@ TEST(CostmapNavigationTest, NewGoalPreemptsWithZeroVelocityAndSameTree) {
 
 // ---------------- 析构顺序 (Ruling #3) ----------------
 
-TEST(CostmapNavigationTest, DestructorDoesNotCrash) {
-  const auto dir = make_config_dir();
+TEST(CostmapNavigationTest, destructorDoesNotCrash) {
+  const auto dir = makeConfigDir();
   {
     CostmapNavigation* host = createHost(dir);
     ASSERT_NE(host, nullptr);

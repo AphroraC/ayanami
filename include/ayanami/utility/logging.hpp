@@ -12,7 +12,7 @@ namespace ayanami {
  * 支持: trace / debug / info / warn|warning / error / critical / off。
  * 未知字符串回退 info。
  */
-spdlog::level::level_enum log_level_from_string(const std::string& level);
+spdlog::level::level_enum logLevelFromString(const std::string& level);
 
 /**
  * @brief 从 config_logging.json 的 logging 段配置 spdlog 默认 logger。
@@ -30,6 +30,6 @@ spdlog::level::level_enum log_level_from_string(const std::string& level);
  * 文件名为 <logging_dir>/ayanami.log。幂等且可重配: 每次调用重建
  * console/file sink (保留其他 sink), 全局级别同步到所有已注册 logger。
  */
-void configure_logging();
+void configureLogging();
 
 }  // namespace ayanami

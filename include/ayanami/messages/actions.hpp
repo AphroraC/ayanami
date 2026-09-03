@@ -3,6 +3,7 @@
 #include "ayanami/messages/failure.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
+#include "ayanami/messages/recovery_params.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -19,6 +20,8 @@ struct GetPathGoal {
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
   double tolerance = 0.1;
+  /// @brief 目标规划插件逻辑名; 空表示用 server 默认 (request 时填充)。
+  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<GetPathGoal>;
@@ -46,6 +49,8 @@ struct SmoothPathGoal {
   ayanami::nav_msgs::Path path;
   double max_duration = 2.0;
   bool check_for_collision = false;
+  /// @brief 平滑插件逻辑名; 空表示用 server 默认 (request 时填充)。
+  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<SmoothPathGoal>;
@@ -70,6 +75,8 @@ struct SmoothPathFeedback {
 
 struct ExePathGoal {
   ayanami::nav_msgs::Path path;
+  /// @brief 控制器插件逻辑名; 空表示用 server 默认 (request 时填充)。
+  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<ExePathGoal>;
@@ -94,6 +101,10 @@ struct ExePathFeedback {
 
 struct RecoveryGoal {
   std::string recovery_id;
+  /// @brief 触发本次恢复动作的失败上下文 (BT Recovery 节点从黑板注入)。
+  ayanami::FailureContext cause;
+  /// @brief 按次覆盖参数 (nullopt 字段 = 插件 configure 期默认值)。
+  ayanami::RecoveryBehaviorParams behavior;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<RecoveryGoal>;

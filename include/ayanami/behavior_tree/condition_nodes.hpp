@@ -38,7 +38,7 @@ class IsPathValid : public BT::ConditionNode {
 class IsGoalReached : public BT::ConditionNode {
  public:
   IsGoalReached(const std::string& name, const BT::NodeConfig& config)
-    : BT::ConditionNode(name, config), tolerance_(0.5) {}
+    : BT::ConditionNode(name, config), tolerance(0.5) {}
 
   static BT::PortsList providedPorts() {
     return {
@@ -51,16 +51,16 @@ class IsGoalReached : public BT::ConditionNode {
   BT::NodeStatus tick() override {
     geometry_msgs::PoseStamped goal, robot_pose;
     if (!getInput("goal", goal) || !getInput("robot_pose", robot_pose) ||
-        !getInput("tolerance", tolerance_)) {
+        !getInput("tolerance", tolerance)) {
       return BT::NodeStatus::FAILURE;
     }
     const double dist =
-        (goal.pose.translation() - robot_pose.pose.translation()).norm();
-    return dist <= tolerance_ ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+        (goal.pose.position - robot_pose.pose.position).norm();
+    return dist <= tolerance ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
   }
 
  private:
-  double tolerance_;
+  double tolerance;
 };
 
 /**
@@ -69,7 +69,7 @@ class IsGoalReached : public BT::ConditionNode {
 class IsFarFromGoal : public BT::ConditionNode {
  public:
   IsFarFromGoal(const std::string& name, const BT::NodeConfig& config)
-    : BT::ConditionNode(name, config), threshold_(0.5) {}
+    : BT::ConditionNode(name, config), threshold(0.5) {}
 
   static BT::PortsList providedPorts() {
     return {
@@ -82,39 +82,39 @@ class IsFarFromGoal : public BT::ConditionNode {
   BT::NodeStatus tick() override {
     geometry_msgs::PoseStamped goal, robot_pose;
     if (!getInput("goal", goal) || !getInput("robot_pose", robot_pose) ||
-        !getInput("threshold", threshold_)) {
+        !getInput("threshold", threshold)) {
       return BT::NodeStatus::FAILURE;
     }
     const double dist =
-        (goal.pose.translation() - robot_pose.pose.translation()).norm();
-    return dist > threshold_ ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+        (goal.pose.position - robot_pose.pose.position).norm();
+    return dist > threshold ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
   }
 
  private:
-  double threshold_;
+  double threshold;
 };
 
 /**
  * @brief 卡住检测条件 (spec §6.5): 低速 + 未到目标, 连续 `consecutive_stuck_ticks`
  * 次判定卡住 -> SUCCESS。
  *
- * 带记忆节点, 状态存 static (跨任务残留坑的根源)。每轮导航开始时由
- * `reset_stuck_token` 黑板令牌变化触发复位, 避免 static 状态跨任务泄漏。
+ * 带记忆节点。状态为本节点实例成员 (非进程级 static): 树常驻单实例即
+ * 导航会话状态; 每轮导航开始时由 `reset_stuck_token` 黑板令牌变化触发复位。
  */
 class IsRobotStuck : public BT::ConditionNode {
  public:
   IsRobotStuck(const std::string& name, const BT::NodeConfig& config)
     : BT::ConditionNode(name, config),
-      stuck_velocity_threshold_(0.001),
-      goal_tolerance_(0.5),
-      consecutive_stuck_ticks_(50) {}
+      stuck_velocity_threshold(0.001),
+      goal_tolerance(0.5),
+      consecutive_stuck_ticks(50) {}
 
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<nav_msgs::Odometry>("robot_odometry", "robot odometry"),
       BT::InputPort<geometry_msgs::PoseStamped>("robot_pose", "current robot pose"),
-      BT::InputPort<geometry_msgs::PoseStamped>(kGoal, "navigation goal"),
-      BT::InputPort<uint64_t>(kResetStuckToken, 0u,
+      BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal"),
+      BT::InputPort<uint64_t>(k_reset_stuck_token, 0u,
                               "blackboard token; changing it resets stuck state"),
       BT::InputPort<double>("stuck_velocity_threshold", 0.001,
                             "linear speed below which the robot is stalled (m/s)"),
@@ -125,47 +125,47 @@ class IsRobotStuck : public BT::ConditionNode {
   }
 
   BT::NodeStatus tick() override {
-    // 每轮导航开始时由 reset_stuck_token 令牌复位 static 状态 (spec §6.5)
+    // 每轮导航开始时由 reset_stuck_token 令牌变化复位本实例状态。
     uint64_t token = 0;
-    if (getInput<uint64_t>(kResetStuckToken, token)) {
-      if (token != s_last_token_) {
-        s_last_token_ = token;
-        s_consecutive_stuck_ = 0;
+    if (getInput<uint64_t>(k_reset_stuck_token, token)) {
+      if (token != last_token) {
+        last_token = token;
+        consecutive_stuck = 0;
       }
     }
 
     nav_msgs::Odometry odom;
     geometry_msgs::PoseStamped robot_pose, goal;
     if (!getInput("robot_odometry", odom) || !getInput("robot_pose", robot_pose) ||
-        !getInput(kGoal, goal) ||
-        !getInput("stuck_velocity_threshold", stuck_velocity_threshold_) ||
-        !getInput("goal_tolerance", goal_tolerance_) ||
-        !getInput("consecutive_stuck_ticks", consecutive_stuck_ticks_)) {
+        !getInput(k_goal, goal) ||
+        !getInput("stuck_velocity_threshold", stuck_velocity_threshold) ||
+        !getInput("goal_tolerance", goal_tolerance) ||
+        !getInput("consecutive_stuck_ticks", consecutive_stuck_ticks)) {
       return BT::NodeStatus::FAILURE;
     }
 
-    const double speed = odom.twist.linear.norm();
+    const double speed = odom.twist.twist.linear.norm();
     const double dist_to_goal =
-        (goal.pose.translation() - robot_pose.pose.translation()).norm();
-    if (speed < stuck_velocity_threshold_ && dist_to_goal > goal_tolerance_) {
-      ++s_consecutive_stuck_;
-      if (s_consecutive_stuck_ >= consecutive_stuck_ticks_) {
+        (goal.pose.position - robot_pose.pose.position).norm();
+    if (speed < stuck_velocity_threshold && dist_to_goal > goal_tolerance) {
+      ++consecutive_stuck;
+      if (consecutive_stuck >= consecutive_stuck_ticks) {
         return BT::NodeStatus::SUCCESS;
       }
       return BT::NodeStatus::FAILURE;
     }
-    s_consecutive_stuck_ = 0;
+    consecutive_stuck = 0;
     return BT::NodeStatus::FAILURE;
   }
 
  private:
-  double stuck_velocity_threshold_;
-  double goal_tolerance_;
-  int consecutive_stuck_ticks_;
+  double stuck_velocity_threshold;
+  double goal_tolerance;
+  int consecutive_stuck_ticks;
 
-  // 跨任务 static 状态 —— 用 reset_stuck_token 令牌复位 (spec §6.5)
-  inline static uint64_t s_last_token_ = 0;
-  inline static int s_consecutive_stuck_ = 0;
+  // 会话状态 (实例成员, 非 static): token 变化触发复位。
+  uint64_t last_token{0};
+  int consecutive_stuck{0};
 };
 
 /**
@@ -176,24 +176,24 @@ class IsRobotStuck : public BT::ConditionNode {
 class GoalUpdated : public BT::ConditionNode {
  public:
   GoalUpdated(const std::string& name, const BT::NodeConfig& config)
-    : BT::ConditionNode(name, config), initialized_(false) {}
+    : BT::ConditionNode(name, config), initialized(false) {}
 
   static BT::PortsList providedPorts() {
-    return { BT::InputPort<geometry_msgs::PoseStamped>(kGoal, "navigation goal") };
+    return { BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal") };
   }
 
   BT::NodeStatus tick() override {
     geometry_msgs::PoseStamped goal;
-    if (!getInput(kGoal, goal)) {
+    if (!getInput(k_goal, goal)) {
       return BT::NodeStatus::FAILURE;
     }
-    if (!initialized_) {
-      initialized_ = true;
-      last_goal_ = goal;
+    if (!initialized) {
+      initialized = true;
+      last_goal = goal;
       return BT::NodeStatus::FAILURE;
     }
     if (goalChanged(goal)) {
-      last_goal_ = goal;
+      last_goal = goal;
       return BT::NodeStatus::SUCCESS;
     }
     return BT::NodeStatus::FAILURE;
@@ -202,21 +202,15 @@ class GoalUpdated : public BT::ConditionNode {
  private:
   static bool goalChanged(const geometry_msgs::PoseStamped& lhs,
                           const geometry_msgs::PoseStamped& rhs) {
-    if (lhs.header.seq != rhs.header.seq) {
-      return true;
-    }
-    if (lhs.header.frame_id != rhs.header.frame_id) {
-      return true;
-    }
-    return !lhs.pose.isApprox(rhs.pose);
+    return !goalEquals(lhs, rhs);
   }
 
   bool goalChanged(const geometry_msgs::PoseStamped& goal) const {
-    return goalChanged(goal, last_goal_);
+    return goalChanged(goal, last_goal);
   }
 
-  bool initialized_;
-  geometry_msgs::PoseStamped last_goal_;
+  bool initialized;
+  geometry_msgs::PoseStamped last_goal;
 };
 
 } // namespace behavior_tree

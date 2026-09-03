@@ -12,57 +12,58 @@
 namespace ayanami {
 namespace modules {
 
-SimpleGoalChecker::SimpleGoalChecker() { loadConfig(); }
-
-void SimpleGoalChecker::loadConfig() {
+SimpleGoalChecker::SimpleGoalChecker() {
+  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
+  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
+  // config_goal_checker → 本插件 json 文件。
   try {
-    const ayanami::ComponentConfig holder("config_goal_checker");
-    const auto& file = holder.get();
-    tolerances_.pose.position =
+    const Config file(GlobalConfig::getConfigPath("config_goal_checker"));
+    param.position_tolerance =
         file.param<double>("goal_checker", "position_tolerance",
-                           tolerances_.pose.position);
-    tolerances_.pose.angle =
+                           param.position_tolerance);
+    param.angle_tolerance =
         file.param<double>("goal_checker", "angle_tolerance",
-                           tolerances_.pose.angle);
-    tolerances_.velocity.linear =
+                           param.angle_tolerance);
+    param.linear_tolerance =
         file.param<double>("goal_checker", "linear_tolerance",
-                           tolerances_.velocity.linear);
-    tolerances_.velocity.angular =
+                           param.linear_tolerance);
+    param.angular_tolerance =
         file.param<double>("goal_checker", "angular_tolerance",
-                           tolerances_.velocity.angular);
+                           param.angular_tolerance);
   } catch (...) {
     // 配置不可读时保持默认值。
   }
 }
 
-void SimpleGoalChecker::reset() { initialized_.store(true); }
+void SimpleGoalChecker::reset() { initialized.store(true); }
 
 bool SimpleGoalChecker::isGoalReached(
     const ayanami::geometry_msgs::PoseStamped& current_pose,
     const ayanami::geometry_msgs::PoseStamped& goal_pose,
     const ayanami::geometry_msgs::TwistStamped& current_velocity) {
-  initialized_.store(true);
+  initialized.store(true);
 
   const Eigen::Vector3d delta =
-      current_pose.pose.translation() - goal_pose.pose.translation();
+      current_pose.pose.position - goal_pose.pose.position;
   const double dist = delta.head<2>().norm();
-  if (dist > tolerances_.pose.position) {
+  if (dist > param.position_tolerance) {
     return false;
   }
 
   // 相对转角 (Eigen::AngleAxisd 取旋转轴转角, 对 2D 偏航足够稳健)。
   const Eigen::AngleAxisd relative(
-      goal_pose.pose.rotation().transpose() * current_pose.pose.rotation());
+      (goal_pose.pose.orientation.inverse() * current_pose.pose.orientation)
+          .normalized());
   const double angle_diff = relative.angle();
-  if (angle_diff > tolerances_.pose.angle) {
+  if (angle_diff > param.angle_tolerance) {
     return false;
   }
 
-  if (current_velocity.twist.linear.norm() > tolerances_.velocity.linear) {
+  if (current_velocity.twist.linear.norm() > param.linear_tolerance) {
     return false;
   }
   if (std::abs(current_velocity.twist.angular.z()) >
-      tolerances_.velocity.angular) {
+      param.angular_tolerance) {
     return false;
   }
   return true;
@@ -70,7 +71,12 @@ bool SimpleGoalChecker::isGoalReached(
 
 ayanami::abstract::GoalCheckerTolerances SimpleGoalChecker::getTolerances()
     const {
-  return tolerances_;
+  ayanami::abstract::GoalCheckerTolerances tolerances;
+  tolerances.pose.position = param.position_tolerance;
+  tolerances.pose.angle = param.angle_tolerance;
+  tolerances.velocity.linear = param.linear_tolerance;
+  tolerances.velocity.angular = param.angular_tolerance;
+  return tolerances;
 }
 
 }  // namespace modules

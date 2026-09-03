@@ -33,7 +33,7 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 // 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel() 立即释放使其
-// 快速返回。被取消时返回 FailureCode::PathNotFound, 执行层经 cancel_
+// 快速返回。被取消时返回 FailureCode::PathNotFound, 执行层经 cancel
 // 置 CANCELED (failure 保留插件返回码)。
 class SlowPlanner : public ayanami::abstract::AbstractPlanner {
 public:
@@ -101,7 +101,7 @@ public:
 
 PoseStamped makePose(double x = 0.0, double y = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -121,7 +121,7 @@ bool readyWithin(Task& t, int max_ms) {
 
 }  // namespace
 
-TEST(CancelResponsiveness, CancelDuringPlanningReadyWithinBudget) {
+TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
   auto planner = std::make_shared<SlowPlanner>();
   ayanami::components::PlannerAction action(planner);
 
@@ -147,7 +147,7 @@ TEST(CancelResponsiveness, CancelDuringPlanningReadyWithinBudget) {
   // 落地 failure 之间 finish 已读); 稳定契约为 status==CANCELED。
 }
 
-TEST(CancelResponsiveness, CancelDuringRecoveryReadyWithinBudget) {
+TEST(CancelResponsiveness, cancelDuringRecoveryReadyWithinBudget) {
   auto recovery = std::make_shared<SlowRecovery>();
   ayanami::components::RecoveryAction action(recovery);
 

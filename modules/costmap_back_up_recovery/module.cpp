@@ -1,5 +1,6 @@
 #include "costmap_back_up_recovery.hpp"
+#include <ayanami/utility/extension_module.hpp>
 
-extern "C" ayanami::costmap::CostmapRecovery* create_costmap_recovery_module() {
+extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new ayanami::modules::CostmapBackUpRecovery();
 }

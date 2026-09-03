@@ -20,18 +20,20 @@ std::string g_echo_so;
 
 } // namespace
 
-TEST(NavigationCallbacksTest, AddAndCallAcrossCompilationUnits) {
+TEST(NavigationCallbacksTest, addAndCallAcrossCompilationUnits) {
   // 槽对象实体定义在 libayanami 的 src/interfaces/callbacks.cpp (不 inline),
   // 测试编译单元 (link libayanami) 引用到同一实例 → 跨编译单元一致。
   int received = 0;
   const int id = NavigationCallbacks::on_get_path_result.add(
       [&](const auto&){ received++; });
-  NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+  // 右值防护: 非平凡类型必须传左值, 避免多观察者下第一个 observer 搬空参数。
+  const GoalResult<GetPathResult> result{};
+  NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(received, 1);
   NavigationCallbacks::on_get_path_result.remove(id);
 }
 
-TEST(NavigationCallbacksTest, ThreadSafeAcrossAddRemoveCall) {
+TEST(NavigationCallbacksTest, threadSafeAcrossAddRemoveCall) {
   // 同 Task 2 的并发测试, 但挂在 NavigationCallbacks 槽上。
   std::atomic<int> hits{0};
   const int id = NavigationCallbacks::on_get_path_result.add([&](const auto&){ hits++; });
@@ -39,7 +41,8 @@ TEST(NavigationCallbacksTest, ThreadSafeAcrossAddRemoveCall) {
   for (int i = 0; i < 8; ++i) {
     ts.emplace_back([&]{
       for (int j = 0; j < 1000; ++j) {
-        NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+        GoalResult<GetPathResult> result{};
+        NavigationCallbacks::on_get_path_result(result);
       }
     });
   }
@@ -48,7 +51,7 @@ TEST(NavigationCallbacksTest, ThreadSafeAcrossAddRemoveCall) {
   NavigationCallbacks::on_get_path_result.remove(id);
 }
 
-TEST(NavigationCallbacksTest, CallbackVisibleAcrossSoBoundary) {
+TEST(NavigationCallbacksTest, callbackVisibleAcrossSoBoundary) {
   // dlopen echo_extension.so (链接 libayanami): 其构造期 add 到
   // NavigationCallbacks::on_get_path_result。本测试 emit 槽后, echo .so
   // 内部的计数必须增加 —— 证明槽对象是 libayanami 内的同一实例
@@ -56,10 +59,11 @@ TEST(NavigationCallbacksTest, CallbackVisibleAcrossSoBoundary) {
   auto ext = ayanami::ExtensionModule::load_module(g_echo_so);
   ASSERT_NE(ext, nullptr);
   auto hits_fn =
-      ayanami::load_module_from_so<int(*)()>(g_echo_so, "echo_extension_hits");
+      ayanami::loadModuleFromSo<int(*)()>(g_echo_so, "echoExtensionHits");
   ASSERT_NE(hits_fn, nullptr);
   const int before = hits_fn();
-  NavigationCallbacks::on_get_path_result(GoalResult<GetPathResult>{});
+  const GoalResult<GetPathResult> result{};
+  NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(hits_fn(), before + 1);
   NavigationCallbacks::on_get_path_result.remove(0);
 }

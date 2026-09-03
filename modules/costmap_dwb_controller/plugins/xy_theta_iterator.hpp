@@ -13,8 +13,8 @@ namespace dwb_plugins {
 class XYThetaIterator : public VelocityIterator {
 public:
   XYThetaIterator()
-      : kinematics_handler_(nullptr), x_it_(nullptr), y_it_(nullptr),
-        th_it_(nullptr) {}
+      : kinematics_handler(nullptr), x_it(nullptr), y_it(nullptr),
+        th_it(nullptr) {}
   void initialize(const ayanami::Config& cfg, KinematicsHandler::Ptr kinematics,
                   const std::string& plugin_name) override;
   void startNewIteration(const nav_2d_msgs::Twist2D& current_velocity,
@@ -31,9 +31,9 @@ protected:
   bool isValidSpeed(double x, double y, double theta);
   virtual bool isValidVelocity();
   void iterateToValidVelocity();
-  int vx_samples_, vy_samples_, vtheta_samples_;
-  KinematicsHandler::Ptr kinematics_handler_;
+  int vx_samples, vy_samples, vtheta_samples;
+  KinematicsHandler::Ptr kinematics_handler;
 
-  std::shared_ptr<OneDVelocityIterator> x_it_, y_it_, th_it_;
+  std::shared_ptr<OneDVelocityIterator> x_it, y_it, th_it;
 };
 }  // namespace dwb_plugins

@@ -15,7 +15,7 @@ Eigen::Isometry3d makeTranslation(double x) {
 
 }  // namespace
 
-TEST(TransformStoreTest, SetThenLookupExplicitLatest) {
+TEST(TransformStoreTest, setThenLookupExplicitLatest) {
   auto& store = TransformStore::instance();
   store.setTransform("map", "odom", ayanami::Timestamp::latest(),
                      makeTranslation(1.0));
@@ -26,14 +26,14 @@ TEST(TransformStoreTest, SetThenLookupExplicitLatest) {
   EXPECT_DOUBLE_EQ(1.0, out.translation().x());
 }
 
-TEST(TransformStoreTest, LookupMissingEdgeReturnsFalse) {
+TEST(TransformStoreTest, lookupMissingEdgeReturnsFalse) {
   auto& store = TransformStore::instance();
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
   EXPECT_FALSE(store.lookupTransform("world", "odom",
                                      ayanami::Timestamp::latest(), out, 0.0));
 }
 
-TEST(TransformStoreTest, FromSecondsCompatHelper) {
+TEST(TransformStoreTest, fromSecondsCompatHelper) {
   // fromSeconds 仅作兼容 helper: 指定秒 → 纳秒计数。
   EXPECT_EQ(TransformStore::fromSeconds(5.0).count(), 5000000000LL);
   // 0 秒 == latest 哨兵 (显式 latest() 语义一致)。
@@ -43,7 +43,7 @@ TEST(TransformStoreTest, FromSecondsCompatHelper) {
   EXPECT_FALSE(TransformStore::fromSeconds(1.0).isLatest());
 }
 
-TEST(TransformStoreTest, SpecificStampInterpolatesBetweenEntries) {
+TEST(TransformStoreTest, specificStampInterpolatesBetweenEntries) {
   auto& store = TransformStore::instance();
   const auto t1 = ayanami::timestampFromSeconds(0.1);
   const auto t2 = ayanami::timestampFromSeconds(0.3);
@@ -63,7 +63,7 @@ TEST(TransformStoreTest, SpecificStampInterpolatesBetweenEntries) {
   EXPECT_DOUBLE_EQ(3.0, out.translation().x());
 }
 
-TEST(TransformStoreTest, ExplicitLatestReturnsNewestEntry) {
+TEST(TransformStoreTest, explicitLatestReturnsNewestEntry) {
   auto& store = TransformStore::instance();
   store.setTransform("latest_odom", "latest_link", ayanami::timestampFromSeconds(0.1),
                      makeTranslation(1.0));
@@ -77,7 +77,7 @@ TEST(TransformStoreTest, ExplicitLatestReturnsNewestEntry) {
   EXPECT_DOUBLE_EQ(3.0, out.translation().x());
 }
 
-TEST(TransformStoreTest, LookupBeforeFirstStampReturnsFalse) {
+TEST(TransformStoreTest, lookupBeforeFirstStampReturnsFalse) {
   auto& store = TransformStore::instance();
   store.setTransform("early_odom", "early_link", ayanami::timestampFromSeconds(0.5),
                      makeTranslation(1.0));

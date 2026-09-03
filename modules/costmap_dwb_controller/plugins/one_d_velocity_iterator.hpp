@@ -101,18 +101,18 @@ public:
     } else if (current > max) {
       current = max;
     }
-    max_vel_ = projectVelocity(current, acc_limit, decel_limit, acc_time, max);
-    min_vel_ = projectVelocity(current, acc_limit, decel_limit, acc_time, min);
+    max_vel = projectVelocity(current, acc_limit, decel_limit, acc_time, max);
+    min_vel = projectVelocity(current, acc_limit, decel_limit, acc_time, min);
     reset();
 
-    if (fabs(min_vel_ - max_vel_) < EPSILON) {
-      increment_ = 1.0;
+    if (fabs(min_vel - max_vel) < EPSILON) {
+      increment = 1.0;
       return;
     }
     num_samples = std::max(2, num_samples);
 
     // e.g. for 4 samples, split distance in 3 even parts
-    increment_ = (max_vel_ - min_vel_) / std::max(1, (num_samples - 1));
+    increment = (max_vel - min_vel) / std::max(1, (num_samples - 1));
   }
 
   /**
@@ -120,8 +120,8 @@ public:
    */
   double getVelocity() const
   {
-    if (return_zero_now_) {return 0.0;}
-    return current_;
+    if (return_zero_now) {return 0.0;}
+    return current;
   }
 
   /**
@@ -129,14 +129,14 @@ public:
    */
   OneDVelocityIterator & operator++()
   {
-    if (return_zero_ && current_ < 0.0 && current_ + increment_ > 0.0 &&
-      current_ + increment_ <= max_vel_ + EPSILON)
+    if (return_zero && current < 0.0 && current + increment > 0.0 &&
+      current + increment <= max_vel + EPSILON)
     {
-      return_zero_now_ = true;
-      return_zero_ = false;
+      return_zero_now = true;
+      return_zero = false;
     } else {
-      current_ += increment_;
-      return_zero_now_ = false;
+      current += increment;
+      return_zero_now = false;
     }
     return *this;
   }
@@ -146,9 +146,9 @@ public:
    */
   void reset()
   {
-    current_ = min_vel_;
-    return_zero_ = true;
-    return_zero_now_ = false;
+    current = min_vel;
+    return_zero = true;
+    return_zero_now = false;
   }
 
   /**
@@ -156,14 +156,14 @@ public:
    */
   bool isFinished() const
   {
-    return current_ > max_vel_ + EPSILON;
+    return current > max_vel + EPSILON;
   }
 
 private:
-  bool return_zero_, return_zero_now_;
-  double min_vel_, max_vel_;
-  double current_;
-  double increment_;
+  bool return_zero, return_zero_now;
+  double min_vel, max_vel;
+  double current;
+  double increment;
 };
 }  // namespace dwb_plugins
 

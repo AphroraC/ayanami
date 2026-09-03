@@ -18,7 +18,7 @@ public:
   double scoreTrajectory(const dwb_msgs::Trajectory2D& traj) override;
 
 protected:
-  double penalty_, strafe_x_, strafe_theta_, theta_scale_;
+  double penalty, strafe_x, strafe_theta, theta_scale;
 };
 
 }  // namespace dwb_critics

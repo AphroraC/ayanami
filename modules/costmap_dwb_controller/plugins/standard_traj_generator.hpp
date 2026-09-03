@@ -38,8 +38,8 @@ public:
    */
   void setSpeedLimit(const double& speed_limit,
                      const bool& percentage) override {
-    if (kinematics_handler_) {
-      kinematics_handler_->setSpeedLimit(speed_limit, percentage);
+    if (kinematics_handler) {
+      kinematics_handler->setSpeedLimit(speed_limit, percentage);
     }
   }
 
@@ -72,33 +72,33 @@ protected:
    */
   virtual std::vector<double> getTimeSteps(const nav_2d_msgs::Twist2D& cmd_vel);
 
-  KinematicsHandler::Ptr kinematics_handler_;
-  std::shared_ptr<VelocityIterator> velocity_iterator_;
+  KinematicsHandler::Ptr kinematics_handler;
+  std::shared_ptr<VelocityIterator> velocity_iterator;
 
-  double sim_time_;
+  double sim_time;
 
   // Sampling Parameters
-  bool discretize_by_time_;
+  bool discretize_by_time;
 
   /// @brief If discretizing by time, the amount of time between each point in
   /// the traj
-  double time_granularity_;
+  double time_granularity;
 
   /// @brief If discretizing by distance, the maximum distance between each
   /// point in the traj
-  double linear_granularity_;
+  double linear_granularity;
 
   /// @brief If discretizing by distance, the maximum angular distance between
   /// each point in the traj
-  double angular_granularity_;
+  double angular_granularity;
 
   /// @brief Whether to include the last point of the trajectory
-  bool include_last_point_;
+  bool include_last_point;
 
   /// @brief Whether to limit the velocity command in the trajectory
-  bool limit_vel_cmd_in_traj_;
+  bool limit_vel_cmd_in_traj;
 
-  std::string plugin_name_;
+  std::string plugin_name;
 };
 
 }  // namespace dwb_plugins

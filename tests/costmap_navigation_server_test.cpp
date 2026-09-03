@@ -1,5 +1,5 @@
 // Task 20: CostmapNavigationServer (spec §5.4) — virtual initialize*Plugin 注入
-// costmap_context_ + new*Execution 工厂 + configureCoreMaps + handleObstacle* 落图。
+// costmap_context + new*Execution 工厂 + configureCoreMaps + handleObstacle* 落图。
 //
 // 覆盖:
 // - configureCoreMaps 建 global/local CostmapContext + StaticLayer/InflationLayer/SimpleObstacleLayer
@@ -19,6 +19,7 @@
 #include <limits>
 #include <atomic>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +31,7 @@
 #include <costmap_2d_layers/simple_obstacle_layer.hpp>
 #include <costmap_2d_layers/static_layer.hpp>
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
@@ -38,7 +40,6 @@
 #include <ayanami/costmap/components/costmap_recovery_execution.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
@@ -52,11 +53,19 @@ using ayanami::FailureCode;
 using ayanami::costmap::CostmapContext;
 using ayanami::costmap::CostmapNavigationServer;
 
-std::string g_plugins_so;
+// 由 main() 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)。
+std::string g_test_planner_so;
+std::string g_test_smoother_so;
+std::string g_test_controller_so;
+std::string g_test_recovery_so;
+std::string g_plain_planner_so;
+std::string g_plain_smoother_so;
+std::string g_plain_controller_so;
+std::string g_plain_recovery_so;
 
 // ---------------- 测试工具 ----------------
 
-std::filesystem::path make_temp_dir() {
+std::filesystem::path makeTempDir() {
   std::filesystem::path dir = std::filesystem::temp_directory_path() /
                               "ayanami_costmap_navigation_server_test";
   std::filesystem::remove_all(dir);
@@ -64,47 +73,49 @@ std::filesystem::path make_temp_dir() {
   return dir;
 }
 
-void write_json(const std::filesystem::path& path,
+void writeJson(const std::filesystem::path& path,
                 const std::string& content) {
   std::ofstream ofs(path);
   ofs << content;
 }
 
-std::string plugin_json(const std::string& module, const std::string& name,
-                        const std::string& symbol) {
+std::string pluginJson(const std::string& module, const std::string& name,
+                        const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + g_plugins_so +
-         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
-// 生成临时 config 目录: config.json global 段含 config_costmap; 4 族符号可各自
-// 指定 costmap 族成功工厂或非 costmap 族工厂 (失败路径)。
-std::filesystem::path make_config_dir(
-    const std::string& planner_symbol,
-    const std::string& smoother_symbol = "create_test_costmap_smoother_plugin",
-    const std::string& controller_symbol = "create_test_costmap_controller_plugin",
-    const std::string& recovery_symbol = "create_test_costmap_recovery_plugin") {
-  auto dir = make_temp_dir() / ("cfg_" + planner_symbol);
+// 生成临时 config 目录: config.json global 段含 config_costmap; 4 族可各自
+// 指定 costmap 族成功插件或非 costmap 族插件 (失败路径)。
+std::filesystem::path makeConfigDir(
+    const std::string& planner_so,
+    const std::string& smoother_so,
+    const std::string& controller_so,
+    const std::string& recovery_so) {
+  auto dir = makeTempDir() / ("cfg" + planner_so);
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
 
-  write_json(dir / "config.json",
+  writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\"\n"
+             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"]\n"
              "  }\n}\n");
 
-  write_json(dir / "planner.json",
-             plugin_json("planner", "test_costmap_planner", planner_symbol));
-  write_json(dir / "smoother.json",
-             plugin_json("smoother", "test_costmap_smoother", smoother_symbol));
-  write_json(dir / "controller.json",
-             plugin_json("controller", "test_costmap_controller",
-                         controller_symbol));
-  write_json(dir / "recovery.json",
+  writeJson(dir / "planner.json",
+             pluginJson("planner", "test_costmap_planner", planner_so));
+  writeJson(dir / "smoother.json",
+             pluginJson("smoother", "test_costmap_smoother", smoother_so));
+  writeJson(dir / "controller.json",
+             pluginJson("controller", "test_costmap_controller",
+                         controller_so));
+  writeJson(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_costmap_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             g_plugins_so + "\",\n    \"create_symbol\": \"" + recovery_symbol +
-             "\"\n  }\n}\n");
+             recovery_so + "\"\n  }\n}\n");
 
   // 20x20 全空 PGM 静态地图 (全部 255 -> FREE_SPACE)。配置故意声明 7x9，
   // 验证非 rolling global master 始终由 PGM 几何决定。
@@ -130,12 +141,6 @@ std::filesystem::path make_config_dir(
         << "    \"smoother_id\": \"test_costmap_smoother\",\n"
         << "    \"controller_id\": \"test_costmap_controller\",\n"
         << "    \"recovery_id\": \"test_costmap_recovery\"\n"
-        << "  },\n"
-        << "  \"modules\": {\n"
-        << "    \"config_planner\": \"planner.json\",\n"
-        << "    \"config_smoother\": \"smoother.json\",\n"
-        << "    \"config_controller\": \"controller.json\",\n"
-        << "    \"config_recovery\": [\"recovery.json\"]\n"
         << "  },\n"
         << "  \"costmap\": {\n"
         << "    \"global_frame\": \"map\",\n"
@@ -180,20 +185,20 @@ costmap_2d_layers::SimpleObstacleLayer* findObstacleLayer(
 // 记录 initialize 注入状态的 TestCostmapPlanner (Task 20 接口断言)。
 class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  std::string init_name_;
-  CostmapContext::Ptr init_ctx_;
-  uint32_t plan_calls_{0};
+  std::string init_name;
+  uint32_t plan_calls{0};
 
   virtual ~TestCostmapPlanner() override = default;
 
-  void initialize(const std::string& name, CostmapContext::Ptr ctx) override {
-    init_name_ = name;
-    init_ctx_ = std::move(ctx);
+  void initialize(const std::string& name,
+                  ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = name;
   }
-  FailureCode makePlan(const ayanami::geometry_msgs::PoseStamped&,
-                       const ayanami::geometry_msgs::PoseStamped&, double,
-                       ayanami::nav_msgs::Path&, double&, std::string&) override {
-    ++plan_calls_;
+  FailureCode makePlan(
+      const ayanami::geometry_msgs::PoseStamped&,
+      const ayanami::geometry_msgs::PoseStamped&, double,
+      ayanami::nav_msgs::Path&, double&, std::string&) override {
+    ++plan_calls;
     return FailureCode::None;
   }
 };
@@ -211,13 +216,12 @@ class PlainAbstractPlanner : public ayanami::abstract::AbstractPlanner {
 // costmap 族 smoother/controller/recovery (接受路径 + initialize 注入断言)。
 class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
  public:
-  std::string init_name_;
-  CostmapContext::Ptr init_ctx_;
+  std::string init_name;
   virtual ~TestCostmapSmoother() override = default;
 
-  void initialize(const std::string& name, CostmapContext::Ptr ctx) override {
-    init_name_ = name;
-    init_ctx_ = std::move(ctx);
+  void initialize(const std::string& name,
+                  ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = name;
   }
   FailureCode smoothPath(const ayanami::nav_msgs::Path&,
                          ayanami::nav_msgs::Path&, double, bool,
@@ -228,19 +232,17 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
 
 class TestCostmapController : public ayanami::costmap::CostmapController {
  public:
-  std::string init_name_;
-  CostmapContext::Ptr init_ctx_;
+  std::string init_name;
   virtual ~TestCostmapController() override = default;
 
-  void initialize(const std::string& name, CostmapContext::Ptr ctx) override {
-    init_name_ = name;
-    init_ctx_ = std::move(ctx);
+  void initialize(const std::string& name,
+                  ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = name;
   }
   FailureCode computeVelocityCommands(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&,
-      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
     return FailureCode::None;
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
@@ -248,17 +250,14 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
 
 class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  std::string init_name_;
-  CostmapContext::Ptr init_ctx_;
+  std::string init_name;
   virtual ~TestCostmapRecovery() override = default;
 
-  void initialize(const std::string& name, CostmapContext::Ptr ctx) override {
-    init_name_ = name;
-    init_ctx_ = std::move(ctx);
+  void initialize(const std::string& name,
+                  ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = name;
   }
-  FailureCode runRecovery(std::string&) override {
-    return FailureCode::None;
-  }
+  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
 };
 
 // 非 costmap 族 smoother/controller/recovery (拒绝路径)。
@@ -276,8 +275,7 @@ class PlainAbstractController : public ayanami::abstract::AbstractController {
   FailureCode computeVelocityCommands(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&,
-      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
     return FailureCode::None;
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
@@ -311,22 +309,22 @@ ayanami::sensor_msgs::PointCloud2 makePointCloud(float x, float y, float z) {
 
 // 设置 TransformStore: map←odom←base_link←lidar, 机器人位于 odom 原点。
 void setupTransforms() {
-  auto& store = ayanami::interfaces::TransformStore::instance();
-  store.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
-                     Eigen::Isometry3d::Identity());
-  store.setTransform("map", "odom", ayanami::Timestamp::latest(),
-                     Eigen::Isometry3d::Identity());
-  store.setTransform("base_link", "lidar", ayanami::Timestamp::latest(),
-                     Eigen::Translation3d(0.1, 0.0, 0.0) *
-                         Eigen::Quaterniond::Identity());
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  rsc.setTransform("map", "odom", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  rsc.setTransform("base_link", "lidar", ayanami::Timestamp::latest(),
+                   Eigen::Translation3d(0.1, 0.0, 0.0) *
+                       Eigen::Quaterniond::Identity());
 }
 
 }  // namespace
 
 // ---------------- configureCoreMaps ----------------
 
-TEST(CostmapNavigationServerTest, ConfigureCoreMapsBuildsContextAndLayers) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -341,9 +339,8 @@ TEST(CostmapNavigationServerTest, ConfigureCoreMapsBuildsContextAndLayers) {
                    -5.0);
   EXPECT_EQ(server.globalCostmap()->get().getCostmap()->getSizeInCellsX(), 20u);
   EXPECT_EQ(server.globalCostmap()->get().getCostmap()->getSizeInCellsY(), 20u);
-  // map_context_ 已注入 (AbstractMapContext 层)
-  EXPECT_EQ(server.costmapContext()->transform_store_,
-            &ayanami::interfaces::TransformStore::instance());
+  // map_context 已注入 (AbstractMapContext 层); 位姿经 RobotStateController 解析。
+  EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
 
   // global: StaticLayer + SimpleObstacleLayer + InflationLayer
   bool has_static = false;
@@ -379,7 +376,7 @@ TEST(CostmapNavigationServerTest, ConfigureCoreMapsBuildsContextAndLayers) {
   EXPECT_TRUE(has_local_inflation);
 }
 
-TEST(CostmapNavigationServerTest, DefaultConfigMatchesNavPgmGeometry) {
+TEST(CostmapNavigationServerTest, defaultConfigMatchesNavPgmGeometry) {
   CostmapNavigationServer server;
   server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
   const auto* global = server.globalCostmap()->get().getCostmap();
@@ -391,7 +388,7 @@ TEST(CostmapNavigationServerTest, DefaultConfigMatchesNavPgmGeometry) {
   EXPECT_DOUBLE_EQ(global->getOriginY(), -3.85);
 }
 
-TEST(CostmapNavigationServerTest, RobotRadiusBuildsCircularFootprint) {
+TEST(CostmapNavigationServerTest, robotRadiusBuildsCircularFootprint) {
   // 真实 config: costmap::robot_radius=0.12 → 16 边形近似圆 (nav_demo 语义)。
   CostmapNavigationServer server;
   server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
@@ -410,8 +407,8 @@ TEST(CostmapNavigationServerTest, RobotRadiusBuildsCircularFootprint) {
 
 // ---------------- 虚 initialize*Plugin ----------------
 
-TEST(CostmapNavigationServerTest, InitializePlannerPluginInjectsContext) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializePlannerPluginInjectsContext) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -419,12 +416,11 @@ TEST(CostmapNavigationServerTest, InitializePlannerPluginInjectsContext) {
   ayanami::abstract::AbstractPlanner::Ptr base = planner;
   EXPECT_TRUE(server.initializePlannerPlugin("my_planner", base));
 
-  EXPECT_EQ(planner->init_name_, "my_planner");
-  EXPECT_EQ(planner->init_ctx_, server.costmapContext());
+  EXPECT_EQ(planner->init_name, "my_planner");
 }
 
-TEST(CostmapNavigationServerTest, InitializePlannerPluginRejectsNonCostmapPlanner) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializePlannerPluginRejectsNonCostmapPlanner) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -432,20 +428,19 @@ TEST(CostmapNavigationServerTest, InitializePlannerPluginRejectsNonCostmapPlanne
   EXPECT_FALSE(server.initializePlannerPlugin("plain", plain));
 }
 
-TEST(CostmapNavigationServerTest, InitializeSmootherPluginInjectsContext) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeSmootherPluginInjectsContext) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto smoother = std::make_shared<TestCostmapSmoother>();
   ayanami::abstract::AbstractSmoother::Ptr base = smoother;
   EXPECT_TRUE(server.initializeSmootherPlugin("my_smoother", base));
-  EXPECT_EQ(smoother->init_name_, "my_smoother");
-  EXPECT_EQ(smoother->init_ctx_, server.costmapContext());
+  EXPECT_EQ(smoother->init_name, "my_smoother");
 }
 
-TEST(CostmapNavigationServerTest, InitializeSmootherPluginRejectsNonCostmapSmoother) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeSmootherPluginRejectsNonCostmapSmoother) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -453,20 +448,19 @@ TEST(CostmapNavigationServerTest, InitializeSmootherPluginRejectsNonCostmapSmoot
   EXPECT_FALSE(server.initializeSmootherPlugin("plain", plain));
 }
 
-TEST(CostmapNavigationServerTest, InitializeControllerPluginInjectsContext) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeControllerPluginInjectsContext) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto controller = std::make_shared<TestCostmapController>();
   ayanami::abstract::AbstractController::Ptr base = controller;
   EXPECT_TRUE(server.initializeControllerPlugin("my_controller", base));
-  EXPECT_EQ(controller->init_name_, "my_controller");
-  EXPECT_EQ(controller->init_ctx_, server.costmapContext());
+  EXPECT_EQ(controller->init_name, "my_controller");
 }
 
-TEST(CostmapNavigationServerTest, InitializeControllerPluginRejectsNonCostmapController) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeControllerPluginRejectsNonCostmapController) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -475,20 +469,19 @@ TEST(CostmapNavigationServerTest, InitializeControllerPluginRejectsNonCostmapCon
   EXPECT_FALSE(server.initializeControllerPlugin("plain", plain));
 }
 
-TEST(CostmapNavigationServerTest, InitializeRecoveryPluginInjectsContext) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeRecoveryPluginInjectsContext) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto recovery = std::make_shared<TestCostmapRecovery>();
   ayanami::abstract::AbstractRecovery::Ptr base = recovery;
   EXPECT_TRUE(server.initializeRecoveryPlugin("my_recovery", base));
-  EXPECT_EQ(recovery->init_name_, "my_recovery");
-  EXPECT_EQ(recovery->init_ctx_, server.costmapContext());
+  EXPECT_EQ(recovery->init_name, "my_recovery");
 }
 
-TEST(CostmapNavigationServerTest, InitializeRecoveryPluginRejectsNonCostmapRecovery) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, initializeRecoveryPluginRejectsNonCostmapRecovery) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -496,7 +489,7 @@ TEST(CostmapNavigationServerTest, InitializeRecoveryPluginRejectsNonCostmapRecov
   EXPECT_FALSE(server.initializeRecoveryPlugin("plain", plain));
 }
 
-TEST(CostmapNavigationServerTest, InitializePlannerPluginFailsWithoutConfiguredMaps) {
+TEST(CostmapNavigationServerTest, initializePlannerPluginFailsWithoutConfiguredMaps) {
   CostmapNavigationServer server;  // 未 configureCoreMaps (Task 18 minor 1)
   auto planner = std::make_shared<TestCostmapPlanner>();
   EXPECT_FALSE(server.initializePlannerPlugin("p", planner));
@@ -505,8 +498,8 @@ TEST(CostmapNavigationServerTest, InitializePlannerPluginFailsWithoutConfiguredM
 
 // ---------------- loadPlugins 端到端 ----------------
 
-TEST(CostmapNavigationServerTest, LoadPluginsLoadsCostmapPluginsAndCreatesActions) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, loadPluginsLoadsCostmapPluginsAndCreatesActions) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   server.loadPlugins(dir.string());
@@ -518,8 +511,8 @@ TEST(CostmapNavigationServerTest, LoadPluginsLoadsCostmapPluginsAndCreatesAction
   ASSERT_EQ(server.recoveryAction("missing"), nullptr);
 }
 
-TEST(CostmapNavigationServerTest, LoadPluginsWithNonCostmapPlannerFails) {
-  auto dir = make_config_dir("create_plain_abstract_planner_plugin");
+TEST(CostmapNavigationServerTest, loadPluginsWithNonCostmapPlannerFails) {
+  auto dir = makeConfigDir(g_plain_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   server.loadPlugins(dir.string());
@@ -531,13 +524,10 @@ TEST(CostmapNavigationServerTest, LoadPluginsWithNonCostmapPlannerFails) {
   ASSERT_NE(server.smootherAction(), nullptr);
 }
 
-TEST(CostmapNavigationServerTest, LoadPluginsRejectsAllPlainAbstractPlugins) {
+TEST(CostmapNavigationServerTest, loadPluginsRejectsAllPlainAbstractPlugins) {
   // 普通 abstract 四族全部拒绝 → 四个 action 都不建。
-  auto dir = make_config_dir(
-      "create_plain_abstract_planner_plugin",
-      "create_plain_abstract_smoother_plugin",
-      "create_plain_abstract_controller_plugin",
-      "create_plain_abstract_recovery_plugin");
+  auto dir = makeConfigDir(g_plain_planner_so, g_plain_smoother_so,
+                             g_plain_controller_so, g_plain_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   server.loadPlugins(dir.string());
@@ -548,49 +538,101 @@ TEST(CostmapNavigationServerTest, LoadPluginsRejectsAllPlainAbstractPlugins) {
   EXPECT_EQ(server.recoveryAction("test_costmap_recovery"), nullptr);
 }
 
-// ---------------- new*Execution 工厂 ----------------
+// ---------------- createActions 生产路径 = Costmap*Action ----------------
+// 生产不再走基类 new*Execution 虚工厂间接层 (Server*Action 已删除):
+// CostmapNavigationServer::createActions 直接构造 Costmap*Action, 其
+// createExecution 产出带 CostmapContext 的 Costmap*Execution。
 
-TEST(CostmapNavigationServerTest, NewPlannerExecutionReturnsCostmapExecution) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+namespace {
+
+// createExecution 是 protected, 测试经以下暴露包装类调用 (验证 Costmap*Action
+// 生产路径产出 Costmap*Execution)。
+class ExposedCostmapPlannerAction : public ayanami::costmap::CostmapPlannerAction {
+ public:
+  using CostmapPlannerAction::CostmapPlannerAction;
+  using CostmapPlannerAction::createExecution;
+};
+class ExposedCostmapSmootherAction : public ayanami::costmap::CostmapSmootherAction {
+ public:
+  using CostmapSmootherAction::CostmapSmootherAction;
+  using CostmapSmootherAction::createExecution;
+};
+class ExposedCostmapControllerAction : public ayanami::costmap::CostmapControllerAction {
+ public:
+  using CostmapControllerAction::CostmapControllerAction;
+  using CostmapControllerAction::createExecution;
+};
+class ExposedCostmapRecoveryAction : public ayanami::costmap::CostmapRecoveryAction {
+ public:
+  using CostmapRecoveryAction::CostmapRecoveryAction;
+  using CostmapRecoveryAction::createExecution;
+};
+
+}  // namespace
+
+TEST(CostmapNavigationServerTest, createActionsBuildsCostmapActions) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
+  server.loadPlugins(dir.string());
+
+  ASSERT_NE(server.plannerAction(), nullptr);
+  ASSERT_NE(server.smootherAction(), nullptr);
+  ASSERT_NE(server.controllerAction(), nullptr);
+  ASSERT_NE(server.recoveryAction("test_costmap_recovery"), nullptr);
+
+  // 每个 action 都是 costmap 族 (生产路径凭证)。
+  EXPECT_NE(dynamic_cast<ayanami::costmap::CostmapPlannerAction*>(
+                server.plannerAction()),
+            nullptr);
+  EXPECT_NE(dynamic_cast<ayanami::costmap::CostmapSmootherAction*>(
+                server.smootherAction()),
+            nullptr);
+  EXPECT_NE(dynamic_cast<ayanami::costmap::CostmapControllerAction*>(
+                server.controllerAction()),
+            nullptr);
+  EXPECT_NE(dynamic_cast<ayanami::costmap::CostmapRecoveryAction*>(
+                server.recoveryAction("test_costmap_recovery")),
+            nullptr);
+}
+
+TEST(CostmapNavigationServerTest, costmapActionCreatesCostmapExecutions) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  server.loadPlugins(dir.string());
 
   auto planner = std::make_shared<TestCostmapPlanner>();
-  auto exec = server.newPlannerExecution("test_planner", planner);
-  auto* cast =
-      dynamic_cast<ayanami::costmap::CostmapPlannerExecution*>(exec.get());
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast, exec.get());
-}
+  auto smoother = std::make_shared<TestCostmapSmoother>();
+  auto controller = std::make_shared<TestCostmapController>();
+  auto recovery = std::make_shared<TestCostmapRecovery>();
 
-TEST(CostmapNavigationServerTest, NewControllerExecutionReturnsCostmapExecution) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
-  CostmapNavigationServer server;
-  server.configureCoreMaps(dir.string());
-
-  auto exec = server.newControllerExecution("test_controller", nullptr);
-  auto* cast =
-      dynamic_cast<ayanami::costmap::CostmapControllerExecution*>(exec.get());
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast, exec.get());
-}
-
-TEST(CostmapNavigationServerTest, NewRecoveryExecutionReturnsCostmapExecution) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
-  CostmapNavigationServer server;
-  server.configureCoreMaps(dir.string());
-
-  auto exec = server.newRecoveryExecution("test_recovery", nullptr);
-  auto* cast =
-      dynamic_cast<ayanami::costmap::CostmapRecoveryExecution*>(exec.get());
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast, exec.get());
+  // Costmap*Action::createExecution → Costmap*Execution (带地图)。
+  // createExecution 是 protected, 用测试内暴露包装类调用。
+  ExposedCostmapPlannerAction pa(planner, server.costmapContext());
+  ASSERT_NE(dynamic_cast<ayanami::costmap::CostmapPlannerExecution*>(
+                pa.createExecution().get()),
+            nullptr);
+  ExposedCostmapSmootherAction sa(smoother, server.costmapContext());
+  ASSERT_NE(dynamic_cast<ayanami::costmap::CostmapSmootherExecution*>(
+                sa.createExecution().get()),
+            nullptr);
+  ExposedCostmapControllerAction ca(controller, server.costmapContext());
+  ASSERT_NE(dynamic_cast<ayanami::costmap::CostmapControllerExecution*>(
+                ca.createExecution().get()),
+            nullptr);
+  ExposedCostmapRecoveryAction ra(recovery, server.costmapContext());
+  ASSERT_NE(dynamic_cast<ayanami::costmap::CostmapRecoveryExecution*>(
+                ra.createExecution().get()),
+            nullptr);
 }
 
 // ---------------- handleObstaclePointCloud (含 Ruling #7) ----------------
 
-TEST(CostmapNavigationServerTest, HandleObstaclePointCloudMarksAndInflates) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
@@ -632,8 +674,8 @@ TEST(CostmapNavigationServerTest, HandleObstaclePointCloudMarksAndInflates) {
             costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, SmacPlanAvoidsObservedGlobalObstacle) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, smacPlanAvoidsObservedGlobalObstacle) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
@@ -641,57 +683,60 @@ TEST(CostmapNavigationServerTest, SmacPlanAvoidsObservedGlobalObstacle) {
   // Place the observation directly between start and goal in the map frame.
   server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
 
-  auto planner = std::make_shared<ayanami::modules::CostmapSmacPlanner>();
-  planner->initialize("smac", server.costmapContext());
+auto planner = std::make_shared<ayanami::modules::CostmapSmacPlanner>();
+  planner->initialize("smac", server.costmapContext()->getSharedConstPtr());
   auto start = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
-  start.pose.translation() = Eigen::Vector3d(-4.0, 0.0, 0.0);
+  start.pose.position = Eigen::Vector3d(-4.0, 0.0, 0.0);
   auto goal = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
-  goal.pose.translation() = Eigen::Vector3d(4.0, 0.0, 0.0);
+  goal.pose.position = Eigen::Vector3d(4.0, 0.0, 0.0);
 
   ayanami::nav_msgs::Path path;
-  double cost = 0.0;
+  double cost_value = 0.0;
   std::string message;
-  ASSERT_EQ(planner->makePlan(start, goal, 0.1, path, cost, message),
+  ASSERT_EQ(planner->makePlan(start, goal, 0.1, path, cost_value, message),
             FailureCode::None)
       << message;
   ASSERT_FALSE(path.poses.empty());
 
-  const auto* global = server.globalCostmap()->get().getCostmap();
   bool deviated_from_straight_line = false;
-  for (const auto& pose : path.poses) {
-    unsigned int mx = 0;
-    unsigned int my = 0;
-    ASSERT_TRUE(global->worldToMap(pose.pose.translation().x(),
-                                   pose.pose.translation().y(), mx, my));
-    EXPECT_FALSE(costmap_2d::isLethal(global->getCost(mx, my)));
-    deviated_from_straight_line |=
-        std::abs(pose.pose.translation().y()) > 0.25;
+  {
+    std::shared_lock<std::shared_mutex> lock(server.globalCostmap()->mutex());
+    const auto* global = server.globalCostmap()->get().getCostmap();
+    for (const auto& pose : path.poses) {
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      ASSERT_TRUE(global->worldToMap(pose.pose.position.x(),
+                                     pose.pose.position.y(), mx, my));
+      EXPECT_FALSE(costmap_2d::isLethal(global->getCost(mx, my)));
+      deviated_from_straight_line |=
+          std::abs(pose.pose.position.y()) > 0.25;
+    }
   }
   EXPECT_TRUE(deviated_from_straight_line);
 }
 
-TEST(CostmapNavigationServerTest, HandleObstaclePointCloudIgnoredWithoutMap) {
+TEST(CostmapNavigationServerTest, handleObstaclePointCloudIgnoredWithoutMap) {
   CostmapNavigationServer server;  // 未 configureCoreMaps
   setupTransforms();
   EXPECT_NO_THROW(server.handleObstaclePointCloud(makePointCloud(0, 0, 0)));
 }
 
-TEST(CostmapNavigationServerTest, ObstacleStampQueriesTfAtMessageTime) {
+TEST(CostmapNavigationServerTest, obstacleStampQueriesTfAtMessageTime) {
   // 传感器 header.stamp 消费: TF 查询用消息时刻, 而非隐式 latest。
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
-  auto& store = ayanami::interfaces::TransformStore::instance();
+  auto& rsc = ayanami::components::RobotStateController::instance();
   const auto ts = ayanami::timestampFromSeconds(123.0);
   // 与 setupTransforms 相同的数值, 但在具体时刻发布 (值一致, 跨测试无害)。
-  store.setTransform("odom", "base_link", ts, Eigen::Isometry3d::Identity());
-  store.setTransform("map", "odom", ts, Eigen::Isometry3d::Identity());
-  store.setTransform("base_link", "lidar", ts,
-                     Eigen::Translation3d(0.1, 0.0, 0.0) *
-                         Eigen::Quaterniond::Identity());
+  rsc.setTransform("odom", "base_link", ts, Eigen::Isometry3d::Identity());
+  rsc.setTransform("map", "odom", ts, Eigen::Isometry3d::Identity());
+  rsc.setTransform("base_link", "lidar", ts,
+                   Eigen::Translation3d(0.1, 0.0, 0.0) *
+                       Eigen::Quaterniond::Identity());
 
   // 帧 stamp 命中 ts 时刻的 TF → 落图 (lidar(0,0) → odom(0.1,0) → cell(10,10))。
   auto cloud = makePointCloud(0.0f, 0.0f, 0.0f);
@@ -708,18 +753,18 @@ TEST(CostmapNavigationServerTest, ObstacleStampQueriesTfAtMessageTime) {
   EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, ObstacleLaserScanUsesHeaderStamp) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, obstacleLaserScanUsesHeaderStamp) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
-  auto& store = ayanami::interfaces::TransformStore::instance();
+  auto& rsc = ayanami::components::RobotStateController::instance();
   const auto ts = ayanami::timestampFromSeconds(200.0);
-  store.setTransform("odom", "base_link", ts, Eigen::Isometry3d::Identity());
-  store.setTransform("map", "odom", ts, Eigen::Isometry3d::Identity());
-  store.setTransform("base_link", "lidar", ts,
-                     Eigen::Translation3d(0.1, 0.0, 0.0) *
-                         Eigen::Quaterniond::Identity());
+  rsc.setTransform("odom", "base_link", ts, Eigen::Isometry3d::Identity());
+  rsc.setTransform("map", "odom", ts, Eigen::Isometry3d::Identity());
+  rsc.setTransform("base_link", "lidar", ts,
+                   Eigen::Translation3d(0.1, 0.0, 0.0) *
+                       Eigen::Quaterniond::Identity());
 
   ayanami::sensor_msgs::LaserScan scan;
   scan.header.frame_id = "lidar";
@@ -736,8 +781,8 @@ TEST(CostmapNavigationServerTest, ObstacleLaserScanUsesHeaderStamp) {
   EXPECT_EQ(master->getCost(12, 10), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, LaserRaytraceClearsDynamicObstacle) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, laserRaytraceClearsDynamicObstacle) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
@@ -759,8 +804,8 @@ TEST(CostmapNavigationServerTest, LaserRaytraceClearsDynamicObstacle) {
   EXPECT_EQ(local->getCost(12, 10), costmap_2d::FREE_SPACE);
 }
 
-TEST(CostmapNavigationServerTest, ObstacleCallbacksForwardToObstacleLayer) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, obstacleInputIsDirectMethodNotGlobalSlot) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
@@ -768,23 +813,23 @@ TEST(CostmapNavigationServerTest, ObstacleCallbacksForwardToObstacleLayer) {
   auto* obstacle_layer = findObstacleLayer(server.localCostmap());
   ASSERT_NE(obstacle_layer, nullptr);
 
-  ayanami::interfaces::NavigationCallbacks::on_obstacle_pointcloud(
-      makePointCloud(0.0f, 0.0f, 0.0f));
+  // 障碍观测输入不走全局旁路槽 (输出/观测分层纪律): 经宿主直递的公共方法落图。
+  server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
 
   auto* master = server.localCostmap()->get().getCostmap();
   EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, ConcurrentObstacleHandlersDoNotCrash) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, concurrentObstacleHandlersDoNotCrash) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
 
-  // 两线程并发 hammer 同一障碍位置: 共享 prev_obstacles_local_ 使 clear 窗口
+  // 两线程并发 hammer 同一障碍位置: 共享 prev_obstacles_local 使 clear 窗口
   // 必覆盖本帧点 (obs 帧语义 = "当前观测覆盖旧观测"), 故用同一 cell 保证
-  // 任何交错下的最后写入都是 LETHAL → 断言确定。锁的作用是串行化 marks_/
-  // clear_regions_/prev_obstacles_local_/grid 的并发改写 (无锁则 UB 可能崩)。
+  // 任何交错下的最后写入都是 LETHAL → 断言确定。锁的作用是串行化 marks/
+  // clear_regions/prev_obstacles_local/grid 的并发改写 (无锁则 UB 可能崩)。
   std::atomic<bool> start{false};
   auto run = [&](float x) {
     while (!start.load()) {
@@ -804,8 +849,8 @@ TEST(CostmapNavigationServerTest, ConcurrentObstacleHandlersDoNotCrash) {
   EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, DestructorStopsActionsAndDoesNotCrash) {
-  auto dir = make_config_dir("create_test_costmap_planner_plugin");
+TEST(CostmapNavigationServerTest, destructorStopsActionsAndDoesNotCrash) {
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   {
     CostmapNavigationServer server;
     server.configureCoreMaps(dir.string());
@@ -826,14 +871,19 @@ TEST(CostmapNavigationServerTest, DestructorStopsActionsAndDoesNotCrash) {
     server.start();
     server.stop();
   }
-  // 作用域结束 → 析构: remove obstacle callbacks + 基类 stop/reset/clearPlugins,
+  // 作用域结束 → 析构: 基类 stop/reset/clearPlugins,
   // 不挂 (Ruling #3)。
 }
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
-  if (argc > 1) {
-    g_plugins_so = argv[1];
-  }
+  if (argc > 1) g_test_planner_so = argv[1];
+  if (argc > 2) g_test_smoother_so = argv[2];
+  if (argc > 3) g_test_controller_so = argv[3];
+  if (argc > 4) g_test_recovery_so = argv[4];
+  if (argc > 5) g_plain_planner_so = argv[5];
+  if (argc > 6) g_plain_smoother_so = argv[6];
+  if (argc > 7) g_plain_controller_so = argv[7];
+  if (argc > 8) g_plain_recovery_so = argv[8];
   return RUN_ALL_TESTS();
 }

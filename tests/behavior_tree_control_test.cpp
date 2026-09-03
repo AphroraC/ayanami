@@ -34,13 +34,13 @@ class MockChild : public BT::ActionNodeBase {
 
   BT::NodeStatus tick() override {
     ++tick_count;
-    return status_fn_ ? status_fn_() : BT::NodeStatus::SUCCESS;
+    return status_fn ? status_fn() : BT::NodeStatus::SUCCESS;
   }
 
   void halt() override { resetStatus(); }
 
   int tick_count = 0;
-  std::function<BT::NodeStatus()> status_fn_;
+  std::function<BT::NodeStatus()> status_fn;
 };
 
 std::vector<MockChild*> collectMocks(BT::Tree& tree) {
@@ -62,12 +62,12 @@ BT::BehaviorTreeFactory makeFactory() {
 PoseStamped makePose(double x, double y = 0.0) {
   PoseStamped p;
   p.header.frame_id = "map";
-  p.pose = Eigen::Isometry3d::Identity();
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose = ayanami::geometry_msgs::Pose::fromIsometry(Eigen::Isometry3d::Identity());
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
-constexpr const char* kRecoveryXml = R"(
+constexpr const char* k_recovery_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
     <RecoveryNode name="rec" number_of_retries="2">
@@ -79,16 +79,16 @@ constexpr const char* kRecoveryXml = R"(
 
 } // namespace
 
-TEST(BehaviorTreeControlTest, RecoveryNodeExhaustsRetriesAfterThreeFailures) {
+TEST(BehaviorTreeControlTest, recoveryNodeExhaustsRetriesAfterThreeFailures) {
   auto factory = makeFactory();
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   auto bb = BT::Blackboard::create();
-  auto tree = factory.createTreeFromText(kRecoveryXml, bb);
+  auto tree = factory.createTreeFromText(k_recovery_xml, bb);
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   // fail #1 -> recovery SUCCESS -> 重试, 返回 RUNNING
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
@@ -100,23 +100,23 @@ TEST(BehaviorTreeControlTest, RecoveryNodeExhaustsRetriesAfterThreeFailures) {
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
-TEST(BehaviorTreeControlTest, RecoveryNodeRecoveryChildFailsImmediately) {
+TEST(BehaviorTreeControlTest, recoveryNodeRecoveryChildFailsImmediately) {
   auto factory = makeFactory();
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   auto bb = BT::Blackboard::create();
-  auto tree = factory.createTreeFromText(kRecoveryXml, bb);
+  auto tree = factory.createTreeFromText(k_recovery_xml, bb);
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::FAILURE; };
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, PipelineSequenceReticksPlannerWhileControllerRuns) {
+TEST(BehaviorTreeControlTest, pipelineSequenceReticksPlannerWhileControllerRuns) {
   auto factory = makeFactory();
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   auto bb = BT::Blackboard::create();
@@ -132,8 +132,8 @@ TEST(BehaviorTreeControlTest, PipelineSequenceReticksPlannerWhileControllerRuns)
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::RUNNING; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
@@ -141,24 +141,24 @@ TEST(BehaviorTreeControlTest, PipelineSequenceReticksPlannerWhileControllerRuns)
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
-TEST(BehaviorTreeControlTest, RecoveryNodeResetsRetriesAfterSuccess) {
+TEST(BehaviorTreeControlTest, recoveryNodeResetsRetriesAfterSuccess) {
   auto factory = makeFactory();
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   auto bb = BT::Blackboard::create();
-  auto tree = factory.createTreeFromText(kRecoveryXml, bb);
+  auto tree = factory.createTreeFromText(k_recovery_xml, bb);
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   // 首轮成功 -> retry 计数复位
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 0);
 
   // 复位后重新计数: 2 次失败 + 2 次 recovery 成功后第 3 次失败耗尽
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
@@ -166,7 +166,7 @@ TEST(BehaviorTreeControlTest, RecoveryNodeResetsRetriesAfterSuccess) {
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
-TEST(BehaviorTreeControlTest, RateControllerGatesTicksAtHz) {
+TEST(BehaviorTreeControlTest, rateControllerGatesTicksAtHz) {
   BT::TimePoint now{};
   auto clock = [&now] { return now; };
 
@@ -187,7 +187,7 @@ TEST(BehaviorTreeControlTest, RateControllerGatesTicksAtHz) {
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 1u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   // 100Hz tick 100ms (10 tick, 每 10ms): hz=10 -> 周期 100ms, 首 tick 立即执行,
   // 其余在冷却期内返回缓存, 因此 child 只被执行 1 次。
@@ -198,7 +198,7 @@ TEST(BehaviorTreeControlTest, RateControllerGatesTicksAtHz) {
   EXPECT_EQ(mocks[0]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, RateControllerRunsAgainAfterPeriodElapsed) {
+TEST(BehaviorTreeControlTest, rateControllerRunsAgainAfterPeriodElapsed) {
   BT::TimePoint now{};
   auto clock = [&now] { return now; };
 
@@ -219,7 +219,7 @@ TEST(BehaviorTreeControlTest, RateControllerRunsAgainAfterPeriodElapsed) {
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 1u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   now += std::chrono::milliseconds(50);
@@ -237,7 +237,7 @@ TEST(BehaviorTreeControlTest, RateControllerRunsAgainAfterPeriodElapsed) {
   EXPECT_EQ(mocks[0]->tick_count, 3);
 }
 
-TEST(BehaviorTreeControlTest, RateControllerHzMinusOneRunsOnceThenCaches) {
+TEST(BehaviorTreeControlTest, rateControllerHzMinusOneRunsOnceThenCaches) {
   BT::TimePoint now{};
   auto clock = [&now] { return now; };
 
@@ -258,7 +258,7 @@ TEST(BehaviorTreeControlTest, RateControllerHzMinusOneRunsOnceThenCaches) {
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 1u);
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   // hz=-1: 单次执行后缓存 SUCCESS
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
@@ -267,7 +267,52 @@ TEST(BehaviorTreeControlTest, RateControllerHzMinusOneRunsOnceThenCaches) {
   EXPECT_EQ(mocks[0]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, PipelineSequenceStaysOnRunningChildAndAdvances) {
+TEST(BehaviorTreeControlTest, rateControllerResetTokenReexecutesCachedChild) {
+  BT::TimePoint now{};
+  auto clock = [&now] { return now; };
+
+  BT::BehaviorTreeFactory factory;
+  factory.registerNodeType<MockChild>("MockChild");
+  factory.registerNodeType<RateController, RateController::ClockFn>("RateController",
+                                                                    clock);
+  auto bb = BT::Blackboard::create();
+  bb->set<uint64_t>("goal_revision", 0u);
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4">
+  <BehaviorTree ID="main">
+    <RateController hz="-1.0" reset_token="{goal_revision}">
+      <MockChild name="c"/>
+    </RateController>
+  </BehaviorTree>
+</root>)",
+                                          bb);
+
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 1u);
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+
+  // 单次模式缓存 SUCCESS, 后续 tick 不再执行 child
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 1);
+
+  // reset_token 变化 (新 goal -> goal_revision 递增): 无视缓存立即重执行。
+  // 这是 "新 goal 立即重规划/重平滑" 的机制 (默认树 planner/smoother
+  // RateController 均绑定 reset_token="{goal_revision}")。
+  bb->set<uint64_t>("goal_revision", 1u);
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 2);
+
+  // token 未变时继续缓存
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 2);
+
+  bb->set<uint64_t>("goal_revision", 2u);
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 3);
+}
+
+TEST(BehaviorTreeControlTest, pipelineSequenceStaysOnRunningChildAndAdvances) {
   auto factory = makeFactory();
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   auto bb = BT::Blackboard::create();
@@ -284,23 +329,23 @@ TEST(BehaviorTreeControlTest, PipelineSequenceStaysOnRunningChildAndAdvances) {
 
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
   // child0 RUNNING 时下次 tick 依然执行 child0
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::RUNNING; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 0);
 
   // child0 SUCCESS 后从 child0 转 child1 继续
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 3);
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, PipelineSequenceFailsWhenAnyChildFails) {
+TEST(BehaviorTreeControlTest, pipelineSequenceFailsWhenAnyChildFails) {
   auto factory = makeFactory();
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   auto bb = BT::Blackboard::create();
@@ -319,8 +364,8 @@ TEST(BehaviorTreeControlTest, PipelineSequenceFailsWhenAnyChildFails) {
   ASSERT_EQ(mocks.size(), 2u);
 
   // child0 直接 FAILURE -> 整树 FAILURE
-  mocks[0]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
-  mocks[1]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 0);
@@ -341,14 +386,14 @@ TEST(BehaviorTreeControlTest, PipelineSequenceFailsWhenAnyChildFails) {
                                             bb2);
   auto mocks2 = collectMocks(tree2);
   ASSERT_EQ(mocks2.size(), 2u);
-  mocks2[0]->status_fn_ = [] { return BT::NodeStatus::SUCCESS; };
-  mocks2[1]->status_fn_ = [] { return BT::NodeStatus::FAILURE; };
+  mocks2[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  mocks2[1]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   EXPECT_EQ(tree2.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks2[0]->tick_count, 1);
   EXPECT_EQ(mocks2[1]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, IsPathValidEmptyPathFailsNonEmptySucceeds) {
+TEST(BehaviorTreeControlTest, isPathValidEmptyPathFailsNonEmptySucceeds) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<IsPathValid>("IsPathValid");
   auto bb = BT::Blackboard::create();
@@ -360,18 +405,18 @@ TEST(BehaviorTreeControlTest, IsPathValidEmptyPathFailsNonEmptySucceeds) {
 </root>)",
                                           bb);
 
-  bb->set<Path>(kRawPath, Path{});
+  bb->set<Path>(k_raw_path, Path{});
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
   Path path;
   path.header.frame_id = "map";
   path.poses.push_back(makePose(0.0));
   path.poses.push_back(makePose(1.0));
-  bb->set<Path>(kRawPath, path);
+  bb->set<Path>(k_raw_path, path);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST(BehaviorTreeControlTest, GoalUpdatedDetectsGoalChange) {
+TEST(BehaviorTreeControlTest, goalUpdatedDetectsGoalChange) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
   auto bb = BT::Blackboard::create();
@@ -384,20 +429,20 @@ TEST(BehaviorTreeControlTest, GoalUpdatedDetectsGoalChange) {
                                           bb);
 
   // 首次 tick 初始化基线 -> FAILURE
-  bb->set<PoseStamped>(kGoal, makePose(0.0));
+  bb->set<PoseStamped>(k_goal, makePose(0.0));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
   // 黑板 goal 变化 -> SUCCESS
   auto changed = makePose(5.0);
-  changed.header.seq = 1;
-  bb->set<PoseStamped>(kGoal, changed);
+  changed.header.stamp = ayanami::Timestamp{static_cast<std::int64_t>(1)};
+  bb->set<PoseStamped>(k_goal, changed);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
   // 未变化 -> FAILURE
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST(BehaviorTreeControlTest, IsGoalReachedWithinTolerance) {
+TEST(BehaviorTreeControlTest, isGoalReachedWithinTolerance) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<IsGoalReached>("IsGoalReached");
   auto bb = BT::Blackboard::create();
@@ -411,14 +456,14 @@ TEST(BehaviorTreeControlTest, IsGoalReachedWithinTolerance) {
 
   bb->set<PoseStamped>("robot_pose", makePose(0.0));
 
-  bb->set<PoseStamped>(kGoal, makePose(1.0));
+  bb->set<PoseStamped>(k_goal, makePose(1.0));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
-  bb->set<PoseStamped>(kGoal, makePose(0.25));
+  bb->set<PoseStamped>(k_goal, makePose(0.25));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST(BehaviorTreeControlTest, IsFarFromGoalBeyondThreshold) {
+TEST(BehaviorTreeControlTest, isFarFromGoalBeyondThreshold) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<IsFarFromGoal>("IsFarFromGoal");
   auto bb = BT::Blackboard::create();
@@ -432,14 +477,14 @@ TEST(BehaviorTreeControlTest, IsFarFromGoalBeyondThreshold) {
 
   bb->set<PoseStamped>("robot_pose", makePose(0.0));
 
-  bb->set<PoseStamped>(kGoal, makePose(1.0));
+  bb->set<PoseStamped>(k_goal, makePose(1.0));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
-  bb->set<PoseStamped>(kGoal, makePose(0.25));
+  bb->set<PoseStamped>(k_goal, makePose(0.25));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 }
 
-TEST(BehaviorTreeControlTest, IsRobotStuckTokenResetClearsState) {
+TEST(BehaviorTreeControlTest, isRobotStuckTokenResetClearsState) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<IsRobotStuck>("IsRobotStuck");
   auto bb = BT::Blackboard::create();
@@ -455,23 +500,23 @@ TEST(BehaviorTreeControlTest, IsRobotStuckTokenResetClearsState) {
                                           bb);
 
   // 静止 + 远离目标 (连续 3 tick 判定卡住)
-  bb->set<uint64_t>(kResetStuckToken, 1u);
+  bb->set<uint64_t>(k_reset_stuck_token, 1u);
   bb->set<Odometry>("robot_odometry", Odometry{});
   bb->set<PoseStamped>("robot_pose", makePose(0.0));
-  bb->set<PoseStamped>(kGoal, makePose(10.0));
+  bb->set<PoseStamped>(k_goal, makePose(10.0));
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
   // reset_stuck_token 变化 -> 状态清零 (防 static 跨任务残留)
-  bb->set<uint64_t>(kResetStuckToken, 2u);
+  bb->set<uint64_t>(k_reset_stuck_token, 2u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 }
 
-TEST(BehaviorTreeControlTest, ValidateRequiredBlackboardEntriesThrowsOnMissing) {
+TEST(BehaviorTreeControlTest, validateRequiredBlackboardEntriesThrowsOnMissing) {
   auto empty = BT::Blackboard::create();
   EXPECT_THROW(validateRequiredBlackboardEntries(empty), std::runtime_error);
 

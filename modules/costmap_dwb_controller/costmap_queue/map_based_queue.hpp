@@ -65,7 +65,7 @@ public:
    * @brief Default Constructor
    */
   explicit MapBasedQueue(bool reset_bins = true)
-  : reset_bins_(reset_bins), item_count_(0)
+  : reset_bins(reset_bins), item_count(0)
   {
     reset();
   }
@@ -75,11 +75,11 @@ public:
    */
   virtual void reset()
   {
-    if (reset_bins_ || item_count_ > 0) {
-      item_bins_.clear();
-      item_count_ = 0;
+    if (reset_bins || item_count > 0) {
+      item_bins.clear();
+      item_count = 0;
     }
-    iter_ = last_insert_iter_ = item_bins_.end();
+    iter = last_insert_iter = item_bins.end();
   }
 
   /**
@@ -92,27 +92,27 @@ public:
     // We keep track of the last priority we inserted. If this items priority
     // matches the previous insertion we can avoid searching through all the
     // bins.
-    if (last_insert_iter_ == item_bins_.end() || last_insert_iter_->first != priority) {
-      last_insert_iter_ = item_bins_.find(priority);
+    if (last_insert_iter == item_bins.end() || last_insert_iter->first != priority) {
+      last_insert_iter = item_bins.find(priority);
 
       // If not found, create a new bin
-      if (last_insert_iter_ == item_bins_.end()) {
+      if (last_insert_iter == item_bins.end()) {
         auto map_item = std::make_pair(priority, std::move(std::vector<item_t>()));
 
         // Inserts an item if it doesn't exist. Returns an iterator to the item
         // whether it existed or was inserted.
-        std::pair<ItemMapIterator, bool> insert_result = item_bins_.insert(std::move(map_item));
-        last_insert_iter_ = insert_result.first;
+        std::pair<ItemMapIterator, bool> insert_result = item_bins.insert(std::move(map_item));
+        last_insert_iter = insert_result.first;
       }
     }
 
     // Add the item to the vector for this map key
-    last_insert_iter_->second.push_back(item);
-    item_count_++;
+    last_insert_iter->second.push_back(item);
+    item_count++;
 
     // Use short circuiting to check if we want to update the iterator
-    if (iter_ == item_bins_.end() || priority < iter_->first) {
-      iter_ = last_insert_iter_;
+    if (iter == item_bins.end() || priority < iter->first) {
+      iter = last_insert_iter;
     }
   }
 
@@ -124,7 +124,7 @@ public:
    */
   bool isEmpty()
   {
-    return item_count_ == 0;
+    return item_count == 0;
   }
 
   /**
@@ -133,11 +133,11 @@ public:
    */
   item_t & front()
   {
-    if (iter_ == item_bins_.end()) {
+    if (iter == item_bins.end()) {
       throw std::out_of_range("front() called on empty costmap_queue::MapBasedQueue!");
     }
 
-    return iter_->second.back();
+    return iter->second.back();
   }
 
   /**
@@ -145,27 +145,27 @@ public:
    */
   void pop()
   {
-    if (iter_ != item_bins_.end() && !iter_->second.empty()) {
-      iter_->second.pop_back();
-      item_count_--;
+    if (iter != item_bins.end() && !iter->second.empty()) {
+      iter->second.pop_back();
+      item_count--;
     }
 
     auto not_empty = [](const typename ItemMap::value_type & key_val) {
         return !key_val.second.empty();
       };
-    iter_ = std::find_if(iter_, item_bins_.end(), not_empty);
+    iter = std::find_if(iter, item_bins.end(), not_empty);
   }
 
 protected:
   using ItemMap = std::map<double, std::vector<item_t>>;
   using ItemMapIterator = typename ItemMap::iterator;
 
-  bool reset_bins_;
+  bool reset_bins;
 
-  ItemMap item_bins_;
-  unsigned int item_count_;
-  ItemMapIterator iter_;
-  ItemMapIterator last_insert_iter_;
+  ItemMap item_bins;
+  unsigned int item_count;
+  ItemMapIterator iter;
+  ItemMapIterator last_insert_iter;
 };
 }  // namespace costmap_queue
 

@@ -22,9 +22,9 @@ bool GoalDistCritic::prepare(const geometry_msgs::Pose2D&,
   }
 
   // Enqueue just the last pose
-  int index = costmap_->getIndex(local_goal_x, local_goal_y);
-  cell_values_[index] = 0.0;
-  queue_->enqueueCell(local_goal_x, local_goal_y);
+  int index = costmap->getIndex(local_goal_x, local_goal_y);
+  cell_values[index] = 0.0;
+  queue->enqueueCell(local_goal_x, local_goal_y);
 
   propogateManhattanDistances();
 
@@ -34,7 +34,7 @@ bool GoalDistCritic::prepare(const geometry_msgs::Pose2D&,
 bool GoalDistCritic::getLastPoseOnCostmap(
     const nav_2d_msgs::Path2D& global_plan, unsigned int& x, unsigned int& y) {
   nav_2d_msgs::Path2D adjusted_global_plan =
-      dwb_core::adjustPlanResolution(global_plan, costmap_->getResolution());
+      dwb_core::adjustPlanResolution(global_plan, costmap->getResolution());
   bool started_path = false;
 
   // skip global path points until we reach the border of the local map
@@ -42,8 +42,8 @@ bool GoalDistCritic::getLastPoseOnCostmap(
     double g_x = adjusted_global_plan.poses[i].x;
     double g_y = adjusted_global_plan.poses[i].y;
     unsigned int map_x, map_y;
-    if (costmap_->worldToMap(g_x, g_y, map_x, map_y) &&
-        costmap_->getCost(map_x, map_y) != costmap_2d::NO_INFORMATION) {
+    if (costmap->worldToMap(g_x, g_y, map_x, map_y) &&
+        costmap->getCost(map_x, map_y) != costmap_2d::NO_INFORMATION) {
       // Still on the costmap. Continue.
       x = map_x;
       y = map_y;

@@ -89,7 +89,7 @@ public:
 
 PoseStamped makePose(double x = 0.0, double y = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -114,9 +114,77 @@ bool readyWithin(Task& t, int max_ms) {
   return t.ready();
 }
 
+// 支持 setNewGoal in-place 更新的 planner: setNewGoal 立即返回 true 让
+// PlannerExecution 走 latest-wins 采纳 (不 cancel/join/新建 execution); makePlan
+// 阻塞到 report 释放, 被取消返回 PathNotFound, 否则把传入的最新 goal 编码进路径。
+class LatestWinsPlanner : public ayanami::abstract::AbstractPlanner {
+ public:
+  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
+                       Path& plan, double&, std::string&) override {
+    ++calls;
+    ++entered_calls;
+    const int running_now = ++running;
+    int observed = max_running.load();
+    while (running_now > observed &&
+           !max_running.compare_exchange_weak(observed, running_now)) {}
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      release_cv.wait_for(lock, std::chrono::milliseconds(3000),
+                          [this] { return canceled.load() || released.load(); });
+    }
+    --running;
+    if (canceled.exchange(false)) {
+      return FailureCode::PathNotFound;
+    }
+    plan.poses.push_back(start);
+    plan.poses.push_back(goal);
+    return FailureCode::None;
+  }
+
+  bool cancel() override {
+    canceled.store(true);
+    release_cv.notify_all();
+    return true;
+  }
+
+  bool setNewGoal(const PoseStamped&, const PoseStamped&, double) override {
+    ++set_goal_calls;
+    return true;
+  }
+
+  void release() {
+    released.store(true);
+    release_cv.notify_all();
+  }
+
+  std::atomic<int> calls{0};
+  std::atomic<int> entered_calls{0};
+  std::atomic<int> running{0};
+  std::atomic<int> max_running{0};
+  std::atomic<int> set_goal_calls{0};
+  std::atomic<bool> canceled{false};
+  std::atomic<bool> released{false};
+  std::mutex mutex;
+  std::condition_variable release_cv;
+};
+
+// 计数 createExecution: 证明连续 goal 只创建过 1 个 execution 线程
+// (首个 acceptGoal 创建, 之后全部走 in-place setNewGoal 路径)。
+class CountingPlannerAction : public ayanami::components::PlannerAction {
+ public:
+  using PlannerAction::PlannerAction;
+  std::atomic<int> executions_created{0};
+
+ protected:
+  ayanami::components::PlannerExecution::Ptr createExecution() override {
+    executions_created.fetch_add(1);
+    return PlannerAction::createExecution();
+  }
+};
+
 }  // namespace
 
-TEST(LatestWins, SameSlotSecondGoalEjectsFirstPromptly) {
+TEST(LatestWins, sameSlotSecondGoalEjectsFirstPromptly) {
   auto planner = std::make_shared<BlockingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
@@ -168,4 +236,72 @@ TEST(LatestWins, SameSlotSecondGoalEjectsFirstPromptly) {
 
   // 无 spin: 调用次数有界 (线性于提交数, 远小于无限重试)。
   EXPECT_LE(planner->calls.load(), 3);
+}
+
+TEST(LatestWins, setNewGoalPlannerHundredGoalsSingleExecutionLatestWins) {
+  constexpr int kGoals = 100;
+  auto planner = std::make_shared<LatestWinsPlanner>();
+  CountingPlannerAction action(planner);
+
+  std::vector<ayanami::components::TaskHandle<ayanami::actions::GetPathResult>>
+      tasks;
+  tasks.reserve(kGoals);
+
+  // 首个 goal 创建唯一 execution 并阻塞在 makePlan。
+  GetPathGoal first = makeGoal(1);
+  first.goal = makePose(1.0, 7.0);
+  tasks.push_back(action.acceptGoal(first));
+  ASSERT_TRUE(tasks.front().valid());
+
+  // 等首个 execution 线程进入插件 (之后 2..100 全部走 in-place setNewGoal)。
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(2000);
+    while (planner->running.load() == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_GE(planner->running.load(), 1);
+  }
+
+  // 连续 99 个新 goal in-place 抢占: goal id 编码进 goal 位姿 x。
+  for (int i = 2; i <= kGoals; ++i) {
+    GetPathGoal g = makeGoal(i);
+    g.goal = makePose(static_cast<double>(i), 7.0);
+    tasks.push_back(action.acceptGoal(g));
+  }
+  ASSERT_EQ(tasks.size(), kGoals);
+  for (const auto& t : tasks) {
+    ASSERT_TRUE(t.valid());
+  }
+
+  // 前 99 个 Task 被最新 goal 抢占 → CANCELED。
+  for (int i = 0; i < kGoals - 1; ++i) {
+    ASSERT_TRUE(readyWithin(tasks[i], 2000));
+    EXPECT_EQ(tasks[i].status(), GoalStatus::CANCELED);
+  }
+
+  // 只有一个 execution 线程 (首个创建, 无重建/cancel/join/new thread)。
+  EXPECT_EQ(action.executions_created.load(), 1);
+  // 插件 setNewGoal 被调用 99 次 (goal 2..100 的 in-place 抢占)。
+  EXPECT_EQ(planner->set_goal_calls.load(), kGoals - 1);
+
+  // 插件最大并发 1 (单 execution 线程驱动, 绝无重入)。
+  EXPECT_EQ(planner->max_running.load(), 1);
+
+  // 释放: 执行线程采纳最新 (goal 100) 并成功。
+  planner->release();
+  ASSERT_TRUE(readyWithin(tasks[kGoals - 1], 3000));
+  EXPECT_EQ(tasks[kGoals - 1].status(), GoalStatus::SUCCEEDED);
+  EXPECT_EQ(tasks[kGoals - 1].result().failure, FailureCode::None);
+
+  // 结果对应最新 goal (goal id 编码 x = 100, y = 7)。
+  const auto& result = tasks[kGoals - 1].result();
+  ASSERT_GE(result.path.poses.size(), 1u);
+  EXPECT_DOUBLE_EQ(result.path.poses.back().pose.position.x(),
+                   static_cast<double>(kGoals));
+  EXPECT_DOUBLE_EQ(result.path.poses.back().pose.position.y(), 7.0);
+
+  // 无并发残留。
+  EXPECT_EQ(planner->running.load(), 0);
 }

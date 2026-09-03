@@ -6,7 +6,8 @@
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/abstract/core/abstract_navigation.hpp>
-#include <ayanami/abstract/core/map_context.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
+#include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
@@ -18,12 +19,13 @@
 namespace {
 
 using ayanami::FailureCode;
+using ayanami::costmap::CostmapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::OccupancyGrid;
 using ayanami::nav_msgs::Path;
 
-// ---- 测试派生类: 只实现纯虚, 继承默认实现 (cancel/setMapCallback/lock/unlock/isCurrent) ----
+// ---- 测试派生类: 只实现纯虚, 继承默认实现 (cancel/setMapCallback/isCurrent) ----
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
@@ -36,8 +38,7 @@ public:
 class TestController : public ayanami::abstract::AbstractController {
 public:
   FailureCode computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                      TwistStamped&, std::string&,
-                                      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+                                      TwistStamped&, std::string&) override {
     return FailureCode::None;
   }
   bool setPlan(const Path&) override { return true; }
@@ -65,24 +66,9 @@ public:
   void setGoal(const PoseStamped&) override {}
 };
 
-class TestMapContext : public ayanami::abstract::AbstractMapContext {
-public:
-  const std::string& getGlobalFrame() const override { return global_; }
-  const std::string& getRobotFrame() const override { return robot_; }
-  bool getRobotPose(PoseStamped& pose) const override {
-    pose.header.frame_id = global_;
-    pose.pose = Eigen::Isometry3d::Identity();
-    return true;
-  }
-
-private:
-  std::string global_ = "map";
-  std::string robot_ = "base_link";
-};
-
 } // namespace
 
-TEST(CoreAbstractPlanner, MakePlanCallableAndCancelDefaultsFalse) {
+TEST(CoreAbstractPlanner, makePlanCallableAndCancelDefaultsFalse) {
   TestPlanner p;
   PoseStamped start, goal;
   Path plan;
@@ -92,20 +78,19 @@ TEST(CoreAbstractPlanner, MakePlanCallableAndCancelDefaultsFalse) {
   EXPECT_FALSE(p.cancel());
 }
 
-TEST(CoreAbstractController, ComputeGoalAndSetPlan) {
+TEST(CoreAbstractController, computeGoalAndSetPlan) {
   TestController c;
   PoseStamped pose;
   TwistStamped vel, cmd;
   std::string msg;
-  ayanami::abstract::AbstractGoalChecker::Ptr checker;
-  EXPECT_EQ(c.computeVelocityCommands(pose, vel, cmd, msg, checker),
+  EXPECT_EQ(c.computeVelocityCommands(pose, vel, cmd, msg),
             FailureCode::None);
   Path plan;
   EXPECT_TRUE(c.setPlan(plan));
   EXPECT_FALSE(c.cancel());
 }
 
-TEST(CoreAbstractSmoother, SmoothPathCallableAndCancelDefaultsFalse) {
+TEST(CoreAbstractSmoother, smoothPathCallableAndCancelDefaultsFalse) {
   TestSmoother s;
   Path path, out;
   std::string msg;
@@ -113,14 +98,14 @@ TEST(CoreAbstractSmoother, SmoothPathCallableAndCancelDefaultsFalse) {
   EXPECT_FALSE(s.cancel());
 }
 
-TEST(CoreAbstractRecovery, RunRecoveryCallableAndCancelDefaultsFalse) {
+TEST(CoreAbstractRecovery, runRecoveryCallableAndCancelDefaultsFalse) {
   TestRecovery r;
   std::string msg;
   EXPECT_EQ(r.runRecovery(msg), FailureCode::None);
   EXPECT_FALSE(r.cancel());
 }
 
-TEST(CoreAbstractNavigation, LifecycleAndSetGoal) {
+TEST(CoreAbstractNavigation, lifecycleAndSetGoal) {
   TestNavigation nav;
   nav.initialize("/tmp/nonexistent.json");
   nav.start();
@@ -130,33 +115,26 @@ TEST(CoreAbstractNavigation, LifecycleAndSetGoal) {
   nav.setGoal(goal);
 }
 
-TEST(CoreAbstractNavigation, SetMapCallbackDefaultsToNoop) {
-  TestNavigation nav;
-  bool called = false;
-  ayanami::abstract::AbstractNavigation::MapCallback cb =
-      [&](const std::string&, const OccupancyGrid&) { called = true; };
-  nav.setMapCallback(cb);
-  EXPECT_FALSE(called);
+TEST(CoreCostmapContext, defaultCurrentTrue) {
+  CostmapContext ctx;
+  EXPECT_TRUE(ctx.isCurrent());
 }
 
-TEST(CoreAbstractMapContext, DefaultCurrentAndLockUnlockNoop) {
-  TestMapContext mc;
-  EXPECT_TRUE(mc.isCurrent());
-  mc.lock();
-  mc.unlock();
-}
-
-TEST(CoreAbstractMapContext, FramesAndRobotPoseFallback) {
-  TestMapContext mc;
-  EXPECT_EQ(mc.getGlobalFrame(), "map");
-  EXPECT_EQ(mc.getRobotFrame(), "base_link");
+TEST(CoreCostmapContext, framesAndRobotPose) {
+  CostmapContext ctx;
+  ctx.setFrames("map", "base_link");
+  ayanami::components::RobotStateController::instance().setTransform(
+      "map", "base_link", ayanami::Timestamp::latest(),
+      Eigen::Isometry3d::Identity());
+  EXPECT_EQ(ctx.getGlobalFrame(), "map");
+  EXPECT_EQ(ctx.getRobotFrame(), "base_link");
   PoseStamped pose;
-  ASSERT_TRUE(mc.getRobotPose(pose));
+  ASSERT_TRUE(ctx.getRobotPose(pose));
   EXPECT_EQ(pose.header.frame_id, "map");
-  EXPECT_TRUE(pose.pose.matrix().isIdentity());
+  EXPECT_TRUE(pose.pose.toIsometry().matrix().isIdentity());
 }
 
-TEST(CoreAbstract, PtrAliasesExist) {
+TEST(CoreAbstract, ptrAliasesExist) {
   static_assert(
       std::is_same_v<ayanami::abstract::AbstractPlanner::Ptr,
                      std::shared_ptr<ayanami::abstract::AbstractPlanner>>);
@@ -173,6 +151,6 @@ TEST(CoreAbstract, PtrAliasesExist) {
       std::is_same_v<ayanami::abstract::AbstractNavigation::Ptr,
                      std::shared_ptr<ayanami::abstract::AbstractNavigation>>);
   static_assert(
-      std::is_same_v<ayanami::abstract::AbstractMapContext::Ptr,
-                     std::shared_ptr<ayanami::abstract::AbstractMapContext>>);
+      std::is_same_v<ayanami::costmap::CostmapContext::Ptr,
+                     std::shared_ptr<ayanami::costmap::CostmapContext>>);
 }

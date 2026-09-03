@@ -49,10 +49,9 @@ inline nav_2d_msgs::Pose2DStamped poseStampedToPose2D(
   nav_2d_msgs::Pose2DStamped pose2d;
   pose2d.frame_id = pose.header.frame_id;
   pose2d.stamp = pose.header.stamp;
-  pose2d.pose.x = pose.pose.translation().x();
-  pose2d.pose.y = pose.pose.translation().y();
-  const Eigen::Quaterniond q(pose.pose.linear());
-  pose2d.pose.theta = getYaw(q);
+  pose2d.pose.x = pose.pose.position.x();
+  pose2d.pose.y = pose.pose.position.y();
+  pose2d.pose.theta = getYaw(pose.pose.orientation);
   return pose2d;
 }
 
@@ -81,7 +80,8 @@ inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
   ayanami::geometry_msgs::PoseStamped pose;
   pose.header.frame_id = pose2d.frame_id;
   pose.header.stamp = pose2d.stamp;
-  pose.pose = pose2DToPose(pose2d.pose);
+  pose.pose = ayanami::geometry_msgs::Pose::fromIsometry(
+      pose2DToPose(pose2d.pose));
   return pose;
 }
 
@@ -92,7 +92,8 @@ inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
   ayanami::geometry_msgs::PoseStamped pose;
   pose.header.frame_id = frame;
   pose.header.stamp = stamp;
-  pose.pose = pose2DToPose(pose2d);
+  pose.pose =
+      ayanami::geometry_msgs::Pose::fromIsometry(pose2DToPose(pose2d));
   return pose;
 }
 
@@ -103,7 +104,7 @@ inline nav_2d_msgs::Path2D pathToPath2D(
   path2d.frame_id = path.header.frame_id;
   path2d.stamp = path.header.stamp;
   for (const auto& pose : path.poses) {
-    path2d.poses.push_back(poseToPose2D(pose.pose));
+    path2d.poses.push_back(poseToPose2D(pose.pose.toIsometry()));
   }
   return path2d;
 }

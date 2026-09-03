@@ -35,18 +35,18 @@ public:
   using Task = Server::Task;
 
   explicit ControllerAction(ayanami::abstract::AbstractController::Ptr controller)
-      : controller_(std::move(controller)),
-        server_(std::make_shared<Server>()) {
-    server_->setGoalCallback([](const Server::GoalHandleType& gh) {
+      : controller(std::move(controller)),
+        action_server(std::make_shared<Server>()) {
+    action_server->setGoalCallback([](const Server::GoalHandleType& gh) {
       ayanami::interfaces::NavigationCallbacks::on_exe_path_goal(gh.goal);
     });
-    server_->setCancelCallback([this](uint64_t goal_id) {
+    action_server->setCancelCallback([this](uint64_t goal_id) {
       Base::cancelGoal(goal_id);
     });
-    server_->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
+    action_server->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
       ayanami::interfaces::NavigationCallbacks::on_exe_path_feedback(gf.feedback);
     });
-    server_->setResultCallback([](const Server::GoalResultType& gr) {
+    action_server->setResultCallback([](const Server::GoalResultType& gr) {
       ayanami::interfaces::NavigationCallbacks::on_exe_path_result(gr);
     });
   }
@@ -54,18 +54,18 @@ public:
   ~ControllerAction() override { cancelAll(); }
 
   Task acceptGoal(const Goal& goal) {
-    auto task = server_->acceptGoal(goal);
-    auto gh = server_->getGoal(task.goal_id());
+    auto task = action_server->acceptGoal(goal);
+    auto gh = action_server->getGoal(task.goal_id());
     if (!gh) {
       return task;
     }
-    if (!controller_) {
+    if (!controller) {
       Result result;
       result.failure = FailureCode::InternalError;
       result.message = "Controller plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
-      server_->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
+      action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
                              result);
       return task;
     }
@@ -73,28 +73,49 @@ public:
     return task;
   }
 
-  bool cancelGoal(uint64_t goal_id) { return server_->cancelGoal(goal_id); }
+  bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
+
+  /// @brief 运行中 in-place 更新目标路径 + 规划版本 (spec in-place plan update)。
+  /// 不 cancel / 不 join / 不新建 Execution; 线程安全 (execution plan_mutex)。
+  /// 返回 false 表示 goal 已不在跑 (任务已完成/取消) 或 execution 已到终态
+  /// (该次更新不会被消费)。调用方应重查已完成任务并消费结果, 而非误报失败。
+  bool updatePlan(uint64_t goal_id, const nav_msgs::Path& path,
+                  uint64_t plan_version) {
+    auto exec = Base::executionForGoal(goal_id);
+    if (!exec) {
+      return false;
+    }
+    return exec->updatePlan(path, plan_version);
+  }
 
   void cancelAll() {
-    server_->cancelAll();
+    action_server->cancelAll();
     Base::cancelAll();
   }
 
-  ServerPtr server() const { return server_; }
+  ServerPtr server() const { return action_server; }
+
+  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子
+  /// 返回带地图的 execution)。取代旧的 Server*Action 私有子类间接层。
+  /// 未注入时 createExecution 默认构造 abstract execution。
+  void setExecutionFactory(std::function<ControllerExecution::Ptr()> factory) {
+    execution_factory = std::move(factory);
+  }
 
 protected:
   void runImpl(const GoalHandleType& gh, ControllerExecution& exec) override {
-    server_->setActive(gh.id);
+    action_server->setActive(gh.id);
     exec.setNewPlan(gh.goal.path);
+    exec.setPlanVersion(gh.goal.plan_version);
     exec.start();
     runImplCommon(
         gh, exec,
         [this](const GoalHandleType& gh, ControllerExecution& exec) -> bool {
-          if (server_->isCancelRequested(gh.id)) {
+          if (action_server->isCancelRequested(gh.id)) {
             exec.cancel();
           }
           const bool canceled =
-              server_->isCancelRequested(gh.id) ||
+              action_server->isCancelRequested(gh.id) ||
               exec.getState() == ControllerExecution::CANCELED;
           if (canceled) {
             finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
@@ -124,11 +145,14 @@ protected:
   }
 
   virtual ControllerExecution::Ptr createExecution() {
-    return std::make_shared<ControllerExecution>(controller_);
+    if (execution_factory) {
+      return execution_factory();
+    }
+    return std::make_shared<ControllerExecution>(controller);
   }
 
 protected:
-  ayanami::abstract::AbstractController::Ptr controller_;
+  ayanami::abstract::AbstractController::Ptr controller;
 
 private:
   void finishResult(const GoalHandleType& gh, const ControllerExecution& exec,
@@ -146,11 +170,15 @@ private:
     result.message = exec.getMessage();
     result.reached = exec.getState() == ControllerExecution::ARRIVED_GOAL;
     result.session_id = gh.goal.session_id;
-    result.plan_version = gh.goal.plan_version;
-    server_->publishResult(gh.id, status, result);
+    // 最终结果只携带真正被 controller->setPlan 消费的已应用版本 (applied),
+    // 不携带仅在途/未消费的 pending 版本: in-place updatePlan 提交的版本只有
+    // 在执行循环消费并 setPlan 成功后才会反映到 exec.getPlanVersion()。
+    result.plan_version = exec.getPlanVersion();
+    action_server->publishResult(gh.id, status, result);
   }
 
-  ServerPtr server_;
+  std::function<ControllerExecution::Ptr()> execution_factory;
+  ServerPtr action_server;
 };
 
 } // namespace components

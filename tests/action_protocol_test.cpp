@@ -52,14 +52,14 @@ class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
                        double& cost, std::string&) override {
-    calls_++;
+    calls++;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
     cost = 1.0;
     return FailureCode::None;
   }
   bool cancel() override { return true; }
-  std::atomic<int> calls_{0};
+  std::atomic<int> calls{0};
 };
 
 // 慢速成功 planner: 阻塞到 release() 才填 path (观察 ACTIVE 中间态用)。
@@ -105,7 +105,7 @@ public:
 
 PoseStamped makePose(double x = 0.0, double y = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -122,7 +122,7 @@ GetPathGoal makeGoal(uint64_t session, uint64_t version) {
 
 // ---- ActionServer 协议层: PENDING→ACTIVE→terminal 法定转换 ----
 
-TEST(ActionProtocol, LifecyclePendingActiveSucceeded) {
+TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
   Server server;
   auto task = server.acceptGoal(makeGoal(1, 1));
   ASSERT_TRUE(task.valid());
@@ -151,7 +151,7 @@ TEST(ActionProtocol, LifecyclePendingActiveSucceeded) {
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
 
-TEST(ActionProtocol, LifecycleActiveAborted) {
+TEST(ActionProtocol, lifecycleActiveAborted) {
   Server server;
   auto task = server.acceptGoal(makeGoal(1, 2));
   ASSERT_TRUE(task.valid());
@@ -166,7 +166,7 @@ TEST(ActionProtocol, LifecycleActiveAborted) {
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
 
-TEST(ActionProtocol, LifecycleActiveCanceled) {
+TEST(ActionProtocol, lifecycleActiveCanceled) {
   Server server;
   auto task = server.acceptGoal(makeGoal(1, 3));
   ASSERT_TRUE(task.valid());
@@ -181,7 +181,7 @@ TEST(ActionProtocol, LifecycleActiveCanceled) {
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
 
-TEST(ActionProtocol, TerminalIsAbsorbingRejectsFurtherTransitions) {
+TEST(ActionProtocol, terminalIsAbsorbingRejectsFurtherTransitions) {
   Server server;
   auto task = server.acceptGoal(makeGoal(1, 4));
   ASSERT_TRUE(task.valid());
@@ -203,7 +203,7 @@ TEST(ActionProtocol, TerminalIsAbsorbingRejectsFurtherTransitions) {
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
 
-TEST(ActionProtocol, UnknownGoalRejectsEveryOperation) {
+TEST(ActionProtocol, unknownGoalRejectsEveryOperation) {
   Server server;
   GetPathResult result;
   result.failure = FailureCode::None;
@@ -216,7 +216,7 @@ TEST(ActionProtocol, UnknownGoalRejectsEveryOperation) {
 
 // ---- PlannerAction 主流: acceptGoal → ACTIVE → terminal ----
 
-TEST(ActionProtocol, PlannerAcceptGoalReachesActiveThenSucceeded) {
+TEST(ActionProtocol, plannerAcceptGoalReachesActiveThenSucceeded) {
   auto planner = std::make_shared<GatedPlanner>();
   ayanami::components::PlannerAction action(planner);
 
@@ -243,7 +243,7 @@ TEST(ActionProtocol, PlannerAcceptGoalReachesActiveThenSucceeded) {
   EXPECT_EQ(action.server()->activeGoalCount(), 0u);
 }
 
-TEST(ActionProtocol, PlannerAcceptGoalAbortsOnInternalError) {
+TEST(ActionProtocol, plannerAcceptGoalAbortsOnInternalError) {
   auto planner = std::make_shared<ThrowingPlanner>();
   ayanami::components::PlannerAction action(planner);
 

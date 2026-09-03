@@ -34,18 +34,18 @@ public:
   using Task = Server::Task;
 
   explicit RecoveryAction(ayanami::abstract::AbstractRecovery::Ptr recovery)
-      : recovery_(std::move(recovery)),
-        server_(std::make_shared<Server>()) {
-    server_->setGoalCallback([](const Server::GoalHandleType& gh) {
+      : recovery(std::move(recovery)),
+        action_server(std::make_shared<Server>()) {
+    action_server->setGoalCallback([](const Server::GoalHandleType& gh) {
       ayanami::interfaces::NavigationCallbacks::on_recovery_goal(gh.goal);
     });
-    server_->setCancelCallback([this](uint64_t goal_id) {
+    action_server->setCancelCallback([this](uint64_t goal_id) {
       Base::cancelGoal(goal_id);
     });
-    server_->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
+    action_server->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
       ayanami::interfaces::NavigationCallbacks::on_recovery_feedback(gf.feedback);
     });
-    server_->setResultCallback([](const Server::GoalResultType& gr) {
+    action_server->setResultCallback([](const Server::GoalResultType& gr) {
       ayanami::interfaces::NavigationCallbacks::on_recovery_result(gr);
     });
   }
@@ -53,46 +53,55 @@ public:
   ~RecoveryAction() override { cancelAll(); }
 
   Task acceptGoal(const Goal& goal) {
-    auto task = server_->acceptGoal(goal);
-    auto gh = server_->getGoal(task.goal_id());
+    auto task = action_server->acceptGoal(goal);
+    auto gh = action_server->getGoal(task.goal_id());
     if (!gh) {
       return task;
     }
-    if (!recovery_) {
+    if (!recovery) {
       Result result;
       result.failure = FailureCode::InternalError;
       result.message = "Recovery plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
-      server_->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
+      action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
                              result);
       return task;
     }
-    Base::start(*gh, createExecution(), 0);
+    auto exec = createExecution();
+    exec->setBehaviorParams(goal.behavior);
+    Base::start(*gh, std::move(exec), 0);
     return task;
   }
 
-  bool cancelGoal(uint64_t goal_id) { return server_->cancelGoal(goal_id); }
+  bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
   void cancelAll() {
-    server_->cancelAll();
+    action_server->cancelAll();
     Base::cancelAll();
   }
 
-  ServerPtr server() const { return server_; }
+  ServerPtr server() const { return action_server; }
+
+  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子
+  /// 返回带地图的 execution)。取代旧的 Server*Action 私有子类间接层。
+  /// 未注入时 createExecution 默认构造 abstract execution。
+  void setExecutionFactory(std::function<RecoveryExecution::Ptr()> factory) {
+    execution_factory = std::move(factory);
+  }
 
 protected:
   void runImpl(const GoalHandleType& gh, RecoveryExecution& exec) override {
-    server_->setActive(gh.id);
+    action_server->setActive(gh.id);
     exec.start();
     runImplCommon(
         gh, exec,
         [this](const GoalHandleType& gh, RecoveryExecution& exec) -> bool {
-          if (server_->isCancelRequested(gh.id)) {
+          if (action_server->isCancelRequested(gh.id)) {
             exec.cancel();
           }
           const bool canceled =
-              server_->isCancelRequested(gh.id) ||
+              action_server->isCancelRequested(gh.id) ||
               exec.getState() == RecoveryExecution::CANCELED;
           if (canceled) {
             finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
@@ -117,11 +126,14 @@ protected:
   }
 
   virtual RecoveryExecution::Ptr createExecution() {
-    return std::make_shared<RecoveryExecution>(recovery_);
+    if (execution_factory) {
+      return execution_factory();
+    }
+    return std::make_shared<RecoveryExecution>(recovery);
   }
 
 protected:
-  ayanami::abstract::AbstractRecovery::Ptr recovery_;
+  ayanami::abstract::AbstractRecovery::Ptr recovery;
 
 private:
   void finishResult(const GoalHandleType& gh, const RecoveryExecution& exec,
@@ -139,10 +151,11 @@ private:
     result.message = exec.getMessage();
     result.session_id = gh.goal.session_id;
     result.plan_version = gh.goal.plan_version;
-    server_->publishResult(gh.id, status, result);
+    action_server->publishResult(gh.id, status, result);
   }
 
-  ServerPtr server_;
+  std::function<RecoveryExecution::Ptr()> execution_factory;
+  ServerPtr action_server;
 };
 
 } // namespace components

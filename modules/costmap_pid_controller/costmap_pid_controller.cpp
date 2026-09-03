@@ -6,10 +6,10 @@
 // - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
 // - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
 // - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
-// - linear 按 max_acc/max_decel 分开限幅; angular 受 max_angular_accel 限幅
-// - distanceDecay 临近 goal 减速; 位置进入 goal_checker XY 容差后 linear=0,
-//   仅 angular PID 对齐 goal 朝向; 到达判定由 goal_checker 宣布 (isGoalReached
-//   已从接口移除, 控制器自身不判到达)。
+// - linear 按 max_acc_x/max_decel_x 分开限幅; angular 受 max_acc_theta 限幅
+// - distanceDecay 临近 goal 减速; 位置进入 param.goal_tolerance XY 容差后
+//   linear=0, 仅 angular PID 对齐 goal 朝向; 到达判定由 execution 层 goal_checker
+//   宣布 (computeVelocityCommands 不再接收 goal_checker, 控制器自身不判到达)。
 
 #include "costmap_pid_controller.hpp"
 
@@ -29,14 +29,14 @@ namespace modules {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr double k_pi = 3.14159265358979323846;
 
 double normalizeAngle(double angle) {
-  while (angle > kPi) {
-    angle -= 2.0 * kPi;
+  while (angle > k_pi) {
+    angle -= 2.0 * k_pi;
   }
-  while (angle < -kPi) {
-    angle += 2.0 * kPi;
+  while (angle < -k_pi) {
+    angle += 2.0 * k_pi;
   }
   return angle;
 }
@@ -46,14 +46,15 @@ double shortestAngularDistance(double from, double to) {
 }
 
 double yawOf(const geometry_msgs::PoseStamped& pose) {
-  const Eigen::Matrix3d& r = pose.pose.linear();
-  return std::atan2(r(1, 0), r(0, 0));
+  const Eigen::Quaterniond& q = pose.pose.orientation;
+  return std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
+                    1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
 }
 
 double distance2d(const geometry_msgs::PoseStamped& a,
                   const geometry_msgs::PoseStamped& b) {
-  const Eigen::Vector3d& pa = a.pose.translation();
-  const Eigen::Vector3d& pb = b.pose.translation();
+  const Eigen::Vector3d& pa = a.pose.position;
+  const Eigen::Vector3d& pb = b.pose.position;
   return std::hypot(pa.x() - pb.x(), pa.y() - pb.y());
 }
 
@@ -66,9 +67,9 @@ uint64_t computePlanSignature(const nav_msgs::Path& plan) {
   }
   auto& goal = plan.poses.back();
   int64_t gx =
-      static_cast<int64_t>(std::round(goal.pose.translation().x() * 1000.0));
+      static_cast<int64_t>(std::round(goal.pose.position.x() * 1000.0));
   int64_t gy =
-      static_cast<int64_t>(std::round(goal.pose.translation().y() * 1000.0));
+      static_cast<int64_t>(std::round(goal.pose.position.y() * 1000.0));
   return (std::hash<int64_t>()(gx) ^ std::hash<int64_t>()(gy)) ^
          (static_cast<uint64_t>(plan.poses.size()) << 4);
 }
@@ -93,74 +94,75 @@ double CostmapPidController::PidAxis::compute(double error, double dt) {
   return kp * error + ki * integral + kd * derivative;
 }
 
-CostmapPidController::CostmapPidController() { loadConfig(); }
-
-void CostmapPidController::initialize(
-    const std::string& name, ayanami::costmap::CostmapContext::Ptr ctx) {
-  // 纯 path tracker 不读图: 满足 costmap 族契约 (spec §5.5) 但不持有地图。
-  // config 在构造函数 loadConfig 完成, name/ctx 无需持久化。
-  (void)name;
-  (void)ctx;
-}
-
-void CostmapPidController::loadConfig() {
+CostmapPidController::CostmapPidController() {
+  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
+  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
+  // config_pid_controller → 本插件 json 文件。
   try {
-    const ayanami::ComponentConfig holder("config_controller");
-    const auto& file = holder.get();
-    config_.max_v = file.param<double>("costmap_pid_controller", "max_v",
-                                       config_.max_v);
-    config_.max_w = file.param<double>("costmap_pid_controller", "max_w",
-                                       config_.max_w);
-    config_.max_acc = file.param<double>("costmap_pid_controller", "max_acc",
-                                         config_.max_acc);
-    config_.max_decel = file.param<double>("costmap_pid_controller",
-                                           "max_decel", config_.max_decel);
-    config_.max_angular_accel =
-        file.param<double>("costmap_pid_controller", "max_angular_accel",
-                           config_.max_angular_accel);
-    config_.kp_v = file.param<double>("costmap_pid_controller", "kp_v",
-                                      config_.kp_v);
-    config_.ki_v = file.param<double>("costmap_pid_controller", "ki_v",
-                                      config_.ki_v);
-    config_.kd_v = file.param<double>("costmap_pid_controller", "kd_v",
-                                      config_.kd_v);
-    config_.kp_w = file.param<double>("costmap_pid_controller", "kp_w",
-                                      config_.kp_w);
-    config_.ki_w = file.param<double>("costmap_pid_controller", "ki_w",
-                                      config_.ki_w);
-    config_.kd_w = file.param<double>("costmap_pid_controller", "kd_w",
-                                      config_.kd_w);
-    config_.dist_decay = file.param<double>("costmap_pid_controller",
-                                            "dist_decay", config_.dist_decay);
-    config_.goal_tolerance =
+    const Config file(GlobalConfig::getConfigPath("config_pid_controller"));
+    param.max_vel_x = file.param<double>("costmap_pid_controller", "max_vel_x",
+                                         param.max_vel_x);
+    param.max_vel_theta =
+        file.param<double>("costmap_pid_controller", "max_vel_theta",
+                           param.max_vel_theta);
+    param.max_acc_x = file.param<double>("costmap_pid_controller", "max_acc_x",
+                                         param.max_acc_x);
+    param.max_decel_x =
+        file.param<double>("costmap_pid_controller", "max_decel_x",
+                           param.max_decel_x);
+    param.max_acc_theta =
+        file.param<double>("costmap_pid_controller", "max_acc_theta",
+                           param.max_acc_theta);
+    param.kp_v = file.param<double>("costmap_pid_controller", "kp_v",
+                                    param.kp_v);
+    param.ki_v = file.param<double>("costmap_pid_controller", "ki_v",
+                                    param.ki_v);
+    param.kd_v = file.param<double>("costmap_pid_controller", "kd_v",
+                                    param.kd_v);
+    param.kp_w = file.param<double>("costmap_pid_controller", "kp_w",
+                                    param.kp_w);
+    param.ki_w = file.param<double>("costmap_pid_controller", "ki_w",
+                                    param.ki_w);
+    param.kd_w = file.param<double>("costmap_pid_controller", "kd_w",
+                                    param.kd_w);
+    param.dist_decay = file.param<double>("costmap_pid_controller",
+                                          "dist_decay", param.dist_decay);
+    param.goal_tolerance =
         file.param<double>("costmap_pid_controller", "goal_tolerance",
-                           config_.goal_tolerance);
-    config_.slide_window = file.param<double>("costmap_pid_controller",
-                                              "slide_window",
-                                              config_.slide_window);
-    config_.default_dt = file.param<double>("costmap_pid_controller",
-                                            "default_dt", config_.default_dt);
-    config_.heading_deadband =
+                           param.goal_tolerance);
+    param.slide_window = file.param<double>("costmap_pid_controller",
+                                            "slide_window", param.slide_window);
+    param.default_dt = file.param<double>("costmap_pid_controller",
+                                          "default_dt", param.default_dt);
+    param.heading_deadband =
         file.param<double>("costmap_pid_controller", "heading_deadband",
-                           config_.heading_deadband);
-    config_.rotate_in_place_angle =
+                           param.heading_deadband);
+    param.rotate_in_place_angle =
         file.param<double>("costmap_pid_controller", "rotate_in_place_angle",
-                           config_.rotate_in_place_angle);
-    config_.mode = file.param<std::string>("costmap_pid_controller", "mode",
-                                           config_.mode);
+                           param.rotate_in_place_angle);
+    param.mode = file.param<std::string>("costmap_pid_controller", "mode",
+                                         param.mode);
   } catch (...) {
     // 配置不可读时保持默认值。
   }
 
-  pid_x_.kp = config_.kp_v;
-  pid_x_.ki = config_.ki_v;
-  pid_x_.kd = config_.kd_v;
-  pid_y_.kp = config_.kp_v;
-  pid_y_.ki = config_.ki_v;
-  pid_y_.kd = config_.kd_v;
-  pid_w_.kp = config_.kp_w;
-  pid_w_.ki = config_.ki_w;
-  pid_w_.kd = config_.kd_w;
+  pid_x.kp = param.kp_v;
+  pid_x.ki = param.ki_v;
+  pid_x.kd = param.kd_v;
+  pid_y.kp = param.kp_v;
+  pid_y.ki = param.ki_v;
+  pid_y.kd = param.kd_v;
+  pid_w.kp = param.kp_w;
+  pid_w.ki = param.ki_w;
+  pid_w.kd = param.kd_w;
+}
+
+void CostmapPidController::initialize(
+    const std::string& name, ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 纯 path tracker 不读图: 满足 costmap 族契约 (spec §5.5) 仅持有地图指针。
+  // config 在构造函数读取, name 无需持久化。
+  (void)name;
+  map_ = std::move(map);
 }
 
 bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
@@ -168,14 +170,14 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
     return false;
   }
   const uint64_t signature = computePlanSignature(plan);
-  plan_ = plan;
-  goal_ = plan.poses.back();
-  canceled_.store(false);
-  if (signature != plan_signature_) {
+  this->plan = plan;
+  goal = plan.poses.back();
+  canceled.store(false);
+  if (signature != plan_signature) {
     // 新 goal (或首帧): 重置跟踪状态, 确保 setPlan 首帧从 0 起步 (不携带旧速度)。
-    plan_signature_ = signature;
+    plan_signature = signature;
     resetTrackingState();
-    last_track_idx_ = 1;
+    last_track_idx = 1;
   }
   return true;
 }
@@ -183,47 +185,43 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
 FailureCode CostmapPidController::computeVelocityCommands(
     const geometry_msgs::PoseStamped& pose,
     const geometry_msgs::TwistStamped& velocity,
-    geometry_msgs::TwistStamped& cmd_vel, std::string& message,
-    const ayanami::abstract::AbstractGoalChecker::Ptr& goal_checker) {
+    geometry_msgs::TwistStamped& cmd_vel, std::string& message) {
   // 历史脏内存 bug: 入口强制清零后填充。
   cmd_vel = geometry_msgs::TwistStamped{};
   cmd_vel.twist = geometry_msgs::Twist{};
   cmd_vel.header = pose.header;
   message.clear();
 
-  if (plan_.poses.empty()) {
+  if (plan.poses.empty()) {
     message = "PID controller has no plan";
     return FailureCode::NoValidCommand;
   }
-  if (canceled_.load()) {
+  if (canceled.load()) {
     resetTrackingState();
     message = "PID controller canceled";
     return FailureCode::Canceled;
   }
 
-  last_pose_ = pose;
-  const double dt = std::max(config_.default_dt, 1e-6);
+  last_pose = pose;
+  const double dt = std::max(param.default_dt, 1e-6);
 
-  // 到达判定由 goal_checker 全权负责: PID 只读其容差 (position/angle 字段)。
-  // 空指针防御: 回退到 config 的 goal_tolerance (仅作停线速度的 XY 边界)。
-  const double xy_tol =
-      goal_checker ? goal_checker->getTolerances().pose.position
-                   : config_.goal_tolerance;
+  // 到达判定由 execution 层 goal_checker 全权负责; PID 自身使用 param 的
+  // goal_tolerance (自身 param) 作为停线速度的 XY 边界。
+  const double xy_tol = param.goal_tolerance;
 
   // ---- 位置已进入 goal XY 容差: 停止线速度, 仅 angular PID 对齐 goal 朝向 ----
   // (goal_checker 在 execution 层最终宣布到达)
-  if (distance2d(last_pose_, goal_) < xy_tol) {
+  if (distance2d(last_pose, goal) < xy_tol) {
     const double yaw_err =
-        shortestAngularDistance(yawOf(pose), yawOf(goal_));
+        shortestAngularDistance(yawOf(pose), yawOf(goal));
     const double target_theta =
-        std::abs(yaw_err) < config_.heading_deadband ? 0.0 : yaw_err;
-    double angular_w = pid_w_.compute(target_theta, dt);
-    angular_w = std::clamp(angular_w, -config_.max_w, config_.max_w);
-    angular_w = limitAcceleration(last_angular_vel_, angular_w,
-                                  config_.max_angular_accel,
-                                  config_.max_angular_accel, dt);
-    last_angular_vel_ = angular_w;
-    last_linear_vel_ = 0.0;
+        std::abs(yaw_err) < param.heading_deadband ? 0.0 : yaw_err;
+    double angular_w = pid_w.compute(target_theta, dt);
+    angular_w = std::clamp(angular_w, -param.max_vel_theta, param.max_vel_theta);
+    angular_w = limitAcceleration(last_angular_vel, angular_w,
+                                  param.max_acc_theta, param.max_acc_theta, dt);
+    last_angular_vel = angular_w;
+    last_linear_vel = 0.0;
     cmd_vel.twist.linear.x() = 0.0;
     cmd_vel.twist.linear.y() = 0.0;
     cmd_vel.twist.angular.z() = angular_w;
@@ -235,8 +233,8 @@ FailureCode CostmapPidController::computeVelocityCommands(
   const double robot_yaw = yawOf(pose);
   size_t nearest = 0;
   double min_dist = std::numeric_limits<double>::infinity();
-  for (size_t i = 0; i < plan_.poses.size(); ++i) {
-    const double d = distance2d(pose, plan_.poses[i]);
+  for (size_t i = 0; i < plan.poses.size(); ++i) {
+    const double d = distance2d(pose, plan.poses[i]);
     if (d < min_dist) {
       min_dist = d;
       nearest = i;
@@ -245,80 +243,79 @@ FailureCode CostmapPidController::computeVelocityCommands(
   // 向前推进到第一个 >= slide_window 的点 (或末点), 避免在路径点处
   // lookahead 窗口塌缩导致目标距离≈0 的停车停顿。
   size_t target_idx = nearest;
-  while (target_idx + 1 < plan_.poses.size() &&
-         distance2d(pose, plan_.poses[target_idx]) < config_.slide_window) {
+  while (target_idx + 1 < plan.poses.size() &&
+         distance2d(pose, plan.poses[target_idx]) < param.slide_window) {
     ++target_idx;
   }
-  last_track_idx_ = target_idx;
+  last_track_idx = target_idx;
 
   const Eigen::Vector3d rel =
-      plan_.poses[target_idx].pose.translation() - pose.pose.translation();
+      plan.poses[target_idx].pose.position - pose.pose.position;
   const double c = std::cos(robot_yaw);
   const double s = std::sin(robot_yaw);
   const double local_x = c * rel.x() + s * rel.y();   // 前向
   const double local_y = -s * rel.x() + c * rel.y();  // 左向
 
   double target_theta = std::atan2(local_y, local_x);
-  if (config_.mode == "omni") {
+  if (param.mode == "omni") {
     // 全向底盘: 选最近车体运动方向角 (0 / ±90° / 180°)。
     std::map<double, double> candidates;
-    for (const double reference : {0.0, kPi / 2.0, kPi, -kPi / 2.0}) {
+    for (const double reference : {0.0, k_pi / 2.0, k_pi, -k_pi / 2.0}) {
       const double diff = shortestAngularDistance(reference, target_theta);
       candidates.emplace(std::abs(diff), diff);
     }
     target_theta = candidates.begin()->second;
   }
   // 差速底盘: 仅 yaw 控制直接朝向 target (不取负号)。
-  if (std::abs(target_theta) < config_.heading_deadband) {
+  if (std::abs(target_theta) < param.heading_deadband) {
     target_theta = 0.0;
   }
 
   // ---- 三轴 PID ----
   double linear_x = 0.0;
   double linear_y = 0.0;
-  if (config_.mode == "omni") {
-    linear_x = pid_x_.compute(local_x, dt);
-    linear_y = pid_y_.compute(local_y, dt);
+  if (param.mode == "omni") {
+    linear_x = pid_x.compute(local_x, dt);
+    linear_y = pid_y.compute(local_y, dt);
   } else {
     const double target_dist = std::hypot(local_x, local_y);
     const double heading_scale =
-        std::abs(target_theta) > config_.rotate_in_place_angle
+        std::abs(target_theta) > param.rotate_in_place_angle
             ? 0.0
             : std::max(0.0, std::cos(target_theta));
-    linear_x = pid_x_.compute(target_dist, dt) * heading_scale;
+    linear_x = pid_x.compute(target_dist, dt) * heading_scale;
     linear_y = 0.0;
   }
-  double angular_w = pid_w_.compute(target_theta, dt);
+  double angular_w = pid_w.compute(target_theta, dt);
 
   // 线速度上限。
   double cur_v = std::hypot(linear_x, linear_y);
-  if (cur_v > config_.max_v) {
-    const double k = config_.max_v / cur_v;
+  if (cur_v > param.max_vel_x) {
+    const double k = param.max_vel_x / cur_v;
     linear_x *= k;
     linear_y *= k;
-    cur_v = config_.max_v;
+    cur_v = param.max_vel_x;
   }
 
-  // 角速度: max_w 钳制 + max_angular_accel 限幅。
-  angular_w = std::clamp(angular_w, -config_.max_w, config_.max_w);
-  angular_w = limitAcceleration(last_angular_vel_, angular_w,
-                                config_.max_angular_accel,
-                                config_.max_angular_accel, dt);
-  last_angular_vel_ = angular_w;
+  // 角速度: max_vel_theta 钳制 + max_acc_theta 限幅。
+  angular_w = std::clamp(angular_w, -param.max_vel_theta, param.max_vel_theta);
+  angular_w = limitAcceleration(last_angular_vel, angular_w,
+                                param.max_acc_theta, param.max_acc_theta, dt);
+  last_angular_vel = angular_w;
 
-  // 线速度: distanceDecay 临近 goal 减速 + max_acc/max_decel 分开限幅。
+  // 线速度: distanceDecay 临近 goal 减速 + max_acc_x/max_decel_x 分开限幅。
   double desired_vel = 0.0;
   if (cur_v > 1e-9) {
-    const double goal_dist = distance2d(pose, goal_);
+    const double goal_dist = distance2d(pose, goal);
     const double decayed = distanceDecay(goal_dist, cur_v);
-    desired_vel = limitAcceleration(last_linear_vel_, decayed,
-                                    config_.max_acc, config_.max_decel, dt);
+    desired_vel = limitAcceleration(last_linear_vel, decayed,
+                                    param.max_acc_x, param.max_decel_x, dt);
     const double coeff = desired_vel / cur_v;
     linear_x *= coeff;
     linear_y *= coeff;
-    last_linear_vel_ = desired_vel;
+    last_linear_vel = desired_vel;
   } else {
-    last_linear_vel_ = 0.0;
+    last_linear_vel = 0.0;
   }
 
   cmd_vel.twist.linear.x() = linear_x;
@@ -330,16 +327,16 @@ FailureCode CostmapPidController::computeVelocityCommands(
 }
 
 bool CostmapPidController::cancel() {
-  canceled_.store(true);
+  canceled.store(true);
   return true;
 }
 
 void CostmapPidController::resetTrackingState() {
-  pid_x_.reset();
-  pid_y_.reset();
-  pid_w_.reset();
-  last_linear_vel_ = 0.0;
-  last_angular_vel_ = 0.0;
+  pid_x.reset();
+  pid_y.reset();
+  pid_w.reset();
+  last_linear_vel = 0.0;
+  last_angular_vel = 0.0;
 }
 
 double CostmapPidController::limitAcceleration(double last_vel, double cmd_vel,
@@ -355,8 +352,8 @@ double CostmapPidController::limitAcceleration(double last_vel, double cmd_vel,
 
 double CostmapPidController::distanceDecay(double distance,
                                            double target_velocity) const {
-  if (distance < config_.dist_decay) {
-    return (distance / std::max(config_.dist_decay, 1e-9)) * target_velocity;
+  if (distance < param.dist_decay) {
+    return (distance / std::max(param.dist_decay, 1e-9)) * target_velocity;
   }
   return target_velocity;
 }

@@ -4,19 +4,19 @@
 
 #include <algorithm>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <spdlog/spdlog.h>
 
+#include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "conversions.hpp"
 #include "exceptions.hpp"
 #include "geometry_utils.hpp"
 #include "registration.hpp"
 
-using dwb_core::geometry_utils::euclidean_distance;
+using dwb_core::geometry_utils::euclideanDistance;
 
 namespace ayanami {
 namespace modules {
@@ -25,11 +25,11 @@ namespace {
 
 /// @brief 等价 nav2_utils::transformPose 的 TransformStore 版:
 /// 查 target ← source 变换 (latest), 返回目标帧下的 2D 位姿。
-bool transformPose(ayanami::interfaces::TransformStore* store,
+bool transformPose(ayanami::components::RobotStateController* state_controller,
                    const std::string& target_frame,
                    const nav_2d_msgs::Pose2DStamped& pose_in,
                    nav_2d_msgs::Pose2DStamped& pose_out) {
-  if (store == nullptr) {
+  if (state_controller == nullptr) {
     return false;
   }
   if (pose_in.frame_id == target_frame) {
@@ -37,8 +37,8 @@ bool transformPose(ayanami::interfaces::TransformStore* store,
     return true;
   }
   Eigen::Isometry3d T;
-  if (!store->lookupTransform(target_frame, pose_in.frame_id,
-                              ayanami::Timestamp::latest(), T)) {
+  if (!state_controller->lookupTransform(target_frame, pose_in.frame_id,
+                                         ayanami::Timestamp::latest(), T)) {
     return false;
   }
   Eigen::Isometry3d T_in = Eigen::Isometry3d::Identity();
@@ -61,67 +61,73 @@ bool transformPose(ayanami::interfaces::TransformStore* store,
 CostmapDwBLocalPlanner::CostmapDwBLocalPlanner() {
   registerAllCritics();
   registerAllTrajectoryGenerators();
+
+  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
+  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
+  // config_dwb_controller → 本插件 json 文件。json 段 = controller.name
+  // (插件实例名)。
+  std::string config_path;
+  try {
+    config_path = GlobalConfig::getConfigPath("config_dwb_controller");
+  } catch (const std::exception&) {
+    config_path.clear();
+  }
+  config_ = std::make_unique<Config>(config_path);
+  const ayanami::Config& cfg = *config_;
+  const std::string section =
+      cfg.param<std::string>("controller", "name", "dwb_local");
+  param.transform_tolerance =
+      cfg.param<double>(section, "transform_tolerance", 0.1);
+  param.prune_plan = cfg.param<bool>(section, "prune_plan", true);
+  param.prune_distance =
+      cfg.param<double>(section, "prune_distance", 2.0);
+  param.forward_prune_distance =
+      cfg.param<double>(section, "forward_prune_distance", 2.0);
+  param.debug_trajectory_details =
+      cfg.param<bool>(section, "debug_trajectory_details", false);
+  param.short_circuit_trajectory_evaluation =
+      cfg.param<bool>(section, "short_circuit_trajectory_evaluation", true);
+  param.shorten_transformed_plan =
+      cfg.param<bool>(section, "shorten_transformed_plan", true);
+  param.trajectory_generator_name = cfg.param<std::string>(
+      section, "trajectory_generator_name",
+      std::string("dwb_plugins::StandardTrajectoryGenerator"));
+  param.default_critic_namespaces =
+      cfg.param<std::vector<std::string>>(section, "default_critic_namespaces",
+                                          {});
+  param.critics = cfg.param<std::vector<std::string>>(section, "critics", {});
 }
 
 void CostmapDwBLocalPlanner::initialize(
-    const std::string& name, ayanami::costmap::CostmapContext::Ptr ctx) {
-  ctx_ = std::move(ctx);
-  dwb_plugin_name_ = name;
+    const std::string& name, ayanami::costmap::CostmapContext::ConstPtr map) {
+  dwb_plugin_name = name;
+  map_ = std::move(map);
 
-  // 模块配置 (经 ComponentConfig 当前插件装载上下文, 与 pid 模块同款)。
-  const ayanami::ComponentConfig holder("config_controller");
-  const ayanami::Config& cfg = holder.get();
+  // 模块参数已在构造函数读取; 此处仅创建运行资源 (trajectory generator +
+  // critics)。子插件 (generator/critic) 自身参数由其 initialize 读取。
+  const ayanami::Config& cfg = *config_;
 
-  transform_tolerance_ =
-      cfg.param<double>(dwb_plugin_name_, "transform_tolerance", 0.1);
-  spdlog::info("Setting transform_tolerance to {}", transform_tolerance_);
-
-  prune_plan_ = cfg.param<bool>(dwb_plugin_name_, "prune_plan", true);
-  prune_distance_ = cfg.param<double>(dwb_plugin_name_, "prune_distance", 2.0);
-  forward_prune_distance_ =
-      cfg.param<double>(dwb_plugin_name_, "forward_prune_distance", 2.0);
-  debug_trajectory_details_ =
-      cfg.param<bool>(dwb_plugin_name_, "debug_trajectory_details", false);
-  short_circuit_trajectory_evaluation_ = cfg.param<bool>(
-      dwb_plugin_name_, "short_circuit_trajectory_evaluation", true);
-  shorten_transformed_plan_ =
-      cfg.param<bool>(dwb_plugin_name_, "shorten_transformed_plan", true);
-
-  std::string traj_generator_name = cfg.param<std::string>(
-      dwb_plugin_name_, "trajectory_generator_name",
-      std::string("dwb_plugins::StandardTrajectoryGenerator"));
-
-  costmap_ = ctx_ ? ctx_->localCostmap2D() : nullptr;
-  if (costmap_ == nullptr) {
-    throw std::runtime_error(
-        "CostmapDwBLocalPlanner requires a local costmap (CostmapContext)");
-  }
-
-  // footprint: 从 local wrapper 的 LayeredCostmap 拿 (等价 costmap_ros_->
-  // getRobotFootprint)。
-  footprint_spec_.clear();
-  if (ctx_ && ctx_->local_costmap_) {
-    const auto& fp = ctx_->local_costmap_->get().getFootprint();
-    for (const auto& point : fp) {
-      footprint_spec_.push_back(::geometry_msgs::Point{point.x, point.y, 0.0});
-    }
-  }
+  spdlog::info("Setting transform_tolerance to {}", param.transform_tolerance);
 
   // 静态注册表创建 generator (strip "dwb_plugins::" 前缀)。
-  const std::string kGenPrefix = "dwb_plugins::";
-  std::string gen_key = traj_generator_name;
-  if (gen_key.compare(0, kGenPrefix.size(), kGenPrefix) == 0) {
-    gen_key = gen_key.substr(kGenPrefix.size());
+  const std::string k_gen_prefix = "dwb_plugins::";
+  std::string gen_key = param.trajectory_generator_name;
+  if (gen_key.compare(0, k_gen_prefix.size(), k_gen_prefix) == 0) {
+    gen_key = gen_key.substr(k_gen_prefix.size());
   }
   auto& gen_registry = trajectoryGeneratorRegistry();
   const auto gen_it = gen_registry.find(gen_key);
   if (gen_it == gen_registry.end()) {
     throw std::runtime_error("Unknown trajectory generator: " +
-                             traj_generator_name);
+                             param.trajectory_generator_name);
   }
-  traj_generator_ = gen_it->second();
-  traj_generator_->initialize(cfg, dwb_plugin_name_);
+  traj_generator = gen_it->second();
+  traj_generator->initialize(cfg, dwb_plugin_name);
 
+  // footprint 每周期从快照刷新; 初始化阶段 critic 先以空网格/空 footprint
+  // 装载, costmap/footprint 指针在每周期 prepare 前由控制器重绑。
+  // local_grid 置空: 首个 computeVelocityCommands 会返回 MapUnavailable 直至
+  // 拿到有效快照。
   try {
     loadCritics();
   } catch (const std::exception& e) {
@@ -136,12 +142,17 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
     base_name = base_name + "Critic";
   }
 
+  // 与 loadCritics 同源回退: 配置未指定命名空间时默认 dwb_critics。
+  std::vector<std::string> namespaces = param.default_critic_namespaces;
+  if (namespaces.empty()) {
+    namespaces.emplace_back("dwb_critics");
+  }
   if (base_name.find("::") == std::string::npos) {
-    for (unsigned int j = 0; j < default_critic_namespaces_.size(); j++) {
-      std::string full_name = default_critic_namespaces_[j] + "::" + base_name;
+    for (unsigned int j = 0; j < namespaces.size(); j++) {
+      std::string full_name = namespaces[j] + "::" + base_name;
       // 注册表查简化名 (strip 命名空间)
-      const std::string ns = default_critic_namespaces_[j] + "::";
-      const std::string key = full_name.substr(ns.size());
+      const std::string prefix = namespaces[j] + "::";
+      const std::string key = full_name.substr(prefix.size());
       if (criticRegistry().count(key) != 0) {
         return full_name;
       }
@@ -151,36 +162,33 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
 }
 
 void CostmapDwBLocalPlanner::loadCritics() {
-  // loadCritics 仅在 initialize 调用链内执行, 配置经局部 Config 读取
-  // (与 onInit 的 config() 引用同生命周期)。
-  const ayanami::ComponentConfig holder("config_controller");
-  const ayanami::Config& cfg = holder.get();
+  // loadCritics 在 initialize (configure) 调用链内创建 critic 运行资源;
+  // 模块级参数 default_critic_namespaces / critics 已在构造函数读入 param。
+  const ayanami::Config& cfg = *config_;
 
-  default_critic_namespaces_ =
-      cfg.param<std::vector<std::string>>(
-             dwb_plugin_name_, "default_critic_namespaces", {});
-  if (default_critic_namespaces_.empty()) {
-    default_critic_namespaces_.emplace_back("dwb_critics");
+  std::vector<std::string> default_critic_namespaces =
+      param.default_critic_namespaces;
+  if (default_critic_namespaces.empty()) {
+    default_critic_namespaces.emplace_back("dwb_critics");
   }
 
-  std::vector<std::string> critic_names =
-      cfg.param<std::vector<std::string>>(dwb_plugin_name_, "critics", {});
+  std::vector<std::string> critic_names = param.critics;
   if (critic_names.empty()) {
-    throw std::runtime_error("No critics defined for " + dwb_plugin_name_);
+    throw std::runtime_error("No critics defined for " + dwb_plugin_name);
   }
 
   for (unsigned int i = 0; i < critic_names.size(); i++) {
     std::string critic_plugin_name = critic_names[i];
     std::string plugin_class = cfg.param<std::string>(
-        dwb_plugin_name_, critic_plugin_name + ".class", critic_plugin_name);
+        dwb_plugin_name, critic_plugin_name + ".class", critic_plugin_name);
 
     plugin_class = resolveCriticClassName(plugin_class);
 
     // 注册表键 = strip 命名空间后的简化类名
-    const std::string kCriticPrefix = "dwb_critics::";
+    const std::string k_critic_prefix = "dwb_critics::";
     std::string registry_key = plugin_class;
-    if (registry_key.compare(0, kCriticPrefix.size(), kCriticPrefix) == 0) {
-      registry_key = registry_key.substr(kCriticPrefix.size());
+    if (registry_key.compare(0, k_critic_prefix.size(), k_critic_prefix) == 0) {
+      registry_key = registry_key.substr(k_critic_prefix.size());
     }
     const auto it = criticRegistry().find(registry_key);
     if (it == criticRegistry().end()) {
@@ -189,10 +197,13 @@ void CostmapDwBLocalPlanner::loadCritics() {
 
     TrajectoryCritic::Ptr plugin = it->second();
     spdlog::info("Using critic \"{}\" ({})", critic_plugin_name, plugin_class);
-    critics_.push_back(plugin);
+    critics.push_back(plugin);
     try {
-      plugin->initialize(cfg, critic_plugin_name, dwb_plugin_name_, costmap_,
-                         &footprint_spec_);
+      // costmap/footprint 此时为空: 每周期 prepare 前由控制器重绑
+      // (critic::setCostmap + 更新 footprint_spec 内容), 初始化不再要求
+      // 具体地图实例。
+      plugin->initialize(cfg, critic_plugin_name, dwb_plugin_name, nullptr,
+                         &footprint_spec);
     } catch (const std::exception& e) {
       spdlog::error("Couldn't initialize critic plugin!");
       throw;
@@ -203,30 +214,70 @@ void CostmapDwBLocalPlanner::loadCritics() {
 
 bool CostmapDwBLocalPlanner::setPlan(const ayanami::nav_msgs::Path& path) {
   auto path2d = dwb_core::conversions::pathToPath2D(path);
-  for (dwb_core::TrajectoryCritic::Ptr& critic : critics_) {
+  for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
     critic->reset();
   }
 
-  traj_generator_->reset();
+  traj_generator->reset();
 
-  global_plan_ = path2d;
+  global_plan = path2d;
   return true;
 }
 
 FailureCode CostmapDwBLocalPlanner::computeVelocityCommands(
     const ayanami::geometry_msgs::PoseStamped& pose,
     const ayanami::geometry_msgs::TwistStamped& velocity,
-    ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string& message,
-    const ayanami::abstract::AbstractGoalChecker::Ptr& /*goal_checker*/) {
+    ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string& message) {
   // 入口清零 (框架纪律): cmd_vel 全字段清零。
   cmd_vel = ayanami::geometry_msgs::TwistStamped{};
+
+  // 锁纪律: 持 shared 锁的 local 读视图 (整个打分周期), 零拷贝; 地图写者
+  // 等锁写入。视图析构释放锁。
+  if (!map_) {
+    message = "CostmapDwBLocalPlanner: no costmap module";
+    return FailureCode::MapUnavailable;
+  }
+  local_view = map_->lockLocal();
+  if (!local_view.valid()) {
+    message = "CostmapDwBLocalPlanner: no local costmap available";
+    return FailureCode::MapUnavailable;
+  }
+  local_grid = local_view.grid();
+  local_frame = local_view.frame();
+
+  // 每周期刷新 footprint (critics 持有 footprint_spec 地址, 内容就地更新)。
+  footprint_spec.clear();
+  const auto& fp = map_->footprint();
+  footprint_spec.reserve(fp.size());
+  for (const auto& point : fp) {
+    footprint_spec.push_back(
+        ::geometry_msgs::Point{point.x, point.y, 0.0});
+  }
+  for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
+    critic->setCostmap(local_grid);
+  }
 
   std::shared_ptr<dwb_msgs::LocalPlanEvaluation> results = nullptr;
 
   try {
+    // The execution feeds the robot pose from the TF tree, which is in the
+    // map frame. Trajectory simulation and critics must run in the local
+    // costmap frame, or trajectories are scored against the wrong cells and
+    // DWB settles into inefficient rotation-only commands.
+    nav_2d_msgs::Pose2DStamped pose2d =
+        dwb_core::conversions::poseStampedToPose2D(pose);
+    if (pose2d.frame_id != local_frame) {
+      nav_2d_msgs::Pose2DStamped pose_local;
+      if (!transformPose(&ayanami::components::RobotStateController::instance(),
+                         local_frame, pose2d, pose_local)) {
+        message = "CostmapDwBLocalPlanner: unable to transform robot pose "
+                  "into local costmap frame";
+        return FailureCode::TransformUnavailable;
+      }
+      pose2d = pose_local;
+    }
     nav_2d_msgs::Twist2DStamped cmd_vel2d = computeVelocityCommands(
-        dwb_core::conversions::poseStampedToPose2D(pose),
-        dwb_core::conversions::twist3Dto2D(velocity.twist), results);
+        pose2d, dwb_core::conversions::twist3Dto2D(velocity.twist), results);
     cmd_vel.header.frame_id = cmd_vel2d.frame_id;
     cmd_vel.twist = dwb_core::conversions::twist2Dto3D(cmd_vel2d.velocity);
     return FailureCode::None;
@@ -255,10 +306,7 @@ nav_2d_msgs::Twist2DStamped CostmapDwBLocalPlanner::computeVelocityCommands(
 
   prepareGlobalPlan(pose, transformed_plan, goal_pose);
 
-  std::lock_guard<std::recursive_mutex> lock(
-      ctx_->local_costmap_->mutex());
-
-  for (dwb_core::TrajectoryCritic::Ptr& critic : critics_) {
+  for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
     if (!critic->prepare(pose.pose, velocity, goal_pose.pose,
                          transformed_plan)) {
       spdlog::warn("A scoring function failed to prepare");
@@ -275,7 +323,7 @@ nav_2d_msgs::Twist2DStamped CostmapDwBLocalPlanner::computeVelocityCommands(
     cmd_vel.velocity = best.traj.velocity;
 
     // debrief stateful scoring functions
-    for (dwb_core::TrajectoryCritic::Ptr& critic : critics_) {
+    for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
       critic->debrief(cmd_vel.velocity);
     }
 
@@ -283,7 +331,7 @@ nav_2d_msgs::Twist2DStamped CostmapDwBLocalPlanner::computeVelocityCommands(
   } catch (const dwb_core::NoLegalTrajectoriesException& e) {
     nav_2d_msgs::Twist2D empty_cmd;
     // debrief stateful scoring functions
-    for (dwb_core::TrajectoryCritic::Ptr& critic : critics_) {
+    for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
       critic->debrief(empty_cmd);
     }
 
@@ -297,10 +345,10 @@ void CostmapDwBLocalPlanner::prepareGlobalPlan(
     nav_2d_msgs::Pose2DStamped& goal_pose, bool /*publish_plan*/) {
   transformed_plan = transformGlobalPlan(pose);
 
-  goal_pose.frame_id = global_plan_.frame_id;
-  goal_pose.pose = global_plan_.poses.back();
-  if (!transformPose(ctx_->transform_store_, ctx_->getGlobalFrame(),
-                     goal_pose, goal_pose)) {
+  goal_pose.frame_id = global_plan.frame_id;
+  goal_pose.pose = global_plan.poses.back();
+  if (!transformPose(&ayanami::components::RobotStateController::instance(),
+                     local_frame, goal_pose, goal_pose)) {
     throw dwb_core::PlannerTFException(
         "Unable to transform goal pose into local costmap's frame");
   }
@@ -316,10 +364,10 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::coreScoringAlgorithm(
   worst.total = -1;
   dwb_core::IllegalTrajectoryTracker tracker;
 
-  traj_generator_->startNewIteration(velocity);
-  while (traj_generator_->hasMoreTwists()) {
-    twist = traj_generator_->nextTwist();
-    traj = traj_generator_->generateTrajectory(pose, velocity, twist);
+  traj_generator->startNewIteration(velocity);
+  while (traj_generator->hasMoreTwists()) {
+    twist = traj_generator->nextTwist();
+    traj = traj_generator->generateTrajectory(pose, velocity, twist);
 
     try {
       dwb_msgs::TrajectoryScore score = scoreTrajectory(traj, best.total);
@@ -356,7 +404,7 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::coreScoringAlgorithm(
   }
 
   if (best.total < 0) {
-    if (debug_trajectory_details_) {
+    if (param.debug_trajectory_details) {
       spdlog::error("{}", tracker.getMessage());
       for (auto const& x : tracker.getPercentages()) {
         spdlog::error("{:.2f}: {:>10}/{}", x.second, x.first.first,
@@ -374,7 +422,7 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::scoreTrajectory(
   dwb_msgs::TrajectoryScore score;
   score.traj = traj;
 
-  for (dwb_core::TrajectoryCritic::Ptr& critic : critics_) {
+  for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
     dwb_msgs::CriticScore cs;
     cs.name = critic->getName();
     cs.scale = critic->getScale();
@@ -388,7 +436,7 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::scoreTrajectory(
     cs.raw_score = critic_score;
     score.scores.push_back(cs);
     score.total += critic_score * cs.scale;
-    if (short_circuit_trajectory_evaluation_ && best_score > 0 &&
+    if (param.short_circuit_trajectory_evaluation && best_score > 0 &&
         score.total > best_score) {
       // since we keep adding positives, once we are worse than the best, we
       // will stay worse
@@ -401,32 +449,32 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::scoreTrajectory(
 
 nav_2d_msgs::Path2D CostmapDwBLocalPlanner::transformGlobalPlan(
     const nav_2d_msgs::Pose2DStamped& pose) {
-  if (global_plan_.poses.empty()) {
+  if (global_plan.poses.empty()) {
     throw dwb_core::PlannerException("Received plan with zero length");
   }
 
   // let's get the pose of the robot in the frame of the plan
   nav_2d_msgs::Pose2DStamped robot_pose;
-  if (!transformPose(ctx_->transform_store_, global_plan_.frame_id, pose,
-                     robot_pose)) {
+  if (!transformPose(&ayanami::components::RobotStateController::instance(),
+                     global_plan.frame_id, pose, robot_pose)) {
     throw dwb_core::PlannerTFException(
         "Unable to transform robot pose into global plan's frame");
   }
 
   // we'll discard points on the plan that are outside the local costmap
   double dist_threshold =
-      std::max(costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY()) *
-      costmap_->getResolution() / 2.0;
+      std::max(local_grid->getSizeInCellsX(), local_grid->getSizeInCellsY()) *
+      local_grid->getResolution() / 2.0;
 
   // If prune_plan is enabled (it is by default) then we want to restrict the
   // plan to distances within that range as well.
-  double prune_dist = prune_distance_;
+  double prune_dist = param.prune_distance;
 
   // Set the maximum distance we'll include points before getting to the part
   // of the path where the robot is located (the start of the plan). Basically,
   // these are the points the robot has already passed.
   double transform_start_threshold;
-  if (prune_plan_) {
+  if (param.prune_plan) {
     transform_start_threshold = std::min(dist_threshold, prune_dist);
   } else {
     transform_start_threshold = dist_threshold;
@@ -436,8 +484,8 @@ nav_2d_msgs::Path2D CostmapDwBLocalPlanner::transformGlobalPlan(
   // near the robot (the end of the plan). This determines the amount of the
   // plan passed on to the critics
   double transform_end_threshold;
-  double forward_prune_dist = forward_prune_distance_;
-  if (shorten_transformed_plan_) {
+  double forward_prune_dist = param.forward_prune_distance;
+  if (param.shorten_transformed_plan) {
     transform_end_threshold = std::min(dist_threshold, forward_prune_dist);
   } else {
     transform_end_threshold = dist_threshold;
@@ -446,39 +494,39 @@ nav_2d_msgs::Path2D CostmapDwBLocalPlanner::transformGlobalPlan(
   // Find the first pose in the global plan that's further than prune distance
   // from the robot using integrated distance
   auto prune_point = dwb_core::geometry_utils::first_after_integrated_distance(
-      global_plan_.poses.begin(), global_plan_.poses.end(), prune_dist);
+      global_plan.poses.begin(), global_plan.poses.end(), prune_dist);
 
   // Find the first pose in the plan (upto prune_point) that's less than
   // transform_start_threshold from the robot.
   auto transformation_begin = std::find_if(
-      begin(global_plan_.poses), prune_point,
+      begin(global_plan.poses), prune_point,
       [&](const auto& global_plan_pose) {
-        return euclidean_distance(robot_pose.pose, global_plan_pose) <
+        return euclideanDistance(robot_pose.pose, global_plan_pose) <
                transform_start_threshold;
       });
 
   // Find the first pose in the end of the plan that's further than
   // transform_end_threshold from the robot using integrated distance
   auto transformation_end = std::find_if(
-      transformation_begin, global_plan_.poses.end(), [&](const auto& plan_pose) {
-        return euclidean_distance(plan_pose, robot_pose.pose) >
+      transformation_begin, global_plan.poses.end(), [&](const auto& plan_pose) {
+        return euclideanDistance(plan_pose, robot_pose.pose) >
                transform_end_threshold;
       });
 
   // Transform the near part of the global plan into the robot's frame of
   // reference.
   nav_2d_msgs::Path2D transformed_plan;
-  transformed_plan.frame_id = ctx_->getGlobalFrame();
+  transformed_plan.frame_id = local_frame;
   transformed_plan.stamp = pose.stamp;
 
   // Helper function for the transform below. Converts a pose2D from global
   // frame to local
   auto transformGlobalPoseToLocal = [&](const auto& global_plan_pose) {
     nav_2d_msgs::Pose2DStamped stamped_pose, transformed_pose;
-    stamped_pose.frame_id = global_plan_.frame_id;
+    stamped_pose.frame_id = global_plan.frame_id;
     stamped_pose.pose = global_plan_pose;
-    transformPose(ctx_->transform_store_, transformed_plan.frame_id,
-                  stamped_pose, transformed_pose);
+    transformPose(&ayanami::components::RobotStateController::instance(),
+                  transformed_plan.frame_id, stamped_pose, transformed_pose);
     return transformed_pose.pose;
   };
 
@@ -488,8 +536,8 @@ nav_2d_msgs::Path2D CostmapDwBLocalPlanner::transformGlobalPlan(
 
   // Remove the portion of the global plan that we've already passed so we
   // don't process it on the next iteration.
-  if (prune_plan_) {
-    global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
+  if (param.prune_plan) {
+    global_plan.poses.erase(begin(global_plan.poses), transformation_begin);
   }
 
   if (transformed_plan.poses.empty()) {

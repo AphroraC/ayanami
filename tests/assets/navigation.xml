@@ -2,34 +2,44 @@
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
     <RecoveryNode name="NavigateRecovery" number_of_retries="6">
       <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="{planner_frequency}">
+        <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-              <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+              <ComputePathToPose goal="{goal}" path="{raw_path}" plugin_id="{planner_id}"/>
               <IsPathValid path="{raw_path}"/>
-              <SmoothPath  input_path="{raw_path}" path="{smoothed_path}"/>
-              <IsPathValid path="{smoothed_path}"/>
             </Sequence>
             <Sequence>
+              <HaltControllers/>
               <Recovery recovery="{clear_costmap_id}"/>
-              <AlwaysFailure/>
             </Sequence>
           </RecoveryNode>
         </RateController>
+        <RateController hz="{smoother_frequency}" reset_token="{goal_revision}">
+          <SmoothPath input_path="{raw_path}" path="{smoothed_path}" plugin_id="{smoother_id}"/>
+        </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1">
-          <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
+          <FollowPath path="{smoothed_path}" frequency="{controller_frequency}" plugin_id="{controller_id}"/>
           <Sequence>
+            <HaltControllers/>
             <Recovery recovery="{clear_costmap_id}"/>
-            <AlwaysFailure/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
         <RoundRobin name="RecoveryActions">
-          <Sequence><Recovery recovery="{spin_id}"/>    <AlwaysFailure/></Sequence>
-          <Sequence><Recovery recovery="{wait_id}"/>    <AlwaysFailure/></Sequence>
-          <Sequence><Recovery recovery="{backup_id}"/>  <AlwaysFailure/></Sequence>
+          <Sequence>
+            <HaltControllers/>
+            <Recovery recovery="{spin_id}"/>
+          </Sequence>
+          <Sequence>
+            <HaltControllers/>
+            <Recovery recovery="{wait_id}"/>
+          </Sequence>
+          <Sequence>
+            <HaltControllers/>
+            <Recovery recovery="{backup_id}"/>
+          </Sequence>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

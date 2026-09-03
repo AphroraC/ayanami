@@ -29,7 +29,7 @@ void driveBounds(costmap_2d::Layer& layer, double& min_x, double& min_y,
 
 // ---------- StaticLayer ----------
 
-TEST(CostmapLayersTest, StaticLayerInlineMapCoversFullMap) {
+TEST(CostmapLayersTest, staticLayerInlineMapCoversFullMap) {
   constexpr double res = 0.5;
   auto master = makeGrid(20, 20, res);
 
@@ -82,7 +82,7 @@ TEST(CostmapLayersTest, StaticLayerInlineMapCoversFullMap) {
   EXPECT_TRUE(has_unknown);
 }
 
-TEST(CostmapLayersTest, StaticLayerLoadsPgm) {
+TEST(CostmapLayersTest, staticLayerLoadsPgm) {
   // 写一个 3x3 P5 PGM: 0(black)->LETHAL, 255(white)->FREE, 128->NO_INFORMATION
   const char* path = "/tmp/opencode/static_layer_test.pgm";
   {
@@ -109,7 +109,7 @@ TEST(CostmapLayersTest, StaticLayerLoadsPgm) {
   std::remove(path);
 }
 
-TEST(CostmapLayersTest, StaticLayerResizesNonRollingMasterFromMap) {
+TEST(CostmapLayersTest, staticLayerResizesNonRollingMasterFromMap) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   layered->resizeMap(3, 4, 1.0, 0.0, 0.0);
@@ -140,7 +140,7 @@ TEST(CostmapLayersTest, StaticLayerResizesNonRollingMasterFromMap) {
             costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapLayersTest, StaticLayerQueuedMapAppliesInUpdateCycle) {
+TEST(CostmapLayersTest, staticLayerQueuedMapAppliesInUpdateCycle) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
@@ -164,7 +164,7 @@ TEST(CostmapLayersTest, StaticLayerQueuedMapAppliesInUpdateCycle) {
 
 // ---------- SimpleObstacleLayer ----------
 
-TEST(CostmapLayersTest, SimpleObstacleLayerMarkThenClear) {
+TEST(CostmapLayersTest, simpleObstacleLayerMarkThenClear) {
   constexpr double res = 0.5;
   auto master = makeGrid(20, 20, res);
 
@@ -195,7 +195,7 @@ TEST(CostmapLayersTest, SimpleObstacleLayerMarkThenClear) {
 
 // ---------- InflationLayer ----------
 
-TEST(CostmapLayersTest, InflationLayerInflatesAroundLethal) {
+TEST(CostmapLayersTest, inflationLayerInflatesAroundLethal) {
   constexpr double res = 0.5;
   auto master = makeGrid(30, 30, res);
   master.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
@@ -231,7 +231,7 @@ TEST(CostmapLayersTest, InflationLayerInflatesAroundLethal) {
   EXPECT_EQ(master.getCost(5, 12), costmap_2d::FREE_SPACE);
 }
 
-TEST(CostmapLayersTest, InflationLayerSmoothGradientWithRealisticParams) {
+TEST(CostmapLayersTest, inflationLayerSmoothGradientWithRealisticParams) {
   // 真实 config 参数 (costmap_navigation.json): res 0.05, inflation 0.5,
   // inscribed 0.3, csf 10.0。断言 inscribed 带外代价严格递减且末端平滑趋零
   // (可视化上呈现渐变而非单一颜色)。
@@ -269,7 +269,7 @@ TEST(CostmapLayersTest, InflationLayerSmoothGradientWithRealisticParams) {
   EXPECT_EQ(master.getCost(30 + 11, 30), costmap_2d::FREE_SPACE);
 }
 
-TEST(CostmapLayersTest, InflationRadiusShrinkRemovesOldBand) {
+TEST(CostmapLayersTest, inflationRadiusShrinkRemovesOldBand) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   lm->resizeMap(30, 30, 0.5, 0.0, 0.0);
   auto obstacles =
@@ -288,7 +288,7 @@ TEST(CostmapLayersTest, InflationRadiusShrinkRemovesOldBand) {
   EXPECT_EQ(lm->getCostmap()->getCost(17, 15), costmap_2d::FREE_SPACE);
 }
 
-TEST(CostmapLayersTest, ObstacleMaximumOverridesUnknown) {
+TEST(CostmapLayersTest, obstacleMaximumOverridesUnknown) {
   costmap_2d::Costmap2D master(10, 10, 1.0, 0.0, 0.0,
                                costmap_2d::NO_INFORMATION);
   costmap_2d_layers::SimpleObstacleLayer layer;
@@ -297,7 +297,7 @@ TEST(CostmapLayersTest, ObstacleMaximumOverridesUnknown) {
   EXPECT_EQ(master.getCost(2, 2), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapLayersTest, InflationLayerClipsRadiusTo1000) {
+TEST(CostmapLayersTest, inflationLayerClipsRadiusTo1000) {
   constexpr double res = 0.5;
   auto master = makeGrid(30, 30, res);
   master.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);

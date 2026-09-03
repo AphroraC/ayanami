@@ -1,8 +1,10 @@
-// Task 25: modules/costmap_navigation 模块工厂 (spec §4.3)。
-// dlopen 入口: create_navigation_module → AbstractNavigation* (宿主插件)。
+// modules/costmap_navigation 模块工厂 (spec §4.3)。
+// 公共 dlopen 入口: create_extension_module → ayanami::ExtensionModule*
+// (宿主插件 CostmapNavigation 间接派生 AbstractNavigation/ExtensionModule)。
 
 #include "costmap_navigation.hpp"
+#include <ayanami/utility/extension_module.hpp>
 
-extern "C" ayanami::abstract::AbstractNavigation* create_navigation_module() {
+extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new ayanami::modules::CostmapNavigation();
 }

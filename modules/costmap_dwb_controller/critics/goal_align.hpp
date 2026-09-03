@@ -15,7 +15,7 @@ namespace dwb_critics {
  */
 class GoalAlignCritic : public GoalDistCritic {
 public:
-  GoalAlignCritic() : forward_point_distance_(0.0) {}
+  GoalAlignCritic() : forward_point_distance(0.0) {}
   void onInit() override;
   bool prepare(const geometry_msgs::Pose2D& pose,
                const nav_2d_msgs::Twist2D& vel,
@@ -24,7 +24,7 @@ public:
   double scorePose(const geometry_msgs::Pose2D& pose) override;
 
 protected:
-  double forward_point_distance_;
+  double forward_point_distance;
 };
 
 }  // namespace dwb_critics

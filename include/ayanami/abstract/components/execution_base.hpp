@@ -7,7 +7,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
-#include <thread>
 
 namespace ayanami {
 namespace components {
@@ -15,9 +14,11 @@ namespace components {
 /**
  * @brief 抽象执行基类 (对标 MBF AbstractExecutionBase, spec §5 components/)。
  *
- * 用专用线程跑可能耗时的导航任务; 内部状态机 (atomic<int>) + condition_variable
- * 向控制线程发布状态更新。派生类覆写 run()/preRun()/postRun()/safetyCheck()/
- * publishStopCommand() 钩子 (map 层覆写, 对标 MBF §2.2 模式)。
+ * run() 状态机以"任务"方式提交到进程级 WorkerPool, 由池内常驻 worker 执行
+ * preRun()→run()→postRun(); 不再自建专用 std::thread。内部状态机 (atomic<int>)
+ * + condition_variable 向控制线程发布状态更新 (waitForStateUpdate 事件驱动,
+ * cancel/stop/setState 均 notify)。派生类覆写 run()/preRun()/postRun()/
+ * safetyCheck()/publishStopCommand() 钩子 (map 层覆写, 对标 MBF §2.2 模式)。
  *
  * Ruling #2: 本类内部状态机独立于 actions::GoalStatus (5 态); Task 9 action
  * 层才做 ExecutionState→GoalStatus 映射 (active 合并)。
@@ -28,29 +29,30 @@ public:
 
   virtual ~ExecutionBase();
 
-  /// @brief 开线程跑虚 run()。若线程已在跑, 先 stop+join 再重启。
+  /// @brief 提交 run() 任务到 WorkerPool 异步执行。
+  /// 若上一次 run 任务仍在跑, 先等其结束再重启 (等价旧 start() 的 stop+join)。
   virtual void start();
 
-  /// @brief 请求退出线程 (rigorous), 线程以 STOPPED 状态退出。
+  /// @brief 请求退出 run() (rigorous), run() 以 STOPPED 状态退出。
   virtual void stop();
 
-  /// @brief 取消执行: 置 cancel_ 并调虚 publishStopCommand() (安全停止)。
+  /// @brief 取消执行: 置 cancel_requested 并调虚 publishStopCommand() (安全停止)。
   virtual void cancel();
 
-  /// @brief 等待执行线程结束。
+  /// @brief 等待 run() 任务完全结束 (等价旧实现的 join 执行线程)。
   void join();
 
-  /// @brief 在 condition_ 上等待状态更新, 返回是否在超时前被唤醒。
+  /// @brief 在 condition 上等待状态更新, 返回是否在超时前被唤醒。
   bool waitForStateUpdate(std::chrono::microseconds const& duration);
 
   /// @brief 当前内部状态 (原子读)。
-  int getState() const { return state_.load(); }
+  int getState() const { return state.load(); }
 
   /// @brief 最近一次插件调用的统一失败码 (None=成功)。
-  FailureCode getFailure() const { return failure_; }
+  FailureCode getFailure() const { return failure; }
 
   /// @brief 最近一次的人类可读消息。
-  std::string getMessage() const { return message_; }
+  std::string getMessage() const { return message; }
 
 protected:
   /// @brief 执行主体 (线程入口), 派生覆写。
@@ -68,20 +70,26 @@ protected:
   /// @brief 发布停止命令 (默认空; controller 覆写为清零 cmd_vel)。
   virtual void publishStopCommand() {}
 
-  /// @brief 更新状态并在 signalling 时通知 condition_。
+  /// @brief 更新状态并在 signalling 时通知 condition。
   void setState(int state, bool signalling = true) {
-    state_ = state;
-    if (signalling) condition_.notify_all();
+    this->state = state;
+    if (signalling) condition.notify_all();
   }
 
-  std::thread thread_;
-  std::condition_variable condition_;
-  std::mutex mutex_;
-  std::atomic<bool> should_exit_{false};
-  std::atomic<bool> cancel_{false};
-  std::atomic<int> state_{0};
-  FailureCode failure_{FailureCode::None};
-  std::string message_;
+  std::condition_variable condition;
+  std::mutex mutex;
+  std::atomic<bool> should_exit{false};
+  std::atomic<bool> cancel_requested{false};
+  std::atomic<int> state{0};
+  FailureCode failure{FailureCode::None};
+  std::string message;
+
+private:
+  /// @brief WorkerPool 任务体: preRun → run → postRun, 结束后解挂 running。
+  void runTask();
+
+  /// @brief 是否仍有 run 任务在跑 (mutex 保护, 供 start/join 谓词等待)。
+  bool running{false};
 };
 
 } // namespace components

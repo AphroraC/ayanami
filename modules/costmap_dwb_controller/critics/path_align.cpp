@@ -10,11 +10,11 @@ namespace dwb_critics {
 
 void PathAlignCritic::onInit() {
   PathDistCritic::onInit();
-  stop_on_failure_ = false;
+  stop_on_failure = false;
 
-  forward_point_distance_ =
-      config().param<double>(dwb_plugin_name_,
-                             name_ + ".forward_point_distance", 0.325);
+  forward_point_distance =
+      config().param<double>(dwb_plugin_name,
+                             name + ".forward_point_distance", 0.325);
 }
 
 bool PathAlignCritic::prepare(const geometry_msgs::Pose2D& pose,
@@ -24,12 +24,12 @@ bool PathAlignCritic::prepare(const geometry_msgs::Pose2D& pose,
   double dx = pose.x - goal.x;
   double dy = pose.y - goal.y;
   double sq_dist = dx * dx + dy * dy;
-  if (sq_dist > forward_point_distance_ * forward_point_distance_) {
-    zero_scale_ = false;
+  if (sq_dist > forward_point_distance * forward_point_distance) {
+    zero_scale = false;
   } else {
     // once we are close to goal, trying to keep the nose close to anything
     // destabilizes behavior.
-    zero_scale_ = true;
+    zero_scale = true;
     return true;
   }
 
@@ -37,15 +37,15 @@ bool PathAlignCritic::prepare(const geometry_msgs::Pose2D& pose,
 }
 
 double PathAlignCritic::getScale() const {
-  if (zero_scale_) {
+  if (zero_scale) {
     return 0.0;
   } else {
-    return costmap_->getResolution() * 0.5 * scale_;
+    return costmap->getResolution() * 0.5 * scale;
   }
 }
 
 double PathAlignCritic::scorePose(const geometry_msgs::Pose2D& pose) {
-  return PathDistCritic::scorePose(getForwardPose(pose, forward_point_distance_));
+  return PathDistCritic::scorePose(getForwardPose(pose, forward_point_distance));
 }
 
 }  // namespace dwb_critics

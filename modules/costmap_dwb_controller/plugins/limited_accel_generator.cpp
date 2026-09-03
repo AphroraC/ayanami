@@ -13,23 +13,23 @@ namespace dwb_plugins {
 
 void LimitedAccelGenerator::initialize(const ayanami::Config& cfg,
                                        const std::string& plugin_name) {
-  plugin_name_ = plugin_name;
-  StandardTrajectoryGenerator::initialize(cfg, plugin_name_);
+  this->plugin_name = plugin_name;
+  StandardTrajectoryGenerator::initialize(cfg, plugin_name);
 
   // 原版: sim_period 参数声明失败 (未设置) → 回退 controller_frequency。
-  // Config json 无"参数未声明"概念, 以 has_param 判缺省。
-  if (cfg.has_param(plugin_name, "sim_period")) {
-    acceleration_time_ = cfg.param<double>(plugin_name, "sim_period", 0.0);
+  // Config json 无"参数未声明"概念, 以 hasParam 判缺省。
+  if (cfg.hasParam(plugin_name, "sim_period")) {
+    acceleration_time = cfg.param<double>(plugin_name, "sim_period", 0.0);
   } else {
     spdlog::warn("'sim_period' parameter is not set for {}", plugin_name);
     double controller_frequency =
         cfg.param<double>(plugin_name, "controller_frequency", 20.0);
     if (controller_frequency > 0) {
-      acceleration_time_ = 1.0 / controller_frequency;
+      acceleration_time = 1.0 / controller_frequency;
     } else {
       spdlog::warn("A controller_frequency less than or equal to 0 has been "
                    "set. Ignoring the parameter, assuming a rate of 20Hz");
-      acceleration_time_ = 0.05;
+      acceleration_time = 0.05;
     }
   }
 }
@@ -37,7 +37,7 @@ void LimitedAccelGenerator::initialize(const ayanami::Config& cfg,
 void LimitedAccelGenerator::startNewIteration(
     const nav_2d_msgs::Twist2D& current_velocity) {
   // Limit our search space to just those within the limited acceleration_time
-  velocity_iterator_->startNewIteration(current_velocity, acceleration_time_);
+  velocity_iterator->startNewIteration(current_velocity, acceleration_time);
 }
 
 nav_2d_msgs::Twist2D LimitedAccelGenerator::computeNewVelocity(

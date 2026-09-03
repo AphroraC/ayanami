@@ -10,7 +10,6 @@ namespace {
 
 std::once_flag g_global_config_once;
 std::mutex g_global_config_mutex;
-thread_local const Config* g_active_config = nullptr;
 
 } // namespace
 
@@ -30,51 +29,19 @@ Config::Config(const std::string& config_filename) {
       }
     }
   }
-  config_ = json;
+  config = json;
 }
 
 Config::~Config() {}
 
-Config::Scope::Scope(const Config& config) : previous_(g_active_config) {
-  g_active_config = &config;
-}
-
-Config::Scope::~Scope() { g_active_config = previous_; }
-
-const Config* Config::active() { return g_active_config; }
-
-bool Config::has_param(const std::string& module_name,
+bool Config::hasParam(const std::string& module_name,
                        const std::string& param_name) const {
-  const auto& json = std::any_cast<const nlohmann::json&>(config_);
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
   const auto module = json.find(module_name);
   if (module == json.end()) {
     return false;
   }
   return module->find(param_name) != module->end();
-}
-
-std::vector<std::string> Config::param_string_or_list(
-    const std::string& module_name, const std::string& param_name) const {
-  const auto& json = std::any_cast<const nlohmann::json&>(config_);
-  const auto module = json.find(module_name);
-  if (module == json.end()) {
-    return {};
-  }
-  const auto parameter = module->find(param_name);
-  if (parameter == module->end()) {
-    return {};
-  }
-  std::vector<std::string> out;
-  if (parameter->is_string()) {
-    out.push_back(parameter->get<std::string>());
-  } else if (parameter->is_array()) {
-    for (const auto& item : *parameter) {
-      if (item.is_string()) {
-        out.push_back(item.get<std::string>());
-      }
-    }
-  }
-  return out;
 }
 
 GlobalConfig::GlobalConfig(const std::string& config_path)
@@ -92,7 +59,7 @@ void GlobalConfig::create(const std::string& config_path) {
     // 文件 -> 父目录
     directory = directory.parent_path();
   } else if (!std::filesystem::exists(directory / "config.json")) {
-    // 目录: 兜底兼容 config/ 与 configs/ (spec §2.2)
+    // 目录: 兜底兼容 config/ 与 configs/
     if (std::filesystem::exists(directory / "config" / "config.json")) {
       directory /= "config";
     } else if (std::filesystem::exists(directory / "configs" / "config.json")) {
@@ -101,7 +68,7 @@ void GlobalConfig::create(const std::string& config_path) {
   }
 
   inst = new GlobalConfig((directory / "config.json").string());
-  inst->override_param("global", "config_path", directory.string());
+  inst->overrideParam("global", "config_path", directory.string());
 }
 
 GlobalConfig* GlobalConfig::instance(const std::string& config_path,
@@ -123,79 +90,25 @@ GlobalConfig* GlobalConfig::instance(const std::string& config_path,
   return inst;
 }
 
-std::string GlobalConfig::get_config_path(const std::string& config_name) {
+std::string GlobalConfig::getConfigPath(const std::string& config_name) {
   const GlobalConfig* config = instance();
   const std::filesystem::path directory =
       config->param<std::string>("global", "config_path", ".");
-  const std::filesystem::path filename =
-      config->param<std::string>("global", config_name, config_name + ".json");
+  std::string filename;
+  try {
+    filename =
+        config->param<std::string>("global", config_name, config_name + ".json");
+  } catch (const std::exception&) {
+    // global 段该键为字符串数组 (插件文件族): 取首项作为主配置文件。
+    const auto files = config->param<std::vector<std::string>>(
+        "global", config_name, {});
+    filename = files.empty() ? config_name + ".json" : files.front();
+  }
   return (directory / filename).string();
-}
-
-std::vector<std::string> GlobalConfig::get_config_paths(
-    const std::string& config_name) {
-  const GlobalConfig* config = instance();
-  const std::filesystem::path directory =
-      config->param<std::string>("global", "config_path", ".");
-  const auto filenames =
-      config->param<std::vector<std::string>>("global", config_name, {});
-  std::vector<std::string> paths;
-  paths.reserve(filenames.size());
-  for (const auto& filename : filenames) {
-    paths.push_back((directory / filename).string());
-  }
-  return paths;
-}
-
-std::vector<std::string> GlobalConfig::get_config_paths(
-    const std::string& owner_config, const std::string& config_name) {
-  const GlobalConfig* config = instance();
-  const std::filesystem::path directory =
-      config->param<std::string>("global", "config_path", ".");
-  const std::string owner_file =
-      config->param<std::string>("global", owner_config, "");
-
-  std::vector<std::string> entries;
-  if (!owner_file.empty()) {
-    const Config owner((directory / owner_file).string());
-    entries = owner.param_string_or_list("modules", config_name);
-  }
-  if (entries.empty()) {
-    // modules 段缺失/无条目: 回退 config 根下 <config_name>.json
-    entries.push_back(config_name + ".json");
-  }
-
-  std::vector<std::string> paths;
-  paths.reserve(entries.size());
-  for (const auto& entry : entries) {
-    const std::filesystem::path p(entry);
-    paths.push_back(p.is_absolute() ? entry : (directory / p).string());
-  }
-  return paths;
-}
-
-std::string GlobalConfig::get_config_path(const std::string& owner_config,
-                                          const std::string& config_name) {
-  const auto paths = get_config_paths(owner_config, config_name);
-  return paths.empty() ? std::string() : paths.front();
-}
-
-ComponentConfig::ComponentConfig(const std::string& config_key) {
-  config_ = Config::active();
-  if (!config_ && !config_key.empty()) {
-    owned_ = std::make_unique<Config>(
-        GlobalConfig::get_config_path("config_navigation", config_key));
-    config_ = owned_.get();
-  }
-  if (!config_) {
-    owned_ = std::make_unique<Config>("");
-    config_ = owned_.get();
-  }
 }
 
 DEFINE_CONFIG_IO_SPECIALIZATION(bool)
 DEFINE_CONFIG_IO_SPECIALIZATION(int)
-DEFINE_CONFIG_IO_SPECIALIZATION(long)
 DEFINE_CONFIG_IO_SPECIALIZATION(double)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::string)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<std::string>)
@@ -203,9 +116,7 @@ DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<std::vector<std::string>>)
 
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector2d)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector3d)
-DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Vector4d)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<Eigen::Vector2d>)
-DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Quaterniond)
 DEFINE_CONFIG_IO_SPECIALIZATION(Eigen::Isometry3d)
 DEFINE_CONFIG_IO_SPECIALIZATION(std::vector<Eigen::Isometry3d>)
 

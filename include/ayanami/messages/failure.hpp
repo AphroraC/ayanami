@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace ayanami {
 
@@ -32,6 +33,37 @@ enum class FailureCode : uint8_t {
   GoalNotReached,       ///< 未到达目标。
   RecoveryFailed,       ///< 恢复行为失败。
   InternalError,        ///< 内部错误 / 插件未初始化。
+};
+
+/**
+ * @brief 失败发生的处理阶段 (BT action 节点写 FailureContext 用)。
+ */
+enum class FailureStage : uint8_t {
+  Planner = 0,
+  Smoother = 1,
+  Controller = 2,
+  Recovery = 3,
+  Navigation = 4,
+  Unknown = 5,
+};
+
+/**
+ * @brief 结构化失败上下文 (spec §6.2 关键纪律扩展)。
+ *
+ * 每个 BT action 节点 (ComputePathToPose / SmoothPath / FollowPath / Recovery)
+ * 在返回 FAILURE 前把精确的失败上下文写入黑板 `failure_context`
+ * (blackboard_protocol.hpp)。RecoveryGoal.cause 携带该上下文, 使恢复行为可识别
+ * 触发它的失败 (插件 id / 失败码 / 所属会话版本)。
+ *
+ * 黑板键值全量替换 (非增量 merge): 节点的 latest 失败覆盖前次失败。
+ */
+struct FailureContext {
+  FailureStage stage = FailureStage::Unknown;
+  FailureCode code = FailureCode::None;
+  std::string plugin_id;   ///< 触发失败的插件逻辑名
+  std::string message;     ///< 诊断消息 (仅供日志, BT/宿主不解析)
+  uint64_t session_id = 0;  ///< 失败所属会话
+  uint64_t plan_version = 0;  ///< 失败所属规划版本
 };
 
 }  // namespace ayanami

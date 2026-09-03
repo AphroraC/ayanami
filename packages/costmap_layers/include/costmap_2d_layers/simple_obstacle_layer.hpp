@@ -16,18 +16,18 @@ class SimpleObstacleLayer : public costmap_2d::Layer {
   enum class CombinationMethod { OVERWRITE = 0, MAXIMUM = 1, NONE = 2 };
 
   void setCombinationMethod(CombinationMethod method) {
-    combination_method_ = method;
+    combination_method = method;
   }
 
   // Global maps restore the underlying StaticLayer before applying dynamic
   // marks, so they must not overwrite that restored value with FREE.
-  void setClearToFree(bool clear_to_free) { clear_to_free_ = clear_to_free; }
+  void setClearToFree(bool clear_to_free) { clear_to_free = clear_to_free; }
 
   // 在世界坐标 (wx, wy) 标记一个障碍; 在 updateCosts 阶段写入 master grid。
   void markObstacles(double wx, double wy,
                      costmap_2d::CostValue cost = costmap_2d::LETHAL_OBSTACLE) {
-    marks_.push_back(Mark{wx, wy, cost});
-    current_ = false;
+    marks.push_back(Mark{wx, wy, cost});
+    current = false;
   }
 
   // 清除世界矩形 [min_wx, max_wx] x [min_wy, max_wy] 覆盖的区域:
@@ -46,12 +46,12 @@ class SimpleObstacleLayer : public costmap_2d::Layer {
   void updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j,
                    int max_i, int max_j) override;
 
-  void activate() override { current_ = true; }
+  void activate() override { current = true; }
   void deactivate() override {}
   void reset() override {
-    marks_.clear();
-    clear_regions_.clear();
-    current_ = false;
+    marks.clear();
+    clear_regions.clear();
+    current = false;
   }
   void matchSize() override {}
 
@@ -73,10 +73,10 @@ class SimpleObstacleLayer : public costmap_2d::Layer {
   static void touch(double x, double y, double* min_x, double* min_y,
                     double* max_x, double* max_y);
 
-  CombinationMethod combination_method_{CombinationMethod::MAXIMUM};
-  bool clear_to_free_{true};
-  std::vector<Mark> marks_;
-  std::vector<ClearRegion> clear_regions_;
+  CombinationMethod combination_method{CombinationMethod::MAXIMUM};
+  bool clear_to_free{true};
+  std::vector<Mark> marks;
+  std::vector<ClearRegion> clear_regions;
 };
 
 }  // namespace costmap_2d_layers

@@ -1,4 +1,4 @@
-// logging_test: log_level_from_string 解析 + configure_logging 行为
+// logging_test: logLevelFromString 解析 + configureLogging 行为
 // (console_output / file_output / 轮转参数 / 级别, 学习 asuka 参数集)。
 //
 // 覆盖:
@@ -25,7 +25,7 @@
 
 namespace {
 
-std::filesystem::path make_temp_dir() {
+std::filesystem::path makeTempDir() {
   const auto dir =
       std::filesystem::temp_directory_path() / "ayanami_logging_test";
   std::filesystem::remove_all(dir);
@@ -68,18 +68,18 @@ bool has_file_sink(const std::shared_ptr<spdlog::logger>& logger) {
 }
 
 // 写最小 config 目录: config.json + config_logging.json。
-std::filesystem::path make_config_dir(const std::string& logging_json) {
-  const auto dir = make_temp_dir();
+std::filesystem::path makeConfigDir(const std::string& logging_json) {
+  const auto dir = makeTempDir();
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_logging\": \"config_logging.json\"\n"
              "  }\n}\n");
   // logging_dir 占位符替换为实际测试目录。
   std::string json = logging_json;
-  const std::string kPlaceholder = "LOGGING_DIR_PLACEHOLDER";
-  const auto pos = json.find(kPlaceholder);
+  const std::string k_placeholder = "LOGGING_DIR_PLACEHOLDER";
+  const auto pos = json.find(k_placeholder);
   if (pos != std::string::npos) {
-    json.replace(pos, kPlaceholder.size(), dir.string());
+    json.replace(pos, k_placeholder.size(), dir.string());
   }
   write_file(dir / "config_logging.json", json);
   return dir;
@@ -87,22 +87,22 @@ std::filesystem::path make_config_dir(const std::string& logging_json) {
 
 }  // namespace
 
-TEST(LoggingTest, LogLevelFromStringParses) {
-  using ayanami::log_level_from_string;
-  EXPECT_EQ(log_level_from_string("trace"), spdlog::level::trace);
-  EXPECT_EQ(log_level_from_string("debug"), spdlog::level::debug);
-  EXPECT_EQ(log_level_from_string("info"), spdlog::level::info);
-  EXPECT_EQ(log_level_from_string("warn"), spdlog::level::warn);
-  EXPECT_EQ(log_level_from_string("warning"), spdlog::level::warn);
-  EXPECT_EQ(log_level_from_string("ERROR"), spdlog::level::err);
-  EXPECT_EQ(log_level_from_string("critical"), spdlog::level::critical);
-  EXPECT_EQ(log_level_from_string("off"), spdlog::level::off);
+TEST(LoggingTest, logLevelFromStringParses) {
+  using ayanami::logLevelFromString;
+  EXPECT_EQ(logLevelFromString("trace"), spdlog::level::trace);
+  EXPECT_EQ(logLevelFromString("debug"), spdlog::level::debug);
+  EXPECT_EQ(logLevelFromString("info"), spdlog::level::info);
+  EXPECT_EQ(logLevelFromString("warn"), spdlog::level::warn);
+  EXPECT_EQ(logLevelFromString("warning"), spdlog::level::warn);
+  EXPECT_EQ(logLevelFromString("ERROR"), spdlog::level::err);
+  EXPECT_EQ(logLevelFromString("critical"), spdlog::level::critical);
+  EXPECT_EQ(logLevelFromString("off"), spdlog::level::off);
   // 未知字符串回退 info。
-  EXPECT_EQ(log_level_from_string("bogus"), spdlog::level::info);
+  EXPECT_EQ(logLevelFromString("bogus"), spdlog::level::info);
 }
 
-TEST(LoggingTest, FileOutputTrueWritesLogFile) {
-  const auto dir = make_config_dir(
+TEST(LoggingTest, fileOutputTrueWritesLogFile) {
+  const auto dir = makeConfigDir(
       "{\n  \"logging\": {\n"
       "    \"console_output\": false,\n"
       "    \"file_output\": true,\n"
@@ -111,7 +111,7 @@ TEST(LoggingTest, FileOutputTrueWritesLogFile) {
       "    \"rotate_logs\": false\n"
       "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
-  ayanami::configure_logging();
+  ayanami::configureLogging();
 
   auto logger = spdlog::default_logger();
   ASSERT_NE(logger, nullptr);
@@ -129,8 +129,8 @@ TEST(LoggingTest, FileOutputTrueWritesLogFile) {
   EXPECT_NE(content.find("logging test marker 42"), std::string::npos);
 }
 
-TEST(LoggingTest, ConsoleOutputTrueKeepsConsoleAndRotatingSink) {
-  const auto dir = make_config_dir(
+TEST(LoggingTest, consoleOutputTrueKeepsConsoleAndRotatingSink) {
+  const auto dir = makeConfigDir(
       "{\n  \"logging\": {\n"
       "    \"console_output\": true,\n"
       "    \"console_level\": \"debug\",\n"
@@ -142,7 +142,7 @@ TEST(LoggingTest, ConsoleOutputTrueKeepsConsoleAndRotatingSink) {
       "    \"max_files\": 3\n"
       "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
-  ayanami::configure_logging();
+  ayanami::configureLogging();
 
   auto logger = spdlog::default_logger();
   ASSERT_NE(logger, nullptr);
@@ -158,8 +158,8 @@ TEST(LoggingTest, ConsoleOutputTrueKeepsConsoleAndRotatingSink) {
   EXPECT_TRUE(ifs.good());
 }
 
-TEST(LoggingTest, ReconfigureIsIdempotentNoSinkDuplication) {
-  const auto dir = make_config_dir(
+TEST(LoggingTest, reconfigureIsIdempotentNoSinkDuplication) {
+  const auto dir = makeConfigDir(
       "{\n  \"logging\": {\n"
       "    \"console_output\": true,\n"
       "    \"file_output\": true,\n"
@@ -168,13 +168,13 @@ TEST(LoggingTest, ReconfigureIsIdempotentNoSinkDuplication) {
       "    \"rotate_logs\": true\n"
       "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
-  ayanami::configure_logging();
+  ayanami::configureLogging();
   auto logger = spdlog::default_logger();
   const auto sink_count = logger->sinks().size();
   ASSERT_GE(sink_count, 2u);
 
   // 再次配置: sink 重建而非追加。
-  ayanami::configure_logging();
+  ayanami::configureLogging();
   EXPECT_EQ(logger->sinks().size(), sink_count);
 }
 

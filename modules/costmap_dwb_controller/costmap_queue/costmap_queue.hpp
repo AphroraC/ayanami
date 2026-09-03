@@ -63,7 +63,7 @@ public:
   CellData(
     const double d, const unsigned int i, const unsigned int x, const unsigned int y,
     const unsigned int sx, const unsigned int sy)
-  : distance_(d), index_(i), x_(x), y_(y), src_x_(sx), src_y_(sy)
+  : distance(d), index(i), x(x), y(y), src_x(sx), src_y(sy)
   {
   }
 
@@ -71,7 +71,7 @@ public:
    * @brief Default Constructor - Should be used sparingly
    */
   CellData()
-  : distance_(std::numeric_limits<double>::max()), index_(0), x_(0), y_(0), src_x_(0), src_y_(0)
+  : distance(std::numeric_limits<double>::max()), index(0), x(0), y(0), src_x(0), src_y(0)
   {
   }
 
@@ -80,10 +80,10 @@ public:
     return (x > y) ? (x - y) : (y - x);
   }
 
-  double distance_;
-  unsigned int index_;
-  unsigned int x_, y_;
-  unsigned int src_x_, src_y_;
+  double distance;
+  unsigned int index;
+  unsigned int x, y;
+  unsigned int src_x, src_y;
 };
 
 /**
@@ -113,7 +113,7 @@ public:
    * @param costmap Costmap which defines the size/number of cells
    * @param manhattan If true, sort cells by Manhattan distance, otherwise use Euclidean distance
    */
-  explicit CostmapQueue(costmap_2d::Costmap2D & costmap, bool manhattan = false);
+  explicit CostmapQueue(const costmap_2d::Costmap2D & costmap, bool manhattan = false);
 
   /**
    * @brief Clear the queue
@@ -159,10 +159,10 @@ protected:
    */
   void computeCache();
 
-  costmap_2d::Costmap2D & costmap_;
-  std::vector<bool> seen_;
-  int max_distance_;
-  bool manhattan_;
+  const costmap_2d::Costmap2D & costmap;
+  std::vector<bool> seen;
+  int max_distance;
+  bool manhattan;
 
 protected:
   /**
@@ -179,10 +179,10 @@ protected:
   {
     unsigned int dx = CellData::absolute_difference(cur_x, src_x);
     unsigned int dy = CellData::absolute_difference(cur_y, src_y);
-    return cached_distances_[dx][dy];
+    return cached_distances[dx][dy];
   }
-  std::vector<std::vector<double>> cached_distances_;
-  int cached_max_distance_;
+  std::vector<std::vector<double>> cached_distances;
+  int cached_max_distance;
 };
 }  // namespace costmap_queue
 

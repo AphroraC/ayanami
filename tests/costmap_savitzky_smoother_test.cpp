@@ -8,13 +8,15 @@
 // - 空 path / 点数 < 7 → SUCCESS, out=in
 // - check_for_collision=true: 平滑后路径经过障碍 cell → 回滚到 original path,
 //   msg 含 "collision"
-// - module.cpp 导出 create_costmap_smoother_module 符号 (dlopen 验证)
+// - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,7 +32,7 @@
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
-#include <ayanami/utility/load_module.hpp>
+#include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
@@ -65,21 +67,22 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
 std::shared_ptr<CostmapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto ctx = std::make_shared<CostmapContext>();
-  ctx->global_costmap_ = wrapper;
+  ctx->setGlobalCostmap(wrapper);
   return ctx;
 }
 
 std::shared_ptr<CostmapSavitzkySmoother> makeSmoother(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto smoother = std::make_shared<CostmapSavitzkySmoother>();
-  smoother->initialize("test_savitzky", makeContext(wrapper));
+  smoother->initialize(
+      "test_savitzky", makeContext(wrapper)->getSharedConstPtr());
   return smoother;
 }
 
 ayanami::geometry_msgs::PoseStamped makePose(double x, double y) {
   auto p = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -100,7 +103,7 @@ Path makeLPath() {
 double pathLengthSum(const Path& p) {
   double sum = 0.0;
   for (std::size_t i = 1; i < p.poses.size(); ++i) {
-    sum += (p.poses[i].pose.translation() - p.poses[i - 1].pose.translation())
+    sum += (p.poses[i].pose.position - p.poses[i - 1].pose.position)
                .norm();
   }
   return sum;
@@ -111,7 +114,7 @@ bool posesEqual(const Path& a, const Path& b) {
     return false;
   }
   for (std::size_t i = 0; i < a.poses.size(); ++i) {
-    if ((a.poses[i].pose.translation() - b.poses[i].pose.translation()).norm() >
+    if ((a.poses[i].pose.position - b.poses[i].pose.position).norm() >
         1e-9) {
       return false;
     }
@@ -123,7 +126,7 @@ bool posesEqual(const Path& a, const Path& b) {
 
 // ---------- 平滑有效性 ----------
 
-TEST(CostmapSavitzkySmootherTest, SmoothsLShapedPath) {
+TEST(CostmapSavitzkySmootherTest, smoothsLShapedPath) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
@@ -137,17 +140,17 @@ TEST(CostmapSavitzkySmootherTest, SmoothsLShapedPath) {
   EXPECT_EQ(out.poses.size(), in.poses.size());
   EXPECT_LT(pathLengthSum(out), pathLengthSum(in));
   // 两端点固定不动。
-  EXPECT_NEAR(out.poses.front().pose.translation().x(),
-              in.poses.front().pose.translation().x(), 1e-9);
-  EXPECT_NEAR(out.poses.front().pose.translation().y(),
-              in.poses.front().pose.translation().y(), 1e-9);
-  EXPECT_NEAR(out.poses.back().pose.translation().x(),
-              in.poses.back().pose.translation().x(), 1e-9);
-  EXPECT_NEAR(out.poses.back().pose.translation().y(),
-              in.poses.back().pose.translation().y(), 1e-9);
+  EXPECT_NEAR(out.poses.front().pose.position.x(),
+              in.poses.front().pose.position.x(), 1e-9);
+  EXPECT_NEAR(out.poses.front().pose.position.y(),
+              in.poses.front().pose.position.y(), 1e-9);
+  EXPECT_NEAR(out.poses.back().pose.position.x(),
+              in.poses.back().pose.position.x(), 1e-9);
+  EXPECT_NEAR(out.poses.back().pose.position.y(),
+              in.poses.back().pose.position.y(), 1e-9);
 }
 
-TEST(CostmapSavitzkySmootherTest, TinyMaxDurationReturnsSuccess) {
+TEST(CostmapSavitzkySmootherTest, tinyMaxDurationReturnsSuccess) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
@@ -164,7 +167,7 @@ TEST(CostmapSavitzkySmootherTest, TinyMaxDurationReturnsSuccess) {
 
 // ---------- 空 / 短 path ----------
 
-TEST(CostmapSavitzkySmootherTest, EmptyPathReturnsSuccessWithEmptyOut) {
+TEST(CostmapSavitzkySmootherTest, emptyPathReturnsSuccessWithEmptyOut) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
@@ -179,7 +182,7 @@ TEST(CostmapSavitzkySmootherTest, EmptyPathReturnsSuccessWithEmptyOut) {
   EXPECT_TRUE(out.poses.empty());
 }
 
-TEST(CostmapSavitzkySmootherTest, ShortPathReturnsSuccessWithSamePath) {
+TEST(CostmapSavitzkySmootherTest, shortPathReturnsSuccessWithSamePath) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
@@ -198,7 +201,7 @@ TEST(CostmapSavitzkySmootherTest, ShortPathReturnsSuccessWithSamePath) {
 
 // ---------- 碰撞检查回滚 ----------
 
-TEST(CostmapSavitzkySmootherTest, CollisionCheckRollsBackToOriginal) {
+TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
   costmap_2d::Costmap2D* cm = wrapper->get().getCostmap();
@@ -216,31 +219,41 @@ TEST(CostmapSavitzkySmootherTest, CollisionCheckRollsBackToOriginal) {
   for (const auto& p : in.poses) {
     unsigned int mx = 0;
     unsigned int my = 0;
-    if (cm->worldToMap(p.pose.translation().x(), p.pose.translation().y(), mx,
+    if (cm->worldToMap(p.pose.position.x(), p.pose.position.y(), mx,
                        my)) {
       orig_cells.insert({mx, my});
     }
   }
 
   bool found = false;
+  unsigned int cell_x = 0;
+  unsigned int cell_y = 0;
   for (std::size_t i = 1; i + 1 < smoothed.poses.size(); ++i) {
     unsigned int mx = 0;
     unsigned int my = 0;
-    const Eigen::Vector3d& t = smoothed.poses[i].pose.translation();
+    const Eigen::Vector3d& t = smoothed.poses[i].pose.position;
     if (!cm->worldToMap(t.x(), t.y(), mx, my)) {
       continue;
     }
     const auto cell = std::make_pair(mx, my);
     if (orig_cells.count(cell) == 0 &&
         cm->getCost(mx, my) < costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
-      cm->setCost(mx, my, costmap_2d::LETHAL_OBSTACLE);
+      cell_x = mx;
+      cell_y = my;
       found = true;
       break;
     }
   }
   ASSERT_TRUE(found) << "expected a smoothed corner-cut cell to place obstacle";
+  // 唯一写者路径: unique 锁内直接在 master grid 落障碍 (测试只改栅格不下发
+  // 层), 后续 smoothPath 经 shared 锁直读即见。
+  {
+    std::unique_lock<std::shared_mutex> lock(wrapper->mutex());
+    wrapper->get().getCostmap()->setCost(cell_x, cell_y,
+                                         costmap_2d::LETHAL_OBSTACLE);
+  }
 
-  // 重平滑 + 碰撞检查 → 回滚到 original path。
+  // 重平滑 + 碰撞检查 → 回滚到 original path (加锁直读含障碍)。
   Path out;
   message.clear();
   const FailureCode failure =
@@ -251,19 +264,13 @@ TEST(CostmapSavitzkySmootherTest, CollisionCheckRollsBackToOriginal) {
   EXPECT_NE(message.find("collision"), std::string::npos);
 }
 
-// ---------- module.cpp 工厂符号 ----------
+// ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------
 
-TEST(CostmapSavitzkySmootherTest, ModuleFactoryCreatesSmoother) {
+TEST(CostmapSavitzkySmootherTest, moduleFactoryCreatesSmoother) {
   ASSERT_FALSE(g_module_so.empty());
-  void* handle = ayanami::open_so(g_module_so);
-  ASSERT_NE(handle, nullptr);
-  using Factory = ayanami::costmap::CostmapSmoother* (*)();
-  void* symbol = ayanami::load_symbol(handle, "create_costmap_smoother_module");
-  ASSERT_NE(symbol, nullptr);
-  auto factory = reinterpret_cast<Factory>(symbol);
-  ayanami::costmap::CostmapSmoother* smoother = factory();
+  auto smoother = std::dynamic_pointer_cast<CostmapSavitzkySmoother>(
+      ayanami::ExtensionModule::load_module(g_module_so));
   ASSERT_NE(smoother, nullptr);
-  delete smoother;
 }
 
 int main(int argc, char** argv) {

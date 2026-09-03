@@ -2,6 +2,8 @@
 
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
+#include "ayanami/messages/sensor_msgs.hpp"
+#include "ayanami/utility/extension_module.hpp"
 
 #include <functional>
 #include <memory>
@@ -14,10 +16,10 @@ namespace abstract {
  * @brief 宿主导航插件入口 (spec §5.1)。
  *
  * ROS 侧 dlopen 宿主插件 (如 CostmapNavigation, spec §5.6), 只通过本接口
- * initialize/start/stop/spinOnce/setGoal + setMapCallback 转发输入;
- * 内部持有 NavigationServerBase + BehaviorTreePilot 全套。
+ * initialize/start/stop/spinOnce/setGoal + setPointcloud/setLaserScan 转发
+ * 输入; 内部持有 NavigationServerBase + BehaviorTreePilot 全套。
  */
-class AbstractNavigation {
+class AbstractNavigation : public virtual ExtensionModule {
 public:
   using Ptr = std::shared_ptr<AbstractNavigation>;
 
@@ -38,12 +40,15 @@ public:
   /// @brief 设置导航目标。
   virtual void setGoal(const ayanami::geometry_msgs::PoseStamped& goal) = 0;
 
-  /// @brief 地图可视化/转发回调 (frame_id, 占据栅格)。
-  using MapCallback =
-      std::function<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)>;
-
-  /// @brief 注册地图回调。默认空实现 (不注册), 派生可选覆写。
-  virtual void setMapCallback(MapCallback cb) { (void)cb; }
+  /// @brief 障碍观测输入: 点云 (ROS 回调同步 TF + 转换后直递宿主)。
+  /// 默认 no-op (测试 stub 可不管); 具体宿主覆写转发到障碍落图管线。
+  virtual void setPointcloud(const ayanami::sensor_msgs::PointCloud2& cloud) {
+    (void)cloud;
+  }
+  /// @brief 障碍观测输入: 激光扫描 (同上)。
+  virtual void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) {
+    (void)scan;
+  }
 };
 
 } // namespace abstract

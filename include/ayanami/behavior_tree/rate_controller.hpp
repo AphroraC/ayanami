@@ -26,72 +26,81 @@ class RateController : public BT::DecoratorNode {
 
   RateController(const std::string& name, const BT::NodeConfig& config, ClockFn clock)
     : BT::DecoratorNode(name, config),
-      clock_fn_(std::move(clock)),
-      hz_(-1.0),
-      last_status_(BT::NodeStatus::FAILURE),
-      last_time_(),
-      started_(false) {}
+      clock_fn(std::move(clock)),
+      hz(-1.0),
+      last_status(BT::NodeStatus::FAILURE),
+      last_time(),
+      started(false) {}
 
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<double>("hz", -1.0, "rate in Hz (-1: run once then cache)"),
+      BT::InputPort<uint64_t>("reset_token", 0, "revision that resets the cache"),
     };
   }
 
   BT::NodeStatus tick() override {
-    if (!getInput("hz", hz_)) {
+    if (!getInput("hz", hz)) {
       return BT::NodeStatus::FAILURE;
     }
+    uint64_t token = 0;
+    (void)getInput("reset_token", token);
+    if (token != reset_token) {
+      reset_token = token;
+      started = false;
+      last_status = BT::NodeStatus::FAILURE;
+    }
 
-    if (hz_ <= 0.0) {
+    if (hz <= 0.0) {
       // 单次模式: 终端结果 (SUCCESS/FAILURE) 缓存, RUNNING 的异步 child 持续
       // re-tick 让 onRunning 轮询 (Task 12 stage C: hz=-1 下 ComputePathToPose
       // 首次 tick 后返回 RUNNING, 若缓存 RUNNING 不再 re-tick, 结果永不就绪)。
-      if (started_) {
-        if (last_status_ == BT::NodeStatus::RUNNING) {
-          last_status_ = child_node_->executeTick();
-          return last_status_;
+      if (started) {
+        if (last_status == BT::NodeStatus::RUNNING) {
+          last_status = child_node_->executeTick();
+          return last_status;
         }
-        return last_status_;
+        return last_status;
       }
-      started_ = true;
+      started = true;
       const BT::NodeStatus status = child_node_->executeTick();
-      last_status_ = status;
+      last_status = status;
       return status;
     }
 
-    const BT::TimePoint now = clock_fn_();
-    if (!started_) {
-      started_ = true;
-      last_time_ = now;
+    const BT::TimePoint now = clock_fn();
+    if (!started) {
+      started = true;
+      last_time = now;
       const BT::NodeStatus status = child_node_->executeTick();
-      last_status_ = status;
+      last_status = status;
       return status;
     }
 
     // 限频模式: 距上次执行 >= 1/hz 才重新执行
-    const auto period = std::chrono::duration<double>(1.0 / hz_);
-    if (now - last_time_ >= period) {
-      last_time_ = now;
+    const auto period = std::chrono::duration<double>(1.0 / hz);
+    if (now - last_time >= period) {
+      last_time = now;
       const BT::NodeStatus status = child_node_->executeTick();
-      last_status_ = status;
+      last_status = status;
       return status;
     }
-    return last_status_;
+    return last_status;
   }
 
   void halt() override {
     BT::DecoratorNode::halt();
-    started_ = false;
-    last_status_ = BT::NodeStatus::FAILURE;
+    started = false;
+    last_status = BT::NodeStatus::FAILURE;
   }
 
  private:
-  ClockFn clock_fn_;
-  double hz_;
-  BT::NodeStatus last_status_;
-  BT::TimePoint last_time_;
-  bool started_;
+  ClockFn clock_fn;
+  double hz;
+  BT::NodeStatus last_status;
+  BT::TimePoint last_time;
+  bool started;
+  uint64_t reset_token{0};
 };
 
 } // namespace behavior_tree

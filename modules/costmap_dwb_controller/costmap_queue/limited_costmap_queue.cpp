@@ -42,13 +42,13 @@ LimitedCostmapQueue::LimitedCostmapQueue(
   const int distance_limit)
 : CostmapQueue(costmap)
 {
-  max_distance_ = distance_limit;
+  max_distance = distance_limit;
   reset();
 }
 
 bool LimitedCostmapQueue::validCellToQueue(const CellData & cell)
 {
-  return cell.distance_ <= max_distance_;
+  return cell.distance <= max_distance;
 }
 
 }  // namespace costmap_queue

@@ -6,7 +6,7 @@
 // - RobotFrameSingleSourceFromCostmapNavigationJson: robot_frame 单一来源改为
 //   costmap_navigation.json::navigation::robot_frame (costmap.json 不再读)。
 // - ConfigureCoreMapsTwiceWarns: 二次 configureCoreMaps spdlog warn + 不替换
-//   costmap_context_ (同一 ptr)。
+//   costmap_context (同一 ptr)。
 // - PidSignatureCoarseSameGoalNoReset: 同 goal 同 size 仅中间点稍异的 plan,
 //   粗签名 (goal+size) 相同 → setPlan 不重置 PID 状态 (ramp 连续)。
 
@@ -31,9 +31,9 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/ostream_sink.h>
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
@@ -52,9 +52,9 @@ using ayanami::modules::CostmapPidController;
 using ayanami::modules::CostmapSmacPlanner;
 using ayanami::nav_msgs::Path;
 
-constexpr double kMaxAcc = 1.0;
-constexpr double kDt = 0.05;
-constexpr double kPi = 3.14159265358979323846;
+constexpr double k_max_acc = 1.0;
+constexpr double k_dt = 0.05;
+constexpr double k_pi = 3.14159265358979323846;
 
 std::filesystem::path g_module_dir;  // pid/smac 模块配置目录
 
@@ -66,9 +66,9 @@ void write_file(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::filesystem::path make_unique_dir(const std::string& tag) {
+std::filesystem::path makeUniqueDir(const std::string& tag) {
   auto dir = std::filesystem::temp_directory_path() /
-             ("ayanami_minor_carry_" + tag);
+             ("ayanami_minor_carry" + tag);
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   return dir;
@@ -81,9 +81,9 @@ void resetModuleConfig() {
 
 PoseStamped makePose(double x, double y, double yaw = 0.0) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
-  p.pose.linear() =
-      Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
+  p.pose.orientation =
+      Eigen::Quaterniond(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
   return p;
 }
 
@@ -113,9 +113,9 @@ PoseStamped cellCenter(unsigned int mx, unsigned int my, double res = 0.5) {
 
 // 临时配置目录: costmap_navigation.json 含 robot_frame + costmap 段 (原
 // costmap.json 参数已并入 navigation 文件)。static_map 留空 (不需要真实地图文件)。
-std::filesystem::path make_navigation_config_dir(
+std::filesystem::path makeNavigationConfigDir(
     const std::string& robot_frame) {
-  auto dir = make_unique_dir("nav_cfg_" + robot_frame);
+  auto dir = makeUniqueDir("nav_cfg" + robot_frame);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"costmap_navigation.json\"\n"
@@ -154,9 +154,9 @@ std::filesystem::path make_navigation_config_dir(
 
 std::string pidConfigContent() {
   return "{\n  \"costmap_pid_controller\": {\n"
-         "    \"max_v\": 2.0,\n    \"max_w\": 1.0,\n"
-         "    \"max_acc\": 1.0,\n    \"max_decel\": 1.0,\n"
-         "    \"max_angular_accel\": 1.0,\n"
+         "    \"max_vel_x\": 2.0,\n    \"max_vel_theta\": 1.0,\n"
+         "    \"max_acc_x\": 1.0,\n    \"max_decel_x\": 1.0,\n"
+         "    \"max_acc_theta\": 1.0,\n"
          "    \"kp_v\": 1.0,\n    \"ki_v\": 0.0,\n    \"kd_v\": 0.0,\n"
          "    \"kp_w\": 1.0,\n    \"ki_w\": 0.0,\n    \"kd_w\": 0.0,\n"
          "    \"dist_decay\": 2.0,\n    \"goal_tolerance\": 0.1,\n"
@@ -185,10 +185,7 @@ TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
                      const PoseStamped& robot, FailureCode& failure,
                      std::string& message) {
   TwistStamped cmd;
-  // goal_checker 传空: 触发 PID 空指针防御 (回退 config goal_tolerance), 控制器
-  // 只负责生成速度, 到达判定由 execution 层的 goal_checker 负责。
-  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message,
-                                         nullptr);
+  failure = ctl->computeVelocityCommands(robot, TwistStamped{}, cmd, message);
   return cmd;
 }
 
@@ -196,27 +193,26 @@ TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
 
 // ---------------- Test 1 ----------------
 
-TEST(MinorCarryWiring, SmacPlannerFallsBackToRobotPose) {
+TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   resetModuleConfig();
 
   auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5 = 10m x 10m, 全 free
   auto ctx = std::make_shared<CostmapContext>();
-  ctx->global_costmap_ = wrapper;
-  ctx->global_frame_ = "map";
-  ctx->robot_frame_ = "base_link";
-  ctx->transform_store_ = &ayanami::interfaces::TransformStore::instance();
+  ctx->setGlobalCostmap(wrapper);
+  ctx->setLocalCostmap(wrapper);
+  ctx->setFrames("map", "base_link");
 
   // mock robot pose (1, 2, pi/4) in map frame。
-  auto& store = ayanami::interfaces::TransformStore::instance();
+  auto& rsc = ayanami::components::RobotStateController::instance();
   Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
   T_robot.translation() = Eigen::Vector3d(1.0, 2.0, 0.0);
   T_robot.linear() =
-      Eigen::AngleAxisd(kPi / 4.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-  store.setTransform("map", "base_link", ayanami::Timestamp::latest(),
-                     T_robot);
+      Eigen::AngleAxisd(k_pi / 4.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  rsc.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                   T_robot);
 
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->initialize("test_smac", ctx);
+  planner->initialize("test_smac", ctx->getSharedConstPtr());
 
   // start 留空 (默认构造: translation 全零 + frame_id 空)。
   const PoseStamped start;
@@ -230,17 +226,18 @@ TEST(MinorCarryWiring, SmacPlannerFallsBackToRobotPose) {
   EXPECT_EQ(failure, FailureCode::None) << message;
   ASSERT_FALSE(plan.poses.empty());
   // 首位 pose == fallback 的 robot pose (1, 2, pi/4)。
-  EXPECT_NEAR(plan.poses.front().pose.translation().x(), 1.0, 1e-6);
-  EXPECT_NEAR(plan.poses.front().pose.translation().y(), 2.0, 1e-6);
-  const double yaw = std::atan2(plan.poses.front().pose.linear()(1, 0),
-                                plan.poses.front().pose.linear()(0, 0));
-  EXPECT_NEAR(yaw, kPi / 4.0, 1e-6);
+  EXPECT_NEAR(plan.poses.front().pose.position.x(), 1.0, 1e-6);
+  EXPECT_NEAR(plan.poses.front().pose.position.y(), 2.0, 1e-6);
+  const auto& q = plan.poses.front().pose.orientation;
+  const double yaw = std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
+                                1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
+  EXPECT_NEAR(yaw, k_pi / 4.0, 1e-6);
 }
 
 // ---------------- Test 2 ----------------
 
-TEST(MinorCarryWiring, RobotFrameSingleSourceFromCostmapNavigationJson) {
-  const auto dir = make_navigation_config_dir("base_footprint");
+TEST(MinorCarryWiring, robotFrameSingleSourceFromCostmapNavigationJson) {
+  const auto dir = makeNavigationConfigDir("base_footprint");
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
@@ -253,8 +250,8 @@ TEST(MinorCarryWiring, RobotFrameSingleSourceFromCostmapNavigationJson) {
 
 // ---------------- Test 3 ----------------
 
-TEST(MinorCarryWiring, ConfigureCoreMapsTwiceWarns) {
-  const auto dir = make_navigation_config_dir("base_footprint");
+TEST(MinorCarryWiring, configureCoreMapsTwiceWarns) {
+  const auto dir = makeNavigationConfigDir("base_footprint");
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   const auto ctx1 = server.costmapContext();
@@ -277,7 +274,7 @@ TEST(MinorCarryWiring, ConfigureCoreMapsTwiceWarns) {
 
 // ---------------- Test 4 ----------------
 
-TEST(MinorCarryWiring, PidSignatureCoarseSameGoalNoReset) {
+TEST(MinorCarryWiring, pidSignatureCoarseSameGoalNoReset) {
   resetModuleConfig();
   auto ctl = makeController();
 
@@ -296,32 +293,33 @@ TEST(MinorCarryWiring, PidSignatureCoarseSameGoalNoReset) {
   // 同 goal (9,0) 同 size (10), 仅中间点稍移 y → 粗签名 (goal+size) 相同。
   Path plan2 = plan1;
   for (int i = 1; i + 1 < static_cast<int>(plan2.poses.size()); ++i) {
-    plan2.poses[i].pose.translation().y() += 0.005;
+    plan2.poses[i].pose.position.y() += 0.005;
   }
   ASSERT_TRUE(ctl->setPlan(plan2));
 
   const TwistStamped c3 = compute(ctl, robot, failure, message);
   ASSERT_EQ(failure, FailureCode::None);
 
-  // 不重置: ramp 连续 (c3 ≈ 3*kMaxAcc*kDt), 而不是掉回 kMaxAcc*kDt。
+  // 不重置: ramp 连续 (c3 ≈ 3*k_max_acc*k_dt), 而不是掉回 k_max_acc*k_dt。
   EXPECT_GT(c3.twist.linear.x(), c2.twist.linear.x());
-  EXPECT_NEAR(c3.twist.linear.x(), 3.0 * kMaxAcc * kDt, 1e-9);
+  EXPECT_NEAR(c3.twist.linear.x(), 3.0 * k_max_acc * k_dt, 1e-9);
 }
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
 
-  // 模块配置目录 (pid/smac loadConfig)。
-  g_module_dir = make_unique_dir("modules");
+  // 模块配置目录 (严格单层索引; pid/smac 构造时经 getConfigPath 显式读取)。
+  g_module_dir = makeUniqueDir("modules");
   write_file(g_module_dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\"\n"
+             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_planner\": \"costmap_smac_planner.json\",\n"
+             "    \"config_controller\": \"costmap_pid_controller.json\",\n"
+             "    \"config_smac_planner\": \"costmap_smac_planner.json\",\n"
+             "    \"config_pid_controller\": \"costmap_pid_controller.json\"\n"
              "  }\n}\n");
   write_file(g_module_dir / "navigation.json",
-             "{\n  \"modules\": {\n"
-             "    \"config_controller\": \"costmap_pid_controller.json\",\n"
-             "    \"config_planner\": \"costmap_smac_planner.json\"\n"
-             "  }\n}\n");
+             "{\n  \"navigation\": {}\n}\n");
   write_file(g_module_dir / "costmap_pid_controller.json", pidConfigContent());
   write_file(g_module_dir / "costmap_smac_planner.json",
              "{\n  \"costmap_smac_planner\": {\n"

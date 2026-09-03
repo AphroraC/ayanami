@@ -1,12 +1,15 @@
-// Task 1 (M2 阶段 A BLOCK #1): controller 整循环持锁 → per-cycle short lock。
+// 并发回归: controller 每 cycle 经 lockLocal() 取 local 读视图 (RAII shared
+// 锁, 零拷贝直读 master grid), 与并发 obstacle 写者 (落障碍 + updateMapUnlocked
+// 重算) 交错, 互不饿死。
 //
-// 回归对象: M1 CostmapControllerExecution::run() 整 control loop 持
-// local_costmap_->mutex() (recursive_mutex)。M2 接 ROS 障碍回调
-// (handleObstaclePointCloud 走同一 local 锁) 会饿死 controller / 阻断 spinOnce。
+// 旧架构 (BLOCK #1): CostmapControllerExecution::run() 整 control loop 持
+// local wrapper recursive_mutex, 会饿死 obstacle feed。新架构单写者 + 多读者:
+// - controller 每 cycle 经 lockLocal() 取 local shared 锁视图, 周期结束即释放;
+// - obstacle 写者 (唯一写者) unique 锁内落障碍 + updateMapUnlocked 重算 master;
+// - 读者短持锁, 写者等读者释放后写入, 双方均能推进 (无饿死 / 无死锁)。
 //
-// 本测试: controller 线程 @20Hz 每 cycle 短持锁 compute; 另一线程每 5ms 投
-// obstacle feed (模拟 handleObstaclePointCloud 走 local wrapper mutex)。
-// 断言双方都未被饿死 (≥15/run), 且测试整体快速完成 (不死锁)。
+// 断言: 双方都完成足够轮次 (无饿死 / 无死锁), 且 controller 每次 compute 都能
+// 拿到有效锁视图 (无 MapUnavailable)。
 
 #include <gtest/gtest.h>
 
@@ -21,11 +24,14 @@
 #include <costmap_2d/layered_costmap.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include <ayanami/costmap/components/costmap_controller_execution.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
+#include <ayanami/costmap/components/costmap_controller_execution.hpp>
+#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
+
+#include <shared_mutex>
 
 namespace {
 
@@ -34,22 +40,33 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
-// FakeController: 模拟真实 costmap 控制器 —— computeVelocityCommands 在临界段
-// (controller 持 local wrapper 锁内) sleep 5ms 模拟工作 (M2-P5 裁决)。
-class FakeController : public ayanami::abstract::AbstractController {
+// 加锁读视图 FakeController: 记录周期数 (写者不被读者饿死的并发验证)。
+class SnapshotController : public ayanami::costmap::CostmapController {
  public:
+  void initialize(const std::string&,
+                  ayanami::costmap::CostmapContext::ConstPtr map) override {
+    map_ = std::move(map);
+  }
   FailureCode computeVelocityCommands(
       const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
-      std::string&,
-      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
-    ++cycles_;
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      std::string&) override {
+    ++cycles;
+    auto view = map_->lockLocal();
+    if (!view.valid()) {
+      ++snapshot_missing;
+      return FailureCode::MapUnavailable;
+    }
     cmd_vel.twist.linear.x() = 0.5;
     return FailureCode::None;
   }
+
+  std::atomic<int> cycles{0};
+  std::atomic<int> snapshot_missing{0};
+
+ private:
+  ayanami::costmap::CostmapContext::ConstPtr map_;
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
-  std::atomic<int> cycles_{0};
 };
 
 // checker 测试桩: 永不到达 + 恒有进展。
@@ -78,29 +95,17 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeLocalWrapper() {
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-// std::recursive_mutex 无 try_lock_for (非 TimedLockable): 用有限时长的
-// try_lock 轮询模拟, 保证测试在锁被整循环占用时也能在时限内完成而非挂死。
-bool lockWithTimeout(std::recursive_mutex& m, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (m.try_lock()) {
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  return false;
-}
-
 }  // namespace
 
-TEST(ConcurrentControllerObstacle, NoDeadlockNoStarvation) {
+TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   auto local = makeLocalWrapper();
   auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
-  ctx->local_costmap_ = local;
+  ctx->setLocalCostmap(local);
 
-  auto controller = std::make_shared<FakeController>();
+  auto controller = std::make_shared<SnapshotController>();
+  controller->initialize("test_controller", ctx);
   ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
-                                                    ctx->local_costmap_);
+                                                    ctx);
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
@@ -111,31 +116,40 @@ TEST(ConcurrentControllerObstacle, NoDeadlockNoStarvation) {
 
   std::atomic<bool> feeding{true};
   std::atomic<int> obstacle_feeds{0};
+  std::atomic<int> wrapped{0};
 
   exec.start();
 
-  // obstacle feed 线程: 每 5ms 投一次 (模拟 handleObstaclePointCloud 走 local
-  // wrapper mutex)。用有限时长 try_lock 轮询 —— 旧实现整循环持锁时只会记录
-  // 超时而非挂死, 保证测试本身不死锁、饿死可观测。
+  // obstacle 写者线程: 唯一写者 —— 写锁内 markObservable 落障碍 + updateMap
+  // 发布新 epoch。若 controller 曾持写锁整循环, 这里会被饿死 (feeds 长期不
+  // 增长) / 与旧实现整循环持锁冲突。
   std::thread feeder([&] {
     while (feeding.load()) {
-      if (lockWithTimeout(local->mutex(), std::chrono::milliseconds(100))) {
-        ++obstacle_feeds;  // 模拟锁内 markObstacles 短工作
-        local->mutex().unlock();
+      {
+        std::unique_lock<std::shared_mutex> lock(local->mutex());
+        local->get().getCostmap()->setCost(3, 3, costmap_2d::LETHAL_OBSTACLE);
+        local->updateMapUnlocked(0.0, 0.0, 0.0);
+        ++obstacle_feeds;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    ++wrapped;
   });
 
-  // 跑 ~1.2s: @20Hz → ~22 controller cycle; 每 5ms → ~240 次 feed 尝试。
+  // 跑 ~1.2s: @20Hz → ~22 controller cycle; 每 5ms → ~240 次 feed。
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
   feeding.store(false);
   feeder.join();
+
   exec.cancel();
   exec.join();
 
-  // 防饿死: controller 完成 ≥75% 预期 cycle; obstacle feed ≥15 次成功落锁。
-  EXPECT_GE(controller->cycles_.load(), 15);
+  // 防饿死: controller 完成 ≥15 cycle 且每次都拿到有效视图 (无 MapUnavailable)。
+  EXPECT_GE(controller->cycles.load(), 15);
+  EXPECT_EQ(controller->snapshot_missing.load(), 0)
+      << "controller 每 cycle 都应拿到有效视图";
+  // obstacle 写者同样完成 ≥15 次 (读者 shared 锁不阻塞写者以外的读者;
+  // 写者等读者释放, 双方都能推进)。
   EXPECT_GE(obstacle_feeds.load(), 15);
 }

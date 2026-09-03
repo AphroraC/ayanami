@@ -1,28 +1,15 @@
-// Task 2 (M2 阶段 A BLOCK #3): recovery 锁 global+local (scoped_lock) 防与
-// obstacle feed 数据竞态。M2 收尾: obstacle feed 改为"local 阶段锁内写完释放
-// 后才请求 global"(见 markObstaclesInFrame 两段式锁作用域), 与 recovery 的
-// global→local 锁序构成无环图, 无 AB/BA 死锁。
+// 恢复 vs 障碍并发 (地图变更经唯一写者命令端口)。
 //
-// 锁纪律 (生产代码, 本测试的回归对象):
-// - CostmapRecoveryExecution::run(): 整个恢复在 scoped_lock(global, local)
-//   临界段内执行; clear recovery 在临界段内直写 local master grid → FREE。
-// - markObstaclesInFrame: local 锁 {clear+mark+updateMap} → 释放 local →
-//   global 锁 {updateMap}。任何时刻不嵌套持有 local→请求 global。
-// - controller/planner: 各自只持 local; Context::lock(): 只持 global。
+// 新架构 (加锁直读 CostmapView, 无快照/epoch): 恢复插件不接触可变
+// wrapper/layer; clear recovery 只构造类型化 ClearCostmapCommand 并经
+// CostmapCommandPort 提交, 唯一写者 (这里模拟等价 writer) 持 wrapper 的
+// unique 锁清层 + updateMapUnlocked 发布。读者经 shared 锁直读 master grid。
 //
-// 保护目标: clear 直写 local master grid 与 obstacle feed 在 local wrapper
-// 锁内 mark/updateMap 写回同一 cell 并发竞态; 以及 (修复后引入的新问题)
-// recovery 持 global 等 local 与 obstacle 持 local 等 global 的 AB/BA 死锁。
-//
-// 本测试不依赖 sleep/循环概率: 用 Gate (condition_variable 门) 编排确定性
-// 交错, 事件日志 (EventLog) 断言 happens-before 次序:
-//   T1 (恢复): 进入 CS (持 global+local) 可观察, 阻塞至放行 → 退出 CS。
-//   T2 (obstacle): 持 local 前先声明等待 → local 阶段 (锁内读回 LETHAL) →
-//      释放 local → 才请求/获取 global → 完成。
-// 断言: recovery 退出 CS 才允许 obstacle 入 local (local master grid 写串行);
-// obstacle 释放 local 后才请求 global (无 L→G 嵌套 ⇒ 无 AB/BA); 双线程均完成。
-// 不用生产测试钩子: CS 进入点由受测恢复模块 (测试侧 GuardedRecovery) 的
-// runRecovery 自报, 锁本身由生产执行器加/解。
+// 断言:
+//  - clear-command-port 路径真实生效: 提交后 master grid 机器人附近 → FREE,
+//    远处保持 LETHAL;
+//  - 与 obstacle 写者交替多轮, 读写方各持锁 (unique/shared), 每步锁内读回
+//    确定性值 (无撕裂 / 无死锁); 命令提交计数随轮次严格递增 (计数代数)。
 
 #include <gtest/gtest.h>
 
@@ -30,6 +17,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,99 +28,95 @@
 #include <costmap_2d_layers/simple_obstacle_layer.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
+#include <ayanami/costmap/components/costmap_commands.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
-#include <ayanami/costmap/components/costmap_recovery_execution.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
+#include <ayanami/costmap/core/costmap_command.hpp>
+#include <ayanami/costmap/core/costmap_recovery.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
 
 namespace {
 
 using ayanami::FailureCode;
+using ayanami::costmap::ClearCostmapCommand;
+using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapContext;
 using ayanami::modules::CostmapClearCostmapRecovery;
 
 // 20x20 @0.5m, origin (0,0): cell (4,4) 中心 = 世界 (2.25, 2.25)。
-constexpr double kRobotX = 2.25;
-constexpr double kRobotY = 2.25;
+constexpr double k_robot_x = 2.25;
+constexpr double k_robot_y = 2.25;
 
-// ---- 确定性同步原语 (仅测试) ----
+// 等价写者命令端口: submit 即执行 writer 级清图 (clearCostmapArea 在写锁内
+// 清层 + updateMapUnlocked 发布)。恢复插件只持有该接口, 不接触 wrapper。
+class TestWriterPort : public CostmapCommandPort {
+ public:
+  TestWriterPort(const std::shared_ptr<costmap_2d::CostmapWrapper>& global,
+                 const std::shared_ptr<costmap_2d::CostmapWrapper>& local,
+                 ayanami::components::RobotStateController* rsc,
+                 const std::string& robot_frame)
+      : global(global),
+        local(local),
+        rsc(rsc),
+        robot_frame(robot_frame) {}
 
-// 门: set() 唤醒所有等待者, reset() 复用。waitFor 带超时, 死锁时判失败而非挂死。
+  bool submit(const ClearCostmapCommand& command) override {
+    ++submissions;
+    if (!command.enabled) {
+      return true;
+    }
+    const bool clear_global =
+        command.affected_maps == "global" || command.affected_maps == "both";
+    const bool clear_local =
+        command.affected_maps == "local" || command.affected_maps == "both";
+    bool ok = true;
+    if (clear_global && global) {
+      Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
+      ok = rsc->lookupTransform(global->getGlobalFrame(), robot_frame,
+                                ayanami::Timestamp::latest(), p) &&
+           ok;
+      ok = ayanami::costmap::clearCostmapArea(global, p, command.clear_radius) &&
+           ok;
+    }
+    if (clear_local && local) {
+      Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
+      ok = rsc->lookupTransform(local->getGlobalFrame(), robot_frame,
+                                ayanami::Timestamp::latest(), p) &&
+           ok;
+      ok = ayanami::costmap::clearCostmapArea(local, p, command.clear_radius) &&
+           ok;
+    }
+    return ok;
+  }
+
+  // 写锁 (writer submit) 完成时递增的计数: 表达"版本/epoch"单调"语义。
+  std::atomic<int> submissions{0};
+
+ private:
+  std::shared_ptr<costmap_2d::CostmapWrapper> global;
+  std::shared_ptr<costmap_2d::CostmapWrapper> local;
+  ayanami::components::RobotStateController* rsc;
+  std::string robot_frame;
+};
+
+// 同步门 (仅测试): set() 唤醒全部等待者。
 class Gate {
  public:
   void set() {
-    std::lock_guard<std::mutex> lk(m_);
-    opened_ = true;
-    cv_.notify_all();
-  }
-  void reset() {
-    std::lock_guard<std::mutex> lk(m_);
-    opened_ = false;
-  }
-  void wait() {
-    std::unique_lock<std::mutex> lk(m_);
-    cv_.wait(lk, [this] { return opened_; });
+    std::lock_guard<std::mutex> lk(m);
+    opened = true;
+    cv.notify_all();
   }
   bool waitFor(std::chrono::milliseconds timeout) const {
-    std::unique_lock<std::mutex> lk(m_);
-    return cv_.wait_for(lk, timeout, [this] { return opened_; });
-  }
-  bool isOpen() const {
-    std::lock_guard<std::mutex> lk(m_);
-    return opened_;
+    std::unique_lock<std::mutex> lk(m);
+    return cv.wait_for(lk, timeout, [this] { return opened; });
   }
 
  private:
-  mutable std::mutex m_;
-  mutable std::condition_variable cv_;
-  bool opened_{false};
-};
-
-// 事件日志: 记录交错里程碑, 供 happens-before 次序断言 (indexOf 返回首次下标)。
-class EventLog {
- public:
-  void add(const std::string& ev) {
-    std::lock_guard<std::mutex> lk(m_);
-    entries_.push_back(ev);
-  }
-  int indexOf(const std::string& ev) const {
-    std::lock_guard<std::mutex> lk(m_);
-    for (std::size_t i = 0; i < entries_.size(); ++i) {
-      if (entries_[i] == ev) {
-        return static_cast<int>(i);
-      }
-    }
-    return -1;
-  }
-
- private:
-  mutable std::mutex m_;
-  std::vector<std::string> entries_;
-};
-
-// 守卫恢复模块 (测试侧注入插件): runRecovery 一进入即置 entered_ 并阻塞到
-// release_ 开门才返回。它运行在 CostmapRecoveryExecution::run() 的
-// scoped_lock(global, local) 临界段内 —— 置 entered_ 那一刻可观察恢复同时
-// 持有两把锁 (等价"恢复持 global 后请求 local 并进入临界段")。
-class GuardedRecovery : public ayanami::abstract::AbstractRecovery {
- public:
-  GuardedRecovery(Gate& entered, Gate& release, EventLog& log)
-      : entered_(entered), release_(release), log_(log) {}
-
-  FailureCode runRecovery(std::string& /*message*/) override {
-    log_.add("recovery.cs.enter");
-    entered_.set();
-    release_.wait();
-    log_.add("recovery.cs.exit");
-    return FailureCode::None;
-  }
-
-  bool cancel() override { return true; }
-
- private:
-  Gate& entered_;
-  Gate& release_;
-  EventLog& log_;
+  mutable std::mutex m;
+  mutable std::condition_variable cv;
+  bool opened{false};
 };
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
@@ -147,162 +131,115 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
 }
 
 void setRobot(double wx, double wy) {
-  auto& store = ayanami::interfaces::TransformStore::instance();
-  store.setTransform(
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(wx, wy, 0.0) * Eigen::Quaterniond::Identity());
 }
 
-}  // namespace
-
-// 确定性构造 AB/BA 最不利交错并证明无死锁 + local master grid 写串行:
-//   T_recovery: scoped_lock(global, local) → 进入 CS (持双锁) → 阻塞至放行。
-//   T_obstacle: 请求 local (在 recovery 持锁期间排队) → 获得 local (仅在
-//               recovery 退出 CS 后) → local 阶段锁内读回 LETHAL → 释放
-//               local → 才请求+获取 global → 完成。
-// 断言:
-//   1) obstacle.local.acquire 严格晚于 recovery.cs.exit ⇒ 两路写 local master
-//      grid (clear 直写 / feed mark+updateMap) 永不重叠, 串行。
-//   2) obstacle.local.release 严格早于 obstacle.global.request ⇒ obstacle 从不
-//      持 local 等 global ⇒ 与 recovery 的 global→local 无环, 无 AB/BA。
-//   3) 双线程均在超时内完成 ⇒ 无死锁。
-TEST(RecoveryVsObstacle, NoDeadlockNoAbBaAndLocalWritesSerialized) {
-  // local costmap 挂 SimpleObstacleLayer (M1 obstacle feed 落图目标)。
-  auto layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto global = makeWrapper();
-  auto local = makeWrapper(layer);
-
-  auto ctx = std::make_shared<CostmapContext>();
-  ctx->global_costmap_ = global;
-  ctx->local_costmap_ = local;
-  ctx->transform_store_ = &ayanami::interfaces::TransformStore::instance();
-  setRobot(kRobotX, kRobotY);
-
-  Gate entered;       // recovery 已进入 CS (持 global+local)
-  Gate release_cs;    // coordinator 放行 recovery 退出 CS
-  EventLog log;
-
-  auto recovery = std::make_shared<GuardedRecovery>(entered, release_cs, log);
-  ayanami::costmap::CostmapRecoveryExecution exec(
-      "recovery_vs_obstacle", recovery, global, local);
-
-  costmap_2d::Costmap2D* lg = local->get().getCostmap();
-
-  Gate go_obstacle;       // coordinator 放行 obstacle 的 local 阶段
-  Gate obstacle_waiting;  // obstacle 即将在 local 锁上排队
-  Gate obstacle_done;     // obstacle 全部阶段完成
-
-  exec.start();  // recovery 线程: preRun → scoped_lock(global, local) → GuardedRecovery
-
-  // 恢复临界段可观察: recovery 此刻持 global+local 两把锁。
-  ASSERT_TRUE(entered.waitFor(std::chrono::seconds(5)));
-
-  // obstacle feed 线程 (模拟 markObstaclesInFrame 的新锁序: local 段写完释放
-  // 才请求 global)。go_obstacle 在 recovery 进入 CS 后才放行, 保证 obstacle
-  // 的 local 请求必然撞上恢复持锁窗口。
-  go_obstacle.set();
-  std::thread feeder([&] {
-    go_obstacle.wait();
-    log.add("obstacle.local.request");
-    obstacle_waiting.set();
-    {
-      std::lock_guard<std::recursive_mutex> lk(local->mutex());
-      log.add("obstacle.local.acquire");
-      // 锁内宽观察窗替换为确定性断言: local 锁获得必然发生在 recovery 退出
-      // CS 之后 (见末尾次序断言), 写入被串行化, 锁内读回必为 LETHAL。
-      layer->markObstacles(kRobotX, kRobotY);
-      local->updateMap(kRobotX, kRobotY, 0.0);
-      EXPECT_EQ(lg->getCost(4, 4), costmap_2d::LETHAL_OBSTACLE);
-      log.add("obstacle.local.release");
-    }
-    // 关键 (无 AB/BA): local 已释放才请求 global, 从不嵌套持锁。
-    log.add("obstacle.global.request");
-    {
-      std::lock_guard<std::recursive_mutex> gk(global->mutex());
-      log.add("obstacle.global.acquire");
-      global->updateMap(kRobotX, kRobotY, 0.0);
-      log.add("obstacle.global.release");
-    }
-    obstacle_done.set();
-  });
-
-  // 构造交错: obstacle 在 local 锁上排队时, recovery 必仍持 global+local
-  // (coordinator 尚未放行, 放行前 recovery 不可能退出 CS)。
-  ASSERT_TRUE(obstacle_waiting.waitFor(std::chrono::seconds(5)));
-  ASSERT_TRUE(entered.isOpen());
-
-  // 放行 recovery 退出 CS → obstacle 拿到 local → 完成 local 阶段 → 释放 →
-  // 再请求 global。若生产曾 L→G 嵌套 (AB/BA), 双方互等, 上方超时判失败。
-  release_cs.set();
-
-  ASSERT_TRUE(obstacle_done.waitFor(std::chrono::seconds(5)));
-  feeder.join();
-  exec.join();
-
-  EXPECT_EQ(lg->getCost(4, 4), costmap_2d::LETHAL_OBSTACLE);
-
-  // ---- happens-before 次序断言 (事件链由 Gate/锁建立) ----
-  const int cs_enter = log.indexOf("recovery.cs.enter");
-  const int cs_exit = log.indexOf("recovery.cs.exit");
-  const int loc_req = log.indexOf("obstacle.local.request");
-  const int loc_acq = log.indexOf("obstacle.local.acquire");
-  const int loc_rel = log.indexOf("obstacle.local.release");
-  const int glo_req = log.indexOf("obstacle.global.request");
-  int first_missing = -1;
-  for (int idx : {cs_enter, cs_exit, loc_req, loc_acq, loc_rel, glo_req}) {
-    if (idx < 0) {
-      first_missing = idx;
-      break;
-    }
-  }
-  ASSERT_EQ(first_missing, -1) << "事件日志缺失里程碑";
-
-  EXPECT_LT(cs_enter, loc_req) << "recovery 进入 CS 后才放行 obstacle";
-  // local master grid 写串行: 恢复 (clear 直写) 退出 CS 后 obstacle 才允许进入
-  // local 阶段 (mark+updateMap), 两路写绝不重叠。
-  EXPECT_LT(cs_exit, loc_acq) << "recovery 退出 CS 之前 obstacle 不得写 local";
-  // 无 AB/BA: obstacle 先释放 local, 再请求 global。
-  EXPECT_LT(loc_rel, glo_req) << "obstacle 持 local 时不得请求 global";
+// 唯一写者路径: unique 锁内 mark 动态障碍层 + updateMapUnlocked 重算发布。
+void feedObstacles(
+    const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper,
+    const std::shared_ptr<costmap_2d_layers::SimpleObstacleLayer>& layer) {
+  std::unique_lock<std::shared_mutex> lock(wrapper->mutex());
+  layer->markObstacles(k_robot_x, k_robot_y);
+  layer->markObstacles(7.75, 7.75);
+  wrapper->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
 }
 
-// 真实 CostmapClearCostmapRecovery (scoped_lock(global, local) 临界段内直写
-// local master grid) 与 obstacle feed (local 锁内 mark+updateMap) 交替多轮,
-// 全程 Gate 编排零 sleep: 每轮 feed 锁内读回 (4,4) 必为 LETHAL, clear 后必为
-// FREE。确定性验证两路写 local master grid 严格串行且内容稳定 (无撕裂)。
-TEST(RecoveryVsObstacle, LocalMasterGridWritesSerializedAcrossRounds) {
-  auto layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto global = makeWrapper();
-  auto local = makeWrapper(layer);
+// 读者路径: shared 锁内直读 master grid 单个 cell。
+unsigned char cellCost(
+    const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper, unsigned int x,
+    unsigned int y) {
+  std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
+  return wrapper->get().getCostmap()->getCost(x, y);
+}
+
+}  // namespace
+
+// command port 真实生效: 提交 clear 命令后, 机器人附近清回 FREE, 远处保持
+// LETHAL; 且只允许 writer 触发变更 (恢复插件无任何可变访问权)。
+TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
+  auto global_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto local_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto global = makeWrapper(global_layer);
+  auto local = makeWrapper(local_layer);
 
   auto ctx = std::make_shared<CostmapContext>();
-  ctx->global_costmap_ = global;
-  ctx->local_costmap_ = local;
-  ctx->transform_store_ = &ayanami::interfaces::TransformStore::instance();
-  setRobot(kRobotX, kRobotY);
+  ctx->setGlobalCostmap(global);
+  ctx->setLocalCostmap(local);
+  setRobot(k_robot_x, k_robot_y);
 
-  auto recovery = std::make_shared<CostmapClearCostmapRecovery>();
-  recovery->initialize("costmap_clear_costmap_recovery", ctx);
-  ayanami::costmap::CostmapRecoveryExecution exec(
-      "recovery_vs_obstacle", recovery, global, local);
+  auto port = std::make_shared<TestWriterPort>(
+      global, local, &ayanami::components::RobotStateController::instance(),
+      ctx->getRobotFrame());
 
-  costmap_2d::Costmap2D* lg = local->get().getCostmap();
+  auto rec = std::make_shared<CostmapClearCostmapRecovery>();
+  rec->initialize("costmap_clear_costmap_recovery", ctx->getSharedConstPtr());
+  rec->setCommandPort(port);
 
-  constexpr int kRounds = 16;
-  std::vector<Gate> go_feed(kRounds);
-  std::vector<Gate> feed_done(kRounds);
+  // 先经写者落障碍 (feed): 近处与远处都 LETHAL。
+  feedObstacles(local, local_layer);
+  feedObstacles(global, global_layer);
+  EXPECT_EQ(cellCost(local, 4, 4), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(cellCost(local, 15, 15), costmap_2d::LETHAL_OBSTACLE);
+
+  // 恢复: 经命令端口提交 typed clear 命令 (仅经命令端口), 不清除远处障碍。
+  std::string message;
+  const FailureCode failure = rec->runRecovery(message);
+  EXPECT_EQ(failure, FailureCode::None) << message;
+  EXPECT_EQ(port->submissions.load(), 1)
+      << "clear 必须经命令端口提交给唯一写者执行";
+
+  // 本地 + 全局: 机器人附近 → FREE, 远处保持 LETHAL。
+  EXPECT_EQ(cellCost(local, 4, 4), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(cellCost(local, 5, 5), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(cellCost(local, 15, 15), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(cellCost(global, 4, 4), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(cellCost(global, 15, 15), costmap_2d::LETHAL_OBSTACLE);
+}
+
+// 干净的确定性交替 (clear 命令 vs obstacle feed) 多轮: 每轮 feed 完成后读回
+// LETHAL, clear 后读回 FREE —— 写全经唯一写者 (unique 锁), 读写方各持锁,
+// 无撕裂/无死锁; 命令提交计数随轮次递增。
+TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
+  auto global_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto local_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto global = makeWrapper(global_layer);
+  auto local = makeWrapper(local_layer);
+
+  auto ctx = std::make_shared<CostmapContext>();
+  ctx->setGlobalCostmap(global);
+  ctx->setLocalCostmap(local);
+  setRobot(k_robot_x, k_robot_y);
+
+  auto port = std::make_shared<TestWriterPort>(
+      global, local, &ayanami::components::RobotStateController::instance(),
+      ctx->getRobotFrame());
+
+  auto rec = std::make_shared<CostmapClearCostmapRecovery>();
+  rec->initialize("costmap_clear_costmap_recovery", ctx->getSharedConstPtr());
+  rec->setCommandPort(port);
+
+  constexpr int k_rounds = 16;
   std::atomic<int> bad_reads{0};
   std::atomic<int> bad_after_clear{0};
+  std::atomic<int> rounds_done{0};
 
-  // obstacle feed 线程: 每轮在 local 锁内 markObstacles + updateMap 写回
-  // (4,4) 为 LETHAL, 锁内读回必须看到自己的写入 (写入被串行化, 无撕裂)。
+  std::vector<Gate> go_feed(k_rounds);
+  std::vector<Gate> feed_done(k_rounds);
+
+  // obstacle 写者线程: 每轮经写者 (unique 锁) 落障碍 + 发布, 完成后回报。
   std::thread feeder([&] {
-    for (int i = 0; i < kRounds; ++i) {
-      go_feed[i].wait();
+    for (int i = 0; i < k_rounds; ++i) {
+      go_feed[i].waitFor(std::chrono::seconds(5));
       {
-        std::lock_guard<std::recursive_mutex> lk(local->mutex());
-        layer->markObstacles(kRobotX, kRobotY);
-        local->updateMap(kRobotX, kRobotY, 0.0);
-        if (lg->getCost(4, 4) != costmap_2d::LETHAL_OBSTACLE) {
+        std::unique_lock<std::shared_mutex> lock(local->mutex());
+        local_layer->markObstacles(k_robot_x, k_robot_y);
+        local->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
+        // 锁内读回必须看到自己的写入 (writer 串行, 无撕裂)。
+        if (local->get().getCostmap()->getCost(4, 4) !=
+            costmap_2d::LETHAL_OBSTACLE) {
           ++bad_reads;
         }
       }
@@ -310,22 +247,27 @@ TEST(RecoveryVsObstacle, LocalMasterGridWritesSerializedAcrossRounds) {
     }
   });
 
-  for (int i = 0; i < kRounds; ++i) {
-    // feed 先落 LETHAL
+  for (int i = 0; i < k_rounds; ++i) {
     go_feed[i].set();
     ASSERT_TRUE(feed_done[i].waitFor(std::chrono::seconds(5)));
-    // 恢复清回 FREE: start()+join() = 一轮 scoped_lock(global, local) 临界段,
-    // clear recovery 在该临界段内把 robot 附近 (含 (4,4)) 直写为 FREE。
-    exec.start();
-    exec.join();
-    if (lg->getCost(4, 4) != costmap_2d::FREE_SPACE) {
+    if (cellCost(local, 4, 4) != costmap_2d::LETHAL_OBSTACLE) {
+      ++bad_reads;
+    }
+    // 恢复: 经命令端口提交 typed clear → 唯一写者清回 FREE。
+    std::string message;
+    EXPECT_EQ(rec->runRecovery(message), FailureCode::None) << message;
+    if (cellCost(local, 4, 4) != costmap_2d::FREE_SPACE) {
       ++bad_after_clear;
     }
+    ++rounds_done;
   }
 
   feeder.join();
-
+  EXPECT_EQ(rounds_done.load(), k_rounds);
+  EXPECT_EQ(port->submissions.load(), k_rounds)
+      << "clear 提交计数必须随轮次严格递增 (命令全经唯一写者)";
   EXPECT_EQ(bad_reads.load(), 0)
-      << "obstacle 锁内读回被并发 clear 撕裂 (local master grid 写未串行)";
+      << "feed 写者锁内读回被并发 clear 撕裂 (writer 串行化被破坏)";
   EXPECT_EQ(bad_after_clear.load(), 0) << "clear 后 cell 未被写回 LETHAL";
+  // 无死锁: 双线程均完成 (写者线程 join 返回 + 主线程 k_rounds 轮全部完成)。
 }

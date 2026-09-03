@@ -1,15 +1,14 @@
 {
   "controller": {
     "name": "costmap_pid",
-    "so_name": "libayanami_costmap_pid_controller.so",
-    "create_symbol": "create_controller_module"
+    "so_name": "libayanami_costmap_pid_controller.so"
   },
   "costmap_pid_controller": {
-    "max_v": 2.0,
-    "max_w": 1.0,
-    "max_acc": 1.0,
-    "max_decel": 1.0,
-    "max_angular_accel": 1.0,
+    "max_vel_x": 2.0,
+    "max_vel_theta": 1.0,
+    "max_acc_x": 1.0,
+    "max_decel_x": 1.0,
+    "max_acc_theta": 1.0,
     "kp_v": 1.0,
     "ki_v": 0.0,
     "kd_v": 0.0,

@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <memory>
+#include <thread>
 
 namespace ayanami {
 namespace components {
@@ -33,82 +34,91 @@ public:
   };
 
   explicit SmootherExecution(ayanami::abstract::AbstractSmoother::Ptr smoother)
-      : smoother_(std::move(smoother)) {}
+      : smoother(std::move(smoother)) {}
 
   /// @brief 记录入参并启动平滑线程。
   using ExecutionBase::start;
   void smoothPath(const nav_msgs::Path& path, double max_duration,
                   bool check_for_collision) {
-    path_ = path;
-    max_duration_ = max_duration;
-    check_for_collision_ = check_for_collision;
+    this->path = path;
+    this->max_duration = max_duration;
+    this->check_for_collision = check_for_collision;
     ExecutionBase::start();
   }
 
-  /// @brief 取消: 置 cancel_ 并透传到 smoother 插件 (virtual cancel)。
+  /// @brief 取消: 置 cancel_requested 并透传到 smoother 插件 (virtual cancel_requested)。
   void cancel() override {
-    cancel_ = true;
-    if (smoother_) smoother_->cancel();
-    condition_.notify_all();
+    cancel_requested = true;
+    if (smoother) smoother->cancel();
+    condition.notify_all();
   }
 
   SmootherState getState() const {
-    return static_cast<SmootherState>(state_.load());
+    return static_cast<SmootherState>(state.load());
   }
 
   /// @brief 最近一次平滑结果。
-  const nav_msgs::Path& getSmoothedPath() const { return smoothed_path_; }
+  const nav_msgs::Path& getSmoothedPath() const { return smoothed_path; }
 
-  void setMaxRetries(int retries) { max_retries_ = retries; }
+  void setMaxRetries(int retries) { max_retries = retries; }
 
   void setPatience(double seconds) {
-    patience_ = std::chrono::duration<double>(seconds);
+    patience = std::chrono::duration<double>(seconds);
   }
 
   bool isPatienceExceeded() const {
-    if (patience_ <= std::chrono::duration<double>(0)) return false;
-    return std::chrono::steady_clock::now() - start_time_ > patience_;
+    if (patience <= std::chrono::duration<double>(0)) return false;
+    return std::chrono::steady_clock::now() - start_time > patience;
   }
 
 protected:
+  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
+  /// 带快照的 typed 调用 (在执行层完成快照获取, 插件不接触地图)。
+  virtual FailureCode callSmoother(
+      const nav_msgs::Path& in, nav_msgs::Path& out, double max_duration,
+      bool check_for_collision, std::string& message) {
+    return smoother->smoothPath(in, out, max_duration, check_for_collision,
+                                 message);
+  }
+
   void run() override {
     setState(STARTED, false);
-    start_time_ = std::chrono::steady_clock::now();
+    start_time = std::chrono::steady_clock::now();
     int retries = 0;
     try {
       while (true) {
-        if (cancel_) {
-          failure_ = FailureCode::Canceled;
+        if (cancel_requested) {
+          failure = FailureCode::Canceled;
           setState(CANCELED, true);
           return;
         }
-        if (should_exit_) {
-          failure_ = FailureCode::Canceled;
+        if (should_exit) {
+          failure = FailureCode::Canceled;
           setState(STOPPED, true);
           return;
         }
         setState(SMOOTHING, false);
 
-        failure_ = smoother_->smoothPath(path_, smoothed_path_, max_duration_,
-                                     check_for_collision_, message_);
-        bool success = failure_ == FailureCode::None;
+        failure = callSmoother(path, smoothed_path, max_duration,
+                             check_for_collision, message);
+        bool success = failure == FailureCode::None;
 
-        if (cancel_ && !isPatienceExceeded()) {
-          failure_ = FailureCode::Canceled;
+        if (cancel_requested && !isPatienceExceeded()) {
+          failure = FailureCode::Canceled;
           setState(CANCELED, true);
           return;
         } else if (success) {
           setState(SMOOTHED_PATH, true);
           return;
-        } else if (max_retries_ > 0 && ++retries > max_retries_) {
-          if (failure_ == FailureCode::None) failure_ = FailureCode::Timeout;
+        } else if (max_retries > 0 && ++retries > max_retries) {
+          if (failure == FailureCode::None) failure = FailureCode::Timeout;
           setState(MAX_RETRIES, true);
           return;
         } else if (isPatienceExceeded()) {
-          failure_ = FailureCode::Timeout;
+          failure = FailureCode::Timeout;
           setState(PAT_EXCEEDED, true);
           return;
-        } else if (max_retries_ == 0) {
+        } else if (max_retries == 0) {
           setState(NO_SMOOTHED_PATH, true);
           return;
         } else {
@@ -116,21 +126,21 @@ protected:
         }
       }
     } catch (...) {
-      failure_ = FailureCode::InternalError;
-      message_ = "Unknown error occurred";
+      failure = FailureCode::InternalError;
+      message = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);
     }
   }
 
-private:
-  ayanami::abstract::AbstractSmoother::Ptr smoother_;
-  nav_msgs::Path path_;
-  nav_msgs::Path smoothed_path_;
-  double max_duration_{0.0};
-  bool check_for_collision_{false};
-  int max_retries_{-1};
-  std::chrono::duration<double> patience_{0};
-  std::chrono::steady_clock::time_point start_time_;
+protected:
+  ayanami::abstract::AbstractSmoother::Ptr smoother;
+  nav_msgs::Path path;
+  nav_msgs::Path smoothed_path;
+  double max_duration{0.0};
+  bool check_for_collision{false};
+  int max_retries{-1};
+  std::chrono::duration<double> patience{0};
+  std::chrono::steady_clock::time_point start_time;
 };
 
 } // namespace components

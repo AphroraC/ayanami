@@ -3,7 +3,8 @@
 // dlopen 装载 + NavigationServerBase 注入 (createActions → ControllerExecution)。
 //
 // argv: 1=simple_goal_checker.so, 2=simple_progress_checker.so,
-//       3=navigation_plugins.so (controller/planner/smoother/recovery 工厂)。
+//       3=test_planner_plugin.so, 4=test_smoother_plugin.so,
+//       5=test_looping_controller_plugin.so, 6=test_recovery_plugin.so
 
 #include <gtest/gtest.h>
 
@@ -37,9 +38,12 @@ using ayanami::modules::SimpleProgressChecker;
 
 std::string g_goal_checker_so;
 std::string g_progress_checker_so;
-std::string g_nav_plugins_so;
+std::string g_planner_so;
+std::string g_smoother_so;
+std::string g_looping_controller_so;
+std::string g_recovery_so;
 
-std::filesystem::path make_temp_dir() {
+std::filesystem::path makeTempDir() {
   std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "ayanami_checker_test";
   std::filesystem::remove_all(dir);
@@ -55,8 +59,8 @@ void write_file(const std::filesystem::path& path,
 
 PoseStamped pose(double x, double y, double yaw = 0.0) {
   PoseStamped p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
-  p.pose.linear() =
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
+  p.pose.orientation =
       Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
   return p;
 }
@@ -70,19 +74,19 @@ TwistStamped twist(double linear_x, double angular_z) {
 
 // --- 直接模块 API 测试 (配置驱动容差/时间窗) ---
 
-std::filesystem::path make_module_config_dir() {
-  const auto dir = make_temp_dir() / "module_cfg";
+std::filesystem::path makeModuleConfigDir() {
+  const auto dir = makeTempDir() / "module_cfg";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
+  // 严格单层索引: 模块构造时经 getConfigPath("config_goal_checker") 等显式读取。
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\"\n"
-             "  }\n}\n");
-  write_file(dir / "navigation.json",
-             "{\n  \"modules\": {\n"
+             "    \"config_navigation\": \"navigation.json\",\n"
              "    \"config_goal_checker\": \"simple_goal_checker.json\",\n"
              "    \"config_progress_checker\": \"simple_progress_checker.json\"\n"
              "  }\n}\n");
+  write_file(dir / "navigation.json",
+             "{\n  \"navigation\": {}\n}\n");
   write_file(dir / "simple_goal_checker.json",
              "{\n  \"goal_checker\": {\n"
              "    \"position_tolerance\": 0.1,\n"
@@ -99,8 +103,8 @@ std::filesystem::path make_module_config_dir() {
   return dir;
 }
 
-TEST(SimpleGoalCheckerTest, ReachedWithinTolerances) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleGoalCheckerTest, reachedWithinTolerances) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleGoalChecker checker;
   checker.reset();
@@ -111,8 +115,8 @@ TEST(SimpleGoalCheckerTest, ReachedWithinTolerances) {
                                     twist(0.05, 0.02)));
 }
 
-TEST(SimpleGoalCheckerTest, NotReachedOutsideTolerances) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleGoalCheckerTest, notReachedOutsideTolerances) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleGoalChecker checker;
   checker.reset();
@@ -128,8 +132,8 @@ TEST(SimpleGoalCheckerTest, NotReachedOutsideTolerances) {
       pose(0.0, 0.0, 1.5708), pose(0.0, 0.0), twist(0.0, 0.0)));
 }
 
-TEST(SimpleGoalCheckerTest, GetTolerancesLoadedFromConfig) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleGoalCheckerTest, getTolerancesLoadedFromConfig) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleGoalChecker checker;
   const auto tol = checker.getTolerances();
@@ -139,8 +143,8 @@ TEST(SimpleGoalCheckerTest, GetTolerancesLoadedFromConfig) {
   EXPECT_DOUBLE_EQ(tol.velocity.angular, 0.1);
 }
 
-TEST(SimpleProgressCheckerTest, MovesWithinPeriodHasProgress) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleProgressCheckerTest, movesWithinPeriodHasProgress) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleProgressChecker checker;
   checker.reset();
@@ -149,8 +153,8 @@ TEST(SimpleProgressCheckerTest, MovesWithinPeriodHasProgress) {
   EXPECT_TRUE(checker.check(pose(1.0, 0.0)));
 }
 
-TEST(SimpleProgressCheckerTest, NoMovementWithinPeriodIsNoProgress) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleProgressCheckerTest, noMovementWithinPeriodIsNoProgress) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleProgressChecker checker;
   checker.reset();
@@ -160,8 +164,8 @@ TEST(SimpleProgressCheckerTest, NoMovementWithinPeriodIsNoProgress) {
   EXPECT_FALSE(checker.check(pose(0.0, 0.0)));
 }
 
-TEST(SimpleProgressCheckerTest, AngleMovementCountsAsProgress) {
-  ayanami::GlobalConfig::instance(make_module_config_dir().string(),
+TEST(SimpleProgressCheckerTest, angleMovementCountsAsProgress) {
+  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
                                   /*override_path=*/true);
   SimpleProgressChecker checker;
   checker.reset();
@@ -172,12 +176,11 @@ TEST(SimpleProgressCheckerTest, AngleMovementCountsAsProgress) {
 
 // --- PluginManager<Checker 族> dlopen 装载 ---
 
-TEST(CheckerPluginManagerTest, LoadGoalCheckerFromSo) {
+TEST(CheckerPluginManagerTest, loadGoalCheckerFromSo) {
   PluginManager<AbstractGoalChecker> mgr;
   ayanami::components::PluginSpec spec;
   spec.name = "simple_goal_checker";
   spec.so_name = g_goal_checker_so;
-  spec.create_symbol = "create_goal_checker_module";
   ASSERT_TRUE(mgr.loadPlugin(
       spec, [](const std::string&,
                std::shared_ptr<AbstractGoalChecker> plugin) {
@@ -190,12 +193,11 @@ TEST(CheckerPluginManagerTest, LoadGoalCheckerFromSo) {
                                      twist(0.0, 0.0)));
 }
 
-TEST(CheckerPluginManagerTest, LoadProgressCheckerFromSo) {
+TEST(CheckerPluginManagerTest, loadProgressCheckerFromSo) {
   PluginManager<AbstractProgressChecker> mgr;
   ayanami::components::PluginSpec spec;
   spec.name = "simple_progress_checker";
   spec.so_name = g_progress_checker_so;
-  spec.create_symbol = "create_progress_checker_module";
   ASSERT_TRUE(mgr.loadPlugin(
       spec, [](const std::string&,
                std::shared_ptr<AbstractProgressChecker> plugin) {
@@ -224,19 +226,25 @@ class CheckerNavServer : public NavigationServerBase {
   }
 
   bool goalCheckerLoaded(const std::string& name) const {
-    return goal_checker_plugins_.hasPlugin(name);
+    return goal_checker_plugins.hasPlugin(name);
   }
   bool progressCheckerLoaded(const std::string& name) const {
-    return progress_checker_plugins_.hasPlugin(name);
+    return progress_checker_plugins.hasPlugin(name);
   }
 };
 
-std::filesystem::path make_server_config_dir() {
-  const auto dir = make_temp_dir() / ("srv_" + std::to_string(std::rand()));
+std::filesystem::path makeServerConfigDir() {
+  const auto dir = makeTempDir() / ("srv" + std::to_string(std::rand()));
   std::filesystem::create_directories(dir);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\"\n"
+             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\"\n"
              "  }\n}\n");
   write_file(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
@@ -245,45 +253,35 @@ std::filesystem::path make_server_config_dir() {
              "    \"controller_id\": \"test_controller\",\n"
              "    \"recovery_id\": \"test_recovery\",\n"
              "    \"goal_checker_id\": \"simple_goal_checker\",\n"
-             "    \"progress_checker_id\": \"simple_progress_checker\"\n"
-             "  },\n"
-             "  \"modules\": {\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\"\n"
+             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
+             "    \"max_vel_x\": 0.5,\n"
+             "    \"max_vel_y\": 0.0,\n"
+             "    \"max_vel_theta\": 1.5\n"
              "  }\n}\n");
 
-  auto plugin_json = [](const std::string& module, const std::string& name,
-                        const std::string& so, const std::string& symbol) {
+  auto pluginJson = [](const std::string& module, const std::string& name,
+                        const std::string& so) {
     return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-           "\",\n    \"so_name\": \"" + so + "\",\n    \"create_symbol\": \"" +
-           symbol + "\"\n  }\n}\n";
+           "\",\n    \"so_name\": \"" + so + "\"\n  }\n}\n";
   };
 
   write_file(dir / "planner.json",
-             plugin_json("planner", "test_planner", g_nav_plugins_so,
-                         "create_test_planner_plugin"));
+             pluginJson("planner", "test_planner", g_planner_so));
   write_file(dir / "smoother.json",
-             plugin_json("smoother", "test_smoother", g_nav_plugins_so,
-                         "create_test_smoother_plugin"));
+             pluginJson("smoother", "test_smoother", g_smoother_so));
   write_file(dir / "controller.json",
-             plugin_json("controller", "test_controller", g_nav_plugins_so,
-                         "create_looping_controller_plugin"));
+             pluginJson("controller", "test_controller",
+                         g_looping_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             g_nav_plugins_so +
-             "\",\n    \"create_symbol\": \"create_test_recovery_plugin\"\n  }\n}\n");
+             g_recovery_so + "\"\n  }\n}\n");
   write_file(dir / "goal_checker.json",
-             plugin_json("goal_checker", "simple_goal_checker",
-                         g_goal_checker_so, "create_goal_checker_module"));
+             pluginJson("goal_checker", "simple_goal_checker",
+                         g_goal_checker_so));
   write_file(dir / "progress_checker.json",
-             plugin_json("progress_checker", "simple_progress_checker",
-                         g_progress_checker_so,
-                         "create_progress_checker_module"));
+             pluginJson("progress_checker", "simple_progress_checker",
+                         g_progress_checker_so));
   return dir;
 }
 
@@ -295,9 +293,9 @@ bool waitReady(Task& t, int max_ms = 3000) {
   return t.ready();
 }
 
-TEST(CheckerServerInjectionTest, ControllerExecutionGetsCheckers) {
+TEST(CheckerServerInjectionTest, controllerExecutionGetsCheckers) {
   CheckerNavServer server;
-  auto dir = make_server_config_dir();
+  auto dir = makeServerConfigDir();
   server.loadPlugins(dir.string());
 
   ASSERT_NE(server.controllerAction(), nullptr);
@@ -321,6 +319,13 @@ TEST(CheckerServerInjectionTest, ControllerExecutionGetsCheckers) {
   EXPECT_NE(server.running_controller_exec->getGoalChecker(), nullptr);
   EXPECT_NE(server.running_controller_exec->getProgressChecker(), nullptr);
 
+  // createActions 注入 navigation.max_vel_{x,y,theta} → execution 速度上限。
+  double max_x = 0.0, max_y = 0.0, max_theta = 0.0;
+  server.running_controller_exec->getMaximumVelocity(max_x, max_y, max_theta);
+  EXPECT_DOUBLE_EQ(max_x, 0.5);
+  EXPECT_DOUBLE_EQ(max_y, 0.0);  // max_vel_y=0: 禁止横移
+  EXPECT_DOUBLE_EQ(max_theta, 1.5);
+
   task.cancel();
   ASSERT_TRUE(waitReady(task));
 }
@@ -331,6 +336,9 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc > 1) g_goal_checker_so = argv[1];
   if (argc > 2) g_progress_checker_so = argv[2];
-  if (argc > 3) g_nav_plugins_so = argv[3];
+  if (argc > 3) g_planner_so = argv[3];
+  if (argc > 4) g_smoother_so = argv[4];
+  if (argc > 5) g_looping_controller_so = argv[5];
+  if (argc > 6) g_recovery_so = argv[6];
   return RUN_ALL_TESTS();
 }

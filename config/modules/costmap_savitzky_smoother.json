@@ -1,8 +1,7 @@
 {
   "smoother": {
     "name": "costmap_savitzky",
-    "so_name": "libayanami_costmap_savitzky_smoother.so",
-    "create_symbol": "create_costmap_smoother_module"
+    "so_name": "libayanami_costmap_savitzky_smoother.so"
   },
   "costmap_savitzky_smoother": {
     "do_refinement": true,

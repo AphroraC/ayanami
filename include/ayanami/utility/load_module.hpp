@@ -12,14 +12,14 @@ namespace ayanami {
  * @note Handles are NEVER dlclose'd — the plugin lifetime equals the process
  *       lifetime (spec §4.1; teardown discipline in §4.5).
  */
-void* open_so(const std::string& so_name);
+void* openSo(const std::string& so_name);
 
 /**
  * @brief dlsym a symbol from an opened handle.
  *
  * @return symbol address (as void*), or nullptr on failure (spdlog::error).
  */
-void* load_symbol(void* h, const std::string& sym);
+void* loadSymbol(void* h, const std::string& sym);
 
 /**
  * @brief Load a factory function pointer from a shared object.
@@ -30,12 +30,12 @@ void* load_symbol(void* h, const std::string& sym);
  * factory to obtain an object instance.
  */
 template <typename T>
-T load_module_from_so(const std::string& so_name, const std::string& sym) {
-  void* handle = open_so(so_name);
+T loadModuleFromSo(const std::string& so_name, const std::string& sym) {
+  void* handle = openSo(so_name);
   if (handle == nullptr) {
     return nullptr;
   }
-  void* symbol = load_symbol(handle, sym);
+  void* symbol = loadSymbol(handle, sym);
   if (symbol == nullptr) {
     return nullptr;
   }

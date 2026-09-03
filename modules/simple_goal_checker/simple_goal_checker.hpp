@@ -16,7 +16,7 @@ namespace modules {
  * 且线速度 < velocity.linear 且角速度 < velocity.angular → 到达。
  * 容差经 simple_goal_checker.json 的 goal_checker 段配置。
  */
-class SimpleGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+class SimpleGoalChecker final : public ayanami::abstract::AbstractGoalChecker {
  public:
   SimpleGoalChecker();
 
@@ -29,10 +29,16 @@ class SimpleGoalChecker : public ayanami::abstract::AbstractGoalChecker {
   ayanami::abstract::GoalCheckerTolerances getTolerances() const override;
 
  private:
-  void loadConfig();
+  struct SimpleGoalCheckerParam {
+    double position_tolerance = 0.10;
+    double angle_tolerance = 0.20;
+    double linear_tolerance = 0.10;
+    double angular_tolerance = 0.10;
+  };
 
-  ayanami::abstract::GoalCheckerTolerances tolerances_;
-  std::atomic<bool> initialized_{false};
+  SimpleGoalCheckerParam param;
+
+  std::atomic<bool> initialized{false};
 };
 
 }  // namespace modules

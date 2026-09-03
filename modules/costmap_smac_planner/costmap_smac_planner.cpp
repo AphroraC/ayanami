@@ -1,6 +1,6 @@
 // Task 21: modules/costmap_smac_planner — A* 全局路径规划模块。
 //
-// 纯 C++ (零 ROS): 在注入的 CostmapContext global LayeredCostmap 上做
+// 纯 C++ (零 ROS): 在入参不可变 CostmapSnapshot (global grid) 上做
 // 标准 4/8 连通 A*。参考 _legacy SmacPlannerAStar 语义但重写:
 // - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
 // - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
@@ -25,21 +25,21 @@ namespace modules {
 
 namespace {
 
-constexpr double kDiagonalStep = std::sqrt(2.0);
+constexpr double k_diagonal_step = std::sqrt(2.0);
 
 struct Cell {
   unsigned int x{0};
   unsigned int y{0};
 };
 
-// A* 搜索参数 (从私有 Config 提取, 匿名命名空间无需访问私有类型)。
+// A* 搜索参数 (从私有 Param 提取, 匿名命名空间无需访问私有类型)。
 struct SearchParams {
   bool use_diagonal{true};
   double cost_factor{0.5};
   double neutral_cost{1.0};
 };
 
-bool isBlocked(costmap_2d::Costmap2D* cm, unsigned int x, unsigned int y) {
+bool isBlocked(const costmap_2d::Costmap2D* cm, unsigned int x, unsigned int y) {
   return cm->getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 }
 
@@ -50,7 +50,7 @@ struct AStarResult {
   std::vector<Cell> cells;
 };
 
-AStarResult runAStar(costmap_2d::Costmap2D* cm, const SearchParams& params,
+AStarResult runAStar(const costmap_2d::Costmap2D* cm, const SearchParams& params,
                      unsigned int sx, unsigned int sy, unsigned int gx,
                      unsigned int gy, const std::atomic<bool>& canceled) {
   const unsigned int width = cm->getSizeInCellsX();
@@ -141,7 +141,7 @@ AStarResult runAStar(costmap_2d::Costmap2D* cm, const SearchParams& params,
         continue;
       }
       const bool diagonal = (off.first != 0 && off.second != 0);
-      const double step = diagonal ? kDiagonalStep : 1.0;
+      const double step = diagonal ? k_diagonal_step : 1.0;
       const double move_cost =
           step * (params.neutral_cost +
                   params.cost_factor * static_cast<double>(cm->getCost(ux, uy)));
@@ -157,7 +157,7 @@ AStarResult runAStar(costmap_2d::Costmap2D* cm, const SearchParams& params,
 }
 
 // 在 (gx,gy) 周围 radius=tolerance_cells 内找最近可行格 (含自身)。
-bool nearestValidGoal(costmap_2d::Costmap2D* cm, unsigned int gx,
+bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
                       unsigned int gy, double tolerance_cells,
                       unsigned int& ox, unsigned int& oy) {
   const int radius = static_cast<int>(std::ceil(std::max(0.0, tolerance_cells)));
@@ -191,63 +191,78 @@ bool nearestValidGoal(costmap_2d::Costmap2D* cm, unsigned int gx,
 
 }  // namespace
 
-CostmapSmacPlanner::CostmapSmacPlanner() { loadConfig(); }
-
-void CostmapSmacPlanner::loadConfig() {
+CostmapSmacPlanner::CostmapSmacPlanner() {
+  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
+  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
+  // config_smac_planner → 本插件 json 文件。
   try {
-    const ayanami::ComponentConfig holder("config_planner");
-    const auto& file = holder.get();
-    config_.use_diagonal = file.param<bool>(
-        "costmap_smac_planner", "use_diagonal", config_.use_diagonal);
-    config_.tolerance = file.param<double>(
-        "costmap_smac_planner", "tolerance", config_.tolerance);
-    config_.cost_factor = file.param<double>(
-        "costmap_smac_planner", "cost_factor", config_.cost_factor);
-    config_.lethal_cost = file.param<int>(
-        "costmap_smac_planner", "lethal_cost", config_.lethal_cost);
-    config_.neutral_cost = file.param<double>(
-        "costmap_smac_planner", "neutral_cost", config_.neutral_cost);
-    config_.use_final_approach = file.param<bool>(
-        "costmap_smac_planner", "use_final_approach", config_.use_final_approach);
+    const Config file(GlobalConfig::getConfigPath("config_smac_planner"));
+    param.use_diagonal = file.param<bool>("costmap_smac_planner", "use_diagonal",
+                                          param.use_diagonal);
+    param.tolerance = file.param<double>("costmap_smac_planner", "tolerance",
+                                         param.tolerance);
+    param.cost_factor = file.param<double>("costmap_smac_planner", "cost_factor",
+                                           param.cost_factor);
+    param.lethal_cost = file.param<int>("costmap_smac_planner", "lethal_cost",
+                                        param.lethal_cost);
+    param.neutral_cost = file.param<double>("costmap_smac_planner",
+                                            "neutral_cost", param.neutral_cost);
+    param.use_final_approach =
+        file.param<bool>("costmap_smac_planner", "use_final_approach",
+                         param.use_final_approach);
   } catch (...) {
+    // 配置不可读时保持默认值。
   }
 }
 
 void CostmapSmacPlanner::initialize(
-    const std::string& /*name*/, ayanami::costmap::CostmapContext::Ptr ctx) {
-  costmap_context_ = std::move(ctx);
+    const std::string& /*name*/, ayanami::costmap::CostmapContext::ConstPtr map) {
+  map_ = std::move(map);
 }
 
 bool CostmapSmacPlanner::cancel() {
-  canceled_.store(true);
+  canceled.store(true);
   return true;
 }
 
-FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start,
-                                         const geometry_msgs::PoseStamped& goal,
-                                         double tolerance, nav_msgs::Path& plan,
-                                         double& cost, std::string& message) {
+bool CostmapSmacPlanner::setNewGoal(
+    const geometry_msgs::PoseStamped&, const geometry_msgs::PoseStamped&,
+    double) {
+  goal_revision.fetch_add(1);
+  // Interrupt the current A* loop. PlannerExecution observes its own goal
+  // revision and immediately invokes makePlan again on the same thread.
+  canceled.store(true);
+  return true;
+}
+
+FailureCode CostmapSmacPlanner::makePlan(
+    const geometry_msgs::PoseStamped& start,
+    const geometry_msgs::PoseStamped& goal, double tolerance,
+    nav_msgs::Path& plan, double& cost, std::string& message) {
   plan.poses.clear();
   cost = 0.0;
   message.clear();
-  canceled_.store(false);
+  canceled.store(false);
 
-  costmap_2d::Costmap2D* cm =
-      costmap_context_ ? costmap_context_->globalCostmap2D() : nullptr;
+  if (!map_) {
+    message = "CostmapSmacPlanner has no costmap module";
+    return FailureCode::MapUnavailable;
+  }
+  // 持 shared 锁读图 (整个规划持有, <10ms), 零拷贝; 地图写者等锁写入。
+  auto costmap = map_->lockGlobal();
+
+  const costmap_2d::Costmap2D* cm = costmap.grid();
   if (!cm) {
-    message = "CostmapSmacPlanner is not initialized";
+    message = "CostmapSmacPlanner has no global costmap";
     return FailureCode::MapUnavailable;
   }
 
   // 3.1 minor carry: start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
-  // context 的 robot pose (经注入的 TransformStore 查询 global ← robot)。
+  // 快照解析的机器人位姿 (execution 在构建快照时经 TransformStore 解析)。
   geometry_msgs::PoseStamped start_pose = start;
-  if (start_pose.pose.translation().norm() == 0.0 &&
-      start_pose.header.frame_id.empty() && costmap_context_) {
-    ayanami::geometry_msgs::PoseStamped robot;
-    if (costmap_context_->getRobotPose(robot)) {
-      start_pose = robot;
-    }
+  if (start_pose.pose.position.norm() == 0.0 &&
+      start_pose.header.frame_id.empty() && costmap.has_robot_pose()) {
+    start_pose = costmap.robot_pose();
   }
 
   if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&
@@ -260,12 +275,12 @@ FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start
   unsigned int sy = 0;
   unsigned int gx = 0;
   unsigned int gy = 0;
-  if (!cm->worldToMap(start_pose.pose.translation().x(),
-                      start_pose.pose.translation().y(), sx, sy)) {
+  if (!cm->worldToMap(start_pose.pose.position.x(),
+                      start_pose.pose.position.y(), sx, sy)) {
     message = "Start pose is outside the global costmap";
     return FailureCode::StartInvalid;
   }
-  if (!cm->worldToMap(goal.pose.translation().x(), goal.pose.translation().y(),
+  if (!cm->worldToMap(goal.pose.position.x(), goal.pose.position.y(),
                       gx, gy)) {
     message = "Goal pose is outside the global costmap";
     return FailureCode::GoalInvalid;
@@ -276,7 +291,7 @@ FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start
     return FailureCode::StartInvalid;
   }
 
-  const double tolerance_m = tolerance > 0.0 ? tolerance : config_.tolerance;
+  const double tolerance_m = tolerance > 0.0 ? tolerance : param.tolerance;
   const double tolerance_cells =
       tolerance_m / std::max(cm->getResolution(), 1e-9);
 
@@ -293,13 +308,13 @@ FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start
   }
 
   SearchParams params;
-  params.use_diagonal = config_.use_diagonal;
-  params.cost_factor = config_.cost_factor;
-  params.neutral_cost = config_.neutral_cost;
+  params.use_diagonal = param.use_diagonal;
+  params.cost_factor = param.cost_factor;
+  params.neutral_cost = param.neutral_cost;
 
   const AStarResult result =
-      runAStar(cm, params, sx, sy, target_x, target_y, canceled_);
-  if (canceled_.load()) {
+      runAStar(cm, params, sx, sy, target_x, target_y, canceled);
+  if (canceled.load()) {
     message = "Planning canceled";
     return FailureCode::Canceled;
   }
@@ -318,7 +333,7 @@ FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start
     cm->mapToWorld(cell.x, cell.y, wx, wy);
     auto p = geometry_msgs::PoseStamped::fromIsometry(
         plan.header.frame_id, Eigen::Isometry3d::Identity());
-    p.pose.translation() = Eigen::Vector3d(wx, wy, 0.0);
+    p.pose.position = Eigen::Vector3d(wx, wy, 0.0);
     plan.poses.push_back(p);
   }
 
@@ -326,16 +341,17 @@ FailureCode CostmapSmacPlanner::makePlan(const geometry_msgs::PoseStamped& start
     plan.poses.front().pose = start_pose.pose;
     if (approximate) {
       // 近似 goal: 保持最近可行格位置, 只对齐朝向。
-      plan.poses.back().pose.linear() = goal.pose.linear();
+      plan.poses.back().pose.orientation = goal.pose.orientation;
     } else {
       plan.poses.back().pose = goal.pose;
     }
     for (std::size_t i = 1; i + 1 < plan.poses.size(); ++i) {
       const Eigen::Vector3d d =
-          plan.poses[i + 1].pose.translation() - plan.poses[i].pose.translation();
+          plan.poses[i + 1].pose.position - plan.poses[i].pose.position;
       const double yaw = std::atan2(d.y(), d.x());
-      plan.poses[i].pose.linear() =
-          Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+      plan.poses[i].pose.orientation =
+          Eigen::Quaterniond(
+              Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
     }
   }
 

@@ -48,7 +48,7 @@ class ToggleLayer : public costmap_2d::Layer {
 
 }  // namespace
 
-TEST(Costmap2DTest, ResizeMapPopulatesMembers) {
+TEST(Costmap2DTest, resizeMapPopulatesMembers) {
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 0, 0);
   EXPECT_EQ(map.getSizeInCellsX(), 10u);
@@ -57,7 +57,7 @@ TEST(Costmap2DTest, ResizeMapPopulatesMembers) {
   EXPECT_NE(map.getCharMap(), nullptr);
 }
 
-TEST(Costmap2DTest, ResizeMapOverwritesPreviousMembers) {
+TEST(Costmap2DTest, resizeMapOverwritesPreviousMembers) {
   // Ruling #6: resizeMap 参数不得遮蔽成员（size_x = size_x 自赋值 bug）
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 0, 0);
@@ -69,7 +69,7 @@ TEST(Costmap2DTest, ResizeMapOverwritesPreviousMembers) {
   EXPECT_DOUBLE_EQ(map.getOriginY(), 2.0);
 }
 
-TEST(Costmap2DTest, SetAndGetCost) {
+TEST(Costmap2DTest, setAndGetCost) {
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 0, 0);
   map.setCost(5, 10, 200);
@@ -77,7 +77,7 @@ TEST(Costmap2DTest, SetAndGetCost) {
   EXPECT_EQ(map.getCost(0, 0), costmap_2d::FREE_SPACE);
 }
 
-TEST(Costmap2DTest, WorldToMapMapToWorldRoundTrip) {
+TEST(Costmap2DTest, worldToMapMapToWorldRoundTrip) {
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 1.0, 2.0);
   unsigned int mx = 0;
@@ -90,7 +90,7 @@ TEST(Costmap2DTest, WorldToMapMapToWorldRoundTrip) {
   EXPECT_EQ(my, 7u);
 }
 
-TEST(Costmap2DTest, LayeredCostmapInvokesLayer) {
+TEST(Costmap2DTest, layeredCostmapInvokesLayer) {
   costmap_2d::LayeredCostmap lcm("map", false, false);
   lcm.resizeMap(10, 20, 0.05, 0, 0);
   auto layer = std::make_shared<TestLayer>();
@@ -101,7 +101,7 @@ TEST(Costmap2DTest, LayeredCostmapInvokesLayer) {
   EXPECT_EQ(lcm.getCostmap()->getCost(2, 3), costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(Costmap2DTest, LayeredCostmapRebuildsDirtyMasterWindow) {
+TEST(Costmap2DTest, layeredCostmapRebuildsDirtyMasterWindow) {
   costmap_2d::LayeredCostmap lcm("map", false, false);
   lcm.resizeMap(10, 10, 1.0, 0.0, 0.0);
   auto layer = std::make_shared<ToggleLayer>();
@@ -114,7 +114,7 @@ TEST(Costmap2DTest, LayeredCostmapRebuildsDirtyMasterWindow) {
   EXPECT_EQ(lcm.getCostmap()->getCost(1, 1), costmap_2d::FREE_SPACE);
 }
 
-TEST(Costmap2DTest, RollingOriginStaysCellAligned) {
+TEST(Costmap2DTest, rollingOriginStaysCellAligned) {
   costmap_2d::Costmap2D map(10, 10, 0.5, 0.0, 0.0);
   map.updateOrigin(0.24, 0.24);
   EXPECT_DOUBLE_EQ(map.getOriginX(), 0.0);
@@ -124,7 +124,7 @@ TEST(Costmap2DTest, RollingOriginStaysCellAligned) {
   EXPECT_DOUBLE_EQ(map.getOriginY(), -0.5);
 }
 
-TEST(Costmap2DTest, FootprintComputesNav2Radii) {
+TEST(Costmap2DTest, footprintComputesNav2Radii) {
   costmap_2d::LayeredCostmap lcm("map", false, false);
   lcm.setFootprint({{-0.2, -0.1, 0.0}, {-0.2, 0.1, 0.0},
                     {0.2, 0.1, 0.0}, {0.2, -0.1, 0.0}});
@@ -132,7 +132,7 @@ TEST(Costmap2DTest, FootprintComputesNav2Radii) {
   EXPECT_NEAR(lcm.getCircumscribedRadius(), std::hypot(0.2, 0.1), 1e-9);
 }
 
-TEST(Costmap2DTest, RaytraceLineUsesBresenhamCells) {
+TEST(Costmap2DTest, raytraceLineUsesBresenhamCells) {
   costmap_2d::Costmap2D map(10, 10, 1.0, 0.0, 0.0);
   std::vector<unsigned int> cells;
   map.raytraceLine([&](unsigned int index) { cells.push_back(index); },
@@ -143,14 +143,14 @@ TEST(Costmap2DTest, RaytraceLineUsesBresenhamCells) {
   EXPECT_EQ(cells.size(), 5u);
 }
 
-TEST(Costmap2DTest, CostValuesMatchSpec) {
+TEST(Costmap2DTest, costValuesMatchSpec) {
   EXPECT_EQ(costmap_2d::FREE_SPACE, 0);
   EXPECT_EQ(costmap_2d::INSCRIBED_INFLATED_OBSTACLE, 253);
   EXPECT_EQ(costmap_2d::LETHAL_OBSTACLE, 254);
   EXPECT_EQ(costmap_2d::NO_INFORMATION, 255);
 }
 
-TEST(Costmap2DTest, IsLethalIncludes253) {
+TEST(Costmap2DTest, isLethalIncludes253) {
   // Ruling #6: isLethal 必须把 253 (inscribed inflated) 判为 lethal,
   // 否则膨胀带被误判为非致命。
   EXPECT_TRUE(costmap_2d::isLethal(253));

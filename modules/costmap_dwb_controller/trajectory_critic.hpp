@@ -1,5 +1,5 @@
 // trajectory_critic.hpp — 迁移自 dwb_core/trajectory_critic.hpp (node 参数读取
-// 换 ayanami::Config; costmap_ros_ 换 costmap_2d::Costmap2D* + footprint 注入)。
+// 换 ayanami::Config; costmap_ros 换 costmap_2d::Costmap2D* + footprint 注入)。
 #pragma once
 
 #include <memory>
@@ -49,20 +49,27 @@ public:
    * @param footprint Robot footprint spec (ObstacleFootprint 等 critic 使用)
    */
   void initialize(const ayanami::Config& cfg, const std::string& name,
-                  const std::string& ns, costmap_2d::Costmap2D* costmap,
+                  const std::string& ns, const costmap_2d::Costmap2D* costmap,
                   const std::vector<geometry_msgs::Point>* footprint) {
-    name_ = name;
-    costmap_ = costmap;
-    footprint_ = footprint;
-    dwb_plugin_name_ = ns;
-    cfg_ = &cfg;
-    scale_ = cfg.param<double>(dwb_plugin_name_, name_ + ".scale", 1.0);
+    this->name = name;
+    this->costmap = costmap;
+    this->footprint = footprint;
+    dwb_plugin_name = ns;
+    this->cfg = &cfg;
+    scale = cfg.param<double>(dwb_plugin_name, name + ".scale", 1.0);
     onInit();
   }
   virtual void onInit() {}
 
+  /// @brief 快照纪律: 每 cycle 由控制器在刷新 local 快照后调用, 把 critic
+  /// 绑定到当前不可变 epoch 的 grid (快照由控制器持有存活整个打分周期)。
+  /// 默认只换指针; 缓存了 &grid 引用/队列的 critic 覆写为重建缓存。
+  virtual void setCostmap(const costmap_2d::Costmap2D* costmap) {
+    this->costmap = costmap;
+  }
+
   /// @brief 子类 onInit 读取参数用 (Config 不可拷贝, 保存指针)。
-  const ayanami::Config& config() const { return *cfg_; }
+  const ayanami::Config& config() const { return *cfg; }
 
   /**
    * @brief Reset the state of the critic
@@ -99,18 +106,18 @@ public:
   virtual void addCriticVisualization(
       std::vector<std::pair<std::string, std::vector<float>>>&) {}
 
-  std::string getName() { return name_; }
+  std::string getName() { return name; }
 
-  virtual double getScale() const { return scale_; }
-  void setScale(const double scale) { scale_ = scale; }
+  virtual double getScale() const { return scale; }
+  void setScale(const double scale) { this->scale = scale; }
 
 protected:
-  std::string name_;
-  std::string dwb_plugin_name_;
-  costmap_2d::Costmap2D* costmap_;
-  const std::vector<geometry_msgs::Point>* footprint_{nullptr};
-  const ayanami::Config* cfg_{nullptr};
-  double scale_;
+  std::string name;
+  std::string dwb_plugin_name;
+  const costmap_2d::Costmap2D* costmap;
+  const std::vector<geometry_msgs::Point>* footprint{nullptr};
+  const ayanami::Config* cfg{nullptr};
+  double scale;
 };
 
 }  // namespace dwb_core

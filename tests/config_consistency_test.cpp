@@ -1,6 +1,6 @@
 // Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6 / §9)。
 // R1 (Controller Ruling #8 选项 a): *_id 值统一为插件 full name (含 _recovery 后缀),
-// 使 BT `{spin_id}` 等黑板书值直接等于 PluginManager/recovery_actions_ 的 name key,
+// 使 BT `{spin_id}` 等黑板书值直接等于 PluginManager/recovery_actions 的 name key,
 // requestRecovery 不再 miss (修历史 recovery_id 与插件 name 不匹配的坑)。
 //
 // 测试分层:
@@ -46,6 +46,7 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <costmap_navigation/costmap_navigation.hpp>
 #include <ayanami/utility/config.hpp>
+#include <ayanami/utility/extension_module.hpp>
 #include <ayanami/utility/load_module.hpp>
 
 namespace {
@@ -56,8 +57,8 @@ using ayanami::abstract::AbstractPlanner;
 using ayanami::abstract::AbstractRecovery;
 using ayanami::abstract::AbstractSmoother;
 using ayanami::actions::RecoveryGoal;
-using ayanami::behavior_tree::kNavigationServer;
-using ayanami::behavior_tree::kSpinId;
+using ayanami::behavior_tree::k_navigation_runtime;
+using ayanami::behavior_tree::k_spin_id;
 using ayanami::components::PluginManager;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
@@ -84,25 +85,55 @@ struct NavIds {
   std::string backup_id;
 };
 
+// 严格单层索引: main config.json global.config_recovery 为单字符串或字符串数组
+// (数组即多插件文件族), 解析为相对 config_path 的完整路径。
+std::vector<std::string> recoveryFamilyFiles() {
+  const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
+  std::vector<std::string> entries;
+  if (g->hasParam("global", "config_recovery")) {
+    try {
+      entries = g->param<std::vector<std::string>>("global", "config_recovery",
+                                                   {});
+    } catch (const std::exception&) {
+      // global.config_recovery 是单字符串。
+    }
+    if (entries.empty()) {
+      const std::string single =
+          g->param<std::string>("global", "config_recovery", "");
+      if (!single.empty()) {
+        entries.push_back(single);
+      }
+    }
+  }
+  const std::string directory =
+      g->param<std::string>("global", "config_path", ".");
+  std::vector<std::string> paths;
+  paths.reserve(entries.size());
+  for (const auto& entry : entries) {
+    const std::filesystem::path p(entry);
+    paths.push_back(p.is_absolute() ? entry : (directory + "/" + entry));
+  }
+  return paths;
+}
+
 NavIds readNavIds() {
   NavIds ids;
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_navigation", "config_planner"));
+        ayanami::GlobalConfig::getConfigPath("config_planner"));
     ids.planner_id = cfg.param<std::string>("planner", "name", "");
   }
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_navigation", "config_smoother"));
+        ayanami::GlobalConfig::getConfigPath("config_smoother"));
     ids.smoother_id = cfg.param<std::string>("smoother", "name", "");
   }
   {
     ayanami::Config cfg(
-        ayanami::GlobalConfig::get_config_path("config_navigation", "config_controller"));
+        ayanami::GlobalConfig::getConfigPath("config_controller"));
     ids.controller_id = cfg.param<std::string>("controller", "name", "");
   }
-  for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
+  for (const auto& path : recoveryFamilyFiles()) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     const std::string role = cfg.param<std::string>("recovery", "role", "");
@@ -121,21 +152,13 @@ NavIds readNavIds() {
 std::string pluginName(const std::string& config_key,
                        const std::string& module_section) {
   ayanami::Config cfg(
-      ayanami::GlobalConfig::get_config_path("config_navigation", config_key));
+      ayanami::GlobalConfig::getConfigPath(config_key));
   return cfg.param<std::string>(module_section, "name", "");
 }
 
-std::string pluginSymbol(const std::string& config_key,
-                         const std::string& module_section) {
-  ayanami::Config cfg(
-      ayanami::GlobalConfig::get_config_path("config_navigation", config_key));
-  return cfg.param<std::string>(module_section, "create_symbol", "");
-}
-
-// config_recovery 数组按 role 定位插件 json, 读 name / create_symbol。
+// config_recovery 数组按 role 定位插件 json, 读 name (工厂统一公共符号)。
 std::string recoveryPluginName(const std::string& role) {
-  for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
+  for (const auto& path : recoveryFamilyFiles()) {
     ayanami::Config cfg(path);
     if (cfg.param<std::string>("recovery", "role", "") == role) {
       return cfg.param<std::string>("recovery", "name", "");
@@ -144,36 +167,21 @@ std::string recoveryPluginName(const std::string& role) {
   return "";
 }
 
-std::string recoveryPluginSymbol(const std::string& role) {
-  for (const auto& path :
-       ayanami::GlobalConfig::get_config_paths("config_navigation", "config_recovery")) {
-    ayanami::Config cfg(path);
-    if (cfg.param<std::string>("recovery", "role", "") == role) {
-      return cfg.param<std::string>("recovery", "create_symbol", "");
-    }
-  }
-  return "";
-}
-
-// dlopen host 模块 → create_navigation_module → CostmapNavigation*, 已 initialize。
+// dlopen host 模块 (公共工厂) → AbstractNavigation → CostmapNavigation*, 已 initialize。
+// 亲引用: 组件寿命 = 进程 (spec §4.1, 不 dlclose), 宿主 shared_ptr 特意泄漏保值,
+// 测试仍负责 delete host。
 CostmapNavigation* createHost(const std::string& config_dir) {
-  void* handle = ayanami::open_so(g_host_so);
-  if (handle == nullptr) {
+  auto nav = std::dynamic_pointer_cast<AbstractNavigation>(
+      ayanami::ExtensionModule::load_module(g_host_so));
+  if (!nav) {
     return nullptr;
   }
-  using Factory = AbstractNavigation* (*)();
-  void* symbol = ayanami::load_symbol(handle, "create_navigation_module");
-  if (symbol == nullptr) {
-    return nullptr;
-  }
-  auto factory = reinterpret_cast<Factory>(symbol);
-  AbstractNavigation* nav = factory();
-  auto* host = dynamic_cast<CostmapNavigation*>(nav);
+  auto* host = dynamic_cast<CostmapNavigation*>(nav.get());
   if (host == nullptr) {
-    delete nav;
     return nullptr;
   }
   host->initialize(config_dir);
+  (void)new std::shared_ptr<AbstractNavigation>(std::move(nav));  // leak-persist
   return host;
 }
 
@@ -192,7 +200,7 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
 
 // ---- A. 纯配置层: id 值 == 插件 full name ----
 
-TEST(ConfigConsistencyTest, AllIdsNonEmpty) {
+TEST(ConfigConsistencyTest, allIdsNonEmpty) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
   EXPECT_FALSE(ids.planner_id.empty());
@@ -205,7 +213,7 @@ TEST(ConfigConsistencyTest, AllIdsNonEmpty) {
   EXPECT_FALSE(ids.backup_id.empty());
 }
 
-TEST(ConfigConsistencyTest, IdsAreFullPluginNames) {
+TEST(ConfigConsistencyTest, idsAreFullPluginNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
 
@@ -233,7 +241,7 @@ TEST(ConfigConsistencyTest, IdsAreFullPluginNames) {
 
 // ---- B. 真实 dlopen: PluginManager 装载名与 costmap_navigation.json 一致 ----
 
-TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
+TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
 
@@ -242,7 +250,6 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
     ayanami::components::PluginSpec spec;
     spec.name = pluginName("config_planner", "planner");
     spec.so_name = g_smac_so;
-    spec.create_symbol = pluginSymbol("config_planner", "planner");
     ASSERT_TRUE(
         mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractPlanner>) {
           return true;
@@ -255,7 +262,6 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
     ayanami::components::PluginSpec spec;
     spec.name = pluginName("config_smoother", "smoother");
     spec.so_name = g_savitzky_so;
-    spec.create_symbol = pluginSymbol("config_smoother", "smoother");
     ASSERT_TRUE(
         mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractSmoother>) {
           return true;
@@ -267,7 +273,6 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
     ayanami::components::PluginSpec spec;
     spec.name = pluginName("config_controller", "controller");
     spec.so_name = g_pid_so;
-    spec.create_symbol = pluginSymbol("config_controller", "controller");
     ASSERT_TRUE(
         mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractController>) {
           return true;
@@ -280,17 +285,16 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
     const struct {
       const char* role;
       const char* so;
-    } kRec[] = {
+    } k_rec[] = {
         {"spin", g_spin_so.c_str()},
         {"backup", g_backup_so.c_str()},
         {"wait", g_wait_so.c_str()},
         {"clear_costmap", g_clear_so.c_str()},
     };
-    for (const auto& r : kRec) {
+    for (const auto& r : k_rec) {
       ayanami::components::PluginSpec spec;
       spec.name = recoveryPluginName(r.role);
       spec.so_name = r.so;
-      spec.create_symbol = recoveryPluginSymbol(r.role);
       ASSERT_TRUE(mgr.loadPlugin(
           spec, [](const std::string&, std::shared_ptr<AbstractRecovery>) {
             return true;
@@ -307,7 +311,7 @@ TEST(ConfigConsistencyTest, PluginManagersLoadMatchingNames) {
 
 // ---- C. 宿主初始化: dlopen host → initialize(config/) → 装载名与 json 一致 ----
 
-TEST(ConfigConsistencyTest, HostInitializeLoadsConsistentPlugins) {
+TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentPlugins) {
   CostmapNavigation* host = createHost(g_config_dir);
   ASSERT_NE(host, nullptr);
 
@@ -339,7 +343,7 @@ TEST(ConfigConsistencyTest, HostInitializeLoadsConsistentPlugins) {
 
 // ---- D. requestRecovery 实调: full name → valid; unsuffixed → invalid ----
 
-TEST(ConfigConsistencyTest, RequestRecoveryUsesFullPluginName) {
+TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
   CostmapNavigation* host = createHost(g_config_dir);
   ASSERT_NE(host, nullptr);
 
@@ -353,14 +357,22 @@ TEST(ConfigConsistencyTest, RequestRecoveryUsesFullPluginName) {
     EXPECT_TRUE(task.valid());
     if (task.valid()) {
       task.cancel();
+      // recovery 是独占的: 上一条 recovery 任务完成后其 onComplete 才释放
+      // recovery_exclusive。等待其终态, 否则下一条 requestRecovery 会因
+      // "another recovery is active" 误报 RecoveryFailed (与无效 id 语义混叠)。
+      ASSERT_TRUE(waitUntil([&task] { return task.ready(); }));
     }
   }
-  // 反向证明: 旧无后缀 id (costmap_clear_costmap) 现真是 NOT FOUND → invalid。
+  // 反向证明: 旧无后缀 id (costmap_clear_costmap) 现真是 NOT FOUND → 结构化
+  // 失败 TaskHandle (valid + ABORTED + InvalidInput), 不静默回退默认。
   {
     RecoveryGoal goal;
     goal.recovery_id = "costmap_clear_costmap";
     auto task = host->navigationServer().requestRecovery(goal);
-    EXPECT_FALSE(task.valid());
+    ASSERT_TRUE(task.valid());
+    ASSERT_TRUE(task.ready());
+    EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::ABORTED);
+    EXPECT_EQ(task.result().failure, ayanami::FailureCode::InvalidInput);
   }
   // config_recovery 数组现装载全部 4 个 recovery 插件 (WIP 一配多文件),
   // spin full name 也已装载 → valid。
@@ -383,7 +395,7 @@ TEST(ConfigConsistencyTest, RequestRecoveryUsesFullPluginName) {
 namespace {
 
 // 最小 recovery BT 树: 单 Recovery 节点, 端口来自黑板 {spin_id} (R1 后为 full name)。
-constexpr const char* kRecoveryOnlyXml = R"(
+constexpr const char* k_recovery_only_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="recovery_only">
     <Recovery recovery="{spin_id}"/>
@@ -419,7 +431,7 @@ void writeFile(const std::filesystem::path& path,
 }
 
 // 建临时 config 目录: config_recovery 指向 spin 恢复插件 (full name), 让宿主
-// loadPlugins 把 costmap_spin_recovery 装入 recovery_actions_。其余插件 json
+// loadPlugins 把 costmap_spin_recovery 装入 recovery_actions。其余插件 json
 // 缺省即可 (loadPlugins 对缺失文件回退空配置, 不 crash)。
 std::filesystem::path makeSpinConfigDir() {
   std::filesystem::path dir = std::filesystem::temp_directory_path() /
@@ -431,11 +443,14 @@ std::filesystem::path makeSpinConfigDir() {
   writeFile(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_logging\": \"config_logging.json\"\n"
+             "    \"config_logging\": \"config_logging.json\",\n"
+             "    \"config_recovery\": [\"spin_recovery.json\"],\n"
+             "    \"config_spin_recovery\": \"spin_recovery.json\"\n"
              "  }\n}\n");
 
   writeFile(dir / "costmap_navigation.json",
              "{\n  \"navigation\": {\n"
+             "    \"behavior_tree_extension\": \"" AYANAMI_TEST_BT_EXT_SO "\",\n"
              "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
              "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
              "    \"recovery_id\": \"costmap_spin_recovery\",\n"
@@ -447,9 +462,6 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"smoother_frequency\": -1.0,\n"
              "    \"controller_frequency\": 20.0,\n"
              "    \"tick_frequency\": 100.0\n"
-             "  },\n"
-             "  \"modules\": {\n"
-             "    \"config_recovery\": [\"spin_recovery.json\"]\n"
              "  }\n");
 
   // spin 恢复插件: full name + 真实 .so。spin_dist 设小以缩短测试时长。
@@ -459,7 +471,6 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"so_name\": \"" +
                  g_spin_so +
                  "\",\n"
-                 "    \"create_symbol\": \"create_costmap_recovery_module\",\n"
                  "    \"spin_dist\": 0.1,\n    \"max_w\": 1.0,\n"
                  "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
                  "  }\n}\n");
@@ -511,25 +522,27 @@ std::filesystem::path makeSpinConfigDir() {
 
 }  // namespace
 
-TEST(ConfigConsistencyTest, BtRecoveryBranchInvokesSpinPlugin) {
+TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinPlugin) {
   const auto dir = makeSpinConfigDir();
   CostmapNavigation* host = createHost(dir.string());
   ASSERT_NE(host, nullptr);
 
-  // spin 插件已由 loadPlugins 装入 recovery_actions_ (name=costmap_spin_recovery)。
+  // spin 插件已由 loadPlugins 装入 recovery_actions (name=costmap_spin_recovery)。
   ASSERT_NE(host->navigationServer().recoveryAction("costmap_spin_recovery"),
             nullptr);
 
   attachSpinObserver();
 
   auto bb = BT::Blackboard::create();
-  bb->set<ayanami::components::NavigationServerBase*>(kNavigationServer,
-                                                       &host->navigationServer());
-  bb->set<std::string>(kSpinId, "costmap_spin_recovery");
+  auto runtime = ayanami::components::NavigationRuntime::Ptr(
+      &host->navigationServer(), [](ayanami::components::NavigationRuntime*) {});
+  bb->set<ayanami::components::NavigationRuntime::Ptr>(k_navigation_runtime,
+                                                       runtime);
+  bb->set<std::string>(k_spin_id, "costmap_spin_recovery");
 
   BT::BehaviorTreeFactory factory;
   ayanami::behavior_tree::registerNavigationBehaviorTreeNodes(factory);
-  auto tree = factory.createTreeFromText(kRecoveryOnlyXml, bb);
+  auto tree = factory.createTreeFromText(k_recovery_only_xml, bb);
 
   // 首 tick: onStart → requestRecovery("costmap_spin_recovery") → 命中 → RUNNING。
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);

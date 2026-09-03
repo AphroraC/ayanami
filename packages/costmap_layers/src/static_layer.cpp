@@ -36,42 +36,42 @@ costmap_2d::CostValue pixelToCost(unsigned char pixel) {
 }  // namespace
 
 void StaticLayer::setMap(const costmap_2d::Costmap2D& map) {
-  std::lock_guard<std::mutex> lock(map_mutex_);
+  std::lock_guard<std::mutex> lock(map_mutex);
   processMap(map);
 }
 
 void StaticLayer::queueMap(const costmap_2d::Costmap2D& map) {
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  pending_map_ = map;
-  current_ = false;
+  std::lock_guard<std::mutex> lock(map_mutex);
+  pending_map = map;
+  current = false;
 }
 
 void StaticLayer::processMap(const costmap_2d::Costmap2D& map) {
-  if (master_ && !master_->isRolling()) {
-    auto* master_grid = master_->getCostmap();
+  if (master && !master->isRolling()) {
+    auto* master_grid = master->getCostmap();
     if (master_grid->getSizeInCellsX() != map.getSizeInCellsX() ||
         master_grid->getSizeInCellsY() != map.getSizeInCellsY() ||
         master_grid->getResolution() != map.getResolution() ||
         master_grid->getOriginX() != map.getOriginX() ||
         master_grid->getOriginY() != map.getOriginY() ||
-        !master_->isSizeLocked()) {
-      master_->resizeMap(map.getSizeInCellsX(), map.getSizeInCellsY(),
+        !master->isSizeLocked()) {
+      master->resizeMap(map.getSizeInCellsX(), map.getSizeInCellsY(),
                          map.getResolution(), map.getOriginX(),
                          map.getOriginY(), true);
     }
   }
-  map_.resizeMap(map.getSizeInCellsX(), map.getSizeInCellsY(),
-                 map.getResolution(), map.getOriginX(), map.getOriginY(),
-                 map.getDefaultValue());
+  this->map.resizeMap(map.getSizeInCellsX(), map.getSizeInCellsY(),
+                      map.getResolution(), map.getOriginX(), map.getOriginY(),
+                      map.getDefaultValue());
   for (unsigned int y = 0; y < map.getSizeInCellsY(); ++y) {
     for (unsigned int x = 0; x < map.getSizeInCellsX(); ++x) {
-      map_.setCost(x, y, map.getCost(x, y));
+      this->map.setCost(x, y, map.getCost(x, y));
     }
   }
-  has_map_ = true;
-  has_updated_data_ = true;
-  current_ = true;
-  full_update_ = true;
+  has_map = true;
+  has_updated_data = true;
+  current = true;
+  full_update = true;
 }
 
 void StaticLayer::setMapPath(const std::string& path, double resolution,
@@ -145,14 +145,14 @@ void StaticLayer::setMapPath(const std::string& path, double resolution,
 }
 
 void StaticLayer::matchSize() {
-  if (!master_ || master_->isRolling()) return;
-  const auto* master_grid = master_->getCostmap();
-  if (map_.getSizeInCellsX() != master_grid->getSizeInCellsX() ||
-      map_.getSizeInCellsY() != master_grid->getSizeInCellsY() ||
-      map_.getResolution() != master_grid->getResolution() ||
-      map_.getOriginX() != master_grid->getOriginX() ||
-      map_.getOriginY() != master_grid->getOriginY()) {
-    map_.resizeMap(master_grid->getSizeInCellsX(),
+  if (!master || master->isRolling()) return;
+  const auto* master_grid = master->getCostmap();
+  if (map.getSizeInCellsX() != master_grid->getSizeInCellsX() ||
+      map.getSizeInCellsY() != master_grid->getSizeInCellsY() ||
+      map.getResolution() != master_grid->getResolution() ||
+      map.getOriginX() != master_grid->getOriginX() ||
+      map.getOriginY() != master_grid->getOriginY()) {
+    map.resizeMap(master_grid->getSizeInCellsX(),
                    master_grid->getSizeInCellsY(),
                    master_grid->getResolution(), master_grid->getOriginX(),
                    master_grid->getOriginY(), costmap_2d::NO_INFORMATION);
@@ -161,90 +161,90 @@ void StaticLayer::matchSize() {
 
 void StaticLayer::addUpdateBounds(double min_x, double min_y, double max_x,
                                   double max_y) {
-  if (!has_extra_bounds_) {
-    extra_min_x_ = min_x;
-    extra_min_y_ = min_y;
-    extra_max_x_ = max_x;
-    extra_max_y_ = max_y;
-    has_extra_bounds_ = true;
+  if (!has_extra_bounds) {
+    extra_min_x = min_x;
+    extra_min_y = min_y;
+    extra_max_x = max_x;
+    extra_max_y = max_y;
+    has_extra_bounds = true;
     return;
   }
-  extra_min_x_ = std::min(extra_min_x_, min_x);
-  extra_min_y_ = std::min(extra_min_y_, min_y);
-  extra_max_x_ = std::max(extra_max_x_, max_x);
-  extra_max_y_ = std::max(extra_max_y_, max_y);
+  extra_min_x = std::min(extra_min_x, min_x);
+  extra_min_y = std::min(extra_min_y, min_y);
+  extra_max_x = std::max(extra_max_x, max_x);
+  extra_max_y = std::max(extra_max_y, max_y);
 }
 
 void StaticLayer::updateBounds(double, double, double, double* min_x,
                                double* min_y, double* max_x, double* max_y) {
   {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    if (pending_map_) {
-      processMap(*pending_map_);
-      pending_map_.reset();
+    std::lock_guard<std::mutex> lock(map_mutex);
+    if (pending_map) {
+      processMap(*pending_map);
+      pending_map.reset();
     }
   }
-  if (!enabled_ || !has_map_) {
-    map_received_in_update_bounds_ = false;
+  if (!enabled || !has_map) {
+    map_received_in_update_bounds = false;
     return;
   }
-  map_received_in_update_bounds_ = true;
-  if (master_ && !master_->isRolling() && !has_updated_data_ &&
-      !has_extra_bounds_ && !full_update_) {
+  map_received_in_update_bounds = true;
+  if (master && !master->isRolling() && !has_updated_data &&
+      !has_extra_bounds && !full_update) {
     return;
   }
-  if (full_update_) {
-    *min_x = std::min(*min_x, map_.getOriginX());
-    *min_y = std::min(*min_y, map_.getOriginY());
-    *max_x = std::max(*max_x, map_.getOriginX() + map_.getSizeInMetersX());
-    *max_y = std::max(*max_y, map_.getOriginY() + map_.getSizeInMetersY());
-    full_update_ = false;
+  if (full_update) {
+    *min_x = std::min(*min_x, map.getOriginX());
+    *min_y = std::min(*min_y, map.getOriginY());
+    *max_x = std::max(*max_x, map.getOriginX() + map.getSizeInMetersX());
+    *max_y = std::max(*max_y, map.getOriginY() + map.getSizeInMetersY());
+    full_update = false;
   }
-  if (master_ && master_->isRolling()) {
-    const auto* master_grid = master_->getCostmap();
+  if (master && master->isRolling()) {
+    const auto* master_grid = master->getCostmap();
     const double origin_x = master_grid->getOriginX();
     const double origin_y = master_grid->getOriginY();
-    if (!have_master_origin_ || origin_x != last_master_origin_x_ ||
-        origin_y != last_master_origin_y_) {
+    if (!have_master_origin || origin_x != last_master_origin_x ||
+        origin_y != last_master_origin_y) {
       *min_x = std::min(*min_x, origin_x);
       *min_y = std::min(*min_y, origin_y);
       *max_x = std::max(*max_x, origin_x + master_grid->getSizeInMetersX());
       *max_y = std::max(*max_y, origin_y + master_grid->getSizeInMetersY());
-      last_master_origin_x_ = origin_x;
-      last_master_origin_y_ = origin_y;
-      have_master_origin_ = true;
+      last_master_origin_x = origin_x;
+      last_master_origin_y = origin_y;
+      have_master_origin = true;
     }
   }
-  if (has_extra_bounds_) {
-    *min_x = std::min(*min_x, extra_min_x_);
-    *min_y = std::min(*min_y, extra_min_y_);
-    *max_x = std::max(*max_x, extra_max_x_);
-    *max_y = std::max(*max_y, extra_max_y_);
-    has_extra_bounds_ = false;
+  if (has_extra_bounds) {
+    *min_x = std::min(*min_x, extra_min_x);
+    *min_y = std::min(*min_y, extra_min_y);
+    *max_x = std::max(*max_x, extra_max_x);
+    *max_y = std::max(*max_y, extra_max_y);
+    has_extra_bounds = false;
   }
-  has_updated_data_ = false;
+  has_updated_data = false;
 }
 
 void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
                               int min_j, int max_i, int max_j) {
-  if (!enabled_ || !has_map_ ||
-      (master_ && !map_received_in_update_bounds_)) {
+  if (!enabled || !has_map ||
+      (master && !map_received_in_update_bounds)) {
     return;
   }
   const int end_x = std::min(max_i, static_cast<int>(master_grid.getSizeInCellsX()));
   const int end_y = std::min(max_j, static_cast<int>(master_grid.getSizeInCellsY()));
   const bool same_geometry =
-      master_grid.getSizeInCellsX() == map_.getSizeInCellsX() &&
-      master_grid.getSizeInCellsY() == map_.getSizeInCellsY() &&
-      master_grid.getResolution() == map_.getResolution() &&
-      master_grid.getOriginX() == map_.getOriginX() &&
-      master_grid.getOriginY() == map_.getOriginY();
+      master_grid.getSizeInCellsX() == map.getSizeInCellsX() &&
+      master_grid.getSizeInCellsY() == map.getSizeInCellsY() &&
+      master_grid.getResolution() == map.getResolution() &&
+      master_grid.getOriginX() == map.getOriginX() &&
+      master_grid.getOriginY() == map.getOriginY();
   for (int y = std::max(0, min_j); y < end_y; ++y) {
     for (int x = std::max(0, min_i); x < end_x; ++x) {
       if (same_geometry) {
         master_grid.setCost(static_cast<unsigned int>(x),
                             static_cast<unsigned int>(y),
-                            map_.getCost(static_cast<unsigned int>(x),
+                            map.getCost(static_cast<unsigned int>(x),
                                          static_cast<unsigned int>(y)));
         continue;
       }
@@ -257,14 +257,14 @@ void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
                              static_cast<unsigned int>(y), wx, wy);
       unsigned int mx = 0;
       unsigned int my = 0;
-      if (map_.worldToMap(wx, wy, mx, my)) {
+      if (map.worldToMap(wx, wy, mx, my)) {
         master_grid.setCost(static_cast<unsigned int>(x),
                             static_cast<unsigned int>(y),
-                            map_.getCost(mx, my));
+                            map.getCost(mx, my));
       }
     }
   }
-  current_ = true;
+  current = true;
 }
 
 }  // namespace costmap_2d_layers

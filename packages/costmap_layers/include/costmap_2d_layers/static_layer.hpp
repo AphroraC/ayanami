@@ -37,12 +37,12 @@ class StaticLayer : public costmap_2d::Layer {
   void activate() override {}
   void deactivate() override {}
   void reset() override {
-    full_update_ = has_map_;
-    current_ = false;
+    full_update = has_map;
+    current = false;
   }
   void matchSize() override;
 
-  bool hasMap() const { return has_map_; }
+  bool hasMap() const { return has_map; }
 
   // Request restoration of a world-coordinate region on the next update.
   void addUpdateBounds(double min_x, double min_y, double max_x,
@@ -50,21 +50,21 @@ class StaticLayer : public costmap_2d::Layer {
 
  private:
   void processMap(const costmap_2d::Costmap2D& map);
-  costmap_2d::Costmap2D map_;
-  std::optional<costmap_2d::Costmap2D> pending_map_;
-  std::mutex map_mutex_;
-  bool has_map_{false};
-  bool map_received_in_update_bounds_{false};
-  bool has_updated_data_{false};
-  bool full_update_{false};
-  bool has_extra_bounds_{false};
-  bool have_master_origin_{false};
-  double last_master_origin_x_{0.0};
-  double last_master_origin_y_{0.0};
-  double extra_min_x_{0.0};
-  double extra_min_y_{0.0};
-  double extra_max_x_{0.0};
-  double extra_max_y_{0.0};
+  costmap_2d::Costmap2D map;
+  std::optional<costmap_2d::Costmap2D> pending_map;
+  std::mutex map_mutex;
+  bool has_map{false};
+  bool map_received_in_update_bounds{false};
+  bool has_updated_data{false};
+  bool full_update{false};
+  bool has_extra_bounds{false};
+  bool have_master_origin{false};
+  double last_master_origin_x{0.0};
+  double last_master_origin_y{0.0};
+  double extra_min_x{0.0};
+  double extra_min_y{0.0};
+  double extra_max_x{0.0};
+  double extra_max_y{0.0};
 };
 
 }  // namespace costmap_2d_layers

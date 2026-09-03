@@ -17,7 +17,7 @@ namespace modules {
  * required_movement 或转角 >= movement_angle_required 则更新基线并判有进展;
  * 时间窗内未移动则判无进展 (卡住)。
  */
-class SimpleProgressChecker : public ayanami::abstract::AbstractProgressChecker {
+class SimpleProgressChecker final : public ayanami::abstract::AbstractProgressChecker {
  public:
   SimpleProgressChecker();
 
@@ -26,20 +26,18 @@ class SimpleProgressChecker : public ayanami::abstract::AbstractProgressChecker 
   bool check(const ayanami::geometry_msgs::PoseStamped& current_pose) override;
 
  private:
-  void loadConfig();
-
-  struct Config {
+  struct SimpleProgressCheckerParam {
     double required_movement = 0.5;         // m
     double movement_angle_required = 0.2;   // rad
     double time_period = 5.0;               // s
   };
 
-  Config config_;
+  SimpleProgressCheckerParam param;
 
-  ayanami::geometry_msgs::PoseStamped base_pose_;
-  std::chrono::steady_clock::time_point base_time_;
-  bool initialized_{false};
-  std::atomic<bool> reset_pending_{false};
+  ayanami::geometry_msgs::PoseStamped base_pose;
+  std::chrono::steady_clock::time_point base_time;
+  bool initialized{false};
+  std::atomic<bool> reset_pending{false};
 };
 
 }  // namespace modules

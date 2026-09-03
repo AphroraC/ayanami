@@ -19,8 +19,8 @@ class Layer {
   virtual ~Layer() = default;
 
   void initialize(LayeredCostmap* parent, std::string name) {
-    master_ = parent;
-    name_ = std::move(name);
+    master = parent;
+    this->name = std::move(name);
     onInitialize();
   }
 
@@ -37,18 +37,18 @@ class Layer {
   virtual void matchSize() {}
   virtual void onFootprintChanged() {}
 
-  bool isCurrent() const { return current_.load(); }
-  bool isEnabled() const { return enabled_; }
-  void setEnabled(bool enabled) { enabled_ = enabled; }
-  const std::string& getName() const { return name_; }
+  bool isCurrent() const { return current.load(); }
+  bool isEnabled() const { return enabled; }
+  void setEnabled(bool enabled) { enabled = enabled; }
+  const std::string& getName() const { return name; }
 
  protected:
   virtual void onInitialize() {}
 
-  LayeredCostmap* master_{nullptr};
-  bool enabled_{true};
-  std::atomic<bool> current_{false};
-  std::string name_;
+  LayeredCostmap* master{nullptr};
+  bool enabled{true};
+  std::atomic<bool> current{false};
+  std::string name;
 };
 
 }  // namespace costmap_2d

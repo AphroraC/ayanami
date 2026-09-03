@@ -32,7 +32,7 @@ protected:
   nav_2d_msgs::Twist2D computeNewVelocity(
       const nav_2d_msgs::Twist2D& cmd_vel,
       const nav_2d_msgs::Twist2D& start_vel, const double dt) override;
-  double acceleration_time_;
-  std::string plugin_name_;
+  double acceleration_time;
+  std::string plugin_name;
 };
 }  // namespace dwb_plugins

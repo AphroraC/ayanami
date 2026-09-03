@@ -1,25 +1,22 @@
 {
   "navigation": {
-    "behavior_tree_xml": "BT/navigation.xml",
+    "behavior_tree_extension": "libayanami_navigation_behavior_tree.so",
     "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
-    "planner_frequency": 1.0,
+    "planner_id": "costmap_smac",
+    "smoother_id": "costmap_savitzky",
+    "controller_id": "dwb_local",
+    "recovery_id": "costmap_clear_costmap_recovery",
+    "goal_checker_id": "simple_goal_checker",
+    "progress_checker_id": "simple_progress_checker",
+    "planner_frequency": -1.0,
     "smoother_frequency": -1.0,
     "controller_frequency": 20.0,
+    "max_vel_x": 0.5,
+    "max_vel_y": 0.0,
+    "max_vel_theta": 1.5,
     "robot_frame": "base_footprint",
+    "velocity_timeout": 0.25,
     "costmap_visualization_rate": 1.0
-  },
-  "modules": {
-    "config_planner": "modules/costmap_smac_planner.json",
-    "config_smoother": "modules/costmap_savitzky_smoother.json",
-    "config_controller": "modules/costmap_pid_controller.json",
-    "config_recovery": [
-      "modules/costmap_clear_costmap_recovery.json",
-      "modules/costmap_spin_recovery.json",
-      "modules/costmap_wait_recovery.json",
-      "modules/costmap_back_up_recovery.json"
-    ],
-    "config_goal_checker": "modules/simple_goal_checker.json",
-    "config_progress_checker": "modules/simple_progress_checker.json"
   },
   "costmap": {
     "global_frame": "map",
@@ -30,7 +27,7 @@
   "costmap_global": {
     "rolling_window": false,
     "track_unknown": false,
-    "static_map": "assets/nav.pgm",
+    "static_map": "config/assets/nav.pgm",
     "inflation_radius": 0.5,
     "inscribed_radius": 0.12,
     "cost_scaling_factor": 10.0

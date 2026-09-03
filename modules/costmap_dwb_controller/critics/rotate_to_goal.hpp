@@ -29,14 +29,14 @@ public:
   virtual double scoreRotation(const dwb_msgs::Trajectory2D& traj);
 
 private:
-  bool in_window_;
-  bool rotating_;
-  double goal_yaw_;
-  double xy_goal_tolerance_;
-  double xy_goal_tolerance_sq_;  ///< Cached squared tolerance
-  double current_xy_speed_sq_, stopped_xy_velocity_sq_;
-  double slowing_factor_;
-  double lookahead_time_;
+  bool in_window;
+  bool rotating;
+  double goal_yaw;
+  double xy_goal_tolerance;
+  double xy_goal_tolerance_sq;  ///< Cached squared tolerance
+  double current_xy_speed_sq, stopped_xy_velocity_sq;
+  double slowing_factor;
+  double lookahead_time;
 };
 
 }  // namespace dwb_critics

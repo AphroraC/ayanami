@@ -5,7 +5,7 @@
 // - goal 在 obstacle → nearestValidGoal → None (tolerance 覆盖) / GoalInvalid (无 tolerance)
 // - start 在 obstacle / 越界 → FailureCode::StartInvalid
 // - cancel() 中途打断 → FailureCode::Canceled
-// - module.cpp 导出 create_costmap_planner_module 符号 (dlopen 验证)
+// - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 
 #include <gtest/gtest.h>
 
@@ -28,7 +28,7 @@
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <costmap_smac_planner/costmap_smac_planner.hpp>
-#include <ayanami/utility/load_module.hpp>
+#include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
@@ -64,21 +64,21 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
 std::shared_ptr<CostmapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto ctx = std::make_shared<CostmapContext>();
-  ctx->global_costmap_ = wrapper;
+  ctx->setGlobalCostmap(wrapper);
   return ctx;
 }
 
 std::shared_ptr<CostmapSmacPlanner> makePlanner(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->initialize("test_smac", makeContext(wrapper));
+  planner->initialize("test_smac", makeContext(wrapper)->getSharedConstPtr());
   return planner;
 }
 
 ayanami::geometry_msgs::PoseStamped makePose(double x, double y) {
   auto p = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -93,7 +93,7 @@ ayanami::geometry_msgs::PoseStamped cellCenter(unsigned int mx, unsigned int my,
 
 // ---------- makePlan 成功路径 ----------
 
-TEST(CostmapSmacPlannerTest, MakePlanSuccessOnFreeMap) {
+TEST(CostmapSmacPlannerTest, makePlanSuccessOnFreeMap) {
   auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5m = 10m x 10m, 全 free
   auto planner = makePlanner(wrapper);
 
@@ -107,13 +107,13 @@ TEST(CostmapSmacPlannerTest, MakePlanSuccessOnFreeMap) {
   EXPECT_EQ(failure, FailureCode::None) << message;
   ASSERT_FALSE(plan.poses.empty());
   EXPECT_GT(cost, 0.0);
-  EXPECT_NEAR(plan.poses.front().pose.translation().x(), start.pose.translation().x(), 1e-6);
-  EXPECT_NEAR(plan.poses.front().pose.translation().y(), start.pose.translation().y(), 1e-6);
-  EXPECT_NEAR(plan.poses.back().pose.translation().x(), goal.pose.translation().x(), 1e-6);
-  EXPECT_NEAR(plan.poses.back().pose.translation().y(), goal.pose.translation().y(), 1e-6);
+  EXPECT_NEAR(plan.poses.front().pose.position.x(), start.pose.position.x(), 1e-6);
+  EXPECT_NEAR(plan.poses.front().pose.position.y(), start.pose.position.y(), 1e-6);
+  EXPECT_NEAR(plan.poses.back().pose.position.x(), goal.pose.position.x(), 1e-6);
+  EXPECT_NEAR(plan.poses.back().pose.position.y(), goal.pose.position.y(), 1e-6);
 }
 
-TEST(CostmapSmacPlannerTest, MakePlanRoutesAroundObstacle) {
+TEST(CostmapSmacPlannerTest, makePlanRoutesAroundObstacle) {
   // 中央 4x4 障碍块 (cells 8..11), start/goal 在两侧。
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
@@ -138,7 +138,7 @@ TEST(CostmapSmacPlannerTest, MakePlanRoutesAroundObstacle) {
 
 // ---------- goal 在 obstacle (nearestValidGoal) ----------
 
-TEST(CostmapSmacPlannerTest, GoalInObstacleWithToleranceFindsNearest) {
+TEST(CostmapSmacPlannerTest, goalInObstacleWithToleranceFindsNearest) {
   // 中央 4x4 障碍块 (cells 8..11), goal 在块中心 (10,10)。
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
@@ -162,7 +162,7 @@ TEST(CostmapSmacPlannerTest, GoalInObstacleWithToleranceFindsNearest) {
   EXPECT_GT(cost, 0.0);
 }
 
-TEST(CostmapSmacPlannerTest, GoalInObstacleWithoutToleranceReturnsNoPath) {
+TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -184,7 +184,7 @@ TEST(CostmapSmacPlannerTest, GoalInObstacleWithoutToleranceReturnsNoPath) {
 
 // ---------- start 异常 ----------
 
-TEST(CostmapSmacPlannerTest, StartInObstacleReturnsErrorSegment) {
+TEST(CostmapSmacPlannerTest, startInObstacleReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -205,7 +205,7 @@ TEST(CostmapSmacPlannerTest, StartInObstacleReturnsErrorSegment) {
   EXPECT_TRUE(plan.poses.empty());
 }
 
-TEST(CostmapSmacPlannerTest, StartOutOfMapReturnsErrorSegment) {
+TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5);
   auto planner = makePlanner(wrapper);
 
@@ -222,7 +222,7 @@ TEST(CostmapSmacPlannerTest, StartOutOfMapReturnsErrorSegment) {
 
 // ---------- cancel() 中途打断 ----------
 
-TEST(CostmapSmacPlannerTest, CancelDuringPlanningReturnsCanceled) {
+TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
   // 800x800 @ 0.05 = 40m x 40m。goal 位于 lethal 环内 (ring 1 cell 厚):
   // A* 必须扩展整个可达区域才能判 NO_PATH (约 100ms), 给 cancel 留足窗口。
   auto wrapper = makeWrapper(800, 0.05, [](costmap_2d::Costmap2D& m) {
@@ -260,20 +260,13 @@ TEST(CostmapSmacPlannerTest, CancelDuringPlanningReturnsCanceled) {
   EXPECT_EQ(failure.load(), FailureCode::Canceled);
 }
 
-// ---------- module.cpp 工厂符号 ----------
+// ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------
 
-TEST(CostmapSmacPlannerTest, ModuleFactoryCreatesPlanner) {
+TEST(CostmapSmacPlannerTest, moduleFactoryCreatesPlanner) {
   ASSERT_FALSE(g_module_so.empty());
-  void* handle = ayanami::open_so(g_module_so);
-  ASSERT_NE(handle, nullptr);
-  using Factory = ayanami::costmap::CostmapPlanner* (*)();
-  void* symbol =
-      ayanami::load_symbol(handle, "create_costmap_planner_module");
-  ASSERT_NE(symbol, nullptr);
-  auto factory = reinterpret_cast<Factory>(symbol);
-  ayanami::costmap::CostmapPlanner* planner = factory();
+  auto planner = std::dynamic_pointer_cast<CostmapSmacPlanner>(
+      ayanami::ExtensionModule::load_module(g_module_so));
   ASSERT_NE(planner, nullptr);
-  delete planner;
 }
 
 int main(int argc, char** argv) {

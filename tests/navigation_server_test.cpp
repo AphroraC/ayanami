@@ -1,18 +1,27 @@
 #include <gtest/gtest.h>
 
+#include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
+#include <ayanami/abstract/components/planner_action.hpp>
+#include <ayanami/abstract/components/recovery_action.hpp>
+#include <ayanami/abstract/components/smoother_action.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
+#include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
-#include <ayanami/abstract/core/map_context.hpp>
+#include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -22,10 +31,14 @@ namespace {
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 由 main() 从 argv 读取 (ctest 传 $<TARGET_FILE:navigation_plugins>)
-std::string g_plugins_so;
+// 由 main() 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)
+std::string g_planner_so;
+std::string g_fail_planner_so;
+std::string g_smoother_so;
+std::string g_controller_so;
+std::string g_recovery_so;
 
-std::filesystem::path make_temp_dir() {
+std::filesystem::path makeTempDir() {
   std::filesystem::path dir = std::filesystem::temp_directory_path() /
                               "ayanami_navigation_server_test";
   std::filesystem::remove_all(dir);
@@ -33,28 +46,11 @@ std::filesystem::path make_temp_dir() {
   return dir;
 }
 
-void write_json(const std::filesystem::path& path,
+void writeJson(const std::filesystem::path& path,
                 const std::string& content) {
   std::ofstream ofs(path);
   ofs << content;
 }
-
-// 通用 MapContext 桩 (Task 7 AbstractMapContext 派生, 测试注入链)。
-class TestMapContext : public ayanami::abstract::AbstractMapContext {
-public:
-  const std::string& getGlobalFrame() const override {
-    static const std::string frame = "map";
-    return frame;
-  }
-  const std::string& getRobotFrame() const override {
-    static const std::string frame = "base_link";
-    return frame;
-  }
-  bool getRobotPose(PoseStamped& pose) const override {
-    pose = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-    return true;
-  }
-};
 
 // checker 测试桩: 立即可达 + 恒有进展 (requestExecution 契约: 控制器成功即
 // goal_checker 判到达 → SUCCEEDED)。
@@ -76,38 +72,37 @@ class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
   bool check(const PoseStamped&) override { return true; }
 };
 
-// 派生 server: 覆写虚钩子以注入 TestMapContext、记录初始化/工厂调用、配置
-// planner execution 的终止性 (max_retries=0, 失败即放弃 → ABORTED)。
+// 派生 server: 覆写虚钩子记录初始化/工厂调用、配置 planner execution 的
+// 终止性 (max_retries=0, 失败即放弃 → ABORTED)。
 class TestNavServer : public ayanami::components::NavigationServerBase {
 public:
   using NavigationServerBase::NavigationServerBase;
 
   bool initializePlannerPlugin(const std::string& name,
                                ayanami::abstract::AbstractPlanner::Ptr p) override {
-    init_names_.push_back("planner:" + name);
-    map_context_ = std::make_shared<TestMapContext>();
+    init_names.push_back("planner:" + name);
     return p != nullptr;
   }
   bool initializeSmootherPlugin(const std::string& name,
                                 ayanami::abstract::AbstractSmoother::Ptr p) override {
-    init_names_.push_back("smoother:" + name);
+    init_names.push_back("smoother:" + name);
     return p != nullptr;
   }
   bool initializeControllerPlugin(const std::string& name,
                                   ayanami::abstract::AbstractController::Ptr p) override {
-    init_names_.push_back("controller:" + name);
+    init_names.push_back("controller:" + name);
     return p != nullptr;
   }
   bool initializeRecoveryPlugin(const std::string& name,
                                 ayanami::abstract::AbstractRecovery::Ptr p) override {
-    init_names_.push_back("recovery:" + name);
+    init_names.push_back("recovery:" + name);
     return p != nullptr;
   }
 
   std::unique_ptr<ayanami::components::PlannerExecution> newPlannerExecution(
       const std::string& name,
       ayanami::abstract::AbstractPlanner::Ptr p) override {
-    factory_names_.push_back(name);
+    factory_names.push_back(name);
     auto exec =
         NavigationServerBase::newPlannerExecution(name, std::move(p));
     exec->setMaxRetries(0);  // 失败即放弃 → 保证失败路径终止性
@@ -116,7 +111,7 @@ public:
   std::unique_ptr<ayanami::components::ControllerExecution> newControllerExecution(
       const std::string& name,
       ayanami::abstract::AbstractController::Ptr p) override {
-    factory_names_.push_back(name);
+    factory_names.push_back(name);
     auto exec =
         NavigationServerBase::newControllerExecution(name, std::move(p));
     // 注入 checker (生产路径由 createActions 按配置注入; 本测试配置无 checker ids)。
@@ -127,66 +122,59 @@ public:
   std::unique_ptr<ayanami::components::RecoveryExecution> newRecoveryExecution(
       const std::string& name,
       ayanami::abstract::AbstractRecovery::Ptr p) override {
-    factory_names_.push_back(name);
+    factory_names.push_back(name);
     return NavigationServerBase::newRecoveryExecution(name, std::move(p));
   }
 
-  void bumpSessionId() { session_id_.fetch_add(1); }
-  const std::vector<std::string>& initNames() const { return init_names_; }
+  void bumpSessionId() { startNewSession(); }
+  const std::vector<std::string>& initNames() const { return init_names; }
   const std::vector<std::string>& factoryNames() const {
-    return factory_names_;
+    return factory_names;
   }
-  bool mapInjected() const { return map_context_ != nullptr; }
 
 private:
-  std::vector<std::string> init_names_;
-  std::vector<std::string> factory_names_;
+  std::vector<std::string> init_names;
+  std::vector<std::string> factory_names;
 };
 
-// 子插件 json (name/so_name/create_symbol, spec §9.5)。
-std::string plugin_json(const std::string& module, const std::string& name,
-                        const std::string& symbol) {
+// 子插件 json (name/so_name, spec §9.5; 工厂统一 create_extension_module)。
+std::string pluginJson(const std::string& module, const std::string& name,
+                        const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + g_plugins_so +
-         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
-// 生成临时 config 目录; planner 符号可选成功/失败工厂 (验证旁路 fallback 用)。
-std::filesystem::path make_config_dir(const std::string& planner_symbol) {
-  auto dir = make_temp_dir() / ("cfg_" + planner_symbol);
+// 生成临时 config 目录; planner so 可选成功/失败插件 (requestPath 失败契约用)。
+std::filesystem::path makeConfigDir(const std::string& planner_so) {
+  auto dir = makeTempDir() / ("cfg" + planner_so);
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
 
-  write_json(dir / "config.json",
+  writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\"\n"
-             "  }\n}\n");
-  write_json(dir / "navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"planner_id\": \"test_planner\",\n"
-             "    \"smoother_id\": \"test_smoother\",\n"
-             "    \"controller_id\": \"test_controller\",\n"
-             "    \"recovery_id\": \"test_recovery\"\n"
-             "  },\n"
-             "  \"modules\": {\n"
+             "    \"config_navigation\": \"navigation.json\",\n"
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
              "    \"config_recovery\": [\"recovery.json\"]\n"
              "  }\n}\n");
-  write_json(dir / "planner.json",
-             plugin_json("planner", "test_planner", planner_symbol));
-  write_json(dir / "smoother.json",
-             plugin_json("smoother", "test_smoother",
-                         "create_test_smoother_plugin"));
-  write_json(dir / "controller.json",
-             plugin_json("controller", "test_controller",
-                         "create_test_controller_plugin"));
-  write_json(dir / "recovery.json",
+  writeJson(dir / "navigation.json",
+             "{\n  \"navigation\": {\n"
+             "    \"planner_id\": \"test_planner\",\n"
+             "    \"smoother_id\": \"test_smoother\",\n"
+             "    \"controller_id\": \"test_controller\",\n"
+             "    \"recovery_id\": \"test_recovery\"\n"
+             "  }\n}\n");
+  writeJson(dir / "planner.json",
+             pluginJson("planner", "test_planner", planner_so));
+  writeJson(dir / "smoother.json",
+             pluginJson("smoother", "test_smoother", g_smoother_so));
+  writeJson(dir / "controller.json",
+             pluginJson("controller", "test_controller", g_controller_so));
+  writeJson(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             g_plugins_so +
-             "\",\n    \"create_symbol\": \"create_test_recovery_plugin\"\n  }\n}\n");
+             g_recovery_so + "\"\n  }\n}\n");
   return dir;
 }
 
@@ -200,14 +188,206 @@ bool waitReady(Task& t, int max_ms = 3000) {
 
 PoseStamped pose(const std::string& frame, double x, double y) {
   auto p = PoseStamped::fromIsometry(frame, Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
+// ---- Recovery 排他性测试桩 ----
+// 阻塞 planner/smoother/controller: makePlan/smoothPath/computeVelocityCommands
+// 进入后一直阻塞到 cancel() 触发 release_all; exit_* 记录阻塞调用返回时刻。
+// 周期 recovery: 首个 onCycleUpdate 记录"三族是否已全部退出"。
+namespace recovery_exclusive {
+
+struct Coordinator {
+  std::mutex mutex;
+  std::condition_variable cv;
+  // 每族独立 release 信号: 各自的 cancel() 只释放自己, 保证另两族继续阻塞到
+  // 自己的 cancel 到来 (否则早退会让被抢占任务以 SUCCESS 而非 CANCELED 收场)。
+  bool planner_release{false};
+  bool smoother_release{false};
+  bool controller_release{false};
+  std::atomic<bool> planner_entered{false};
+  std::atomic<bool> smoother_entered{false};
+  std::atomic<bool> controller_entered{false};
+  std::atomic<bool> planner_exited{false};
+  std::atomic<bool> smoother_exited{false};
+  std::atomic<bool> controller_exited{false};
+  std::atomic<bool> recovery_started{false};
+  std::atomic<bool> all_exited_when_recovery_started{false};
+  std::atomic<int> recovery_cycles{0};
+  int active_recovery_cycles{30};  // 30 * 10ms ≈ 300ms 的 active 窗口
+};
+
+class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
+ public:
+  explicit BlockingPlanner(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
+  ayanami::FailureCode makePlan(
+      const ayanami::geometry_msgs::PoseStamped&,
+      const ayanami::geometry_msgs::PoseStamped&, double,
+      ayanami::nav_msgs::Path& plan, double&, std::string&) override {
+    coord->planner_entered.store(true);
+    {
+      std::unique_lock<std::mutex> lock(coord->mutex);
+      coord->cv.wait(lock, [this] { return coord->planner_release; });
+    }
+    coord->planner_exited.store(true);
+    plan.poses.push_back(ayanami::geometry_msgs::PoseStamped{});
+    return ayanami::FailureCode::None;
+  }
+  bool cancel() override {
+    {
+      std::lock_guard<std::mutex> lock(coord->mutex);
+      coord->planner_release = true;
+    }
+    coord->cv.notify_all();
+    return true;
+  }
+ private:
+  std::shared_ptr<Coordinator> coord;
+};
+
+class BlockingSmoother : public ayanami::abstract::AbstractSmoother {
+ public:
+  explicit BlockingSmoother(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
+  ayanami::FailureCode smoothPath(
+      const ayanami::nav_msgs::Path& path, ayanami::nav_msgs::Path& out,
+      double, bool, std::string&) override {
+    coord->smoother_entered.store(true);
+    {
+      std::unique_lock<std::mutex> lock(coord->mutex);
+      coord->cv.wait(lock, [this] { return coord->smoother_release; });
+    }
+    coord->smoother_exited.store(true);
+    out = path;
+    return ayanami::FailureCode::None;
+  }
+  bool cancel() override {
+    {
+      std::lock_guard<std::mutex> lock(coord->mutex);
+      coord->smoother_release = true;
+    }
+    coord->cv.notify_all();
+    return true;
+  }
+ private:
+  std::shared_ptr<Coordinator> coord;
+};
+
+class BlockingController : public ayanami::abstract::AbstractController {
+ public:
+  explicit BlockingController(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
+  ayanami::FailureCode computeVelocityCommands(
+      const ayanami::geometry_msgs::PoseStamped&,
+      const ayanami::geometry_msgs::TwistStamped&,
+      ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string&) override {
+    coord->controller_entered.store(true);
+    {
+      std::unique_lock<std::mutex> lock(coord->mutex);
+      coord->cv.wait(lock, [this] { return coord->controller_release; });
+    }
+    coord->controller_exited.store(true);
+    cmd_vel.twist.linear.x() = 0.1;
+    return ayanami::FailureCode::None;
+  }
+  bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
+  bool cancel() override {
+    {
+      std::lock_guard<std::mutex> lock(coord->mutex);
+      coord->controller_release = true;
+    }
+    coord->cv.notify_all();
+    return true;
+  }
+ private:
+  std::shared_ptr<Coordinator> coord;
+};
+
+class ActiveRecovery : public ayanami::abstract::AbstractRecovery {
+ public:
+  explicit ActiveRecovery(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
+  ayanami::abstract::RecoveryCycleResult onCycleUpdate(std::string&) override {
+    if (!coord->recovery_started.exchange(true)) {
+      coord->all_exited_when_recovery_started.store(
+          coord->planner_exited.load() && coord->smoother_exited.load() &&
+          coord->controller_exited.load());
+    }
+    ayanami::abstract::RecoveryCycleResult r;
+    r.status =
+        coord->recovery_cycles.fetch_add(1) < coord->active_recovery_cycles
+            ? ayanami::abstract::RecoveryCycleResult::Status::RUNNING
+            : ayanami::abstract::RecoveryCycleResult::Status::SUCCESS;
+    return r;
+  }
+  bool cancel() override { return true; }
+ private:
+  std::shared_ptr<Coordinator> coord;
+};
+
+// 控制器 execution 需要注入 checker 才进入运行循环 (缺省 abstract execution 无
+// checker → INTERNAL_ERROR)。
+class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  void reset() override {}
+  bool isGoalReached(const ayanami::geometry_msgs::PoseStamped&,
+                     const ayanami::geometry_msgs::PoseStamped&,
+                     const ayanami::geometry_msgs::TwistStamped&) override {
+    return false;
+  }
+  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+    return {};
+  }
+};
+
+class RecoveryTestControllerAction : public ayanami::components::ControllerAction {
+ public:
+  using ControllerAction::ControllerAction;
+ protected:
+  ayanami::components::ControllerExecution::Ptr createExecution() override {
+    auto exec =
+        std::make_shared<ayanami::components::ControllerExecution>(controller);
+    exec->setGoalChecker(std::make_shared<NeverGoalChecker>());
+    exec->setProgressChecker(std::make_shared<TrueProgressChecker>());
+    return exec;
+  }
+};
+
+// 直接安装 4 个 action (不 loadPlugins): 主用 requestRecovery 的排他逻辑 +
+// cancelAll* 三族 action map。
+class RecoveryExclusiveServer : public ayanami::components::NavigationServerBase {
+ public:
+  explicit RecoveryExclusiveServer(std::shared_ptr<Coordinator> coord) {
+    default_planner = "blocker";
+    default_smoother = "blocker";
+    default_controller = "blocker";
+    planner_actions["blocker"] = std::make_unique<ayanami::components::PlannerAction>(
+        std::make_shared<BlockingPlanner>(coord));
+    smoother_actions["blocker"] = std::make_unique<ayanami::components::SmootherAction>(
+        std::make_shared<BlockingSmoother>(coord));
+    controller_actions["blocker"] = std::make_unique<RecoveryTestControllerAction>(
+        std::make_shared<BlockingController>(coord));
+    recovery_actions["test_recovery"] = std::make_unique<ayanami::components::RecoveryAction>(
+        std::make_shared<ActiveRecovery>(coord));
+  }
+};
+
+inline bool waitFlag(const std::atomic<bool>& flag, int max_ms = 3000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(max_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (flag.load()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return flag.load();
+}
+
+}  // namespace recovery_exclusive
+
 }  // namespace
 
-TEST(NavigationServerBaseTest, LoadPluginsSucceedsAndCreatesActions) {
-  auto dir = make_config_dir("create_test_planner_plugin");
+TEST(NavigationServerBaseTest, loadPluginsSucceedsAndCreatesActions) {
+  auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
   server.loadPlugins(dir.string());
 
@@ -217,18 +397,17 @@ TEST(NavigationServerBaseTest, LoadPluginsSucceedsAndCreatesActions) {
   ASSERT_NE(server.recoveryAction("test_recovery"), nullptr);
   ASSERT_EQ(server.recoveryAction("missing"), nullptr);
 
-  // 虚 initialize*Plugin 链被调用 (含 name 透传) + TestMapContext 注入生效
+  // 虚 initialize*Plugin 链被调用 (含 name 透传)
   ASSERT_EQ(server.initNames().size(), 4u);
-  EXPECT_TRUE(server.mapInjected());
 }
 
-TEST(NavigationServerBaseTest, RequestPathSucceedsAndFillsSessionAndVersion) {
-  auto dir = make_config_dir("create_test_planner_plugin");
+TEST(NavigationServerBaseTest, requestPathSucceedsAndFillsSessionAndVersion) {
+  auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
   server.loadPlugins(dir.string());
 
-  server.incrementPlanVersion();
-  server.bumpSessionId();
+  server.bumpSessionId();  // session=1, plan_version 归零 (新会话语义)
+  server.incrementPlanVersion();  // plan_version=1
 
   ayanami::actions::GetPathGoal goal;
   goal.start = pose("map", 0.0, 0.0);
@@ -248,8 +427,8 @@ TEST(NavigationServerBaseTest, RequestPathSucceedsAndFillsSessionAndVersion) {
   EXPECT_EQ(server.factoryNames().front(), "test_planner");
 }
 
-TEST(NavigationServerBaseTest, RequestExecutionAndRecoveryAndSmoothingSucceed) {
-  auto dir = make_config_dir("create_test_planner_plugin");
+TEST(NavigationServerBaseTest, requestExecutionAndRecoveryAndSmoothingSucceed) {
+  auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
   server.loadPlugins(dir.string());
 
@@ -280,8 +459,8 @@ TEST(NavigationServerBaseTest, RequestExecutionAndRecoveryAndSmoothingSucceed) {
   }
 }
 
-TEST(NavigationServerBaseTest, PlannerFallbackTriggersDefaultRecovery) {
-  auto dir = make_config_dir("create_fail_planner_plugin");
+TEST(NavigationServerBaseTest, plannerResultCallbackDoesNotScheduleRecovery) {
+  auto dir = makeConfigDir(g_fail_planner_so);
   TestNavServer server;
   server.loadPlugins(dir.string());
 
@@ -289,8 +468,17 @@ TEST(NavigationServerBaseTest, PlannerFallbackTriggersDefaultRecovery) {
   int cb = ayanami::interfaces::NavigationCallbacks::on_recovery_goal.add(
       [&](const ayanami::actions::RecoveryGoal&) { recovery_goal_hits++; });
 
-  server.registerPlannerFallback();
+  // 规划失败结果直接经 on_get_path_result 旁路 emit: server 不再注册任何
+  // fallback, 不得 out-of-band 触发 recovery action。
+  ayanami::actions::GoalResult<ayanami::actions::GetPathResult> gr;
+  gr.status = ayanami::actions::GoalStatus::ABORTED;
+  gr.result.failure = ayanami::FailureCode::PathNotFound;
+  gr.result.session_id = server.currentSessionId();
+  gr.result.plan_version = server.currentPlanVersion();
+  ayanami::interfaces::NavigationCallbacks::on_get_path_result(gr);
 
+  // 真实 requestPath 失败 (Action 内部同样 emit on_get_path_result): 仍无
+  // out-of-band recovery —— recovery 只应由 BT 内 RecoveryNode 调度。
   ayanami::actions::GetPathGoal goal;
   goal.start = pose("map", 0.0, 0.0);
   goal.goal = pose("map", 1.0, 1.0);
@@ -299,43 +487,15 @@ TEST(NavigationServerBaseTest, PlannerFallbackTriggersDefaultRecovery) {
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::ABORTED);
 
-  // 旁路链: on_get_path_result(失败) → fallback → default recovery acceptGoal
-  for (int i = 0; i < 100 && recovery_goal_hits.load() == 0; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_GE(recovery_goal_hits.load(), 1);
+  // 留时间窗口: 若存在 out-of-band fallback, recovery_goal 计数应 > 0。
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(recovery_goal_hits.load(), 0);
 
   ayanami::interfaces::NavigationCallbacks::on_recovery_goal.remove(cb);
 }
 
-TEST(NavigationServerBaseTest, RegisterPlannerFallbackOnlyOnce) {
-  auto dir = make_config_dir("create_fail_planner_plugin");
-  TestNavServer server;
-  server.loadPlugins(dir.string());
-
-  std::atomic<int> recovery_goal_hits{0};
-  int cb = ayanami::interfaces::NavigationCallbacks::on_recovery_goal.add(
-      [&](const ayanami::actions::RecoveryGoal&) { recovery_goal_hits++; });
-
-  server.registerPlannerFallback();
-  server.registerPlannerFallback();  // 重复注册应被忽略
-
-  ayanami::actions::GetPathGoal goal;
-  goal.start = pose("map", 0.0, 0.0);
-  goal.goal = pose("map", 1.0, 1.0);
-  auto task = server.requestPath(goal);
-  ASSERT_TRUE(waitReady(task));
-
-  for (int i = 0; i < 100 && recovery_goal_hits.load() == 0; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_EQ(recovery_goal_hits.load(), 1);
-
-  ayanami::interfaces::NavigationCallbacks::on_recovery_goal.remove(cb);
-}
-
-TEST(NavigationServerBaseTest, DestructorStopsActionsAndDoesNotCrash) {
-  auto dir = make_config_dir("create_test_planner_plugin");
+TEST(NavigationServerBaseTest, destructorStopsActionsAndDoesNotCrash) {
+  auto dir = makeConfigDir(g_planner_so);
   {
     TestNavServer server;
     server.loadPlugins(dir.string());
@@ -354,10 +514,112 @@ TEST(NavigationServerBaseTest, DestructorStopsActionsAndDoesNotCrash) {
   // 作用域结束 → 析构: stop → reset actions → clearPlugins, 不挂
 }
 
+TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption) {
+  // recovery 跨族抢占 (controller 暂停) 已由行为树实现 (树中 <Recovery/> 前放
+  // <HaltControllers/>, 调 server.cancelAllControllers())。server 层 requestRecovery
+  // 只做排他: 拒绝并发恢复与并发普通请求, 不主动 cancel 其它族。
+  auto coord = std::make_shared<recovery_exclusive::Coordinator>();
+  recovery_exclusive::RecoveryExclusiveServer server(coord);
+
+  // 1. 启动三个阻塞任务 (进入插件后一直阻塞)。
+  ayanami::actions::GetPathGoal pgoal;
+  pgoal.start = pose("map", 0.0, 0.0);
+  pgoal.goal = pose("map", 1.0, 1.0);
+  auto ptask = server.requestPath(pgoal);
+
+  ayanami::actions::SmoothPathGoal sgoal;
+  sgoal.path.poses.push_back(pose("map", 0.0, 0.0));
+  auto stask = server.requestSmoothing(sgoal);
+
+  ayanami::actions::ExePathGoal egoal;
+  egoal.path.poses.push_back(pose("map", 0.0, 0.0));
+  auto etask = server.requestExecution(egoal);
+
+  ASSERT_TRUE(ptask.valid());
+  ASSERT_TRUE(stask.valid());
+  ASSERT_TRUE(etask.valid());
+
+  ASSERT_TRUE(recovery_exclusive::waitFlag(coord->planner_entered));
+  ASSERT_TRUE(recovery_exclusive::waitFlag(coord->smoother_entered));
+  ASSERT_TRUE(recovery_exclusive::waitFlag(coord->controller_entered));
+
+  // 2. requestRecovery: 不抢占三族 (树负责暂停); 恢复正常执行完成。
+  ayanami::actions::RecoveryGoal rgoal;
+  rgoal.recovery_id = "test_recovery";
+  auto rtask = server.requestRecovery(rgoal);
+  ASSERT_TRUE(rtask.valid());
+
+  ASSERT_TRUE(recovery_exclusive::waitFlag(coord->recovery_started, 5000));
+  // 恢复启动时三族仍在运行 —— server 不主动 cancel。
+  EXPECT_FALSE(coord->planner_exited.load());
+  EXPECT_FALSE(coord->smoother_exited.load());
+  EXPECT_FALSE(coord->controller_exited.load());
+  EXPECT_FALSE(coord->all_exited_when_recovery_started.load());
+
+  // 3. recovery active 期间: 普通 request 被结构化拒绝 (ABORTED +
+  // FailureCode::RecoveryFailed)。
+  auto rp = server.requestPath(pgoal);
+  ASSERT_TRUE(rp.valid());
+  ASSERT_TRUE(rp.ready());
+  EXPECT_EQ(rp.status(), ayanami::actions::GoalStatus::ABORTED);
+  EXPECT_EQ(rp.result().failure, ayanami::FailureCode::RecoveryFailed);
+
+  auto re = server.requestExecution(egoal);
+  ASSERT_TRUE(re.valid());
+  ASSERT_TRUE(re.ready());
+  EXPECT_EQ(re.status(), ayanami::actions::GoalStatus::ABORTED);
+  EXPECT_EQ(re.result().failure, ayanami::FailureCode::RecoveryFailed);
+
+  // 二次 recovery 同样被拒绝。
+  auto rr = server.requestRecovery(rgoal);
+  ASSERT_TRUE(rr.valid());
+  ASSERT_TRUE(rr.ready());
+  EXPECT_EQ(rr.status(), ayanami::actions::GoalStatus::ABORTED);
+  EXPECT_EQ(rr.result().failure, ayanami::FailureCode::RecoveryFailed);
+
+  // 4. recovery 完成 -> 恢复接受普通请求。
+  std::atomic<bool> recovery_done{false};
+  rtask.onComplete([&recovery_done] { recovery_done.store(true); });
+  ASSERT_TRUE(waitReady(rtask, 5000));
+  EXPECT_EQ(rtask.status(), ayanami::actions::GoalStatus::SUCCEEDED);
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(2000);
+    while (!recovery_done.load() &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(recovery_done.load());
+  }
+
+  // 5. 清理: 树节点的 <HaltControllers/> 语义等价于调 server.cancelAllControllers()
+  // (cancel+join)。这里直接调用验证 join 语义; planner/smoother 由树 halt 清理,
+  // 测试侧同样调用以保证线程退出。
+  server.cancelAllControllers();
+  server.cancelAllPlanners();
+  server.cancelAllSmoothers();
+  ASSERT_TRUE(waitReady(ptask, 2000));
+  EXPECT_EQ(ptask.status(), ayanami::actions::GoalStatus::CANCELED);
+  ASSERT_TRUE(waitReady(stask, 2000));
+  EXPECT_EQ(stask.status(), ayanami::actions::GoalStatus::CANCELED);
+  ASSERT_TRUE(waitReady(etask, 2000));
+  EXPECT_EQ(etask.status(), ayanami::actions::GoalStatus::CANCELED);
+  EXPECT_TRUE(coord->planner_exited.load());
+  EXPECT_TRUE(coord->smoother_exited.load());
+  EXPECT_TRUE(coord->controller_exited.load());
+
+  // 取消+join 完成后 controller 可再次接受新任务 (恢复后重新 FollowPath)。
+  auto exe_after = server.requestExecution(egoal);
+  ASSERT_TRUE(exe_after.valid());
+  EXPECT_FALSE(exe_after.ready());
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
-  if (argc > 1) {
-    g_plugins_so = argv[1];
-  }
+  if (argc > 1) g_planner_so = argv[1];
+  if (argc > 2) g_fail_planner_so = argv[2];
+  if (argc > 3) g_smoother_so = argv[3];
+  if (argc > 4) g_controller_so = argv[4];
+  if (argc > 5) g_recovery_so = argv[5];
   return RUN_ALL_TESTS();
 }

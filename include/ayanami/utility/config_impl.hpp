@@ -152,7 +152,7 @@ template <> struct traits<std::vector<Eigen::Vector2d>> {
 template <typename T>
 std::optional<T> Config::param(const std::string& module_name,
                                const std::string& param_name) const {
-  const auto& json = std::any_cast<const nlohmann::json&>(config_);
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
 
   const auto module = json.find(module_name);
   if (module == json.end()) {
@@ -191,9 +191,9 @@ T Config::param_cast(const std::string& module_name,
 }
 
 template <typename T>
-void Config::override_param(const std::string& module_name,
+void Config::overrideParam(const std::string& module_name,
                             const std::string& param_name, const T& value) {
-  auto& json = std::any_cast<nlohmann::json&>(config_);
+  auto& json = std::any_cast<nlohmann::json&>(config);
   json[module_name][param_name] = traits<T>::invert(value);
 }
 
@@ -204,7 +204,7 @@ void Config::override_param(const std::string& module_name,
                               const TYPE&) const;                              \
   template TYPE Config::param_cast(const std::string&, const std::string&)     \
       const;                                                                   \
-  template void Config::override_param(const std::string&, const std::string&, \
+  template void Config::overrideParam(const std::string&, const std::string&, \
                                        const TYPE&);
 
 } // namespace ayanami

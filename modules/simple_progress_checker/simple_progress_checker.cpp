@@ -13,38 +13,38 @@ namespace ayanami {
 namespace modules {
 
 namespace {
-constexpr double kPi = 3.14159265358979323846;
+constexpr double k_pi = 3.14159265358979323846;
 }
 
-SimpleProgressChecker::SimpleProgressChecker() { loadConfig(); }
-
-void SimpleProgressChecker::loadConfig() {
+SimpleProgressChecker::SimpleProgressChecker() {
+  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
+  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
+  // config_progress_checker → 本插件 json 文件。
   try {
-    const ayanami::ComponentConfig holder("config_progress_checker");
-    const auto& file = holder.get();
-    config_.required_movement =
+    const Config file(GlobalConfig::getConfigPath("config_progress_checker"));
+    param.required_movement =
         file.param<double>("progress_checker", "required_movement",
-                           config_.required_movement);
-    config_.movement_angle_required =
+                           param.required_movement);
+    param.movement_angle_required =
         file.param<double>("progress_checker", "movement_angle_required",
-                           config_.movement_angle_required);
-    config_.time_period = file.param<double>("progress_checker", "time_period",
-                                             config_.time_period);
+                           param.movement_angle_required);
+    param.time_period = file.param<double>("progress_checker", "time_period",
+                                           param.time_period);
   } catch (...) {
     // 配置不可读时保持默认值。
   }
 }
 
 void SimpleProgressChecker::reset() {
-  initialized_ = false;
-  reset_pending_.store(true);
+  initialized = false;
+  reset_pending.store(true);
 }
 
 namespace {
 
 // Eigen 四元数 → 2D 偏航角 [-pi, pi] (normalize 到偏航主值)。
-double yawOf(const Eigen::Isometry3d& iso) {
-  const Eigen::Quaterniond q(iso.rotation());
+double yawOf(const ayanami::geometry_msgs::Pose& pose) {
+  const Eigen::Quaterniond& q = pose.orientation;
   double yaw = std::atan2(
       2.0 * (q.w() * q.z() + q.x() * q.y()),
       1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
@@ -52,8 +52,8 @@ double yawOf(const Eigen::Isometry3d& iso) {
 }
 
 double normalizeAngle(double angle) {
-  while (angle > kPi) angle -= 2.0 * kPi;
-  while (angle < -kPi) angle += 2.0 * kPi;
+  while (angle > k_pi) angle -= 2.0 * k_pi;
+  while (angle < -k_pi) angle += 2.0 * k_pi;
   return angle;
 }
 
@@ -61,32 +61,32 @@ double normalizeAngle(double angle) {
 
 bool SimpleProgressChecker::check(
     const ayanami::geometry_msgs::PoseStamped& current_pose) {
-  if (!initialized_ || reset_pending_.load()) {
-    base_pose_ = current_pose;
-    base_time_ = std::chrono::steady_clock::now();
-    initialized_ = true;
-    reset_pending_.store(false);
+  if (!initialized || reset_pending.load()) {
+    base_pose = current_pose;
+    base_time = std::chrono::steady_clock::now();
+    initialized = true;
+    reset_pending.store(false);
     return true;
   }
 
   const Eigen::Vector3d delta =
-      current_pose.pose.translation() - base_pose_.pose.translation();
+      current_pose.pose.position - base_pose.pose.position;
   const double moved = delta.head<2>().norm();
   const double angle_moved =
-      std::abs(normalizeAngle(yawOf(current_pose.pose) - yawOf(base_pose_.pose)));
+      std::abs(normalizeAngle(yawOf(current_pose.pose) - yawOf(base_pose.pose)));
 
   const double elapsed = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - base_time_)
+                             std::chrono::steady_clock::now() - base_time)
                              .count();
 
-  if (moved >= config_.required_movement ||
-      angle_moved >= config_.movement_angle_required) {
-    base_pose_ = current_pose;
-    base_time_ = std::chrono::steady_clock::now();
+  if (moved >= param.required_movement ||
+      angle_moved >= param.movement_angle_required) {
+    base_pose = current_pose;
+    base_time = std::chrono::steady_clock::now();
     return true;
   }
 
-  if (elapsed > config_.time_period) {
+  if (elapsed > param.time_period) {
     return false;  // 无进展 (卡住)
   }
   return true;

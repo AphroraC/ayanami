@@ -5,6 +5,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 
+# libstdc++ 的 shared_ptr 原子自由函数只有启用 cmpxchg16b 时才走无锁路径
+# (-mcx16), 否则退回按桶自旋锁实现。所有编译 CallbackSlot/CostmapWrapper 头
+# 文件的 TU (lib、模块插件、测试、下游 ayanami_ros) 必须使用同一策略, 否则
+# 同进程内 lock-free 读者与锁池写者混用同一 shared_ptr 对象是未定义行为。
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mcx16" AYANAMI_HAS_MCX16)
+if(AYANAMI_HAS_MCX16)
+  add_compile_options(-mcx16)
+else()
+  message(WARNING "ayanami: -mcx16 不受支持; shared_ptr 原子操作退回 libstdc++ 锁池实现")
+endif()
+
 option(BUILD_SHARED "Build libayanami as shared library" ON)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_WITH_BT "Build behavior tree component" ON)
@@ -55,10 +67,12 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
-  include/ayanami/abstract/components/impl/execution_base.cpp
-  include/ayanami/abstract/components/impl/plugin_manager.cpp
+  src/interfaces/transform_store.cpp
+  src/abstract/components/execution_base.cpp
+  src/abstract/components/worker_pool.cpp
+  src/abstract/components/plugin_manager.cpp
   src/components/navigation_server_base.cpp
-  src/components/impl/navigation_server_base_impl.cpp
+  src/components/robot_state_controller.cpp
   src/costmap/components/costmap_navigation_server.cpp
   ${AYANAMI_BT_SOURCES}
   thirdparty/fast_tf/fast_tf.cpp)
@@ -67,6 +81,9 @@ target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/modules>
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIR})
+if(AYANAMI_HAS_MCX16)
+  target_compile_options(ayanami PUBLIC -mcx16)
+endif()
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
 # Task 20: CostmapNavigationServer 公开头 include costmap_server/costmap_wrapper.hpp
 target_link_libraries(ayanami PUBLIC costmap_server::costmap_server)
@@ -81,7 +98,7 @@ endif()
 install(TARGETS ayanami EXPORT ayanamiTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
-install(DIRECTORY config assets DESTINATION share/ayanami
+install(DIRECTORY config DESTINATION share/ayanami
   PATTERN "*.yaml" EXCLUDE PATTERN "*.yml" EXCLUDE)
 
 # 模块宏
@@ -167,6 +184,13 @@ ayanami_add_module(simple_progress_checker
   modules/simple_progress_checker/simple_progress_checker.cpp
   modules/simple_progress_checker/module.cpp)
 
+# Requirement 3: modules/navigation_behavior_tree (BehaviorTreeExtension 扩展)。
+# 默认导航树 (XML) 与全部自定义导航 BT 节点注册下沉到该 .so; 核心
+# BehaviorTreePilot 泛型化: 只装载/持有 BehaviorTreeExtension(s)。
+ayanami_add_module(navigation_behavior_tree
+  modules/navigation_behavior_tree/navigation_behavior_tree.cpp
+  modules/navigation_behavior_tree/module.cpp)
+
 # 包导出
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
@@ -211,6 +235,25 @@ if(BUILD_TESTING)
     target_link_libraries(transform_store_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME TransformStoreTest COMMAND transform_store_test)
 
+    add_executable(robot_state_controller_test tests/robot_state_controller_test.cpp)
+    target_link_libraries(robot_state_controller_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME RobotStateControllerTest COMMAND robot_state_controller_test)
+
+    # RobotStateController 跨 DSO 单例: instance() 定义在 libayanami .cpp,
+    # dlopen 插件 (链接 libayanami) 与主二进制解析到同一实例、共享状态。
+    add_library(robot_state_dso_extension SHARED
+      tests/plugins/robot_state_dso_extension.cpp)
+    target_link_libraries(robot_state_dso_extension PRIVATE ayanami)
+    set_target_properties(robot_state_dso_extension PROPERTIES PREFIX "lib")
+
+    add_executable(robot_state_controller_cross_dso_test
+      tests/robot_state_controller_cross_dso_test.cpp)
+    target_link_libraries(robot_state_controller_cross_dso_test PRIVATE
+      ayanami GTest::gtest)
+    add_test(NAME RobotStateControllerCrossDSO COMMAND
+      robot_state_controller_cross_dso_test
+      $<TARGET_FILE:robot_state_dso_extension>)
+
     add_executable(load_module_test tests/load_module_test.cpp)
     target_link_libraries(load_module_test PRIVATE ayanami GTest::gtest)
     add_test(NAME LoadModuleTest COMMAND load_module_test
@@ -241,33 +284,54 @@ if(BUILD_TESTING)
     add_executable(plugin_manager_test tests/plugin_manager_test.cpp)
     target_link_libraries(plugin_manager_test PRIVATE ayanami GTest::gtest)
     add_test(NAME PluginManagerTest COMMAND plugin_manager_test
-      $<TARGET_FILE:dummy_planner_module>)
+      $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
 
     # Task 0: BLOCK #2 派生析构经 base ptr 可调 (abstract base virtual ~ 缺失 UB)
     add_executable(plugin_teardown_no_ub_test tests/plugin_teardown_no_ub_test.cpp)
     target_link_libraries(plugin_teardown_no_ub_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME PluginTeardownNoUB COMMAND plugin_teardown_no_ub_test)
 
-    # Task 11: NavigationServerBase (4 族插件工厂在 navigation_plugins .so)
-    add_library(navigation_plugins SHARED tests/plugins/navigation_plugins.cpp)
-    target_link_libraries(navigation_plugins PRIVATE ayanami)
-    set_target_properties(navigation_plugins PROPERTIES PREFIX "lib")
+    # Task 11: NavigationServerBase (4 族插件工厂在测试插件 .so, 每个 .so 单一
+    # 公共 create_extension_module 工厂; 类型化由 PluginManager dynamic_cast 完成)。
+    add_library(test_planner_plugin SHARED tests/plugins/test_planner_plugin.cpp)
+    target_link_libraries(test_planner_plugin PRIVATE ayanami)
+    set_target_properties(test_planner_plugin PROPERTIES PREFIX "lib")
+    add_library(test_failing_planner_plugin SHARED tests/plugins/test_failing_planner_plugin.cpp)
+    target_link_libraries(test_failing_planner_plugin PRIVATE ayanami)
+    set_target_properties(test_failing_planner_plugin PROPERTIES PREFIX "lib")
+    add_library(test_smoother_plugin SHARED tests/plugins/test_smoother_plugin.cpp)
+    target_link_libraries(test_smoother_plugin PRIVATE ayanami)
+    set_target_properties(test_smoother_plugin PROPERTIES PREFIX "lib")
+    add_library(test_controller_plugin SHARED tests/plugins/test_controller_plugin.cpp)
+    target_link_libraries(test_controller_plugin PRIVATE ayanami)
+    set_target_properties(test_controller_plugin PROPERTIES PREFIX "lib")
+    add_library(test_looping_controller_plugin SHARED tests/plugins/test_looping_controller_plugin.cpp)
+    target_link_libraries(test_looping_controller_plugin PRIVATE ayanami)
+    set_target_properties(test_looping_controller_plugin PROPERTIES PREFIX "lib")
+    add_library(test_recovery_plugin SHARED tests/plugins/test_recovery_plugin.cpp)
+    target_link_libraries(test_recovery_plugin PRIVATE ayanami)
+    set_target_properties(test_recovery_plugin PROPERTIES PREFIX "lib")
 
     add_executable(navigation_server_test tests/navigation_server_test.cpp)
     target_link_libraries(navigation_server_test PRIVATE ayanami GTest::gtest)
     add_test(NAME NavigationServerTest COMMAND navigation_server_test
-      $<TARGET_FILE:navigation_plugins>)
+      $<TARGET_FILE:test_planner_plugin>
+      $<TARGET_FILE:test_failing_planner_plugin>
+      $<TARGET_FILE:test_smoother_plugin>
+      $<TARGET_FILE:test_controller_plugin>
+      $<TARGET_FILE:test_recovery_plugin>)
 
     # Task 12: BT 控制节点 + 条件节点 + 黑板协议
     add_executable(behavior_tree_control_test tests/behavior_tree_control_test.cpp)
     target_link_libraries(behavior_tree_control_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME BehaviorTreeControlTest COMMAND behavior_tree_control_test)
 
-    # Task 13: BT action 节点 (TaskHandle 直连) + 注册 + 默认 XML
+    # Task 13: BT action 节点 (TaskHandle 直连) + 注册 + 扩展默认 XML
     add_executable(behavior_tree_action_test tests/behavior_tree_action_test.cpp)
     target_link_libraries(behavior_tree_action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(behavior_tree_action_test PRIVATE
-      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/tests/assets/navigation.xml"
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME BehaviorTreeActionTest COMMAND behavior_tree_action_test)
 
     # Task 14: BT Pilot (常驻树 + pending_goal 黑板 + 抢占零速度)
@@ -275,7 +339,8 @@ if(BUILD_TESTING)
       add_executable(pilot_test tests/pilot_test.cpp)
       target_link_libraries(pilot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
       target_compile_definitions(pilot_test PRIVATE
-        AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
+        AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/tests/assets/navigation.xml"
+        AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
       add_test(NAME PilotTest COMMAND pilot_test)
     endif()
 
@@ -327,6 +392,21 @@ if(BUILD_TESTING)
     add_test(NAME RecoveryVsObstacle COMMAND recovery_vs_obstacle_test)
     set_tests_properties(RecoveryVsObstacle PROPERTIES TIMEOUT 10)
 
+    # Redesign: smoother 持有稳定快照 vs 并发 obstacle 写者 (不可变 epoch)。
+    add_executable(snapshot_stability_test tests/snapshot_stability_test.cpp)
+    target_link_libraries(snapshot_stability_test PRIVATE
+      ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME SnapshotStability COMMAND snapshot_stability_test)
+    set_tests_properties(SnapshotStability PROPERTIES TIMEOUT 10)
+
+    # Redesign: 长时 planner 不阻塞 obstacle 写者 (快照取代整规划持锁)。
+    add_executable(planner_writer_concurrency_test
+      tests/planner_writer_concurrency_test.cpp)
+    target_link_libraries(planner_writer_concurrency_test PRIVATE
+      ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    add_test(NAME PlannerWriterConcurrency COMMAND planner_writer_concurrency_test)
+    set_tests_properties(PlannerWriterConcurrency PROPERTIES TIMEOUT 10)
+
     # Task 3 (M2 阶段 A 收尾): minor carry wiring 综合 5 项
     # (smac start fallback / robot_frame 单一来源 / 二次 configureCoreMaps 守护 /
     #  pid 粗签名 / cmake find_dependency)。
@@ -337,11 +417,17 @@ if(BUILD_TESTING)
       GTest::gtest GTest::gtest_main)
     add_test(NAME MinorCarryWiring COMMAND minor_carry_wirings_test)
 
-    # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)
-    add_library(costmap_plugins SHARED tests/plugins/costmap_plugins.cpp)
-    target_link_libraries(costmap_plugins PRIVATE
-      ayanami costmap_server::costmap_server)
-    set_target_properties(costmap_plugins PROPERTIES PREFIX "lib")
+    # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)。
+    # 每个测试插件 .so 单一公共 create_extension_module 工厂。
+    foreach(plugin test_costmap_planner test_costmap_smoother
+                 test_costmap_controller test_costmap_recovery
+                 test_plain_planner test_plain_smoother
+                 test_plain_controller test_plain_recovery)
+      add_library(${plugin}_plugin SHARED tests/plugins/${plugin}_plugin.cpp)
+      target_link_libraries(${plugin}_plugin PRIVATE
+        ayanami costmap_server::costmap_server)
+      set_target_properties(${plugin}_plugin PROPERTIES PREFIX "lib")
+    endforeach()
 
     add_executable(costmap_navigation_server_test
       tests/costmap_navigation_server_test.cpp)
@@ -350,7 +436,14 @@ if(BUILD_TESTING)
     target_compile_definitions(costmap_navigation_server_test PRIVATE
       AYANAMI_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
-      $<TARGET_FILE:costmap_plugins>)
+      $<TARGET_FILE:test_costmap_planner_plugin>
+      $<TARGET_FILE:test_costmap_smoother_plugin>
+      $<TARGET_FILE:test_costmap_controller_plugin>
+      $<TARGET_FILE:test_costmap_recovery_plugin>
+      $<TARGET_FILE:test_plain_planner_plugin>
+      $<TARGET_FILE:test_plain_smoother_plugin>
+      $<TARGET_FILE:test_plain_controller_plugin>
+      $<TARGET_FILE:test_plain_recovery_plugin>)
 
     # modules/costmap_dwb_controller (DWB, 迁移自 nav2_dwb_controller)
     add_executable(costmap_dwb_controller_test
@@ -395,11 +488,14 @@ if(BUILD_TESTING)
       ayanami costmap_spin_recovery costmap_back_up_recovery
       costmap_wait_recovery costmap_clear_costmap_recovery
       costmap_server::costmap_server GTest::gtest GTest::gtest_main)
+    target_compile_definitions(costmap_recovery_modules_test PRIVATE
+      AYANAMI_MODULES_SRC="${CMAKE_SOURCE_DIR}/modules")
     add_test(NAME CostmapRecoveryModulesTest COMMAND costmap_recovery_modules_test
       $<TARGET_FILE:costmap_spin_recovery>
       $<TARGET_FILE:costmap_back_up_recovery>
       $<TARGET_FILE:costmap_wait_recovery>
-      $<TARGET_FILE:costmap_clear_costmap_recovery>)
+      $<TARGET_FILE:costmap_clear_costmap_recovery>
+      "${CMAKE_SOURCE_DIR}/modules")
 
     # Task 25: modules/costmap_navigation (AbstractNavigation 宿主 + BT 抢占零速度)
     add_library(navigation_test_controller SHARED
@@ -412,6 +508,8 @@ if(BUILD_TESTING)
     target_link_libraries(costmap_navigation_test PRIVATE
       ayanami costmap_navigation costmap_server::costmap_server
       GTest::gtest GTest::gtest_main)
+    target_compile_definitions(costmap_navigation_test PRIVATE
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME CostmapNavigationTest COMMAND costmap_navigation_test
       $<TARGET_FILE:costmap_navigation>
       $<TARGET_FILE:costmap_smac_planner>
@@ -429,6 +527,8 @@ if(BUILD_TESTING)
       target_link_libraries(headless_e2e_test PRIVATE
         ayanami costmap_navigation costmap_server::costmap_server
         GTest::gtest GTest::gtest_main)
+      target_compile_definitions(headless_e2e_test PRIVATE
+        AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
       add_test(NAME HeadlessE2E COMMAND headless_e2e_test
         $<TARGET_FILE:costmap_navigation>
         $<TARGET_FILE:costmap_smac_planner>
@@ -450,7 +550,10 @@ if(BUILD_TESTING)
     add_test(NAME CheckerTest COMMAND checker_test
       $<TARGET_FILE:simple_goal_checker>
       $<TARGET_FILE:simple_progress_checker>
-      $<TARGET_FILE:navigation_plugins>)
+      $<TARGET_FILE:test_planner_plugin>
+      $<TARGET_FILE:test_smoother_plugin>
+      $<TARGET_FILE:test_looping_controller_plugin>
+      $<TARGET_FILE:test_recovery_plugin>)
 
     # Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6/§9)。
     # 需要 host 模块 dlopen + 真实算法模块 .so 做反向解析断言。
@@ -458,6 +561,8 @@ if(BUILD_TESTING)
     target_link_libraries(config_consistency_test PRIVATE
       ayanami costmap_navigation costmap_server::costmap_server
       GTest::gtest GTest::gtest_main)
+    target_compile_definitions(config_consistency_test PRIVATE
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME ConfigConsistencyTest COMMAND config_consistency_test
       "${CMAKE_SOURCE_DIR}/config"
       $<TARGET_FILE:costmap_navigation>
@@ -501,6 +606,39 @@ if(BUILD_TESTING)
         ayanami GTest::gtest GTest::gtest_main)
       add_test(NAME RecoveryExhaustionTest COMMAND recovery_exhaustion_test)
     endif()
+
+    # Requirement 2/3: 所有生产模块经公共工厂装载 (类型化 cast) + 默认树扩展
+    # 独立装载/注册/执行。
+    add_executable(extension_module_factory_test
+      tests/extension_module_factory_test.cpp)
+    target_link_libraries(extension_module_factory_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ExtensionModuleFactoryTest COMMAND extension_module_factory_test
+      $<TARGET_FILE:costmap_navigation>
+      $<TARGET_FILE:costmap_dwb_controller>
+      $<TARGET_FILE:costmap_smac_planner>
+      $<TARGET_FILE:costmap_savitzky_smoother>
+      $<TARGET_FILE:costmap_pid_controller>
+      $<TARGET_FILE:costmap_spin_recovery>
+      $<TARGET_FILE:costmap_back_up_recovery>
+      $<TARGET_FILE:costmap_wait_recovery>
+      $<TARGET_FILE:costmap_clear_costmap_recovery>
+      $<TARGET_FILE:simple_goal_checker>
+      $<TARGET_FILE:simple_progress_checker>
+      $<TARGET_FILE:navigation_behavior_tree>)
+
+    # 本 phase: session/version 单一来源 + failure context + plugin id 分派 +
+    # controller in-place plan update (焦点测试)。
+    add_executable(session_state_dispatch_test tests/session_state_dispatch_test.cpp)
+    target_link_libraries(session_state_dispatch_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(session_state_dispatch_test PRIVATE
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
+    add_test(NAME SessionStateDispatchTest COMMAND session_state_dispatch_test
+      $<TARGET_FILE:test_planner_plugin>
+      $<TARGET_FILE:test_smoother_plugin>
+      $<TARGET_FILE:test_controller_plugin>
+      $<TARGET_FILE:test_recovery_plugin>)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

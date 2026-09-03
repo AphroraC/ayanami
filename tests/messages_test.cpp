@@ -19,17 +19,17 @@ using ayanami::nav_msgs::Path;
 
 } // namespace
 
-TEST(MessagesTest, PoseStampedHasHeaderAndIsometry) {
+TEST(MessagesTest, poseStampedHasHeaderAndIsometry) {
   PoseStamped p = PoseStamped::fromIsometry(
       "map", Eigen::Translation3d(1.0, 0.0, 0.0) * Eigen::Quaterniond::Identity());
   EXPECT_EQ(p.header.frame_id, "map");
   EXPECT_TRUE(p.header.stamp.isLatest());
-  EXPECT_DOUBLE_EQ(p.pose.translation().x(), 1.0);
-  EXPECT_DOUBLE_EQ(p.pose.translation().y(), 0.0);
-  EXPECT_EQ(p.toIsometry().matrix(), p.pose.matrix());
+  EXPECT_DOUBLE_EQ(p.pose.position.x(), 1.0);
+  EXPECT_DOUBLE_EQ(p.pose.position.y(), 0.0);
+  EXPECT_EQ(p.toIsometry().matrix(), p.pose.toIsometry().matrix());
 }
 
-TEST(MessagesTest, HeaderStampDefaultsToLatestSentinel) {
+TEST(MessagesTest, headerStampDefaultsToLatestSentinel) {
   ayanami::geometry_msgs::Header h;
   EXPECT_TRUE(h.stamp.isLatest());
   EXPECT_EQ(h.stamp.count(), 0);
@@ -41,7 +41,7 @@ TEST(MessagesTest, HeaderStampDefaultsToLatestSentinel) {
   EXPECT_TRUE(cloud.header.stamp.isLatest());
 }
 
-TEST(MessagesTest, HeaderStampCarriesExplicitTimestamp) {
+TEST(MessagesTest, headerStampCarriesExplicitTimestamp) {
   ayanami::geometry_msgs::PoseStamped p;
   p.header.stamp = ayanami::timestampFromSeconds(12.5);
   EXPECT_FALSE(p.header.stamp.isLatest());
@@ -49,16 +49,16 @@ TEST(MessagesTest, HeaderStampCarriesExplicitTimestamp) {
   EXPECT_NEAR(p.header.stamp.toSeconds(), 12.5, 1e-9);
 }
 
-TEST(MessagesTest, PathPosesIsPoseStampedVector) {
+TEST(MessagesTest, pathPosesIsPoseStampedVector) {
   static_assert(std::is_same_v<Path::poses_type::value_type, PoseStamped>);
   Path path;
   path.poses.emplace_back();
   path.poses.back().header.frame_id = "map";
-  path.poses.back().pose = Eigen::Isometry3d::Identity();
+  path.poses.back().pose = ayanami::geometry_msgs::Pose::fromIsometry(Eigen::Isometry3d::Identity());
   EXPECT_EQ(path.poses.size(), 1u);
 }
 
-TEST(MessagesTest, FailureCodeUnifiedEnumCoversRequiredCodes) {
+TEST(MessagesTest, failureCodeUnifiedEnumCoversRequiredCodes) {
   // 统一失败码: None=0, 必须覆盖规定的全部分量。
   EXPECT_EQ(static_cast<uint8_t>(ayanami::FailureCode::None), 0u);
   EXPECT_NE(static_cast<uint8_t>(ayanami::FailureCode::Canceled), 0u);
@@ -92,7 +92,7 @@ TEST(MessagesTest, FailureCodeUnifiedEnumCoversRequiredCodes) {
   static_assert(static_cast<int>(FC::InternalError) == 16);
 }
 
-TEST(MessagesTest, ActionResultsUseUniformFailureField) {
+TEST(MessagesTest, actionResultsUseUniformFailureField) {
   ayanami::actions::GetPathResult path;
   ayanami::actions::SmoothPathResult smooth;
   ayanami::actions::ExePathResult exe;
@@ -107,17 +107,17 @@ TEST(MessagesTest, ActionResultsUseUniformFailureField) {
   EXPECT_TRUE(recovery.message.empty());
 }
 
-TEST(MessagesTest, ExePathGoalHasPathAndSessionFields) {
+TEST(MessagesTest, exePathGoalHasPathAndSessionFields) {
   ExePathGoal g;
   EXPECT_EQ(g.session_id, 0u);
   EXPECT_EQ(g.plan_version, 0u);
   g.path.header.frame_id = "map";
   g.path.poses.emplace_back();
-  g.path.poses.back().pose = Eigen::Isometry3d::Identity();
+  g.path.poses.back().pose = ayanami::geometry_msgs::Pose::fromIsometry(Eigen::Isometry3d::Identity());
   EXPECT_EQ(g.path.poses.size(), 1u);
 }
 
-TEST(MessagesTest, MsgPtrAliasesExist) {
+TEST(MessagesTest, msgPtrAliasesExist) {
   static_assert(std::is_same_v<PoseStamped::Ptr, std::shared_ptr<PoseStamped>>);
   static_assert(std::is_same_v<Path::Ptr, std::shared_ptr<Path>>);
   static_assert(std::is_same_v<ExePathGoal::Ptr, std::shared_ptr<ExePathGoal>>);

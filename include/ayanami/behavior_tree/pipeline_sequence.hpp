@@ -19,7 +19,7 @@ namespace behavior_tree {
 class PipelineSequence : public BT::ControlNode {
  public:
   PipelineSequence(const std::string& name, const BT::NodeConfig& config)
-    : BT::ControlNode(name, config), current_child_idx_(0) {}
+    : BT::ControlNode(name, config), current_child_idx(0) {}
 
   static BT::PortsList providedPorts() { return {}; }
 
@@ -28,12 +28,12 @@ class PipelineSequence : public BT::ControlNode {
       const BT::NodeStatus status = children_nodes_[index]->executeTick();
       if (status == BT::NodeStatus::FAILURE) {
         haltChildren();
-        current_child_idx_ = 0;
+        current_child_idx = 0;
         return status;
       }
       if (status == BT::NodeStatus::RUNNING) {
-        if (index >= current_child_idx_) {
-          current_child_idx_ = index;
+        if (index >= current_child_idx) {
+          current_child_idx = index;
           return status;
         }
         continue;
@@ -43,17 +43,17 @@ class PipelineSequence : public BT::ControlNode {
       }
     }
     haltChildren();
-    current_child_idx_ = 0;
+    current_child_idx = 0;
     return BT::NodeStatus::SUCCESS;
   }
 
   void halt() override {
     BT::ControlNode::halt();
-    current_child_idx_ = 0;
+    current_child_idx = 0;
   }
 
  private:
-  size_t current_child_idx_;
+  size_t current_child_idx;
 };
 
 } // namespace behavior_tree

@@ -2,9 +2,8 @@
   "goal_checker": {
     "name": "simple_goal_checker",
     "so_name": "libayanami_simple_goal_checker.so",
-    "create_symbol": "create_goal_checker_module",
-    "position_tolerance": 0.10,
-    "angle_tolerance": 0.20,
+    "position_tolerance": 0.35,
+    "angle_tolerance": 2.60,
     "linear_tolerance": 0.10,
     "angular_tolerance": 0.10
   }

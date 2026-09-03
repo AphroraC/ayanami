@@ -7,7 +7,7 @@
 
 namespace ayanami {
 
-void* open_so(const std::string& so_name) {
+void* openSo(const std::string& so_name) {
   void* handle = dlopen(so_name.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (handle == nullptr) {
     spdlog::error("failed to load shared object '{}': {}", so_name, dlerror());
@@ -17,7 +17,7 @@ void* open_so(const std::string& so_name) {
   return handle;
 }
 
-void* load_symbol(void* h, const std::string& sym) {
+void* loadSymbol(void* h, const std::string& sym) {
   if (h == nullptr) {
     return nullptr;
   }

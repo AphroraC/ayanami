@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ayanami/messages/geometry_msgs.hpp"
+#include "ayanami/utility/extension_module.hpp"
 
 #include <memory>
 
@@ -13,7 +14,7 @@ namespace abstract {
  * 跟踪机器人是否在推进: 设定时间窗内应移动足够的距离/转角, 否则判为卡住
  * (无进展)。有状态: reset() 应在新 goal 或恢复动作前重设基线。
  */
-class AbstractProgressChecker {
+class AbstractProgressChecker : public virtual ExtensionModule {
  public:
   using Ptr = std::shared_ptr<AbstractProgressChecker>;
 

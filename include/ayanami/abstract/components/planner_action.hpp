@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -37,18 +38,18 @@ public:
   using Task = Server::Task;
 
   explicit PlannerAction(ayanami::abstract::AbstractPlanner::Ptr planner)
-      : planner_(std::move(planner)),
-        server_(std::make_shared<Server>()) {
-    server_->setGoalCallback([](const Server::GoalHandleType& gh) {
+      : planner(std::move(planner)),
+        action_server(std::make_shared<Server>()) {
+    action_server->setGoalCallback([](const Server::GoalHandleType& gh) {
       ayanami::interfaces::NavigationCallbacks::on_get_path_goal(gh.goal);
     });
-    server_->setCancelCallback([this](uint64_t goal_id) {
+    action_server->setCancelCallback([this](uint64_t goal_id) {
       Base::cancelGoal(goal_id);
     });
-    server_->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
+    action_server->setFeedbackCallback([](const GoalFeedback<Feedback>& gf) {
       ayanami::interfaces::NavigationCallbacks::on_get_path_feedback(gf.feedback);
     });
-    server_->setResultCallback([](const Server::GoalResultType& gr) {
+    action_server->setResultCallback([](const Server::GoalResultType& gr) {
       ayanami::interfaces::NavigationCallbacks::on_get_path_result(gr);
     });
   }
@@ -57,80 +58,135 @@ public:
 
   /// @brief 主流: 接受 goal 并拿 TaskHandle 直连 (spec §3.4)。
   Task acceptGoal(const Goal& goal) {
-    auto task = server_->acceptGoal(goal);
-    auto gh = server_->getGoal(task.goal_id());
+    auto task = action_server->acceptGoal(goal);
+    auto gh = action_server->getGoal(task.goal_id());
     if (!gh) {
       return task;
     }
-    if (!planner_) {
+    if (!planner) {
       Result result;
       result.failure = FailureCode::InternalError;
       result.message = "Planner plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
-      server_->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
+      action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
                              result);
       return task;
     }
-    Base::start(*gh, createExecution(), 0);
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex);
+      if (active_execution && Base::isRunning(0) &&
+          active_execution->setNewGoal(goal.start, goal.goal,
+                                       goal.tolerance)) {
+        if (active_goal_id != 0) {
+          Result canceled;
+          canceled.failure = FailureCode::Canceled;
+          canceled.message = "Superseded by a newer planner goal";
+          canceled.session_id = active_goal.session_id;
+          canceled.plan_version = active_goal.plan_version;
+          action_server->publishResult(active_goal_id,
+                                       ayanami::actions::GoalStatus::CANCELED,
+                                       canceled);
+        }
+        active_goal_id = gh->id;
+        active_goal = goal;
+        action_server->setActive(gh->id);
+        return task;
+      }
+      active_execution = createExecution();
+      active_goal_id = gh->id;
+      active_goal = goal;
+    }
+    Base::start(*gh, active_execution, 0);
     return task;
   }
 
-  bool cancelGoal(uint64_t goal_id) { return server_->cancelGoal(goal_id); }
+  bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
   void cancelAll() {
-    server_->cancelAll();
+    action_server->cancelAll();
     Base::cancelAll();
   }
 
-  ServerPtr server() const { return server_; }
+  ServerPtr server() const { return action_server; }
+
+  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子返回带
+  /// 地图的 execution)。取代旧的 Server*Action 私有子类间接层。未注入时
+  /// createExecution 默认构造 abstract execution。
+  void setExecutionFactory(std::function<PlannerExecution::Ptr()> factory) {
+    execution_factory = std::move(factory);
+  }
 
 protected:
   void runImpl(const GoalHandleType& gh, PlannerExecution& exec) override {
-    server_->setActive(gh.id);
+    action_server->setActive(gh.id);
     exec.start(gh.goal.start, gh.goal.goal, gh.goal.tolerance);
-    runImplCommon(
-        gh, exec,
-        [this](const GoalHandleType& gh, PlannerExecution& exec) -> bool {
-          if (server_->isCancelRequested(gh.id)) {
-            exec.cancel();
-          }
-          const bool canceled =
-              server_->isCancelRequested(gh.id) ||
-              exec.getState() == PlannerExecution::CANCELED;
-          if (canceled) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-            return true;
-          }
-          if (exec.getState() == PlannerExecution::FOUND_PLAN) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-            return true;
-          }
-          switch (exec.getState()) {
-            case PlannerExecution::MAX_RETRIES:
-            case PlannerExecution::PAT_EXCEEDED:
-            case PlannerExecution::NO_PLAN_FOUND:
-            case PlannerExecution::STOPPED:
-            case PlannerExecution::INTERNAL_ERROR:
-              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-              return true;
-            default:
-              break;
-          }
-          return false;
-        });
+    while (true) {
+      uint64_t goal_id = 0;
+      Goal goal;
+      {
+        std::lock_guard<std::mutex> lock(goal_mutex);
+        if (active_execution.get() == &exec) {
+          goal_id = active_goal_id;
+          goal = active_goal;
+        } else {
+          // This execution was replaced because the plugin does not support
+          // in-place goal updates. It must complete its own original handle.
+          goal_id = gh.id;
+          goal = gh.goal;
+        }
+      }
+      if (goal_id != 0 && action_server->isCancelRequested(goal_id)) {
+        exec.cancel();
+      }
+      const bool canceled = goal_id != 0 &&
+          (action_server->isCancelRequested(goal_id) ||
+           exec.getState() == PlannerExecution::CANCELED);
+      if (canceled) {
+        finishResult(goal_id, goal, exec,
+                     ayanami::actions::GoalStatus::CANCELED);
+        clearActiveExecution(goal_id, &exec);
+        return;
+      }
+      if (exec.getState() == PlannerExecution::FOUND_PLAN) {
+        finishResult(goal_id, goal, exec,
+                     ayanami::actions::GoalStatus::SUCCEEDED);
+        clearActiveExecution(goal_id, &exec);
+        return;
+      }
+      switch (exec.getState()) {
+        case PlannerExecution::MAX_RETRIES:
+        case PlannerExecution::PAT_EXCEEDED:
+        case PlannerExecution::NO_PLAN_FOUND:
+        case PlannerExecution::STOPPED:
+        case PlannerExecution::INTERNAL_ERROR:
+          finishResult(goal_id, goal, exec,
+                       ayanami::actions::GoalStatus::ABORTED);
+          clearActiveExecution(goal_id, &exec);
+          return;
+        default:
+          break;
+      }
+      exec.waitForStateUpdate(std::chrono::milliseconds(20));
+    }
   }
 
   virtual PlannerExecution::Ptr createExecution() {
-    return std::make_shared<PlannerExecution>(planner_);
+    if (execution_factory) {
+      return execution_factory();
+    }
+    return std::make_shared<PlannerExecution>(planner);
   }
 
 protected:
-  ayanami::abstract::AbstractPlanner::Ptr planner_;
+  ayanami::abstract::AbstractPlanner::Ptr planner;
 
 private:
-  void finishResult(const GoalHandleType& gh, const PlannerExecution& exec,
+  std::function<PlannerExecution::Ptr()> execution_factory;
+  void finishResult(uint64_t goal_id, const Goal& goal,
+                    const PlannerExecution& exec,
                     ayanami::actions::GoalStatus status) {
+    if (goal_id == 0) return;
     Result result;
     result.failure = exec.getFailure();
     if (status == ayanami::actions::GoalStatus::CANCELED) {
@@ -142,15 +198,28 @@ private:
       result.failure = FailureCode::InternalError;
     }
     result.message = exec.getMessage();
-    result.path.header = gh.goal.goal.header;
+    result.path.header = goal.goal.header;
     result.path.poses = exec.getPlan().poses;
     result.cost = exec.getCost();
-    result.session_id = gh.goal.session_id;
-    result.plan_version = gh.goal.plan_version;
-    server_->publishResult(gh.id, status, result);
+    result.session_id = goal.session_id;
+    result.plan_version = goal.plan_version;
+    action_server->publishResult(goal_id, status, result);
   }
 
-  ServerPtr server_;
+  void clearActiveExecution(uint64_t goal_id,
+                            const PlannerExecution* execution) {
+    std::lock_guard<std::mutex> lock(goal_mutex);
+    if (active_goal_id == goal_id && active_execution.get() == execution) {
+      active_goal_id = 0;
+      active_execution.reset();
+    }
+  }
+
+  ServerPtr action_server;
+  mutable std::mutex goal_mutex;
+  PlannerExecution::Ptr active_execution;
+  uint64_t active_goal_id{0};
+  Goal active_goal;
 };
 
 } // namespace components

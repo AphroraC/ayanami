@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ayanami/messages/geometry_msgs.hpp"
+#include "ayanami/utility/extension_module.hpp"
 
 #include <memory>
 
@@ -41,7 +42,7 @@ struct GoalCheckerTolerances {
  * 判断 current_pose 是否已到达 goal_pose: 位置/转角差在容差内且速度低于静止
  * 阈值。有状态: reset() 应在收到新 goal / 重规划时调用。
  */
-class AbstractGoalChecker {
+class AbstractGoalChecker : public virtual ExtensionModule {
  public:
   using Ptr = std::shared_ptr<AbstractGoalChecker>;
 

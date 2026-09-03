@@ -4,8 +4,11 @@
 #include <memory>
 #include <string>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <Eigen/Geometry>
+
 #include <ayanami/costmap/core/costmap_recovery.hpp>
+#include <ayanami/messages/recovery_params.hpp>
+#include <ayanami/messages/geometry_msgs.hpp>
 
 namespace ayanami {
 namespace modules {
@@ -13,40 +16,51 @@ namespace modules {
 /**
  * @brief 原地旋转恢复模块 (spec §6.6 costmap_spin_recovery)。
  *
- * 纯 C++ (零 ROS): 在注入的 CostmapContext 上按 spin_dist/max_w 时长逐帧
- * emit on_velocity_command 纯角速度建议 (M1 headless 无真底盘, 不依赖底盘
- * 实际运动, 发完时长即 SUCCESS); 每帧 10ms + cancel 检查; 碰撞检测
- * (global costmap robot 附近 cell >= 253) → FailureCode::RecoveryFailed。
+ * 纯 C++ (零 ROS): 周期驱动接口 (start/onCycleUpdate)。每周期返回纯角速度
+ * 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
+ * 在终态补零; 插件不自行 sleep、不直接调 NavigationCallbacks。
+ * 碰撞检测用时持有的地图模块加锁读的 global grid 机器人附近 cell >= 253
+ * → FAILED(RecoveryFailed)。不持有 context / wrapper / 可变 grid。
  */
-class CostmapSpinRecovery : public ayanami::costmap::CostmapRecovery {
+class CostmapSpinRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
+  using ayanami::costmap::CostmapRecovery::runRecovery;
   CostmapSpinRecovery();
   // Ruling #3: 基类 AbstractRecovery 无虚析构 (仅 AbstractPlanner 有),
   // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapSpinRecovery() = default;
 
   void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::Ptr ctx) override;
+                  ayanami::costmap::CostmapContext::ConstPtr map) override;
 
   FailureCode runRecovery(std::string& message) override;
+
+  void start() override;
+  void setBehaviorParams(
+      const ayanami::RecoveryBehaviorParams& params) override;
+  ayanami::abstract::RecoveryCycleResult onCycleUpdate(
+      std::string& message) override;
+  void end() override;
 
   bool cancel() override;
 
  private:
-  struct Config {
+  struct CostmapSpinRecoveryParam {
     double spin_dist = 1.57;
     double max_w = 0.5;
     double sim_cycle_dt = 0.01;
     double collision_radius = 0.3;
   };
 
-  void loadConfig();
-  bool collisionNearRobot(const ayanami::geometry_msgs::PoseStamped& pose) const;
-  void emitZeroVelocity() const;
+  CostmapSpinRecoveryParam param;
 
-  ayanami::costmap::CostmapContext::Ptr costmap_context_;
-  std::atomic<bool> canceled_{false};
-  Config config_;
+  bool collisionNearRobot(const ayanami::costmap::CostmapView& costmap,
+                          const ::Eigen::Isometry3d& robot_pose) const;
+
+  ayanami::costmap::CostmapContext::ConstPtr map_;
+
+  std::atomic<bool> canceled{false};
+  int remaining_frames{0};
 };
 
 }  // namespace modules

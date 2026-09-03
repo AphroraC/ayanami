@@ -2,9 +2,9 @@
 //
 // 不连真底盘/ROS, 用 dlopen libayanami_costmap_navigation.so 宿主插件组装整条
 // 链: initialize → start → setGoal → BT (smac planner → savitzky smoother →
-// controller) → on_velocity_command 旁路发出 cmd_vel; 同时模拟机器人位姿
-// (on_robot_state_updated) + 周期性虚拟 pointcloud (空间外障碍不影响规划),
-// 并验证 setMapCallback 可视化旁路被触发。最后 stop()/析构必须不崩 (Ruling #3)。
+// controller) → on_velocity_command 旁路发出 cmd_vel; 周期性虚拟 pointcloud
+// (空间外障碍不影响规划); 并验证 on_costmap_visualization 可视化旁路被触发。
+// 最后 stop()/析构必须不崩 (Ruling #3)。
 //
 // argv: 1=host.so, 2=smac.so, 3=savitzky.so, 4=test_controller.so,
 //       5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
@@ -33,7 +33,7 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 #include <ayanami/utility/config.hpp>
-#include <ayanami/utility/load_module.hpp>
+#include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
@@ -65,7 +65,7 @@ int g_map_count = 0;
 
 PoseStamped makePose(double x, double y) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -112,17 +112,15 @@ void write_file(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::string plugin_json(const std::string& module, const std::string& name,
-                        const std::string& so_name,
-                        const std::string& symbol) {
+std::string pluginJson(const std::string& module, const std::string& name,
+                        const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name +
-         "\",\n    \"create_symbol\": \"" + symbol + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
 // 完整配置套件 (对标 spec §9 全套)。static_map 指向 tests/assets 的
 // headless_map.pgm (20x20 @0.5 = 10m x 10m, 全 FREE, A* 从 (0,0) 到 (2,0) 可寻路)。
-std::filesystem::path make_config_dir() {
+std::filesystem::path makeConfigDir() {
   const auto dir = std::filesystem::temp_directory_path() /
                    "ayanami_headless_e2e";
   std::filesystem::remove_all(dir);
@@ -131,12 +129,22 @@ std::filesystem::path make_config_dir() {
 
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\"\n"
+             "    \"config_navigation\": \"costmap_navigation.json\",\n"
+             "    \"config_planner\": \"planner.json\",\n"
+             "    \"config_smoother\": \"smoother.json\",\n"
+             "    \"config_controller\": \"controller.json\",\n"
+             "    \"config_recovery\": [\"recovery.json\"],\n"
+             "    \"config_goal_checker\": \"goal_checker.json\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\",\n"
+             "    \"config_smac_planner\": \"planner.json\",\n"
+             "    \"config_savitzky_smoother\": \"costmap_savitzky_smoother.json\",\n"
+             "    \"config_spin_recovery\": \"costmap_spin_recovery.json\"\n"
              "  }\n}\n");
 
   {
     std::ofstream nav(dir / "costmap_navigation.json");
     nav << "{\n  \"navigation\": {\n"
+        << "    \"behavior_tree_extension\": \"" AYANAMI_TEST_BT_EXT_SO "\",\n"
         << "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
         << "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
         << "    \"planner_id\": \"test_planner\",\n"
@@ -154,51 +162,37 @@ std::filesystem::path make_config_dir() {
         << "    \"controller_frequency\": 20.0,\n"
         << "    \"tick_frequency\": 100.0,\n"
         << "    \"costmap_visualization_rate\": 100.0\n"
-        << "  },\n"
-        << "  \"modules\": {\n"
-        << "    \"config_planner\": \"planner.json\",\n"
-        << "    \"config_smoother\": \"smoother.json\",\n"
-        << "    \"config_controller\": \"controller.json\",\n"
-        << "    \"config_recovery\": [\"recovery.json\"],\n"
-        << "    \"config_goal_checker\": \"goal_checker.json\",\n"
-        << "    \"config_progress_checker\": \"progress_checker.json\"\n"
         << "  }\n";
   }
 
   write_file(dir / "planner.json",
-             plugin_json("planner", "test_planner", g_smac_so,
-                         "create_costmap_planner_module"));
+             pluginJson("planner", "test_planner", g_smac_so));
   write_file(dir / "smoother.json",
-             plugin_json("smoother", "test_smoother", g_savitzky_so,
-                         "create_costmap_smoother_module"));
+             pluginJson("smoother", "test_smoother", g_savitzky_so));
   write_file(dir / "controller.json",
-             plugin_json("controller", "test_controller",
-                         g_test_controller_so,
-                         "create_navigation_test_controller_plugin"));
+             pluginJson("controller", "test_controller",
+                         g_test_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
-             "\",\n    \"create_symbol\": \"create_costmap_recovery_module\"\n  }\n}\n");
-  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
+             "\"\n  }\n}\n");
+  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判
+  // InternalError)。参数并入同一 json (模块经 config_goal_checker /
+  // config_progress_checker 显式读取; progress 的 required_movement 设小:
+  // 模拟 robot 需持续判有进展, 避免 5s 静止窗口误触发 NoProgress)。
   write_file(dir / "goal_checker.json",
-             plugin_json("goal_checker", "simple_goal_checker",
-                         g_goal_checker_so, "create_goal_checker_module"));
-  write_file(dir / "progress_checker.json",
-             plugin_json("progress_checker", "simple_progress_checker",
-                         g_progress_checker_so,
-                         "create_progress_checker_module"));
-
-  // goal/progress checker 私有配置 (提供避免 spdlog 噪音; progress 的 required_movement
-  // 设小: 模拟 robot 需持续判有进展, 避免 5s 静止窗口误触发 NoProgress)。
-  write_file(dir / "costmap_simple_goal_checker.json",
              "{\n  \"goal_checker\": {\n"
+             "    \"name\": \"simple_goal_checker\",\n"
+             "    \"so_name\": \"" + g_goal_checker_so + "\",\n"
              "    \"position_tolerance\": 0.10,\n"
              "    \"angle_tolerance\": 0.20,\n"
              "    \"linear_tolerance\": 0.10,\n"
              "    \"angular_tolerance\": 0.10\n"
              "  }\n}\n");
-  write_file(dir / "costmap_simple_progress_checker.json",
+  write_file(dir / "progress_checker.json",
              "{\n  \"progress_checker\": {\n"
+             "    \"name\": \"simple_progress_checker\",\n"
+             "    \"so_name\": \"" + g_progress_checker_so + "\",\n"
              "    \"required_movement\": 0.1,\n"
              "    \"movement_angle_required\": 0.2,\n"
              "    \"time_period\": 5.0\n"
@@ -335,30 +329,27 @@ bool waitUntil(const Fn& fn, int timeout_ms = 5000) {
 
 // ---------------- Headless E2E: 全导航链路 ----------------
 
-TEST(HeadlessE2E, FullNavigationPipeline) {
+TEST(HeadlessE2E, fullNavigationPipeline) {
   // 1. GlobalConfig::instance(tmp config / full suite)
-  const auto dir = make_config_dir();
+  const auto dir = makeConfigDir();
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
 
   // 2. NavigationCallbacks 清理 (防 prior 测试泄漏污染)
   detachCollectors();
 
-  // 3. dlopen 宿主 → create_navigation_module → AbstractNavigation::Ptr
-  void* handle = ayanami::open_so(g_host_so);
-  ASSERT_NE(handle, nullptr) << "dlopen failed: " << g_host_so;
-  using Factory = AbstractNavigation* (*)();
-  void* symbol = ayanami::load_symbol(handle, "create_navigation_module");
-  ASSERT_NE(symbol, nullptr);
-  auto factory = reinterpret_cast<Factory>(symbol);
-  AbstractNavigation::Ptr nav(factory());
+  // 3. 公共工厂装载 host → AbstractNavigation::Ptr (类型化 cast, requirement 2/4)
+  auto host_ext = ayanami::ExtensionModule::load_module(g_host_so);
+  ASSERT_NE(host_ext, nullptr) << "load_module failed: " << g_host_so;
+  AbstractNavigation::Ptr nav =
+      std::dynamic_pointer_cast<AbstractNavigation>(std::move(host_ext));
   ASSERT_NE(nav, nullptr);
 
   // 4. 收集 cmd_vel
   attachCollectors();
 
-  // 5. 收集 map visualization (验证 spinOnce/start 触发)
+  // 5. 收集 map visualization (验证 start/限频触发 on_costmap_visualization 旁路)
   std::atomic<int> map_count{0};
-  nav->setMapCallback(
+  int map_cb_id = NavigationCallbacks::on_costmap_visualization.add(
       [&map_count](const std::string&, const ayanami::nav_msgs::OccupancyGrid&) {
         ++map_count;
       });
@@ -368,30 +359,15 @@ TEST(HeadlessE2E, FullNavigationPipeline) {
   nav->start();
 
   // 7. 障碍观测: setGoal 之前喂 3 帧虚拟 pointcloud (空间外, 不影响规划),
-  //    验证 handleObstaclePointCloud 落图管线不崩。注意: 不在控制器线程启动后
-  //    并发喂 (plan 规定 Costmap*Execution::run 整循环持 local wrapper 锁, 并发
-  //    点云回调会死锁 —— Task 28 发现, 见 report, 待 reviewer 裁决)。
+  //    验证宿主直递落图管线 (AbstractNavigation::setPointcloud, 不走全局输入槽;
+  //    输入/输出分层纪律) 不崩。注意: 不在控制器线程启动后并发喂 (plan 规定
+  //    Costmap*Execution::run 整循环持 local wrapper 锁, 并发点云回调会死锁 ——
+  //    Task 28 发现, 见 report, 待 reviewer 裁决)。
   setupTransforms();
   for (int i = 0; i < 3; ++i) {
-    NavigationCallbacks::on_obstacle_pointcloud(makeFarPointCloud());
+    nav->setPointcloud(makeFarPointCloud());
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-
-  // 模拟 robot pose (沿 +x 推进; on_robot_state_updated 无锁旁路槽, 安全并发)。
-  std::atomic<bool> sim_running{true};
-  std::atomic<double> sim_x{0.0};
-  std::thread sim_thread([&] {
-    double t = 0.0;
-    while (sim_running.load()) {
-      PoseStamped pose = makePose(sim_x.load(), 0.0);
-      TwistStamped vel;
-      vel.twist.linear.x() = 0.5;
-      NavigationCallbacks::on_robot_state_updated(pose, vel);
-      sim_x.store(t * 0.5);
-      t += 0.01;
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-  });
 
   // 8. setGoal (map frame, x=2, y=0, yaw=0)
   nav->setGoal(makePose(2.0, 0.0));
@@ -409,9 +385,8 @@ TEST(HeadlessE2E, FullNavigationPipeline) {
   EXPECT_GT(map_count.load(), 0);
 
   // 11. nav->stop() + cleanup; 析构不崩 (Ruling #3)
-  sim_running.store(false);
-  sim_thread.join();
   nav->stop();
+  NavigationCallbacks::on_costmap_visualization.remove(map_cb_id);
   detachCollectors();
   nav.reset();  // ~CostmapNavigation → stop() (幂等) + join, 不得崩
 }

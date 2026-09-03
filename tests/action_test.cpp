@@ -35,14 +35,14 @@ class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
                        Path& plan, double&, std::string&) override {
-    calls_++;
+    calls++;
     {
-      std::unique_lock<std::mutex> lock(mutex_);
-      entered_.notify_all();
-      release_.wait_for(lock, std::chrono::milliseconds(2000),
-                        [this] { return canceled_.load(); });
+      std::unique_lock<std::mutex> lock(mutex);
+      entered.notify_all();
+      release.wait_for(lock, std::chrono::milliseconds(2000),
+                        [this] { return canceled.load(); });
     }
-    if (canceled_.exchange(false)) {
+    if (canceled.exchange(false)) {
       return FailureCode::None;  // 被取消: 让 execution 判 CANCELED
     }
     plan.poses.push_back(start);
@@ -50,15 +50,15 @@ public:
     return FailureCode::None;
   }
   bool cancel() override {
-    canceled_ = true;
-    release_.notify_all();
+    canceled = true;
+    release.notify_all();
     return true;
   }
-  std::atomic<int> calls_{0};
-  std::mutex mutex_;
-  std::condition_variable entered_;
-  std::condition_variable release_;
-  std::atomic<bool> canceled_{false};
+  std::atomic<int> calls{0};
+  std::mutex mutex;
+  std::condition_variable entered;
+  std::condition_variable release;
+  std::atomic<bool> canceled{false};
 };
 
 // 即时成功的 planner: 填 path, 验 SUCCEEDED + path 非空
@@ -66,14 +66,14 @@ class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
                        double& cost, std::string&) override {
-    calls_++;
+    calls++;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
     cost = 1.5;
     return FailureCode::None;
   }
   bool cancel() override { return true; }
-  std::atomic<int> calls_{0};
+  std::atomic<int> calls{0};
 };
 
 // controller: 到达判定交给 goal_checker (完成后 N 帧 compute 触发到达)。
@@ -81,15 +81,14 @@ class TestController : public ayanami::abstract::AbstractController {
 public:
   FailureCode computeVelocityCommands(
       const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
-      std::string&,
-      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
-    calls_++;
+      std::string&) override {
+    calls++;
     cmd_vel.twist.linear.x() = 0.5;
     return FailureCode::None;
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
-  std::atomic<int> calls_{0};
+  std::atomic<int> calls{0};
 };
 
 // ---- checker 测试桩 ----
@@ -97,18 +96,18 @@ public:
 class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
   explicit LambdaGoalChecker(std::function<bool()> reached)
-      : reached_(std::move(reached)) {}
+      : reached(std::move(reached)) {}
   void reset() override {}
   bool isGoalReached(const PoseStamped&, const PoseStamped&,
                      const TwistStamped&) override {
-    return reached_();
+    return reached();
   }
   ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 
  private:
-  std::function<bool()> reached_;
+  std::function<bool()> reached;
 };
 
 class AlwaysTrueProgressChecker
@@ -125,21 +124,21 @@ class TestControllerAction : public ayanami::components::ControllerAction {
   using ControllerAction::ControllerAction;
   void initCheckers(ayanami::abstract::AbstractGoalChecker::Ptr goal,
                     ayanami::abstract::AbstractProgressChecker::Ptr progress) {
-    goal_ = std::move(goal);
-    progress_ = std::move(progress);
+    this->goal = std::move(goal);
+    this->progress = std::move(progress);
   }
 
  protected:
   ayanami::components::ControllerExecution::Ptr createExecution() override {
     auto exec = ControllerAction::createExecution();
-    exec->setGoalChecker(goal_);
-    exec->setProgressChecker(progress_);
+    exec->setGoalChecker(goal);
+    exec->setProgressChecker(progress);
     return exec;
   }
 
  private:
-  ayanami::abstract::AbstractGoalChecker::Ptr goal_;
-  ayanami::abstract::AbstractProgressChecker::Ptr progress_;
+  ayanami::abstract::AbstractGoalChecker::Ptr goal;
+  ayanami::abstract::AbstractProgressChecker::Ptr progress;
 };
 
 class FillingSmoother : public ayanami::abstract::AbstractSmoother {
@@ -175,7 +174,7 @@ using Server = ayanami::components::ActionServer<
 
 // ---- ActionServer 协议 (复刻 legacy action_protocol_test, 按 Ruling #2 ACTIVE 通态) ----
 
-TEST(ActionProtocol, CompletionCarriesResultAndCleansGoal) {
+TEST(ActionProtocol, completionCarriesResultAndCleansGoal) {
   Server server;
   auto task = server.acceptGoal({});
   ASSERT_TRUE(task.valid());
@@ -197,7 +196,7 @@ TEST(ActionProtocol, CompletionCarriesResultAndCleansGoal) {
       task.goal_id(), ayanami::actions::GoalStatus::SUCCEEDED, result));
 }
 
-TEST(ActionProtocol, CancelIsARequestUntilExecutionFinishes) {
+TEST(ActionProtocol, cancelIsARequestUntilExecutionFinishes) {
   Server server;
   auto task = server.acceptGoal({});
   ASSERT_TRUE(task.cancel());
@@ -213,7 +212,7 @@ TEST(ActionProtocol, CancelIsARequestUntilExecutionFinishes) {
   EXPECT_EQ(server.activeGoalCount(), 0U);
 }
 
-TEST(ActionProtocol, CompletedGoalsDoNotAccumulate) {
+TEST(ActionProtocol, completedGoalsDoNotAccumulate) {
   Server server;
   for (uint64_t version = 1; version <= 10000; ++version) {
     auto task = server.acceptGoal({});
@@ -228,7 +227,7 @@ TEST(ActionProtocol, CompletedGoalsDoNotAccumulate) {
 
 // ---- PlannerAction ----
 
-TEST(PlannerAction, AcceptGoalReturnsTaskHandleAndSucceedsWithPath) {
+TEST(PlannerAction, acceptGoalReturnsTaskHandleAndSucceedsWithPath) {
   auto planner = std::make_shared<FillingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
@@ -246,20 +245,20 @@ TEST(PlannerAction, AcceptGoalReturnsTaskHandleAndSucceedsWithPath) {
   EXPECT_EQ(task.result().path.header.frame_id, "map");
   EXPECT_EQ(task.result().session_id, 7U);
   EXPECT_EQ(task.result().plan_version, 11U);
-  EXPECT_GE(planner->calls_, 1);
+  EXPECT_GE(planner->calls, 1);
 }
 
-TEST(PlannerAction, CancelSlotInterruptsRunningExecution) {
+TEST(PlannerAction, cancelSlotInterruptsRunningExecution) {
   auto planner = std::make_shared<BlockingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
   auto task = action.acceptGoal({});
   ASSERT_TRUE(task.valid());
   {
-    std::unique_lock<std::mutex> lock(planner->mutex_);
-    ASSERT_TRUE(planner->entered_.wait_for(
+    std::unique_lock<std::mutex> lock(planner->mutex);
+    ASSERT_TRUE(planner->entered.wait_for(
         lock, std::chrono::milliseconds(1000),
-        [&] { return planner->calls_.load() >= 1; }));
+        [&] { return planner->calls.load() >= 1; }));
   }
 
   action.cancel(0);
@@ -267,17 +266,17 @@ TEST(PlannerAction, CancelSlotInterruptsRunningExecution) {
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::CANCELED);
 }
 
-TEST(PlannerAction, TaskHandleCancelForwardsToExecution) {
+TEST(PlannerAction, taskHandleCancelForwardsToExecution) {
   auto planner = std::make_shared<BlockingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
   auto task = action.acceptGoal({});
   ASSERT_TRUE(task.valid());
   {
-    std::unique_lock<std::mutex> lock(planner->mutex_);
-    ASSERT_TRUE(planner->entered_.wait_for(
+    std::unique_lock<std::mutex> lock(planner->mutex);
+    ASSERT_TRUE(planner->entered.wait_for(
         lock, std::chrono::milliseconds(1000),
-        [&] { return planner->calls_.load() >= 1; }));
+        [&] { return planner->calls.load() >= 1; }));
   }
 
   ASSERT_TRUE(task.cancel());
@@ -285,17 +284,17 @@ TEST(PlannerAction, TaskHandleCancelForwardsToExecution) {
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::CANCELED);
 }
 
-TEST(PlannerAction, PreemptSameSlotJoinsOldGoalBeforeNewStarts) {
+TEST(PlannerAction, preemptSameSlotJoinsOldGoalBeforeNewStarts) {
   auto planner = std::make_shared<BlockingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
   auto first = action.acceptGoal({});
   ASSERT_TRUE(first.valid());
   {
-    std::unique_lock<std::mutex> lock(planner->mutex_);
-    ASSERT_TRUE(planner->entered_.wait_for(
+    std::unique_lock<std::mutex> lock(planner->mutex);
+    ASSERT_TRUE(planner->entered.wait_for(
         lock, std::chrono::milliseconds(1000),
-        [&] { return planner->calls_.load() >= 1; }));
+        [&] { return planner->calls.load() >= 1; }));
   }
 
   auto second = action.acceptGoal({});
@@ -307,10 +306,10 @@ TEST(PlannerAction, PreemptSameSlotJoinsOldGoalBeforeNewStarts) {
   ASSERT_TRUE(waitReady(second));
   EXPECT_EQ(second.status(), ayanami::actions::GoalStatus::SUCCEEDED);
   // 串行: 第二个在第一个 join 后启动 (插件从不并发)
-  EXPECT_EQ(planner->calls_.load(), 2);
+  EXPECT_EQ(planner->calls.load(), 2);
 }
 
-TEST(PlannerAction, ResultEmittedOnBypassSlotWhileTaskHandleIsMain) {
+TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
   auto planner = std::make_shared<FillingPlanner>();
   ayanami::components::PlannerAction action(planner);
 
@@ -334,12 +333,12 @@ TEST(PlannerAction, ResultEmittedOnBypassSlotWhileTaskHandleIsMain) {
 
 // ---- 其余 3 个 action 最小验收 ----
 
-TEST(ControllerAction, RunsOneCycleAndSucceeds) {
+TEST(ControllerAction, runsOneCycleAndSucceeds) {
   auto controller = std::make_shared<TestController>();
   TestControllerAction action(controller);
   action.initCheckers(
       std::make_shared<LambdaGoalChecker>(
-          [&controller] { return controller->calls_ >= 3; }),
+          [&controller] { return controller->calls >= 3; }),
       std::make_shared<AlwaysTrueProgressChecker>());
 
   ayanami::actions::ExePathGoal goal;
@@ -349,10 +348,10 @@ TEST(ControllerAction, RunsOneCycleAndSucceeds) {
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::SUCCEEDED);
   EXPECT_TRUE(task.result().reached);
   EXPECT_EQ(task.result().failure, FailureCode::None);
-  EXPECT_GE(controller->calls_, 3);
+  EXPECT_GE(controller->calls, 3);
 }
 
-TEST(SmootherAction, SmoothsPathAndSucceeds) {
+TEST(SmootherAction, smoothsPathAndSucceeds) {
   auto smoother = std::make_shared<FillingSmoother>();
   ayanami::components::SmootherAction action(smoother);
 
@@ -364,7 +363,7 @@ TEST(SmootherAction, SmoothsPathAndSucceeds) {
   EXPECT_EQ(task.result().smoothed_path.poses.size(), 3U);
 }
 
-TEST(RecoveryAction, SingleRunDeliversResult) {
+TEST(RecoveryAction, singleRunDeliversResult) {
   auto recovery = std::make_shared<TestRecovery>();
   ayanami::components::RecoveryAction action(recovery);
 

@@ -5,7 +5,7 @@ namespace ayanami {
 
 ExtensionModule::Ptr ExtensionModule::load_module(const std::string& so_name) {
   auto create =
-      load_module_from_so<ExtensionModule* (*)()>(so_name, "create_extension_module");
+      loadModuleFromSo<ExtensionModule* (*)()>(so_name, "create_extension_module");
   if (create == nullptr) {
     return nullptr;
   }

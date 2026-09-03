@@ -18,24 +18,24 @@ namespace costmap_2d_layers {
 class InflationLayer : public costmap_2d::Layer {
  public:
   void setInflationRadius(double radius) {
-    inflation_radius_ = radius;
-    caches_dirty_ = true;
-    need_reinflation_ = true;
-    current_ = false;
+    inflation_radius = radius;
+    caches_dirty = true;
+    need_reinflation = true;
+    current = false;
   }
 
   void setInscribedRadius(double radius) {
-    inscribed_radius_ = radius;
-    caches_dirty_ = true;
-    need_reinflation_ = true;
-    current_ = false;
+    inscribed_radius = radius;
+    caches_dirty = true;
+    need_reinflation = true;
+    current = false;
   }
 
   void setCostScalingFactor(double factor) {
-    weight_ = factor;
-    caches_dirty_ = true;
-    need_reinflation_ = true;
-    current_ = false;
+    weight = factor;
+    caches_dirty = true;
+    need_reinflation = true;
+    current = false;
   }
 
   // 距离 (cells) -> cost: 0 -> LETHAL, 距障碍 <= inscribed -> 253,
@@ -45,12 +45,12 @@ class InflationLayer : public costmap_2d::Layer {
     if (distance_cells == 0.0) {
       return costmap_2d::LETHAL_OBSTACLE;
     }
-    const double euclidean_distance = distance_cells * resolution;
-    if (euclidean_distance <= inscribed_radius_) {
+    const double euclideanDistance = distance_cells * resolution;
+    if (euclideanDistance <= inscribed_radius) {
       return costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
     }
     const double factor = std::exp(
-        -weight_ * (euclidean_distance - inscribed_radius_));
+        -weight * (euclideanDistance - inscribed_radius));
     return static_cast<costmap_2d::CostValue>(std::round(
         (costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 1) * factor));
   }
@@ -67,7 +67,7 @@ class InflationLayer : public costmap_2d::Layer {
   void matchSize() override {}
   void onFootprintChanged() override;
 
-  unsigned int getCellInflationRadius() const { return cell_inflation_radius_; }
+  unsigned int getCellInflationRadius() const { return cell_inflation_radius; }
 
  private:
   struct QueueCell {
@@ -91,20 +91,20 @@ class InflationLayer : public costmap_2d::Layer {
                                    unsigned int src_x, unsigned int src_y,
                                    double resolution) const;
 
-  double inflation_radius_{0.6};
-  double inscribed_radius_{0.5};
-  double weight_{10.0};
-  unsigned int cell_inflation_radius_{0};
-  bool caches_dirty_{true};
-  bool need_reinflation_{true};
-  bool has_last_bounds_{false};
-  double last_min_x_{std::numeric_limits<double>::max()};
-  double last_min_y_{std::numeric_limits<double>::max()};
-  double last_max_x_{std::numeric_limits<double>::lowest()};
-  double last_max_y_{std::numeric_limits<double>::lowest()};
-  std::vector<std::vector<double>> cached_distances_;
-  std::vector<std::vector<costmap_2d::CostValue>> cached_costs_;
-  std::vector<bool> seen_;
+  double inflation_radius{0.6};
+  double inscribed_radius{0.5};
+  double weight{10.0};
+  unsigned int cell_inflation_radius{0};
+  bool caches_dirty{true};
+  bool need_reinflation{true};
+  bool has_last_bounds{false};
+  double last_min_x{std::numeric_limits<double>::max()};
+  double last_min_y{std::numeric_limits<double>::max()};
+  double last_max_x{std::numeric_limits<double>::lowest()};
+  double last_max_y{std::numeric_limits<double>::lowest()};
+  std::vector<std::vector<double>> cached_distances;
+  std::vector<std::vector<costmap_2d::CostValue>> cached_costs;
+  std::vector<bool> seen;
 };
 
 }  // namespace costmap_2d_layers

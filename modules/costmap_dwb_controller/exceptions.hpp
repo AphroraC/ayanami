@@ -35,11 +35,11 @@ class IllegalTrajectoryException : public PlannerException {
 public:
   IllegalTrajectoryException(const std::string critic_name,
                              const std::string description)
-      : PlannerException(description), critic_name_(critic_name) {}
-  std::string getCriticName() const { return critic_name_; }
+      : PlannerException(description), critic_name(critic_name) {}
+  std::string getCriticName() const { return critic_name; }
 
 protected:
-  std::string critic_name_;
+  std::string critic_name;
 };
 
 /**
@@ -47,7 +47,7 @@ protected:
  */
 class IllegalTrajectoryTracker {
 public:
-  IllegalTrajectoryTracker() : legal_count_(0), illegal_count_(0) {}
+  IllegalTrajectoryTracker() : legal_count(0), illegal_count(0) {}
 
   void addIllegalTrajectory(const IllegalTrajectoryException& e);
   void addLegalTrajectory();
@@ -57,8 +57,8 @@ public:
   std::string getMessage() const;
 
 protected:
-  std::map<std::pair<std::string, std::string>, unsigned int> counts_;
-  unsigned int legal_count_, illegal_count_;
+  std::map<std::pair<std::string, std::string>, unsigned int> counts;
+  unsigned int legal_count, illegal_count;
 };
 
 /**
@@ -67,8 +67,8 @@ protected:
 class NoLegalTrajectoriesException : public PlannerException {
 public:
   explicit NoLegalTrajectoriesException(const IllegalTrajectoryTracker& tracker)
-      : PlannerException(tracker.getMessage()), tracker_(tracker) {}
-  IllegalTrajectoryTracker tracker_;
+      : PlannerException(tracker.getMessage()), tracker(tracker) {}
+  IllegalTrajectoryTracker tracker;
 };
 
 }  // namespace dwb_core

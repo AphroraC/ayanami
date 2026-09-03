@@ -19,11 +19,8 @@ CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::ExePathRe
 CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> NavigationCallbacks::on_recovery_goal;
 CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> NavigationCallbacks::on_recovery_feedback;
 CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> NavigationCallbacks::on_recovery_result;
-CallbackSlot<void(const ayanami::geometry_msgs::PoseStamped&, const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_robot_state_updated;
 CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_velocity_command;
 CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_costmap_visualization;
-CallbackSlot<void(const ayanami::sensor_msgs::PointCloud2&)> NavigationCallbacks::on_obstacle_pointcloud;
-CallbackSlot<void(const ayanami::sensor_msgs::LaserScan&)> NavigationCallbacks::on_obstacle_laserscan;
 
 } // namespace interfaces
 } // namespace ayanami

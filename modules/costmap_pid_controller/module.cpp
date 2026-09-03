@@ -1,5 +1,6 @@
 #include "costmap_pid_controller.hpp"
+#include <ayanami/utility/extension_module.hpp>
 
-extern "C" ayanami::abstract::AbstractController* create_controller_module() {
+extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new ayanami::modules::CostmapPidController();
 }

@@ -5,7 +5,7 @@
 
 namespace {
 
-// 跨 .so 验证计数: 本 .so 内的静态变量, 由 echo_extension_hits() 读取。
+// 跨 .so 验证计数: 本 .so 内的静态变量, 由 echoExtensionHits() 读取。
 std::atomic<int> g_hits{0};
 
 class EchoExtension : public ayanami::ExtensionModule {
@@ -24,6 +24,6 @@ extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new EchoExtension;
 }
 
-extern "C" int echo_extension_hits() {
+extern "C" int echoExtensionHits() {
   return g_hits.load(std::memory_order_relaxed);
 }

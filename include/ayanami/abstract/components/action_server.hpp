@@ -108,44 +108,46 @@ public:
 
   TaskHandle(uint64_t goal_id, std::shared_ptr<TaskState<Result>> state,
              std::function<bool()> cancel)
-      : goal_id_(goal_id), state_(std::move(state)), cancel_(std::move(cancel)) {}
+      : goal_handle_id(goal_id),
+        state(std::move(state)),
+        cancel_fn(std::move(cancel)) {}
 
   /// @brief 是否绑定到真实 goal。
   bool valid() const noexcept {
-    return goal_id_ != 0 && static_cast<bool>(state_);
+    return goal_handle_id != 0 && static_cast<bool>(state);
   }
 
-  uint64_t goal_id() const noexcept { return goal_id_; }
+  uint64_t goal_id() const noexcept { return goal_handle_id; }
 
   /// @brief 是否已完成 (future ready)。
   bool ready() const {
-    return valid() && state_->future.wait_for(std::chrono::seconds(0)) ==
+    return valid() && state->future.wait_for(std::chrono::seconds(0)) ==
                           std::future_status::ready;
   }
 
   /// @brief 整体目标状态 (阻塞到完成; ready()==false 时调用会阻塞)。
   ayanami::actions::GoalStatus status() const {
-    return state_->future.get().status;
+    return state->future.get().status;
   }
 
   /// @brief 各 action 族的 Result 负载 (阻塞到完成)。
-  const Result& result() const { return state_->future.get().result; }
+  const Result& result() const { return state->future.get().result; }
 
   /// @brief 注册完成回调 (已完成则立即调用)。
   void onComplete(std::function<void()> cb) const {
-    if (!cb || !state_) {
+    if (!cb || !state) {
       return;
     }
-    state_->onComplete([cb](const Completion&) { cb(); });
+    state->onComplete([cb](const Completion&) { cb(); });
   }
 
   /// @brief 请求取消 (置 cancel_requested, 由 Action 层透传到 execution)。
-  bool cancel() const { return cancel_ && cancel_(); }
+  bool cancel() const { return cancel_fn && cancel_fn(); }
 
 private:
-  uint64_t goal_id_{0};
-  std::shared_ptr<TaskState<Result>> state_;
-  std::function<bool()> cancel_;
+  uint64_t goal_handle_id{0};
+  std::shared_ptr<TaskState<Result>> state;
+  std::function<bool()> cancel_fn;
 };
 
 /**
@@ -171,25 +173,25 @@ public:
   ~ActionServer() { cancelAll(); }
 
   // ---- 回调注入 (派生 Action 接旁路 emit / execution 透传) ----
-  void setGoalCallback(GoalCallback cb) { goal_callback_ = std::move(cb); }
-  void setCancelCallback(CancelCallback cb) { cancel_callback_ = std::move(cb); }
-  void setResultCallback(ResultCallback cb) { result_callback_ = std::move(cb); }
+  void setGoalCallback(GoalCallback cb) { goal_callback = std::move(cb); }
+  void setCancelCallback(CancelCallback cb) { cancel_callback = std::move(cb); }
+  void setResultCallback(ResultCallback cb) { result_callback = std::move(cb); }
   void setFeedbackCallback(FeedbackCallback cb) {
-    feedback_callback_ = std::move(cb);
+    feedback_callback = std::move(cb);
   }
 
   /// @brief 接受目标: 建 goal 状态 + TaskHandle (含 future), 调 goal 旁路回调。
   Task acceptGoal(const Goal& goal) {
-    const uint64_t goal_id = next_goal_id_.fetch_add(1);
+    const uint64_t goal_id = next_goal_id.fetch_add(1);
     GoalHandleType handle{goal_id, goal, ayanami::actions::GoalStatus::PENDING,
                           false};
     auto task_state = std::make_shared<TaskState<Result>>();
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      goals_.emplace(goal_id, StoredGoal{handle, task_state});
+      std::lock_guard<std::mutex> lock(mutex);
+      goals.emplace(goal_id, StoredGoal{handle, task_state});
     }
-    if (goal_callback_) {
-      goal_callback_(handle);
+    if (goal_callback) {
+      goal_callback(handle);
     }
     return Task(goal_id, task_state,
                 [this, goal_id]() { return cancelGoal(goal_id); });
@@ -199,15 +201,15 @@ public:
   /// (Action 层透传到 execution)。返回 false 若 goal 不存在。
   bool cancelGoal(uint64_t goal_id) {
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto iter = goals_.find(goal_id);
-      if (iter == goals_.end()) {
+      std::lock_guard<std::mutex> lock(mutex);
+      auto iter = goals.find(goal_id);
+      if (iter == goals.end()) {
         return false;
       }
       iter->second.handle.cancel_requested = true;
     }
-    if (cancel_callback_) {
-      cancel_callback_(goal_id);
+    if (cancel_callback) {
+      cancel_callback(goal_id);
     }
     return true;
   }
@@ -216,9 +218,9 @@ public:
   void cancelAll() {
     std::vector<uint64_t> ids;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      ids.reserve(goals_.size());
-      for (const auto& kv : goals_) {
+      std::lock_guard<std::mutex> lock(mutex);
+      ids.reserve(goals.size());
+      for (const auto& kv : goals) {
         ids.push_back(kv.first);
       }
     }
@@ -243,9 +245,9 @@ public:
     std::shared_ptr<TaskState<Result>> task;
     GoalResultType gr;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto iter = goals_.find(goal_id);
-      if (iter == goals_.end()) {
+      std::lock_guard<std::mutex> lock(mutex);
+      auto iter = goals.find(goal_id);
+      if (iter == goals.end()) {
         return false;
       }
       if (isTerminal(iter->second.handle.status)) {
@@ -254,8 +256,8 @@ public:
       iter->second.handle.status = status;
       task = iter->second.task;
       gr = GoalResultType{status, result};
-      goals_.erase(iter);
-      callback = result_callback_;
+      goals.erase(iter);
+      callback = result_callback;
     }
     task->complete(gr);
     if (callback) {
@@ -266,33 +268,33 @@ public:
 
   /// @brief 发布反馈 (经 feedback 旁路回调)。
   void publishFeedback(uint64_t goal_id, const Feedback& feedback) {
-    if (feedback_callback_) {
-      feedback_callback_(GoalFeedback<Feedback>{goal_id, feedback});
+    if (feedback_callback) {
+      feedback_callback(GoalFeedback<Feedback>{goal_id, feedback});
     }
   }
 
   bool hasGoal(uint64_t goal_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return goals_.find(goal_id) != goals_.end();
+    std::lock_guard<std::mutex> lock(mutex);
+    return goals.find(goal_id) != goals.end();
   }
 
   /// @brief 当前非 terminal 的 goal 数量 (对标 legacy activeGoalCount)。
   std::size_t activeGoalCount() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return goals_.size();
+    std::lock_guard<std::mutex> lock(mutex);
+    return goals.size();
   }
 
   bool isCancelRequested(uint64_t goal_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto iter = goals_.find(goal_id);
-    return iter != goals_.end() && iter->second.handle.cancel_requested;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto iter = goals.find(goal_id);
+    return iter != goals.end() && iter->second.handle.cancel_requested;
   }
 
   /// @brief 取 goal 句柄副本 (ActionBase::start 用)。
   std::optional<GoalHandleType> getGoal(uint64_t goal_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto iter = goals_.find(goal_id);
-    if (iter == goals_.end()) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto iter = goals.find(goal_id);
+    if (iter == goals.end()) {
       return std::nullopt;
     }
     return iter->second.handle;
@@ -305,9 +307,9 @@ private:
   };
 
   bool updateStatus(uint64_t goal_id, ayanami::actions::GoalStatus status) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto iter = goals_.find(goal_id);
-    if (iter == goals_.end()) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto iter = goals.find(goal_id);
+    if (iter == goals.end()) {
       return false;
     }
     if (isTerminal(iter->second.handle.status)) {
@@ -323,14 +325,14 @@ private:
            status == GS::CANCELED;
   }
 
-  std::atomic<uint64_t> next_goal_id_{1};
-  mutable std::mutex mutex_;
-  std::map<uint64_t, StoredGoal> goals_;
+  std::atomic<uint64_t> next_goal_id{1};
+  mutable std::mutex mutex;
+  std::map<uint64_t, StoredGoal> goals;
 
-  GoalCallback goal_callback_;
-  CancelCallback cancel_callback_;
-  ResultCallback result_callback_;
-  FeedbackCallback feedback_callback_;
+  GoalCallback goal_callback;
+  CancelCallback cancel_callback;
+  ResultCallback result_callback;
+  FeedbackCallback feedback_callback;
 };
 
 } // namespace components

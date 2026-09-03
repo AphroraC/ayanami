@@ -57,8 +57,7 @@ namespace {
 PoseStamped makePose(double x, double y = 0.0) {
   PoseStamped p;
   p.header.frame_id = "map";
-  p.pose = Eigen::Isometry3d::Identity();
-  p.pose.translation() = Eigen::Vector3d(x, y, 0.0);
+  p.pose.position = Eigen::Vector3d(x, y, 0.0);
   return p;
 }
 
@@ -101,94 +100,98 @@ public:
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
     ++path_calls;
-    auto task = path_server_.acceptGoal(goal);
+    auto task = path_server.acceptGoal(goal);
     GetPathResult r;
     r.failure = FailureCode::PathNotFound;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
-    path_server_.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
+    path_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
     return task;
   }
 
   TaskHandle<SmoothPathResult> requestSmoothing(
       const SmoothPathGoal& goal) override {
-    auto task = smooth_server_.acceptGoal(goal);
+    auto task = smooth_server.acceptGoal(goal);
     SmoothPathResult r;
     r.failure = FailureCode::InvalidInput;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
-    smooth_server_.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
+    smooth_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
     return task;
   }
 
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
-    auto task = exe_server_.acceptGoal(goal);
+    auto task = exe_server.acceptGoal(goal);
     ExePathResult r;
     r.failure = FailureCode::NoValidCommand;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
-    exe_server_.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
+    exe_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
     return task;
   }
 
   TaskHandle<RecoveryResult> requestRecovery(const RecoveryGoal& goal) override {
     {
-      std::lock_guard<std::mutex> lock(recovery_mutex_);
-      ++recovery_requests_[goal.recovery_id];
+      std::lock_guard<std::mutex> lock(recovery_mutex);
+      ++recovery_requests[goal.recovery_id];
     }
-    auto task = recovery_server_.acceptGoal(goal);
+    auto task = recovery_server.acceptGoal(goal);
     RecoveryResult r;
     r.failure = FailureCode::InternalError;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
-    recovery_server_.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
+    recovery_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
     return task;
   }
 
   int recoveryRequests(const std::string& id) const {
-    std::lock_guard<std::mutex> lock(recovery_mutex_);
-    auto iter = recovery_requests_.find(id);
-    return iter == recovery_requests_.end() ? 0 : iter->second;
+    std::lock_guard<std::mutex> lock(recovery_mutex);
+    auto iter = recovery_requests.find(id);
+    return iter == recovery_requests.end() ? 0 : iter->second;
   }
 
   std::atomic<int> path_calls{0};
-  mutable std::mutex recovery_mutex_;
-  std::map<std::string, int> recovery_requests_;
+  mutable std::mutex recovery_mutex;
+  std::map<std::string, int> recovery_requests;
 
-  PathServer path_server_;
-  SmoothServer smooth_server_;
-  ExeServer exe_server_;
-  RecoveryServer recovery_server_;
+  PathServer path_server;
+  SmoothServer smooth_server;
+  ExeServer exe_server;
+  RecoveryServer recovery_server;
 };
 
 void setNavServer(const BT::Blackboard::Ptr& bb,
-                  ayanami::components::NavigationServerBase* server) {
-  bb->set<ayanami::components::NavigationServerBase*>(kNavigationServer, server);
+                  ayanami::components::NavigationRuntime::Ptr server) {
+  bb->set<ayanami::components::NavigationRuntime::Ptr>(k_navigation_runtime,
+                                                       server);
 }
 
 void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
-  bb->set<PoseStamped>(kGoal, makePose(1.0, 1.0));
-  bb->set<Path>(kRawPath, Path{});
-  bb->set<Path>(kSmoothedPath, Path{});
-  bb->set<double>(kPlannerFrequency, -1.0);
-  bb->set<double>(kControllerFrequency, 20.0);
-  bb->set<std::string>(kPlannerId, "test_planner");
-  bb->set<std::string>(kSmootherId, "test_smoother");
-  bb->set<std::string>(kControllerId, "test_controller");
-  bb->set<std::string>(kRecoveryId, "clear_costmap");
-  bb->set<std::string>(kClearCostmapId, "clear_costmap");
-  bb->set<std::string>(kSpinId, "spin");
-  bb->set<std::string>(kWaitId, "wait");
-  bb->set<std::string>(kBackupId, "back_up");
-  bb->set<uint64_t>(kSessionId, 0u);
-  bb->set<uint64_t>(kPlanVersion, 0u);
-  bb->set<uint64_t>(kResetStuckToken, 1u);
+  bb->set<PoseStamped>(k_goal, makePose(1.0, 1.0));
+  bb->set<Path>(k_raw_path, Path{});
+  bb->set<Path>(k_smoothed_path, Path{});
+  bb->set<double>(k_planner_frequency, -1.0);
+  bb->set<double>(k_smoother_frequency, -1.0);
+  bb->set<double>(k_controller_frequency, 20.0);
+  bb->set<std::string>(k_planner_id, "test_planner");
+  bb->set<std::string>(k_smoother_id, "test_smoother");
+  bb->set<std::string>(k_controller_id, "test_controller");
+  bb->set<std::string>(k_recovery_id, "clear_costmap");
+  bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
+  bb->set<std::string>(k_spin_id, "spin");
+  bb->set<std::string>(k_wait_id, "wait");
+  bb->set<std::string>(k_backup_id, "back_up");
+  bb->set<uint64_t>(k_session_id, 0u);
+  bb->set<uint64_t>(k_plan_version, 0u);
+  bb->set<uint64_t>(k_reset_stuck_token, 1u);
+  bb->set<uint64_t>(k_goal_revision, 0u);
+  bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
 
 // 以实际导航树同构结构 (config/BT/navigation.xml) 建树, 外层 RecoveryNode
 // retries=2。去掉 RateController (其 tick 门控会缓存 RUNNING, 不适合本测试
 // 紧循环 tick); 恢复链结构 (PipelineSequence + ReactiveFallback) 保持原样。
-constexpr const char* kExhaustionTreeXml = R"(
+constexpr const char* k_exhaustion_tree_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
     <RecoveryNode name="NavigateRecovery" number_of_retries="2">
@@ -229,7 +232,7 @@ constexpr const char* kExhaustionTreeXml = R"(
 
 // ---- 组件层: RecoveryAction 对恒失败 recovery 报告失败 (复刻 legacy) ----
 
-TEST(RecoveryExhaustion, RecoveryActionReportsFailure) {
+TEST(RecoveryExhaustion, recoveryActionReportsFailure) {
   auto recovery = std::make_shared<FailingRecovery>();
   ayanami::components::RecoveryAction action(recovery);
 
@@ -247,7 +250,7 @@ TEST(RecoveryExhaustion, RecoveryActionReportsFailure) {
   EXPECT_EQ(recovery->calls.load(), 1);
 }
 
-TEST(RecoveryExhaustion, MultipleRecoveryAttemptsAllFail) {
+TEST(RecoveryExhaustion, multipleRecoveryAttemptsAllFail) {
   auto recovery = std::make_shared<FailingRecovery>();
   ayanami::components::RecoveryAction action(recovery);
 
@@ -267,39 +270,37 @@ TEST(RecoveryExhaustion, MultipleRecoveryAttemptsAllFail) {
 
 // ---- BT 层: 恢复链全部耗尽 → 整树 FAILURE, 不无限重试 ----
 
-TEST(RecoveryExhaustion, RecoveryListExhaustedFailsNavigationWithinBounds) {
-  FailingNavServer server;
+TEST(RecoveryExhaustion, recoveryListExhaustedFailsNavigationWithinBounds) {
+  auto server = std::make_shared<FailingNavServer>();
 
   auto bb = BT::Blackboard::create();
-  setNavServer(bb, &server);
+  setNavServer(bb, server);
   setRequiredEntries(bb);
 
   BT::BehaviorTreeFactory factory;
   registerNavigationBehaviorTreeNodes(factory);
-  auto tree = factory.createTreeFromText(kExhaustionTreeXml, bb);
+  auto tree = factory.createTreeFromText(k_exhaustion_tree_xml, bb);
 
   // 有界 tick 直到 root FAILURE: 若无限重试则永远 RUNNING, 超限断言失败。
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
-  const int kMaxTicks = 60;
+  const int k_max_ticks = 60;
   int ticks = 0;
-  for (; ticks < kMaxTicks && status != BT::NodeStatus::FAILURE; ++ticks) {
+  for (; ticks < k_max_ticks && status != BT::NodeStatus::FAILURE; ++ticks) {
     status = tree.tickExactlyOnce();
   }
   ASSERT_EQ(status, BT::NodeStatus::FAILURE) << "恢复链耗尽后树必须 FAILURE";
-  EXPECT_LE(ticks, kMaxTicks);
+  EXPECT_LE(ticks, k_max_ticks);
 
   // planner 被调用且失败
-  EXPECT_GE(server.path_calls.load(), 1);
+  EXPECT_GE(server->path_calls.load(), 1);
 
   // 恢复链列表被完全遍历: clear_costmap (内层) + spin/wait/back_up (外层
   // ReactiveFallback) 每个都被请求
-  EXPECT_GE(server.recoveryRequests("clear_costmap"), 1);
-  EXPECT_GE(server.recoveryRequests("spin"), 1);
-  EXPECT_GE(server.recoveryRequests("wait"), 1);
-  EXPECT_GE(server.recoveryRequests("back_up"), 1);
-
-  // 不无限重试: 总恢复请求有界 (每 id 最多一次尝试即耗尽)
-  EXPECT_LE(server.recoveryRequests("spin"), 2);
-  EXPECT_LE(server.recoveryRequests("wait"), 2);
-  EXPECT_LE(server.recoveryRequests("back_up"), 2);
+  EXPECT_GE(server->recoveryRequests("clear_costmap"), 1);
+  EXPECT_GE(server->recoveryRequests("spin"), 1);
+  EXPECT_GE(server->recoveryRequests("wait"), 1);
+  EXPECT_GE(server->recoveryRequests("back_up"), 1);
+  EXPECT_LE(server->recoveryRequests("spin"), 2);
+  EXPECT_LE(server->recoveryRequests("wait"), 2);
+  EXPECT_LE(server->recoveryRequests("back_up"), 2);
 }

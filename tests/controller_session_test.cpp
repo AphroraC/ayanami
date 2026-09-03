@@ -41,8 +41,7 @@ class RecordingController : public ayanami::abstract::AbstractController {
 public:
   FailureCode computeVelocityCommands(
       const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
-      std::string&,
-      const ayanami::abstract::AbstractGoalChecker::Ptr&) override {
+      std::string&) override {
     ++calls;
     cmd_vel.twist.linear.x() = 0.5;
     return FailureCode::None;
@@ -66,18 +65,18 @@ public:
 class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
   explicit LambdaGoalChecker(std::function<bool()> reached)
-      : reached_(std::move(reached)) {}
+      : reached(std::move(reached)) {}
   void reset() override {}
   bool isGoalReached(const PoseStamped&, const PoseStamped&,
                      const TwistStamped&) override {
-    return reached_();
+    return reached();
   }
   ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 
  private:
-  std::function<bool()> reached_;
+  std::function<bool()> reached;
 };
 
 class AlwaysTrueProgressChecker
@@ -94,21 +93,21 @@ class TestControllerAction : public ayanami::components::ControllerAction {
   using ControllerAction::ControllerAction;
   void initCheckers(ayanami::abstract::AbstractGoalChecker::Ptr goal,
                     ayanami::abstract::AbstractProgressChecker::Ptr progress) {
-    goal_ = std::move(goal);
-    progress_ = std::move(progress);
+    this->goal = std::move(goal);
+    this->progress = std::move(progress);
   }
 
  protected:
   ayanami::components::ControllerExecution::Ptr createExecution() override {
     auto exec = ControllerAction::createExecution();
-    exec->setGoalChecker(goal_);
-    exec->setProgressChecker(progress_);
+    exec->setGoalChecker(goal);
+    exec->setProgressChecker(progress);
     return exec;
   }
 
  private:
-  ayanami::abstract::AbstractGoalChecker::Ptr goal_;
-  ayanami::abstract::AbstractProgressChecker::Ptr progress_;
+  ayanami::abstract::AbstractGoalChecker::Ptr goal;
+  ayanami::abstract::AbstractProgressChecker::Ptr progress;
 };
 
 Path makePath(std::size_t size) {
@@ -117,7 +116,7 @@ Path makePath(std::size_t size) {
   for (std::size_t i = 0; i < size; ++i) {
     PoseStamped p =
         PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
-    p.pose.translation() = Eigen::Vector3d(static_cast<double>(i), 0.0, 0.0);
+    p.pose.position = Eigen::Vector3d(static_cast<double>(i), 0.0, 0.0);
     path.poses.push_back(p);
   }
   return path;
@@ -138,7 +137,7 @@ bool waitReady(Task& t, int max_ms = 5000) {
 
 }  // namespace
 
-TEST(ControllerSession, TenPosePlanRunsFramesAndArrivesAtGoal) {
+TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
   auto controller = std::make_shared<RecordingController>();
   TestControllerAction action(controller);
   action.initCheckers(
