@@ -48,10 +48,9 @@ constexpr int k_default_size_x = 0;
 constexpr int k_default_size_y = 0;
 
 // Dynamic transforms are sampled into TransformStore at tf_sync_rate
-// (50 Hz) with their own stamps, while obstacle lookups use the sensor stamp.
-// A zero tolerance lookup almost never matches a sampled stamp, so obstacles
-// get dropped with "no transform". Use bounded tolerances: local odometry is
-// published at ~100 Hz, AMCL map->odom at ~20 Hz with transform_tolerance 0.5.
+// (50 Hz). Obstacle lookups use Timestamp::latest() (与写入同源): fast_tf 无
+// 外推, 在快于实时的仿真下传感器精确戳恒晚于最新已同步样本, 精确戳查询
+// 会 100% 失败。容差仅用于等待写入侧短暂缺失时的兜底。
 constexpr double k_local_tf_tolerance_s = 0.2;
 constexpr double k_global_tf_tolerance_s = 0.5;
 
@@ -604,10 +603,12 @@ void CostmapNavigationServer::markObstaclesInFrame(
       costmap_context->localCostmap()->getGlobalFrame();
 
   Eigen::Isometry3d T_local = Eigen::Isometry3d::Identity();
+  // 查询用 latest (与 50Hz 同步 loop 同源), 不用传感器戳: fast_tf 无外推,
+  // 在快于实时的仿真下传感器戳恒晚于最新已同步样本, 精确戳查询会 100% 失败。
   if ((!points.empty() || !clearing_points.empty()) &&
-      !robot_state_controller.lookupTransform(local_frame, frame_id, stamp,
-                                              T_local,
-                                              k_local_tf_tolerance_s)) {
+      !robot_state_controller.lookupTransform(
+          local_frame, frame_id, ayanami::Timestamp::latest(), T_local,
+          k_local_tf_tolerance_s)) {
     if (tfWarnDue(local_tf_warn_at)) {
       spdlog::warn("CostmapNavigationServer::markObstaclesInFrame: no "
                    "transform {} <- {} (stamp={:f}s); 障碍落图暂停。检查 TF "
@@ -643,8 +644,8 @@ void CostmapNavigationServer::markObstaclesInFrame(
   double robot_yaw = 0.0;
   Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
   if (robot_state_controller.lookupTransform(
-          local_frame, costmap_context->getRobotFrame(), stamp, T_robot,
-          k_local_tf_tolerance_s)) {
+          local_frame, costmap_context->getRobotFrame(),
+          ayanami::Timestamp::latest(), T_robot, k_local_tf_tolerance_s)) {
     robot_x = T_robot.translation().x();
     robot_y = T_robot.translation().y();
     robot_yaw = std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
@@ -719,12 +720,14 @@ void CostmapNavigationServer::markObstaclesInFrame(
     const bool have_sensor_transform =
         (points.empty() && clearing_points.empty()) ||
         robot_state_controller.lookupTransform(
-            costmap_context->getGlobalFrame(), frame_id, stamp,
-            T_global_sensor, k_global_tf_tolerance_s);
+            costmap_context->getGlobalFrame(), frame_id,
+            ayanami::Timestamp::latest(), T_global_sensor,
+            k_global_tf_tolerance_s);
     if (!have_sensor_transform ||
         !robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), costmap_context->getRobotFrame(),
-            stamp, T_global_robot, k_global_tf_tolerance_s)) {
+            ayanami::Timestamp::latest(), T_global_robot,
+            k_global_tf_tolerance_s)) {
       if (tfWarnDue(global_tf_warn_at)) {
         spdlog::warn(
             "CostmapNavigationServer::markObstaclesInFrame: no global "
