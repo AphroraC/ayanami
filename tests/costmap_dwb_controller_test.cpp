@@ -395,7 +395,7 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
   auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
+  ctx->setFrames("map", "map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   ASSERT_NO_THROW(planner.configure(
@@ -435,7 +435,7 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
 
   auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
+  ctx->setFrames("map", "map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   EXPECT_NO_THROW(planner.configure(

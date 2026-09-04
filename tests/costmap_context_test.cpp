@@ -157,7 +157,7 @@ TEST(CostmapContextTest, frameGettersReturnConfiguredFrames) {
   EXPECT_EQ(ctx.getGlobalFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
 
-  ctx.setFrames("odom", "base_footprint");
+  ctx.setFrames("odom", "odom", "base_footprint");
   EXPECT_EQ(ctx.getGlobalFrame(), "odom");
   EXPECT_EQ(ctx.getRobotFrame(), "base_footprint");
 }
@@ -316,6 +316,40 @@ TEST(CostmapContextTest, viewResolvesRobotPose) {
   EXPECT_DOUBLE_EQ(view.robot_pose().pose.position.y(), 4.0);
 }
 
+TEST(CostmapContextTest, localViewRobotPoseStampedInLocalFrame) {
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  // 独立 frame 名避免与其它用例的 latest 变换互相干扰:
+  // mapF<-odomF = (10,-5), odomF<-baseF = (1,2) (fast_tf 单亲树, 查询沿父链)。
+  rsc.setTransform(
+      "odomF", "baseF", ayanami::Timestamp::latest(),
+      Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
+  rsc.setTransform(
+      "mapF", "odomF", ayanami::Timestamp::latest(),
+      Eigen::Translation3d(10.0, -5.0, 0.0) * Eigen::Quaterniond::Identity());
+
+  CostmapContext ctx;
+  ctx.setFrames("mapF", "odomF", "baseF");
+  ctx.setLocalCostmap(makeWrapper(makeGrid()));
+  ctx.setGlobalCostmap(makeWrapper(makeGrid()));
+
+  // local 视图: 位姿必须解析在视图自身 frame (odomF), 不允许盖 global 章。
+  const CostmapView lview = ctx.lockLocal();
+  ASSERT_TRUE(lview.valid());
+  EXPECT_EQ(lview.frame(), "odomF");
+  ASSERT_TRUE(lview.has_robot_pose());
+  EXPECT_EQ(lview.robot_pose().header.frame_id, "odomF");
+  EXPECT_DOUBLE_EQ(1.0, lview.robot_pose().pose.position.x());
+  EXPECT_DOUBLE_EQ(2.0, lview.robot_pose().pose.position.y());
+
+  // global 视图: 位姿仍在 global 系 (mapF), 沿父链复合 (10+1, -5+2)。
+  const CostmapView gview = ctx.lockGlobal();
+  ASSERT_TRUE(gview.valid());
+  ASSERT_TRUE(gview.has_robot_pose());
+  EXPECT_EQ(gview.robot_pose().header.frame_id, "mapF");
+  EXPECT_DOUBLE_EQ(11.0, gview.robot_pose().pose.position.x());
+  EXPECT_DOUBLE_EQ(-3.0, gview.robot_pose().pose.position.y());
+}
+
 // ---------- 4 个 costmap/core Costmap* 基类 (加锁读视图契约) ----------
 
 TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
@@ -414,7 +448,7 @@ TEST(CostmapContextTest, mapFamilyIgnorantInterfaceOnly) {
   EXPECT_TRUE(ctx.isCurrent());
 
   // 隔离帧名, 避免与其它用例注入的 map/base_link TF 干扰。
-  ctx.setFrames("isolated_map", "isolated_base");
+  ctx.setFrames("isolated_map", "isolated_map", "isolated_base");
   ayanami::geometry_msgs::PoseStamped pose;
   EXPECT_FALSE(ctx.getRobotPose(pose));
 }

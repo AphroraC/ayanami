@@ -210,7 +210,7 @@ TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   auto ctx = std::make_shared<CostmapContext>();
   ctx->setGlobalCostmap(wrapper);
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
+  ctx->setFrames("map", "map", "base_link");
 
   // mock robot pose (1, 2, pi/4) in map frame。
   auto& rsc = ayanami::components::RobotStateController::instance();

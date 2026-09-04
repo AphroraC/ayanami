@@ -73,11 +73,6 @@ class CostmapContext : public map::AbstractMapContext,
   void setLocalCostmap(costmap_2d::CostmapWrapper::Ptr wrapper) {
     local_costmap = std::move(wrapper);
   }
-  void setFrames(std::string global_frame, std::string robot_frame) {
-    this->global_frame = std::move(global_frame);
-    this->local_frame = this->global_frame;
-    this->robot_frame = std::move(robot_frame);
-  }
   void setFrames(std::string global_frame, std::string local_frame,
                  std::string robot_frame) {
     this->global_frame = std::move(global_frame);
@@ -101,15 +96,20 @@ class CostmapContext : public map::AbstractMapContext,
            (!local_costmap || local_costmap->isCurrent());
   }
 
-  /// @brief 获取机器人在 global_frame 的位姿 (TransformStore, 无锁查询)。
+  /// @brief 获取机器人在指定 frame 的位姿 (默认 global_frame; local 视图
+  /// 传 local_frame, 保证 view.frame() 与 robot_pose 帧一致)。
+  /// TransformStore, 无锁查询。
   bool getRobotPose(
-      ayanami::geometry_msgs::PoseStamped& pose) const {
+      ayanami::geometry_msgs::PoseStamped& pose,
+      const std::string& target_frame = "") const {
+    const std::string& frame =
+        target_frame.empty() ? global_frame : target_frame;
     Eigen::Isometry3d T;
     if (!ayanami::components::RobotStateController::instance().lookupTransform(
-            global_frame, robot_frame, ayanami::Timestamp::latest(), T)) {
+            frame, robot_frame, ayanami::Timestamp::latest(), T)) {
       return false;
     }
-    pose = ayanami::geometry_msgs::PoseStamped::fromIsometry(global_frame, T);
+    pose = ayanami::geometry_msgs::PoseStamped::fromIsometry(frame, T);
     return true;
   }
 
@@ -194,7 +194,9 @@ class CostmapContext : public map::AbstractMapContext,
 
  private:
   /// @brief 持 shared 锁构建读视图: grid/frame 取自 wrapper; footprint 取
-  /// configure 期不可变缓存; robot_pose 经 RobotStateController 无锁解析。
+  /// configure 期不可变缓存; robot_pose 在视图自身 frame 解析 (local 视图
+  /// = local_frame, global 视图 = global_frame), 经 RobotStateController
+  /// 无锁解析。
   CostmapView buildView(
       const costmap_2d::CostmapWrapper::Ptr& wrapper,
       const std::string& frame) const {
@@ -204,7 +206,7 @@ class CostmapContext : public map::AbstractMapContext,
     std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
     const auto* grid = wrapper->get().getCostmap();
     ayanami::geometry_msgs::PoseStamped robot_pose;
-    const bool has_robot_pose = getRobotPose(robot_pose);
+    const bool has_robot_pose = getRobotPose(robot_pose, frame);
     return CostmapView(std::move(lock), grid, frame, &footprint_,
                        std::move(robot_pose), has_robot_pose,
                        wrapper->isCurrent());

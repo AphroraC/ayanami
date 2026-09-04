@@ -131,7 +131,7 @@ TEST(CoreCostmapContext, defaultCurrentTrue) {
 
 TEST(CoreCostmapContext, framesAndRobotPose) {
   CostmapContext ctx;
-  ctx.setFrames("map", "base_link");
+  ctx.setFrames("map", "map", "base_link");
   ayanami::components::RobotStateController::instance().setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
