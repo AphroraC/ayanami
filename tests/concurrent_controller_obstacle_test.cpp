@@ -27,7 +27,7 @@
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -48,7 +48,7 @@ using ayanami::nav_msgs::Path;
 class SnapshotController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext&,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_ = std::move(map);
   }
   ControllerResultT computeVelocityCommand(const PoseStamped&,
@@ -70,7 +70,7 @@ class SnapshotController : public ayanami::costmap::CostmapController {
   std::atomic<int> snapshot_missing{0};
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
 };
@@ -109,7 +109,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto local = makeLocalWrapper();
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(local);
 
   auto controller = std::make_shared<SnapshotController>();

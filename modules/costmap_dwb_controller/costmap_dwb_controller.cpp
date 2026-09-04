@@ -65,7 +65,7 @@ CostmapDwBLocalPlanner::CostmapDwBLocalPlanner() {
 
 void CostmapDwBLocalPlanner::configure(
     const PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   dwb_plugin_name = context.name;
   map_ = std::move(map);
 

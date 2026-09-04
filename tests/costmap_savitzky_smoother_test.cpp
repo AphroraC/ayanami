@@ -28,7 +28,7 @@
 #include <costmap_2d_layers/static_layer.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
@@ -38,7 +38,7 @@
 namespace {
 
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::modules::CostmapSavitzkySmoother;
 using ayanami::nav_msgs::Path;
 
@@ -65,9 +65,9 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-std::shared_ptr<CostmapContext> makeContext(
+std::shared_ptr<CostmapMapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(wrapper);
   return ctx;
 }

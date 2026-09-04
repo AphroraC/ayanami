@@ -25,7 +25,7 @@ class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
   virtual ~CostmapSavitzkySmoother() = default;
 
   void configure(const PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   /// @brief in-place 平滑: 直接修改 path; 失败/回滚时恢复原路径。
   SmootherResultT smoothPath(ayanami::nav_msgs::Path& path,
@@ -42,7 +42,7 @@ class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
 
   CostmapSavitzkySmootherParam param;
 
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 
   std::atomic<bool> canceled{false};
 };

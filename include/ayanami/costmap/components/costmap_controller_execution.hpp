@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "ayanami/abstract/components/controller_execution.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/core/costmap_controller.hpp"
 
 namespace ayanami {
@@ -28,7 +28,7 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
 
   CostmapControllerExecution(const std::string& name,
                              ayanami::abstract::AbstractController::Ptr controller,
-                             CostmapContext::Ptr ctx)
+                             CostmapMapContext::Ptr ctx)
       : ControllerExecution(std::move(controller)),
         name(name),
         ctx(std::move(ctx)) {}
@@ -71,7 +71,7 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
 
  private:
   std::string name;
-  CostmapContext::Ptr ctx;
+  CostmapMapContext::Ptr ctx;
 };
 
 }  // namespace costmap

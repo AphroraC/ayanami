@@ -10,7 +10,7 @@
 //      - adjustPlanResolution
 //      - critics: BaseObstacle / PreferForward / Twirling / Oscillation
 //        (构造输入 → 精确分数断言)
-//   C. headless 集成: CostmapContext + 主控制器全链路打分
+//   C. headless 集成: CostmapMapContext + 主控制器全链路打分
 //
 // argv: 1=模块 config json (build tree 下 config/modules/costmap_dwb_controller.json)
 
@@ -27,7 +27,7 @@
 #include <costmap_2d/cost_values.hpp>
 #include <costmap_2d/layered_costmap.hpp>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/utility/config.hpp>
@@ -393,7 +393,7 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
                                                                false);
   local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "map", "base_link");
 
@@ -433,7 +433,7 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
   local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
 
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "map", "base_link");
 

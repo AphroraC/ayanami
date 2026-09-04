@@ -13,7 +13,7 @@ using ayanami::SmootherResultT;
 class SoCostmapSmoother : public ayanami::costmap::CostmapSmoother {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+                 ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   SmootherResultT smoothPath(Path& path, double /*max_duration*/,
                              bool /*check_for_collision*/) override {
     path.header.frame_id = "map";

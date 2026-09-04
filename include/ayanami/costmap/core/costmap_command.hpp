@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ayanami/map/abstract_map_context.hpp"
+
 #include <memory>
 #include <string>
 
@@ -23,14 +25,13 @@ struct ClearCostmapCommand {
 /**
  * @brief 地图变更命令端口: 恢复/外部组件向写者提交类型化写命令的窄接口。
  *
- * 实现 (写者侧) 只有 CostmapNavigationServer 提供; 插件只持有该接口并
- * submit, 从而 "map mutation only through CostmapCommandPort"。
+ * 派生自 map::MapCommandPort, 经 AbstractMapContext::commandPort() 以地图族
+ * 无关的形式暴露; 实现 (写者侧) 只有 CostmapNavigationServer 提供; 插件只
+ * 持有该接口并 submit, 从而 "map mutation only through command port"。
  */
-class CostmapCommandPort {
+class CostmapCommandPort : public map::MapCommandPort {
  public:
   using Ptr = std::shared_ptr<CostmapCommandPort>;
-
-  virtual ~CostmapCommandPort() = default;
 
   /// @brief 提交一条清代价地图命令。返回 true 表示写者已受理。
   virtual bool submit(const ClearCostmapCommand& command) = 0;

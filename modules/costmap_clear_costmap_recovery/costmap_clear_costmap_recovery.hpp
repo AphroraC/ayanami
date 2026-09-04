@@ -20,6 +20,7 @@ using ayanami::costmap::CostmapCommandPort;
  * ClearCostmapCommand 并经 CostmapCommandPort 提交给唯一地图写者
  * (CostmapNavigationServer) 执行, 随后 SUCCESS (无运动, 零速度)。插件不自行
  * sleep、不接触任何可变 wrapper / layer。
+ * 命令端口在 configure 时经 map->commandPort() 获取 (地图族写命令接口)。
  * global 的静态底图由 StaticLayer 恢复, 不直接把 master grid 墙体写成 FREE。
  * 参数统一从 PluginContext.config (config_recovery 指向的本模块 json) 读取。
  */
@@ -30,10 +31,7 @@ class CostmapClearCostmapRecovery final : public ayanami::costmap::CostmapRecove
   virtual ~CostmapClearCostmapRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
-
-  /// @brief 注入写者命令端口 (地图变更只能经此提交)。
-  void setCommandPort(CostmapCommandPort::Ptr port) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   void start() override;
   RecoveryResultT tick() override;

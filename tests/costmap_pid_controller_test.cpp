@@ -31,7 +31,7 @@
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
@@ -45,7 +45,7 @@
 namespace {
 
 using ayanami::abstract::AbstractGoalChecker;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::ErrorCode;
 using ayanami::geometry_msgs::TwistStamped;
@@ -88,8 +88,8 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper() {
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-std::shared_ptr<CostmapContext> makeContext() {
-  auto ctx = std::make_shared<CostmapContext>();
+std::shared_ptr<CostmapMapContext> makeContext() {
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper());
   ctx->setLocalCostmap(makeWrapper());
   return ctx;

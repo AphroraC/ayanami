@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "ayanami/abstract/components/smoother_execution.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/core/costmap_smoother.hpp"
 
 namespace ayanami {
@@ -25,7 +25,7 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
 
   CostmapSmootherExecution(const std::string& name,
                            ayanami::abstract::AbstractSmoother::Ptr smoother,
-                           CostmapContext::Ptr ctx)
+                           CostmapMapContext::Ptr ctx)
       : SmootherExecution(std::move(smoother)),
         name(name),
         ctx(std::move(ctx)) {}
@@ -68,7 +68,7 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
 
  private:
   std::string name;
-  CostmapContext::Ptr ctx;
+  CostmapMapContext::Ptr ctx;
 };
 
 }  // namespace costmap

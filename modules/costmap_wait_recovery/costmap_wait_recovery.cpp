@@ -16,7 +16,7 @@ namespace modules {
 
 void CostmapWaitRecovery::configure(
     const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   (void)map;  // wait 不读图。
   // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
   param.wait_duration = context.config.param<double>(

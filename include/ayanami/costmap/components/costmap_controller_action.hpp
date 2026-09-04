@@ -6,7 +6,7 @@
 #include <utility>
 
 #include "ayanami/abstract/components/controller_action.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/components/costmap_controller_execution.hpp"
 
 namespace ayanami {
@@ -16,7 +16,7 @@ namespace costmap {
  * @brief 局部控制的 costmap 版 Action (spec §5.4, 生产路径)。
  *
  * 复用 ControllerAction 全部协议, 只覆写 createExecution 工厂:
- * 返回 CostmapControllerExecution (带 CostmapContext: 激活/停用 local +
+ * 返回 CostmapControllerExecution (带 CostmapMapContext: 激活/停用 local +
  * 每 cycle 加锁读图 + safetyCheck→isCurrent; 清零停止命令仍由
  * ControllerExecution 保证)。执行配置器 (server 装配: goal/progress
  * checker + 速度上限 + 机器人状态源) 经 configure 注入。
@@ -28,7 +28,7 @@ class CostmapControllerAction : public ayanami::components::ControllerAction {
 
   CostmapControllerAction(
       ayanami::abstract::AbstractController::Ptr controller,
-      CostmapContext::Ptr ctx, ExecutionConfigurator configure = nullptr)
+      CostmapMapContext::Ptr ctx, ExecutionConfigurator configure = nullptr)
       : ControllerAction(std::move(controller)),
         ctx(std::move(ctx)),
         configure(std::move(configure)) {}
@@ -49,7 +49,7 @@ class CostmapControllerAction : public ayanami::components::ControllerAction {
   }
 
  private:
-  CostmapContext::Ptr ctx;
+  CostmapMapContext::Ptr ctx;
   ExecutionConfigurator configure;
 };
 

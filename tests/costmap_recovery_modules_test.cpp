@@ -36,7 +36,7 @@
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_commands.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_recovery_execution.hpp>
 #include <ayanami/costmap/core/costmap_command.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
@@ -57,7 +57,7 @@ using ayanami::ErrorCode;
 using ayanami::RecoveryResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapBackUpRecovery;
 using ayanami::modules::CostmapClearCostmapRecovery;
@@ -103,10 +103,10 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(unsigned int size,
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-std::shared_ptr<CostmapContext> makeContext(
+std::shared_ptr<CostmapMapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& global,
     const std::shared_ptr<costmap_2d::CostmapWrapper>& local = nullptr) {
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
   return ctx;
@@ -471,11 +471,12 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config(moduleConfig("clear.json"))},
                  ctx->getSharedConstPtr());
-  rec->setCommandPort(port);
 
   rec->start();
   const RecoveryResultT outcome = rec->tick();

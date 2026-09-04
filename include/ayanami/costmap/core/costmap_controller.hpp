@@ -4,7 +4,7 @@
 #include <string>
 
 #include "ayanami/abstract/core/abstract_controller.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/types.hpp"
 
 namespace ayanami {
@@ -23,7 +23,7 @@ class CostmapController : public ayanami::abstract::AbstractController {
   using Ptr = std::shared_ptr<CostmapController>;
 
   virtual void configure(const PluginContext& context,
-                         CostmapContext::ConstPtr map) = 0;
+                         CostmapMapContext::ConstPtr map) = 0;
 };
 
 }  // namespace costmap

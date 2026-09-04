@@ -15,18 +15,17 @@ using ayanami::costmap::CostmapCommandPort;
 
 void CostmapClearCostmapRecovery::configure(
     const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
-  (void)map;  // 改图仅经命令端口, 不读图。
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
   param.clear_radius =
       context.config.param<double>("recovery", "clear_radius", param.clear_radius);
   param.affected_maps = context.config.param<std::string>(
       "recovery", "affected_maps", param.affected_maps);
   name = context.name;
-}
-
-void CostmapClearCostmapRecovery::setCommandPort(CostmapCommandPort::Ptr port) {
-  command_port = std::move(port);
+  // 地图写命令端口经地图上下文获取 (AbstractMapContext::commandPort)。
+  command_port =
+      std::dynamic_pointer_cast<CostmapCommandPort>(
+          map ? map->commandPort() : nullptr);
 }
 
 void CostmapClearCostmapRecovery::start() {

@@ -367,6 +367,12 @@ if(BUILD_TESTING)
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapContextTest COMMAND costmap_context_test)
 
+    # Map Family 抽象: 非 costmap 地图族经同一虚钩子装配 (核心零 costmap 依赖)
+    add_executable(map_family_abstraction_test tests/map_family_abstraction_test.cpp)
+    target_link_libraries(map_family_abstraction_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME MapFamilyAbstractionTest COMMAND map_family_abstraction_test)
+
     # Task 19: costmap/components (Costmap*Execution + Costmap*Action)
     add_executable(costmap_components_test tests/costmap_components_test.cpp)
     target_link_libraries(costmap_components_test PRIVATE

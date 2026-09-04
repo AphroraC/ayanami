@@ -32,7 +32,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
@@ -46,7 +46,7 @@ namespace {
 
 using ayanami::ErrorCode;
 using ayanami::PlannerResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
@@ -186,7 +186,7 @@ std::shared_ptr<CostmapPidController> makeController() {
                      "test_pid",
                      ayanami::Config((g_module_dir /
                                       "costmap_pid_controller.json").string())},
-                 std::make_shared<CostmapContext>());
+                 std::make_shared<CostmapMapContext>());
   return ctl;
 }
 
@@ -207,7 +207,7 @@ TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   resetModuleConfig();
 
   auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5 = 10m x 10m, 全 free
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(wrapper);
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "map", "base_link");

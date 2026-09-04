@@ -31,7 +31,7 @@ class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
   virtual ~CostmapBackUpRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   void start() override;
   void setBehaviorParams(
@@ -54,7 +54,7 @@ class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
   bool collisionNearRobot(const ayanami::costmap::CostmapView& costmap,
                           const ::Eigen::Isometry3d& robot_pose) const;
 
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 
   std::atomic<bool> canceled{false};
   int remaining_frames{0};

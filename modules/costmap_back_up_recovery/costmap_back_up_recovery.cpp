@@ -20,7 +20,7 @@ constexpr int k_lethal_threshold = 253;  // Ruling #6
 
 void CostmapBackUpRecovery::configure(
     const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
   param.backup_dist =
       context.config.param<double>("recovery", "backup_dist", param.backup_dist);

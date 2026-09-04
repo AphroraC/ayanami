@@ -28,7 +28,7 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
   ~CostmapSmacPlanner() override = default;
 
   void configure(const PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   PlannerResultT makePlan(const geometry_msgs::PoseStamped& start,
                           const geometry_msgs::PoseStamped& goal,
@@ -51,7 +51,7 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
 
   CostmapSmacPlannerParam param;
 
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 
   std::atomic<bool> canceled{false};
   std::atomic<uint64_t> goal_revision{0};

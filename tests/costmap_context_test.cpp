@@ -14,7 +14,7 @@
 #include <costmap_server/costmap_wrapper.hpp>
 
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
@@ -33,7 +33,7 @@ using ayanami::RecoveryCycleData;
 using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapView;
 
 std::shared_ptr<costmap_2d::LayeredCostmap> makeGrid() {
@@ -59,7 +59,7 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
   virtual ~TestCostmapPlanner() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_ = std::move(map);
   }
@@ -73,7 +73,7 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
   }
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 };
 
 class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
@@ -84,7 +84,7 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   virtual ~TestCostmapSmoother() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_ = std::move(map);
   }
@@ -96,7 +96,7 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   }
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 };
 
 class TestCostmapController : public ayanami::costmap::CostmapController {
@@ -107,7 +107,7 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   virtual ~TestCostmapController() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_ = std::move(map);
   }
@@ -121,7 +121,7 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 };
 
 class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
@@ -132,7 +132,7 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   virtual ~TestCostmapRecovery() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_ = std::move(map);
   }
@@ -145,15 +145,15 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   }
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 };
 
 }  // namespace
 
 // ---------- 帧名 getters ----------
 
-TEST(CostmapContextTest, frameGettersReturnConfiguredFrames) {
-  CostmapContext ctx;
+TEST(CostmapMapContextTest, frameGettersReturnConfiguredFrames) {
+  CostmapMapContext ctx;
   EXPECT_EQ(ctx.getGlobalFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
 
@@ -162,11 +162,11 @@ TEST(CostmapContextTest, frameGettersReturnConfiguredFrames) {
   EXPECT_EQ(ctx.getRobotFrame(), "base_footprint");
 }
 
-TEST(CostmapContextTest, exposesConstSharedMapAndLockedReadAccess) {
-  auto context = std::make_shared<CostmapContext>();
+TEST(CostmapMapContextTest, exposesConstSharedMapAndLockedReadAccess) {
+  auto context = std::make_shared<CostmapMapContext>();
   context->setGlobalCostmap(makeWrapper(makeGrid()));
 
-  std::shared_ptr<const CostmapContext> read_only =
+  std::shared_ptr<const CostmapMapContext> read_only =
       context->getSharedConstPtr();
   ASSERT_TRUE(read_only);
   EXPECT_EQ(read_only.get(), context.get());
@@ -181,16 +181,16 @@ TEST(CostmapContextTest, exposesConstSharedMapAndLockedReadAccess) {
 
 // ---------- isCurrent ----------
 
-TEST(CostmapContextTest, isCurrentTrueWithoutWrappers) {
-  CostmapContext ctx;
+TEST(CostmapMapContextTest, isCurrentTrueWithoutWrappers) {
+  CostmapMapContext ctx;
   EXPECT_TRUE(ctx.isCurrent());
 }
 
-TEST(CostmapContextTest, isCurrentForwardsToWrappers) {
+TEST(CostmapMapContextTest, isCurrentForwardsToWrappers) {
   auto global = makeWrapper(makeGrid());
   auto local = makeWrapper(makeGrid());
 
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
 
@@ -202,11 +202,11 @@ TEST(CostmapContextTest, isCurrentForwardsToWrappers) {
   EXPECT_FALSE(ctx.isCurrent());
 }
 
-TEST(CostmapContextTest, isCurrentWithNullWrapperIgnoresIt) {
+TEST(CostmapMapContextTest, isCurrentWithNullWrapperIgnoresIt) {
   auto local = makeWrapper(makeGrid());
   local->setCurrent(false);
 
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setLocalCostmap(local);
   EXPECT_FALSE(ctx.isCurrent());
 
@@ -216,11 +216,11 @@ TEST(CostmapContextTest, isCurrentWithNullWrapperIgnoresIt) {
 
 // ---------- 加锁读视图 (共享锁内零拷贝直读) ----------
 
-TEST(CostmapContextTest, globalViewExposesGridData) {
+TEST(CostmapMapContextTest, globalViewExposesGridData) {
   auto lm = makeGrid();
   lm->getCostmap()->setCost(1, 1, costmap_2d::LETHAL_OBSTACLE);
   auto global = makeWrapper(lm);
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setGlobalCostmap(global);
 
   const CostmapView view = ctx.lockGlobal();
@@ -229,10 +229,10 @@ TEST(CostmapContextTest, globalViewExposesGridData) {
   EXPECT_EQ(view.frame(), "map");
 }
 
-TEST(CostmapContextTest, writerBlocksWhileReaderHoldsView) {
+TEST(CostmapMapContextTest, writerBlocksWhileReaderHoldsView) {
   auto lm = makeGrid();
   auto global = makeWrapper(lm);
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setGlobalCostmap(global);
 
   std::atomic<bool> reader_holding{false};
@@ -270,27 +270,27 @@ TEST(CostmapContextTest, writerBlocksWhileReaderHoldsView) {
   EXPECT_EQ(cost, costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapContextTest, localViewWithoutWrapperIsInvalid) {
-  CostmapContext ctx;
+TEST(CostmapMapContextTest, localViewWithoutWrapperIsInvalid) {
+  CostmapMapContext ctx;
   const CostmapView view = ctx.lockLocal();
   EXPECT_FALSE(view.valid());
 }
 
 // ---------- getRobotPose (RobotStateController) ----------
 
-TEST(CostmapContextTest, getRobotPoseFailsWithoutTransform) {
-  CostmapContext ctx;
+TEST(CostmapMapContextTest, getRobotPoseFailsWithoutTransform) {
+  CostmapMapContext ctx;
   ayanami::geometry_msgs::PoseStamped pose;
   EXPECT_FALSE(ctx.getRobotPose(pose));
 }
 
-TEST(CostmapContextTest, getRobotPoseUsesTransform) {
+TEST(CostmapMapContextTest, getRobotPoseUsesTransform) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
 
-  CostmapContext ctx;
+  CostmapMapContext ctx;
 
   ayanami::geometry_msgs::PoseStamped pose;
   EXPECT_TRUE(ctx.getRobotPose(pose));
@@ -299,7 +299,7 @@ TEST(CostmapContextTest, getRobotPoseUsesTransform) {
   EXPECT_DOUBLE_EQ(2.0, pose.pose.position.y());
 }
 
-TEST(CostmapContextTest, viewResolvesRobotPose) {
+TEST(CostmapMapContextTest, viewResolvesRobotPose) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   // 用独立时间戳, 避免与同 frame 键的 latest 干扰。
   rsc.setTransform(
@@ -307,7 +307,7 @@ TEST(CostmapContextTest, viewResolvesRobotPose) {
       Eigen::Translation3d(3.0, 4.0, 0.0) * Eigen::Quaterniond::Identity());
 
   auto global = makeWrapper(makeGrid());
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setGlobalCostmap(global);
 
   const CostmapView view = ctx.lockGlobal();
@@ -316,7 +316,7 @@ TEST(CostmapContextTest, viewResolvesRobotPose) {
   EXPECT_DOUBLE_EQ(view.robot_pose().pose.position.y(), 4.0);
 }
 
-TEST(CostmapContextTest, localViewRobotPoseStampedInLocalFrame) {
+TEST(CostmapMapContextTest, localViewRobotPoseStampedInLocalFrame) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   // 独立 frame 名避免与其它用例的 latest 变换互相干扰:
   // mapF<-odomF = (10,-5), odomF<-baseF = (1,2) (fast_tf 单亲树, 查询沿父链)。
@@ -327,7 +327,7 @@ TEST(CostmapContextTest, localViewRobotPoseStampedInLocalFrame) {
       "mapF", "odomF", ayanami::Timestamp::latest(),
       Eigen::Translation3d(10.0, -5.0, 0.0) * Eigen::Quaterniond::Identity());
 
-  CostmapContext ctx;
+  CostmapMapContext ctx;
   ctx.setFrames("mapF", "odomF", "baseF");
   ctx.setLocalCostmap(makeWrapper(makeGrid()));
   ctx.setGlobalCostmap(makeWrapper(makeGrid()));
@@ -360,7 +360,7 @@ TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
       std::dynamic_pointer_cast<ayanami::costmap::CostmapPlanner>(base);
   ASSERT_NE(cast, nullptr);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
   cast->configure(ayanami::PluginContext{"test_planner", ayanami::Config("")},
                   ctx->getSharedConstPtr());
@@ -383,7 +383,7 @@ TEST(CostmapCoreTest, costmapSmootherInitializeAndViewSmoothPath) {
       std::dynamic_pointer_cast<ayanami::costmap::CostmapSmoother>(base);
   ASSERT_NE(cast, nullptr);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
   cast->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
                   ctx->getSharedConstPtr());
@@ -404,7 +404,7 @@ TEST(CostmapCoreTest, costmapControllerInitializeAndViewCompute) {
       std::dynamic_pointer_cast<ayanami::costmap::CostmapController>(base);
   ASSERT_NE(cast, nullptr);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setLocalCostmap(makeWrapper(makeGrid()));
   cast->configure(ayanami::PluginContext{"test_controller", ayanami::Config("")},
                   ctx->getSharedConstPtr());
@@ -426,7 +426,7 @@ TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
       std::dynamic_pointer_cast<ayanami::costmap::CostmapRecovery>(base);
   ASSERT_NE(cast, nullptr);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
   cast->configure(ayanami::PluginContext{"test_recovery", ayanami::Config("")},
                   ctx->getSharedConstPtr());
@@ -438,10 +438,10 @@ TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
   EXPECT_TRUE(recovery->got_view);
 }
 
-// ---------- CostmapContext 无 capability / lock ----------
+// ---------- CostmapMapContext 无 capability / lock ----------
 
-TEST(CostmapContextTest, mapFamilyIgnorantInterfaceOnly) {
-  CostmapContext ctx;
+TEST(CostmapMapContextTest, mapFamilyIgnorantInterfaceOnly) {
+  CostmapMapContext ctx;
   // 核心接口只有帧名 / isCurrent / getRobotPose——无 capability 枚举、无锁。
   EXPECT_EQ(ctx.getGlobalFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");

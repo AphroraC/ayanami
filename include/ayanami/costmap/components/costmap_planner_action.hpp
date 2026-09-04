@@ -6,7 +6,7 @@
 #include <utility>
 
 #include "ayanami/abstract/components/planner_action.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/components/costmap_planner_execution.hpp"
 
 namespace ayanami {
@@ -17,7 +17,7 @@ namespace costmap {
  *
  * 复用 PlannerAction 全部协议 (TaskHandle 直连 + 旁路 emit + 抢占),
  * 只覆写 createExecution 工厂: 返回 CostmapPlannerExecution
- * (带 CostmapContext 的激活动作 / 停用 / safetyCheck / 加锁读图)。
+ * (带 CostmapMapContext 的激活动作 / 停用 / safetyCheck / 加锁读图)。
  * 执行配置器 (server 装配: 无额外注入) 经 configure 注入, 默认无操作。
  */
 class CostmapPlannerAction : public ayanami::components::PlannerAction {
@@ -26,7 +26,7 @@ class CostmapPlannerAction : public ayanami::components::PlannerAction {
       std::function<void(ayanami::components::PlannerExecution::Ptr)>;
 
   CostmapPlannerAction(ayanami::abstract::AbstractPlanner::Ptr planner,
-                       CostmapContext::Ptr ctx,
+                       CostmapMapContext::Ptr ctx,
                        ExecutionConfigurator configure = nullptr)
       : PlannerAction(std::move(planner)),
         ctx(std::move(ctx)),
@@ -48,7 +48,7 @@ class CostmapPlannerAction : public ayanami::components::PlannerAction {
   }
 
  private:
-  CostmapContext::Ptr ctx;
+  CostmapMapContext::Ptr ctx;
   ExecutionConfigurator configure;
 };
 

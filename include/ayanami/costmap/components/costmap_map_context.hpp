@@ -13,6 +13,7 @@
 
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/map/abstract_map_context.hpp"
+#include "ayanami/costmap/core/costmap_command.hpp"
 #include "ayanami/costmap/core/costmap_view.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 
@@ -27,7 +28,7 @@ namespace costmap {
  *
  * 所有权与持有纪律:
  * - 所有权: 由宿主 (CostmapNavigation / CostmapNavigationServer) 持有
- *   CostmapContext::Ptr; 各族插件 (planner/smoother/controller/recovery) 经
+ *   CostmapMapContext::Ptr; 各族插件 (planner/smoother/controller/recovery) 经
  *   initialize(name, ConstPtr) 按需持有 ConstPtr (const 智能指针), 绝不改图。
  * - 读图: 插件经 lockGlobal()/lockLocal() 取 CostmapView (RAII shared 锁 +
  *   零拷贝 master grid 直读), 单次算法调用 (<10ms) 持锁; 地图写者等锁写入。
@@ -36,13 +37,13 @@ namespace costmap {
  *   (checkActivate/checkDeactivate/isCurrent); 规则插件绝不使用。
  * - 字段私有, 只暴露窄 accessor。
  */
-class CostmapContext : public map::AbstractMapContext,
-                       public std::enable_shared_from_this<CostmapContext> {
+class CostmapMapContext : public map::AbstractMapContext,
+                       public std::enable_shared_from_this<CostmapMapContext> {
  public:
-  using Ptr = std::shared_ptr<CostmapContext>;
-  using ConstPtr = std::shared_ptr<const CostmapContext>;
+  using Ptr = std::shared_ptr<CostmapMapContext>;
+  using ConstPtr = std::shared_ptr<const CostmapMapContext>;
 
-  CostmapContext() = default;
+  CostmapMapContext() = default;
 
   std::string mapFamily() const override { return "costmap"; }
   std::string globalFrame() const override { return global_frame; }
@@ -59,7 +60,7 @@ class CostmapContext : public map::AbstractMapContext,
            static_cast<std::uint32_t>(Capability::DynamicObstacleUpdate) |
            static_cast<std::uint32_t>(Capability::ClearRegion);
   }
-  map::MapCommandPort::Ptr commandPort() const override { return nullptr; }
+  map::MapCommandPort::Ptr commandPort() const override { return command_port_; }
   bool getRobotState(geometry_msgs::PoseStamped& pose,
                      geometry_msgs::TwistStamped& velocity) const override {
     return components::RobotStateController::instance().getRobotState(
@@ -84,6 +85,12 @@ class CostmapContext : public map::AbstractMapContext,
   /// 此缓存取 footprint, 绝不读 live LayeredCostmap (写锁外读可变状态)。
   void setFootprint(costmap_2d::Footprint footprint) {
     footprint_ = std::move(footprint);
+  }
+
+  /// @brief 注入地图写命令端口 (configureCoreMaps 期, 唯一写者创建后立即)。
+  /// recovery 等地图族插件经 commandPort() 获取, 不再走旁路注入。
+  void setCommandPort(map::MapCommandPort::Ptr port) {
+    command_port_ = std::move(port);
   }
 
   // ---- frames / freshness ----
@@ -219,6 +226,7 @@ class CostmapContext : public map::AbstractMapContext,
   std::string robot_frame{"base_link"};
   std::uint64_t map_version{0};
   costmap_2d::Footprint footprint_;
+  map::MapCommandPort::Ptr command_port_;
 };
 
 }  // namespace costmap

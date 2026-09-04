@@ -1,4 +1,4 @@
-// 并发达执行: 慢读者经 CostmapContext::lockGlobal() 持 shared 锁直接读
+// 并发达执行: 慢读者经 CostmapMapContext::lockGlobal() 持 shared 锁直接读
 // master grid (CostmapView 零拷贝), 与并发 obstacle 写者 (唯一写者, unique
 // 锁写入) 互斥串行化。
 //
@@ -23,7 +23,7 @@
 #include <costmap_2d/layered_costmap.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_smoother_execution.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -33,7 +33,7 @@
 namespace {
 
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::nav_msgs::Path;
 
 // 同步门 (仅测试): set() 唤醒全部等待者。
@@ -61,7 +61,7 @@ class Gate {
 class SlowSmoother : public ayanami::costmap::CostmapSmoother {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     this->map = std::move(map);
   }
 
@@ -97,7 +97,7 @@ class SlowSmoother : public ayanami::costmap::CostmapSmoother {
   Gate reader_started;
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map;
+  ayanami::costmap::CostmapMapContext::ConstPtr map;
 };
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeGlobalWrapper() {
@@ -129,7 +129,7 @@ Path makePath() {
 // shared 锁的时间戳 (shared_mutex 排他语义 + 单调时钟)。
 TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) {
   auto global = makeGlobalWrapper();
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
 
   auto smoother = std::make_shared<SlowSmoother>();
@@ -178,7 +178,7 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
 // 全部完成 (不被饿死)。
 TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
   auto global = makeGlobalWrapper();
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
 
   auto smoother = std::make_shared<SlowSmoother>();

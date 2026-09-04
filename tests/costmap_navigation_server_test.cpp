@@ -2,7 +2,7 @@
 // costmap_context + new*Execution 工厂 + configureCoreMaps + handleObstacle* 落图。
 //
 // 覆盖:
-// - configureCoreMaps 建 global/local CostmapContext + StaticLayer/InflationLayer/SimpleObstacleLayer
+// - configureCoreMaps 建 global/local CostmapMapContext + StaticLayer/InflationLayer/SimpleObstacleLayer
 // - loadPlugins 触发虚 initialize*Plugin → dynamic_pointer_cast<Costmap*> → configure(ctx, map)
 // - fail case: 非 costmap 族插件 → initialize*Plugin false + loadPlugins 不建 action
 // - new*Execution 返回 Costmap*Execution (绑 global/local wrapper)
@@ -33,7 +33,7 @@
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>
@@ -59,7 +59,7 @@ using ayanami::RecoveryCycleData;
 using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 
 // 由 main() 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)。
@@ -200,7 +200,7 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
   virtual ~TestCostmapPlanner() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
   PlannerResultT makePlan(
@@ -228,7 +228,7 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   virtual ~TestCostmapSmoother() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
   SmootherResultT smoothPath(ayanami::nav_msgs::Path& path, double,
@@ -243,7 +243,7 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   virtual ~TestCostmapController() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
   ControllerResultT computeVelocityCommand(
@@ -260,7 +260,7 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   virtual ~TestCostmapRecovery() override = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
   RecoveryResultT tick() override {
@@ -553,7 +553,7 @@ TEST(CostmapNavigationServerTest, loadPluginsRejectsAllPlainAbstractPlugins) {
 // ---------------- createActions 生产路径 = Costmap*Action ----------------
 // 生产不再走基类 new*Execution 虚工厂间接层 (Server*Action 已删除):
 // CostmapNavigationServer::createActions 直接构造 Costmap*Action, 其
-// createExecution 产出带 CostmapContext 的 Costmap*Execution。
+// createExecution 产出带 CostmapMapContext 的 Costmap*Execution。
 
 namespace {
 

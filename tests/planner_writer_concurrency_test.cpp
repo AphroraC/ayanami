@@ -3,7 +3,7 @@
 //
 // 旧架构 (BLOCK #1): CostmapPlannerExecution::run() 整次规划持 global wrapper
 // recursive_mutex, 规划长达数百毫秒 (大宗 A*) 期间 obstacle feed 被饿死。
-// 新架构: 单写者 + 多读者, 读者经 CostmapContext::lockGlobal() 取 RAII shared
+// 新架构: 单写者 + 多读者, 读者经 CostmapMapContext::lockGlobal() 取 RAII shared
 // 锁视图 (零拷贝直读 master grid, 单次规划 <10ms 短持), 写者 (唯一) 等读者
 // 释放后 unique 锁写入。
 //
@@ -27,7 +27,7 @@
 #include <costmap_2d/layered_costmap.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -47,7 +47,7 @@ using ayanami::nav_msgs::Path;
 class SlowPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext&,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_ = std::move(map);
   }
   PlannerResultT makePlan(
@@ -87,7 +87,7 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
   std::atomic<bool> released{false};
 
  private:
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 };
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeGlobalWrapper() {
@@ -103,7 +103,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeGlobalWrapper() {
 
 TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   auto global = makeGlobalWrapper();
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setGlobalCostmap(global);
 
   // 写者先行落一个障碍 (2,2): 读窗口内的稳定读必须看到它且不被改写。

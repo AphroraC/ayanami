@@ -30,7 +30,7 @@
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/extension.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>

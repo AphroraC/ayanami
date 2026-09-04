@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "ayanami/abstract/components/recovery_execution.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/core/costmap_recovery.hpp"
 
 namespace ayanami {
@@ -28,7 +28,7 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
 
   CostmapRecoveryExecution(const std::string& name,
                            ayanami::abstract::AbstractRecovery::Ptr recovery,
-                           CostmapContext::Ptr ctx)
+                           CostmapMapContext::Ptr ctx)
       : RecoveryExecution(std::move(recovery)),
         name(name),
         ctx(std::move(ctx)) {}
@@ -78,7 +78,7 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
 
  private:
   std::string name;
-  CostmapContext::Ptr ctx;
+  CostmapMapContext::Ptr ctx;
 };
 
 }  // namespace costmap

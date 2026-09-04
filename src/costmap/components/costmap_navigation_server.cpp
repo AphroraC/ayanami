@@ -307,7 +307,7 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   local_raytrace_range = cfg.param<double>(
       "costmap_local", "raytrace_range", local_raytrace_range);
 
-  costmap_context = std::make_shared<CostmapContext>();
+  costmap_context = std::make_shared<CostmapMapContext>();
   costmap_context->bumpVersion();
   costmap_context->setGlobalCostmap(global_wrapper);
   costmap_context->setLocalCostmap(local_wrapper);
@@ -315,6 +315,9 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   // footprint 缓存为不可变副本: 快照构建只读此缓存 (写锁外绝不读 live
   // LayeredCostmap 的 footprint)。
   costmap_context->setFootprint(footprint);
+  // 地图写命令端口经 context 暴露 (AbstractMapContext::commandPort):
+  // recovery 等族插件在 configure 时从地图上下文获取, 不走旁路注入。
+  costmap_context->setCommandPort(command_port);
 
   // 全局 RobotStateController 一次性配置: 帧名 + 速度超时只在此缓存,
   // hot getRobotState() 永不读 Config (spec §5.3 扩展)。
@@ -422,9 +425,8 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
   }
   cast->configure(ayanami::PluginContext{name, module_config},
                   costmap_context->getSharedConstPtr());
-  // 地图变更仅经命令端口: 恢复插件拿到 port 后, 需要改图时提交 typed
-  // 命令, 由本 server (唯一写者) 变更层并发布新 epoch。
-  cast->setCommandPort(command_port);
+  // 地图写命令端口: recovery 在 configure 内经 map->commandPort() 获取
+  // (CostmapCommandPort), 由本 server (唯一写者) 执行。
   return true;
 }
 

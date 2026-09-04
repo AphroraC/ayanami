@@ -21,7 +21,7 @@ namespace costmap_2d {
  *   master grid。地图更新频率低 (≈10Hz), 读者单次读图 <10ms, 写者等待
  *   读者释放即可。
  * - 读者 (planner/smoother/controller/recovery 插件及可视化): 经
- *   CostmapContext::lockGlobal()/lockLocal()/readGlobal()/readLocal() 取
+ *   CostmapMapContext::lockGlobal()/lockLocal()/readGlobal()/readLocal() 取
  *   shared 锁直接读 master grid, 不拷贝、不快照。
  * - isCurrent()/setCurrent(): 与锁独立 (atomic bool), 供 execution
  *   safetyCheck 使用。

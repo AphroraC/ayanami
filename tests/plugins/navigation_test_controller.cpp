@@ -23,7 +23,7 @@ using ayanami::ControllerResultT;
 class NavigationTestController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+                 ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
 
   ControllerResultT computeVelocityCommand(const PoseStamped& /*pose*/,
                                            const TwistStamped& /*velocity*/) override {

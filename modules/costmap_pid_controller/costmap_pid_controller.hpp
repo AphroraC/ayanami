@@ -6,7 +6,7 @@
 #include <string>
 
 #include <ayanami/costmap/core/costmap_controller.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -41,7 +41,7 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   /// @brief costmap 族注入契约。算法不读图, 仅持有地图模块指针; 参数经
   /// PluginContext 注入的自身配置读取。
   void configure(const PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   ControllerResultT computeVelocityCommand(
       const geometry_msgs::PoseStamped& pose,
@@ -103,7 +103,7 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   double last_angular_vel = 0.0;
   size_t last_track_idx = 1;
   uint64_t plan_signature = 0;
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
 
   std::atomic<bool> canceled{false};
 };

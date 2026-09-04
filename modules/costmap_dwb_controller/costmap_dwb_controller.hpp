@@ -54,7 +54,7 @@ public:
   /// @brief costmap 族注入契约 (等价 nav2 configure): 经 PluginContext 读
   /// 自身配置、创建 trajectory generator 并 initialize、loadCritics。
   void configure(const PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   /// @brief nav2 setPlan 等价。
   bool setPlan(const ayanami::nav_msgs::Path& plan) override;
@@ -132,7 +132,7 @@ protected:
   std::string dwb_plugin_name;
 
   // ayanami 注入 (地图模块 const 指针 + 当前周期持锁读视图)
-  ayanami::costmap::CostmapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_;
   ayanami::costmap::CostmapView local_view;
   const costmap_2d::Costmap2D* local_grid{nullptr};
   std::string local_frame;

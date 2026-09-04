@@ -8,7 +8,7 @@
 
 #include "ayanami/behavior_tree/pilot.hpp"
 #include "ayanami/abstract/core/abstract_navigation.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/sensor_msgs.hpp"
@@ -55,7 +55,7 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
 
    /// @brief Expose the costmap family module as a const shared owner. The
    /// module's read APIs enforce the map locking contract for callers.
-   costmap::CostmapContext::ConstPtr getSharedConstPtr() const {
+   costmap::CostmapMapContext::ConstPtr getSharedConstPtr() const {
      return navigation_server ? navigation_server->costmapContextConst()
                                : nullptr;
    }

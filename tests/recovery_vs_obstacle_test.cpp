@@ -30,7 +30,7 @@
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_commands.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_command.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -43,7 +43,7 @@ using ayanami::ErrorCode;
 using ayanami::RecoveryResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::modules::CostmapClearCostmapRecovery;
 
 // 20x20 @0.5m, origin (0,0): cell (4,4) 中心 = 世界 (2.25, 2.25)。
@@ -167,7 +167,7 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   auto global = makeWrapper(global_layer);
   auto local = makeWrapper(local_layer);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
   setRobot(k_robot_x, k_robot_y);
@@ -176,11 +176,12 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
-  rec->setCommandPort(port);
 
   // 先经写者落障碍 (feed): 近处与远处都 LETHAL。
   feedObstacles(local, local_layer);
@@ -212,7 +213,7 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
   auto global = makeWrapper(global_layer);
   auto local = makeWrapper(local_layer);
 
-  auto ctx = std::make_shared<CostmapContext>();
+  auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
   setRobot(k_robot_x, k_robot_y);
@@ -221,11 +222,12 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
-  rec->setCommandPort(port);
 
   constexpr int k_rounds = 16;
   std::atomic<int> bad_reads{0};

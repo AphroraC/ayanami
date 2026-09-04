@@ -7,7 +7,7 @@
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/abstract/core/abstract_navigation.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
-#include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
 
@@ -27,7 +27,7 @@ using ayanami::RecoveryCycleData;
 using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::OccupancyGrid;
@@ -124,13 +124,13 @@ TEST(CoreAbstractNavigation, lifecycleAndSetGoal) {
   nav.setGoal(goal);
 }
 
-TEST(CoreCostmapContext, defaultCurrentTrue) {
-  CostmapContext ctx;
+TEST(CoreCostmapMapContext, defaultCurrentTrue) {
+  CostmapMapContext ctx;
   EXPECT_TRUE(ctx.isCurrent());
 }
 
-TEST(CoreCostmapContext, framesAndRobotPose) {
-  CostmapContext ctx;
+TEST(CoreCostmapMapContext, framesAndRobotPose) {
+  CostmapMapContext ctx;
   ctx.setFrames("map", "map", "base_link");
   ayanami::components::RobotStateController::instance().setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
@@ -160,6 +160,6 @@ TEST(CoreAbstract, ptrAliasesExist) {
       std::is_same_v<ayanami::abstract::AbstractNavigation::Ptr,
                      std::shared_ptr<ayanami::abstract::AbstractNavigation>>);
   static_assert(
-      std::is_same_v<ayanami::costmap::CostmapContext::Ptr,
-                     std::shared_ptr<ayanami::costmap::CostmapContext>>);
+      std::is_same_v<ayanami::costmap::CostmapMapContext::Ptr,
+                     std::shared_ptr<ayanami::costmap::CostmapMapContext>>);
 }

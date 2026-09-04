@@ -29,7 +29,7 @@ bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
 
 void CostmapSpinRecovery::configure(
     const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
   param.spin_dist =
       context.config.param<double>("recovery", "spin_dist", param.spin_dist);

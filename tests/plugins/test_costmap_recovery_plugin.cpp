@@ -17,7 +17,7 @@ using ayanami::RecoveryStatus;
 class SoCostmapRecovery : public ayanami::costmap::CostmapRecovery {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+                 ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   RecoveryResultT tick() override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;

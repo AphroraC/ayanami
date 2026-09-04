@@ -14,7 +14,7 @@ using ayanami::PlannerResultT;
 class SoCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+                 ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   PlannerResultT makePlan(const PoseStamped& /*start*/, const PoseStamped& /*goal*/,
                           double /*tolerance*/) override {
     Path plan;

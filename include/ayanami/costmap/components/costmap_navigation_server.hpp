@@ -13,7 +13,7 @@
 
 #include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/costmap/components/costmap_action.hpp"
-#include "ayanami/costmap/components/costmap_context.hpp"
+#include "ayanami/costmap/components/costmap_map_context.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
 #include "ayanami/costmap/core/costmap_controller.hpp"
 #include "ayanami/costmap/core/costmap_planner.hpp"
@@ -36,8 +36,8 @@ namespace costmap {
  * - 覆写虚 initialize*Plugin: dynamic_pointer_cast 到 costmap 族接口
  *   (CostmapPlanner/Smoother/Controller/Recovery); 失败 (非 costmap 族插件)
  *   spdlog::error + return false (不入表)。算法插件只接收名称初始化, 不注入
- *   CostmapContext —— 地图访问全部经 execution 加锁直读。
- * - 覆写 createActions(): 生产路径直接构造 Costmap*Action (带 CostmapContext
+ *   CostmapMapContext —— 地图访问全部经 execution 加锁直读。
+ * - 覆写 createActions(): 生产路径直接构造 Costmap*Action (带 CostmapMapContext
  *   + execution 配置: checker/速度上限/机器人状态源), 取代基类的
  *   new*Execution 虚工厂间接层。
  * - configureCoreMaps(config_path) 读 config_costmap 构 global/local
@@ -90,8 +90,8 @@ class CostmapNavigationServer
   void handleObstacleLaserScan(const ayanami::sensor_msgs::LaserScan& scan);
 
   // ---- accessors (测试 / 宿主) ----
-   CostmapContext::Ptr costmapContext() const { return costmap_context; }
-   CostmapContext::ConstPtr costmapContextConst() const {
+   CostmapMapContext::Ptr costmapContext() const { return costmap_context; }
+   CostmapMapContext::ConstPtr costmapContextConst() const {
      return costmap_context ? costmap_context->getSharedConstPtr() : nullptr;
    }
   costmap_2d::CostmapWrapper::Ptr globalCostmap() const {
@@ -116,7 +116,7 @@ class CostmapNavigationServer
                             const std::vector<Eigen::Vector3d>& points,
                             const std::vector<Eigen::Vector3d>& clearing_points = {});
 
-  CostmapContext::Ptr costmap_context;
+  CostmapMapContext::Ptr costmap_context;
   CostmapCommandPort::Ptr command_port;
 
   // TF 链路缺失告警节流 (每次传感器回调都可能失败; 只按固定间隔提示, 避免

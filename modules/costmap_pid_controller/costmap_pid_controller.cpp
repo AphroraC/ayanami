@@ -98,7 +98,7 @@ CostmapPidController::CostmapPidController() = default;
 
 void CostmapPidController::configure(
     const PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
   // 键缺失时保持默认值。
   {

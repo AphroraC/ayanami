@@ -192,7 +192,7 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
 
 void CostmapSmacPlanner::configure(
     const PluginContext& context,
-    ayanami::costmap::CostmapContext::ConstPtr map) {
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
   // 配置键缺失时保持默认值。
   const Config& file = context.config;

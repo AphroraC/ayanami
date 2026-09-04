@@ -35,7 +35,7 @@ using ayanami::RecoveryCycleData;
 using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
 using ayanami::SmootherResultT;
-using ayanami::costmap::CostmapContext;
+using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
@@ -47,10 +47,10 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper() {
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-std::shared_ptr<ayanami::costmap::CostmapContext> makeContext(
+std::shared_ptr<ayanami::costmap::CostmapMapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& global = nullptr,
     const std::shared_ptr<costmap_2d::CostmapWrapper>& local = nullptr) {
-  auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
   return ctx;
@@ -59,7 +59,7 @@ std::shared_ptr<ayanami::costmap::CostmapContext> makeContext(
 // 阻塞直到被 cancel: 让执行停在 run 内, 便于观察 preRun/postRun 的激活状态。
 class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
   PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
                           double) override {
     calls++;
@@ -89,7 +89,7 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
 
 class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
   RecoveryResultT tick() override {
     calls++;
     {
@@ -116,7 +116,7 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
 
 class TestController : public ayanami::costmap::CostmapController {
  public:
-  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
   ControllerResultT computeVelocityCommand(const PoseStamped&,
                                            const TwistStamped&) override {
     calls++;
@@ -157,7 +157,7 @@ class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 
 class TestRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
   RecoveryResultT tick() override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;

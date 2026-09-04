@@ -26,7 +26,7 @@ class CostmapWaitRecovery final : public ayanami::costmap::CostmapRecovery {
   virtual ~CostmapWaitRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
-                 ayanami::costmap::CostmapContext::ConstPtr map) override;
+                 ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   void start() override;
   void setBehaviorParams(
