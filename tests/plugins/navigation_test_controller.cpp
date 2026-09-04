@@ -6,6 +6,7 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 #include <string>
@@ -13,24 +14,24 @@
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
-using ayanami::FailureCode;
-
 using ayanami::geometry_msgs::Twist;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
 
 class NavigationTestController : public ayanami::costmap::CostmapController {
  public:
-  void initialize(const std::string& /*name*/,
-                  ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+  void configure(const ayanami::PluginContext& /*context*/,
+                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
 
-  FailureCode computeVelocityCommands(
-      const PoseStamped& /*pose*/, const TwistStamped& /*velocity*/,
-      TwistStamped& cmd_vel, std::string& /*message*/) override {
-    cmd_vel = TwistStamped{};  // 清零纪律
-    cmd_vel.twist = Twist{};
-    cmd_vel.twist.linear.x() = 0.5;
-    return FailureCode::None;
+  ControllerResultT computeVelocityCommand(const PoseStamped& /*pose*/,
+                                           const TwistStamped& /*velocity*/) override {
+    ControllerCommand cmd;
+    cmd.velocity = TwistStamped{};  // 清零纪律
+    cmd.velocity.twist = Twist{};
+    cmd.velocity.twist.linear.x() = 0.5;
+    return ControllerResultT::success(std::move(cmd));
   }
 
   bool setPlan(const Path& /*plan*/) override { return true; }

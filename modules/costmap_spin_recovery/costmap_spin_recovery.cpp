@@ -26,26 +26,18 @@ bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
 }
 }
 
-CostmapSpinRecovery::CostmapSpinRecovery() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_spin_recovery → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_spin_recovery"));
-    param.spin_dist = file.param<double>("recovery", "spin_dist", param.spin_dist);
-    param.max_w = file.param<double>("recovery", "max_w", param.max_w);
-    param.sim_cycle_dt =
-        file.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
-    param.collision_radius = file.param<double>(
-        "recovery", "collision_radius", param.collision_radius);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
-}
 
-void CostmapSpinRecovery::initialize(const std::string& name,
-                                     ayanami::costmap::CostmapContext::ConstPtr map) {
-  (void)name;
+void CostmapSpinRecovery::configure(
+    const ayanami::PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  param.spin_dist =
+      context.config.param<double>("recovery", "spin_dist", param.spin_dist);
+  param.max_w = context.config.param<double>("recovery", "max_w", param.max_w);
+  param.sim_cycle_dt =
+      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
+  param.collision_radius = context.config.param<double>(
+      "recovery", "collision_radius", param.collision_radius);
   map_ = std::move(map);
 }
 

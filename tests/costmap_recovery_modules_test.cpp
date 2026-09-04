@@ -6,7 +6,7 @@
 // - 插件不直接调 on_velocity_command / 不 sleep (行为 + grep 源码测试)。
 // - spin 完成所设 spin_dist → 执行 RECOVERY_DONE, 期间发纯角速度, 终态零速度
 // - back_up 倒车检测碰撞 (不可变 global 快照 lethal) → RECOVERY_FAILED,
-//   message 含 "collision detected" (插件层 runRecovery 契约)
+//   message 含 "collision detected" (插件层 tick 契约)
 // - wait 经执行周期驱动等满 wait_duration → RECOVERY_DONE; 中途 cancel → CANCELED
 // - clear 经 CostmapCommandPort 提交 typed clear 命令, 唯一写者清机器人附近
 //   radius → None, master grid 对应区域 = FREE_SPACE(0), 远处保持 lethal
@@ -41,6 +41,7 @@
 #include <ayanami/costmap/core/costmap_command.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <costmap_back_up_recovery/costmap_back_up_recovery.hpp>
@@ -52,7 +53,8 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::RecoveryResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapContext;
@@ -70,6 +72,14 @@ std::string g_clear_so;
 
 // 模块源码目录 (CMake 注入), 供 grep 源码测试用。
 std::string g_modules_src;
+
+// 临时 config 目录 (main() 内创建), 供构造各模块 PluginContext.config。
+std::string g_config_dir;
+
+// 各模块自身 json (PluginContext.config 参数单一来源)。
+std::string moduleConfig(const std::string& json_name) {
+  return (std::filesystem::path(g_config_dir) / json_name).string();
+}
 
 // 捕捉执行层发布的 on_velocity_command。
 std::vector<TwistStamped> g_emitted;
@@ -232,21 +242,26 @@ TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto spin = std::make_shared<CostmapSpinRecovery>();
-  spin->initialize("costmap_spin_recovery", ctx->getSharedConstPtr());
+  spin->configure(ayanami::PluginContext{"costmap_spin_recovery",
+                                         ayanami::Config(moduleConfig("spin.json"))},
+                  ctx->getSharedConstPtr());
   auto backup = std::make_shared<CostmapBackUpRecovery>();
-  backup->initialize("costmap_back_up_recovery", ctx->getSharedConstPtr());
+  backup->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+                                           ayanami::Config(moduleConfig("backup.json"))},
+                    ctx->getSharedConstPtr());
   auto wait = std::make_shared<CostmapWaitRecovery>();
-  wait->initialize("costmap_wait_recovery", ctx->getSharedConstPtr());
+  wait->configure(ayanami::PluginContext{"costmap_wait_recovery",
+                                         ayanami::Config(moduleConfig("wait.json"))},
+                  ctx->getSharedConstPtr());
 
   spin->start();
   backup->start();
   wait->start();
-  std::string message;
-  (void)spin->tick(message);
-  (void)backup->tick(message);
-  (void)wait->tick(message);
+  (void)spin->tick();
+  (void)backup->tick();
+  (void)wait->tick();
 
-  // 插件的 runRecovery 只是驱动周期逻辑, 绝不自行发布速度命令。
+  // 插件的 tick 只是驱动周期逻辑, 绝不自行发布速度命令。
   EXPECT_TRUE(emittedIsEmpty())
       << "recovery plugins must not publish on_velocity_command directly";
   detachVelocityCapture();
@@ -280,11 +295,13 @@ TEST(CostmapRecoveryModulesTest, spinCompletesWithSuccessViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->initialize("costmap_spin_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+                                        ayanami::Config(moduleConfig("spin.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
-  EXPECT_EQ(exec.getFailure(), FailureCode::None);
+  EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
   EXPECT_TRUE(anyNonZeroAngular());            // 发过纯角速度
@@ -296,7 +313,9 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->initialize("costmap_spin_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+                                        ayanami::Config(moduleConfig("spin.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
   exec.setCyclePeriod(std::chrono::milliseconds(10));
   exec.start();
@@ -318,7 +337,9 @@ TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->initialize("costmap_spin_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+                                        ayanami::Config(moduleConfig("spin.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
   // max_w=0.3 > 注入上限 max_vel_theta=0.1 → 非零命令必须被清零。
   exec.setMaximumVelocity(1.0, 1.0, 0.1);
@@ -351,23 +372,29 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
   setRobot(2.25, 2.25);
 
   auto rec = std::make_shared<CostmapBackUpRecovery>();
-  rec->initialize("costmap_back_up_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+                                        ayanami::Config(moduleConfig("backup.json"))},
+                 ctx->getSharedConstPtr());
 
-  std::string message;
-  const FailureCode failure = rec->runRecovery(message);
-  EXPECT_EQ(failure, FailureCode::RecoveryFailed);
-  EXPECT_NE(message.find("collision detected"), std::string::npos) << message;
+  rec->start();
+  const RecoveryResultT outcome = rec->tick();
+  ASSERT_FALSE(outcome.ok);
+  EXPECT_EQ(outcome.error, ErrorCode::RECOVERY_FAILED);
+  EXPECT_NE(outcome.message.find("collision detected"), std::string::npos)
+      << outcome.message;
 }
 
 TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapBackUpRecovery>();
-  rec->initialize("costmap_back_up_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+                                        ayanami::Config(moduleConfig("backup.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("back_up", rec, ctx);
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
-  EXPECT_EQ(exec.getFailure(), FailureCode::None);
+  EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
   EXPECT_TRUE(anyNonZeroLinear());              // 发过负向线速度
@@ -380,7 +407,9 @@ TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
 TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapWaitRecovery>();
-  rec->initialize("costmap_wait_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_wait_recovery",
+                                        ayanami::Config(moduleConfig("wait.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("wait", rec, ctx);
   const auto start = std::chrono::steady_clock::now();
   exec.start();
@@ -388,7 +417,7 @@ TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   const auto elapsed = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - start)
                            .count();
-  EXPECT_EQ(exec.getFailure(), FailureCode::None);
+  EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
   // wait_duration=0.1, 周期 10ms ⇒ 约 10 帧 (总时长明显 > 0)。
@@ -398,14 +427,16 @@ TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
 TEST(CostmapRecoveryModulesTest, waitCancelReturnsImmediatelyViaExecution) {
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapWaitRecovery>();
-  rec->initialize("costmap_wait_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_wait_recovery",
+                                        ayanami::Config(moduleConfig("wait.json"))},
+                 ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("wait", rec, ctx);
   exec.start();
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   exec.cancel();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::CANCELED);
   exec.join();
-  EXPECT_EQ(exec.getFailure(), FailureCode::Canceled);
+  EXPECT_EQ(exec.getError(), ErrorCode::CANCELED);
 }
 
 // ---------- CostmapClearCostmapRecovery (经命令端口, 无运动) ----------
@@ -441,12 +472,14 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->initialize("costmap_clear_costmap_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+                                        ayanami::Config(moduleConfig("clear.json"))},
+                 ctx->getSharedConstPtr());
   rec->setCommandPort(port);
 
-  std::string message;
-  const FailureCode failure = rec->runRecovery(message);
-  EXPECT_EQ(failure, FailureCode::None) << message;
+  rec->start();
+  const RecoveryResultT outcome = rec->tick();
+  ASSERT_TRUE(outcome.ok) << outcome.message;
 
   // robot 附近 (半径内) → FREE_SPACE(0); 远处保持 lethal。
   for (const auto& wrapper : {global, local}) {
@@ -494,6 +527,7 @@ int main(int argc, char** argv) {
       std::filesystem::temp_directory_path() / "ayanami_costmap_recovery_test";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
+  g_config_dir = dir.string();
   {
     std::ofstream ofs(dir / "config.json");
     ofs << R"({"global": {

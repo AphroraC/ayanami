@@ -2,21 +2,20 @@
 
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
 using ayanami::nav_msgs::Path;
+using ayanami::SmootherResultT;
 
 class SuccessSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  FailureCode smoothPath(const Path& in, Path& out, double /*max_duration*/,
-                         bool /*check_for_collision*/,
-                         std::string& /*message*/) override {
-    out.header.frame_id = "map";
-    out.poses = in.poses;
-    return FailureCode::None;
+  SmootherResultT smoothPath(Path& path, double /*max_duration*/,
+                             bool /*check_for_collision*/) override {
+    path.header.frame_id = "map";
+    return SmootherResultT::success(std::move(path));
   }
   bool cancel() override { return true; }
 };

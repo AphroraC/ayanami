@@ -43,6 +43,7 @@
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <costmap_navigation/costmap_navigation.hpp>
 #include <ayanami/utility/config.hpp>
@@ -399,7 +400,7 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(task.ready());
     EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::ABORTED);
-    EXPECT_EQ(task.result().failure, ayanami::FailureCode::InvalidInput);
+    EXPECT_EQ(task.result().error, ayanami::ErrorCode::INVALID_INPUT);
   }
   // config_recovery 数组现装载全部 4 个 recovery 插件 (WIP 一配多文件),
   // spin full name 也已装载 → valid。

@@ -9,6 +9,7 @@
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -18,7 +19,14 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
+using ayanami::PlannerResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::RecoveryResultT;
+using ayanami::RecoveryStatus;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
@@ -29,32 +37,35 @@ using ayanami::nav_msgs::Path;
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double,
-                       Path&, double&, std::string&) override {
-    return FailureCode::None;
+  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
+                          double) override {
+    return PlannerResultT::success(Path{});
   }
 };
 
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  FailureCode computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                      TwistStamped&, std::string&) override {
-    return FailureCode::None;
+  ControllerResultT computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&) override {
+    return ControllerResultT::success(ControllerCommand{});
   }
   bool setPlan(const Path&) override { return true; }
 };
 
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  FailureCode smoothPath(const Path&, Path&, double, bool,
-                         std::string&) override {
-    return FailureCode::None;
+  SmootherResultT smoothPath(Path&, double, bool) override {
+    return SmootherResultT::success(Path{});
   }
 };
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
+  RecoveryResultT tick() override {
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
+  }
 };
 
 class TestNavigation : public ayanami::abstract::AbstractNavigation {
@@ -71,20 +82,17 @@ public:
 TEST(CoreAbstractPlanner, makePlanCallableAndCancelDefaultsFalse) {
   TestPlanner p;
   PoseStamped start, goal;
-  Path plan;
-  double cost = 0.0;
-  std::string msg;
-  EXPECT_EQ(p.makePlan(start, goal, 0.1, plan, cost, msg), FailureCode::None);
+  auto result = p.makePlan(start, goal, 0.1);
+  EXPECT_TRUE(result.ok);
   EXPECT_FALSE(p.cancel());
 }
 
 TEST(CoreAbstractController, computeGoalAndSetPlan) {
   TestController c;
   PoseStamped pose;
-  TwistStamped vel, cmd;
-  std::string msg;
-  EXPECT_EQ(c.computeVelocityCommands(pose, vel, cmd, msg),
-            FailureCode::None);
+  TwistStamped vel;
+  auto result = c.computeVelocityCommand(pose, vel);
+  EXPECT_TRUE(result.ok);
   Path plan;
   EXPECT_TRUE(c.setPlan(plan));
   EXPECT_FALSE(c.cancel());
@@ -92,16 +100,17 @@ TEST(CoreAbstractController, computeGoalAndSetPlan) {
 
 TEST(CoreAbstractSmoother, smoothPathCallableAndCancelDefaultsFalse) {
   TestSmoother s;
-  Path path, out;
-  std::string msg;
-  EXPECT_EQ(s.smoothPath(path, out, 2.0, true, msg), FailureCode::None);
+  Path path;
+  auto result = s.smoothPath(path, 2.0, true);
+  EXPECT_TRUE(result.ok);
   EXPECT_FALSE(s.cancel());
 }
 
 TEST(CoreAbstractRecovery, runRecoveryCallableAndCancelDefaultsFalse) {
   TestRecovery r;
-  std::string msg;
-  EXPECT_EQ(r.runRecovery(msg), FailureCode::None);
+  auto result = r.tick();
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.data.status, RecoveryStatus::SUCCESS);
   EXPECT_FALSE(r.cancel());
 }
 

@@ -7,6 +7,7 @@
 #include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/utility/extension_module.hpp>
@@ -21,7 +22,7 @@
 #include <vector>
 
 using namespace ayanami::behavior_tree;
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::ExePathResult;
 using ayanami::actions::GetPathGoal;
@@ -124,7 +125,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_path_goal = goal;
     if (path_sync) {
       GetPathResult r;
-      r.failure = path_failure;
+      r.error = path_failure;
       r.path = path_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -139,7 +140,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_smooth_goal = goal;
     if (smooth_sync) {
       SmoothPathResult r;
-      r.failure = smooth_failure;
+      r.error = smooth_failure;
       r.smoothed_path = smooth_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -154,7 +155,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_exe_goal = goal;
     if (exe_sync) {
       ExePathResult r;
-      r.failure = exe_failure;
+      r.error = exe_failure;
       r.reached = exe_reached;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -169,7 +170,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_recovery_goal = goal;
     if (recovery_sync) {
       RecoveryResult r;
-      r.failure = recovery_failure;
+      r.error = recovery_failure;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
@@ -189,17 +190,17 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   std::atomic<int> cancel_count{0};  // 先声明, 后析构 (servers 的 cancel 回调仍安全)
 
   bool path_sync = true;
-  FailureCode path_failure = FailureCode::None;
+  ErrorCode path_failure = ErrorCode::NONE;
   Path path_result;
   GetPathGoal last_path_goal;
 
   bool smooth_sync = true;
-  FailureCode smooth_failure = FailureCode::None;
+  ErrorCode smooth_failure = ErrorCode::NONE;
   Path smooth_result;
   SmoothPathGoal last_smooth_goal;
 
   bool exe_sync = true;
-  FailureCode exe_failure = FailureCode::None;
+  ErrorCode exe_failure = ErrorCode::NONE;
   bool exe_reached = true;
   ExePathGoal last_exe_goal;
   int exe_request_count = 0;
@@ -211,7 +212,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   ExePathGoal last_plan_update;
 
   bool recovery_sync = true;
-  FailureCode recovery_failure = FailureCode::None;
+  ErrorCode recovery_failure = ErrorCode::NONE;
   RecoveryGoal last_recovery_goal;
   int recovery_request_count = 0;
 
@@ -364,7 +365,7 @@ TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
   server->smooth_result = makePath(3);
-  server->smooth_failure = FailureCode::SmoothingFailed;
+  server->smooth_failure = ErrorCode::SMOOTHING_FAILED;
 
   auto bb = BT::Blackboard::create();
   setNavServer(bb, server);
@@ -401,7 +402,7 @@ TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
   ayanami::FailureContext after;
   ASSERT_TRUE(bb->get<ayanami::FailureContext>(k_failure_context, after));
   EXPECT_EQ(after.stage, ayanami::FailureStage::Smoother);
-  EXPECT_EQ(after.code, FailureCode::SmoothingFailed);
+  EXPECT_EQ(after.code, ErrorCode::SMOOTHING_FAILED);
 }
 
 TEST(BehaviorTreeActionTest, staleSessionIsRejectedOnRunning) {
@@ -479,7 +480,7 @@ TEST(BehaviorTreeActionTest, haltedNodeCancelsTask) {
 TEST(BehaviorTreeActionTest, followPathCompletesWhenControllerSucceeds) {
   auto server = std::make_shared<MockNavServer>();
   server->exe_sync = true;
-  server->exe_failure = FailureCode::None;
+  server->exe_failure = ErrorCode::NONE;
   server->exe_reached = true;
 
   auto bb = BT::Blackboard::create();
@@ -519,8 +520,8 @@ TEST(BehaviorTreeActionTest, successfulRecoveryRetriesMainChild) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
   server->smooth_result = makePath(3);
-  server->path_failure = FailureCode::PathNotFound;
-  server->recovery_failure = FailureCode::None;
+  server->path_failure = ErrorCode::PATH_NOT_FOUND;
+  server->recovery_failure = ErrorCode::NONE;
 
   auto bb = BT::Blackboard::create();
   setNavServer(bb, server);
@@ -543,7 +544,7 @@ TEST(BehaviorTreeActionTest, successfulRecoveryRetriesMainChild) {
   EXPECT_EQ(server->path_request_count, 1);
 
   // 恢复后规划恢复正常: 重试任务 (第 2 次 requestPath) 应成功。
-  server->path_failure = FailureCode::None;
+  server->path_failure = ErrorCode::NONE;
 
   // tick 4: 主任务重试 → 规划 onStart (第 2 次 requestPath)。
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);

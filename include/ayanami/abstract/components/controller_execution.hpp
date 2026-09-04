@@ -60,15 +60,30 @@ public:
     this->plan = plan;
   }
 
-  /// @brief 运行中 in-place 更新路径 (无 cancel/join/new Execution)。
+  /// @brief 提交本 goal 的规划版本 (pending); run 循环消费并 setPlan 成功后
+  /// 才进入 applied (getPlanVersion 只回报已应用版本)。
+  void setPlanVersion(uint64_t plan_version) {
+    std::lock_guard<std::mutex> guard(plan_mutex);
+    pending_plan_version = plan_version;
+  }
+
+  /// @brief 已应用版本: 仅在 run 循环消费新 plan 且 controller->setPlan
+  /// 成功后推进 (in-flight 更新不计入)。
+  uint64_t getPlanVersion() const {
+    std::lock_guard<std::mutex> guard(plan_mutex);
+    return applied_plan_version;
+  }
+
+  /// @brief 运行中 in-place 更新路径+版本 (无 cancel/join/new Execution)。
   /// 下一 cycle 的 run 循环消费。
-  bool updatePlan(const nav_msgs::Path& plan) {
+  bool updatePlan(const nav_msgs::Path& plan, uint64_t plan_version) {
     std::lock_guard<std::mutex> guard(plan_mutex);
     if (isTerminalLocked()) {
       return false;
     }
     new_plan = true;
     this->plan = plan;
+    pending_plan_version = plan_version;
     return true;
   }
 
@@ -77,11 +92,11 @@ public:
     return new_plan;
   }
 
-  /// @brief 原子消费路径, 避免更新线程在两次读取之间插入。
-  nav_msgs::Path takeNewPlan() {
+  /// @brief 原子消费路径+版本, 避免更新线程在两次读取之间插入。
+  std::pair<nav_msgs::Path, uint64_t> takeNewPlan() {
     std::lock_guard<std::mutex> guard(plan_mutex);
     new_plan = false;
-    return plan;
+    return {plan, pending_plan_version};
   }
 
   void setControllerFrequency(double frequency) {
@@ -209,7 +224,8 @@ protected:
 
         // 动态更新路径 (连续重规划安全)
         if (hasNewPlan()) {
-          plan = takeNewPlan();
+          uint64_t plan_version = 0;
+          std::tie(plan, plan_version) = takeNewPlan();
           if (plan.poses.empty()) {
             error = ErrorCode::PATH_INVALID;
             message = "The path is empty";
@@ -221,6 +237,11 @@ protected:
             message = "The controller rejected the path";
             setState(INVALID_PLAN, true);
             return;
+          }
+          // setPlan 成功后版本才进入 applied (结果只报已应用版本)。
+          {
+            std::lock_guard<std::mutex> guard(plan_mutex);
+            applied_plan_version = plan_version;
           }
           // 新 plan 成功应用后: 快照 goal 位姿 + reset goal/progress 基线。
           goal = plan.poses.back();
@@ -320,6 +341,8 @@ protected:
   mutable std::mutex plan_mutex;
   nav_msgs::Path plan;
   bool new_plan{false};
+  uint64_t pending_plan_version{0};
+  uint64_t applied_plan_version{0};
 
   /// @brief 锁内调用: 状态机是否已到终态 (run 循环已 return)。
   bool isTerminalLocked() const {

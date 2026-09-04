@@ -208,19 +208,33 @@ TEST(CheckerPluginManagerTest, loadProgressCheckerFromSo) {
 
 // --- NavigationServerBase: createActions 注入 → ControllerExecution ----
 
+// 暴露 protected 速度上限成员 (新 execution 无 getMaximumVelocity 出参 getter;
+// 语义等价: 断言 server 注入的 navigation.max_vel_{x,y,theta})。
+class ExposedControllerExecution
+    : public ayanami::components::ControllerExecution {
+ public:
+  using ControllerExecution::ControllerExecution;
+  void maximumVelocity(double& x, double& y, double& theta) const {
+    x = max_linear_x;
+    y = max_linear_y;
+    theta = max_angular_z;
+  }
+};
+
 // 派生 server: 捕获每次 newControllerExecution 的 execution (非拥有), 供测试
 // 断言 checker 注入。checker 由 base loadPlugins 装载 (default override 接受)。
 class CheckerNavServer : public NavigationServerBase {
  public:
   // 弱捕获: 由 Action 槽持有 execution 的存活期 (任务 RUNNING 期间访问安全)。
-  ayanami::components::ControllerExecution* running_controller_exec = nullptr;
+  ExposedControllerExecution* running_controller_exec = nullptr;
 
   std::unique_ptr<ayanami::components::ControllerExecution>
   newControllerExecution(
       const std::string& name,
       ayanami::abstract::AbstractController::Ptr controller) override {
-    auto exec = std::make_unique<ayanami::components::ControllerExecution>(
-        std::move(controller));
+    (void)name;
+    auto exec =
+        std::make_unique<ExposedControllerExecution>(std::move(controller));
     running_controller_exec = exec.get();
     return exec;
   }
@@ -321,7 +335,7 @@ TEST(CheckerServerInjectionTest, controllerExecutionGetsCheckers) {
 
   // createActions 注入 navigation.max_vel_{x,y,theta} → execution 速度上限。
   double max_x = 0.0, max_y = 0.0, max_theta = 0.0;
-  server.running_controller_exec->getMaximumVelocity(max_x, max_y, max_theta);
+  server.running_controller_exec->maximumVelocity(max_x, max_y, max_theta);
   EXPECT_DOUBLE_EQ(max_x, 0.5);
   EXPECT_DOUBLE_EQ(max_y, 0.0);  // max_vel_y=0: 禁止横移
   EXPECT_DOUBLE_EQ(max_theta, 1.5);

@@ -73,7 +73,6 @@ void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses)
 
 }  // namespace
 
-CostmapSavitzkySmoother::CostmapSavitzkySmoother() = default;
 
 void CostmapSavitzkySmoother::configure(
     const PluginContext& context,

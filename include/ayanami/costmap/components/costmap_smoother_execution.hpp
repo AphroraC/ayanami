@@ -49,7 +49,7 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
   }
 
  protected:
-  SmootherResultT callSmoother(aayanami::nav_msgs::Path& path,
+  SmootherResultT callSmoother(ayanami::nav_msgs::Path& path,
                                double max_duration,
                                bool check_for_collision) override {
     auto* typed = dynamic_cast<CostmapSmoother*>(smoother.get());

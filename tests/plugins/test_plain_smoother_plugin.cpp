@@ -2,19 +2,20 @@
 
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
-using ayanami::nav_msgs::Path;
+using ayanami::SmootherResultT;
 
 class PlainSmoother : public ayanami::abstract::AbstractSmoother {
  public:
-  FailureCode smoothPath(const Path& /*in*/, Path& /*out*/, double /*max_duration*/,
-                         bool /*check_for_collision*/,
-                         std::string& /*message*/) override {
-    return FailureCode::InvalidInput;
+  SmootherResultT smoothPath(ayanami::nav_msgs::Path& /*path*/,
+                             double /*max_duration*/,
+                             bool /*check_for_collision*/) override {
+    return SmootherResultT::failure(ayanami::ErrorCode::INVALID_INPUT,
+                                    "plain smoother always fails");
   }
   bool cancel() override { return true; }
 };

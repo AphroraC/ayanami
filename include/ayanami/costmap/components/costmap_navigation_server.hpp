@@ -67,14 +67,17 @@ class CostmapNavigationServer
 
   // ---- 虚 initialize*Plugin 覆写: costmap 族注入 ----
   bool initializePlannerPlugin(
-      const std::string& name, ayanami::abstract::AbstractPlanner::Ptr) override;
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractPlanner::Ptr) override;
   bool initializeSmootherPlugin(
-      const std::string& name, ayanami::abstract::AbstractSmoother::Ptr) override;
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractSmoother::Ptr) override;
   bool initializeControllerPlugin(
-      const std::string& name,
+      const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractController::Ptr) override;
   bool initializeRecoveryPlugin(
-      const std::string& name, ayanami::abstract::AbstractRecovery::Ptr) override;
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractRecovery::Ptr) override;
 
   // ---- createActions 覆写: 生产路径 = Costmap*Action (costmap_action) ----
   void createActions() override;

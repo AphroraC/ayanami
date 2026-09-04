@@ -95,6 +95,9 @@ protected:
         return;
       }
       if (result.ok) {
+        // in-place 语义: 成功结果以 result.data 为准 (插件 success(path) 会
+        // move 走 execution 的 path 成员), 回填保持 getSmoothedPath 有效。
+        path = std::move(result.data);
         error = ErrorCode::NONE;
         message = result.message;
         setState(SMOOTHED_PATH, true);

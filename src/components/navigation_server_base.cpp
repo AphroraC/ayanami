@@ -195,8 +195,8 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     }
     planner_plugins.loadSingleFromConfig(
         cfg, "planner", name,
-        [this](const std::string& loaded_name, AbstractPlanner::Ptr plugin) {
-          return initializePlannerPlugin(loaded_name, std::move(plugin));
+        [this, cfg](const std::string& loaded_name, AbstractPlanner::Ptr plugin) {
+          return initializePlannerPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
   // smoother
@@ -212,8 +212,8 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     }
     smoother_plugins.loadSingleFromConfig(
         cfg, "smoother", name,
-        [this](const std::string& loaded_name, AbstractSmoother::Ptr plugin) {
-          return initializeSmootherPlugin(loaded_name, std::move(plugin));
+        [this, cfg](const std::string& loaded_name, AbstractSmoother::Ptr plugin) {
+          return initializeSmootherPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
   // controller
@@ -229,8 +229,8 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     }
     controller_plugins.loadSingleFromConfig(
         cfg, "controller", name,
-        [this](const std::string& loaded_name, AbstractController::Ptr plugin) {
-          return initializeControllerPlugin(loaded_name, std::move(plugin));
+        [this, cfg](const std::string& loaded_name, AbstractController::Ptr plugin) {
+          return initializeControllerPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
   // recovery (role 决定默认: clear_costmap 优先)
@@ -242,8 +242,8 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (!name.empty()) recovery_sequence.push_back(name);
     recovery_plugins.loadSingleFromConfig(
         cfg, "recovery", name,
-        [this](const std::string& loaded_name, AbstractRecovery::Ptr plugin) {
-          return initializeRecoveryPlugin(loaded_name, std::move(plugin));
+        [this, cfg](const std::string& loaded_name, AbstractRecovery::Ptr plugin) {
+          return initializeRecoveryPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
   {
@@ -260,9 +260,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
       }
       goal_checker_plugins.loadSingleFromConfig(
           cfg, "goal_checker", name,
-          [this](const std::string& loaded_name,
+          [this, cfg](const std::string& loaded_name,
                  AbstractGoalChecker::Ptr plugin) {
-            return initializeGoalCheckerPlugin(loaded_name, std::move(plugin));
+            return initializeGoalCheckerPlugin(loaded_name, cfg, std::move(plugin));
           });
     }
   }
@@ -280,9 +280,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
       }
       progress_checker_plugins.loadSingleFromConfig(
           cfg, "progress_checker", name,
-          [this](const std::string& loaded_name,
+          [this, cfg](const std::string& loaded_name,
                  AbstractProgressChecker::Ptr plugin) {
-            return initializeProgressCheckerPlugin(loaded_name,
+            return initializeProgressCheckerPlugin(loaded_name, cfg,
                                                    std::move(plugin));
           });
     }
@@ -615,7 +615,7 @@ TaskHandle<Result> NavigationServerBase::rejectedHandle(
   auto state = std::make_shared<TaskState<Result>>();
   Completion completion;
   completion.status = ayanami::actions::GoalStatus::ABORTED;
-  completion.result.failure = code;
+  completion.result.error = code;
   completion.result.message = message;
   completion.result.session_id = session_id;
   completion.result.plan_version = plan_version;
@@ -626,38 +626,39 @@ TaskHandle<Result> NavigationServerBase::rejectedHandle(
 
 // ---- 虚钩子默认实现 (spec §5.3) ----
 
-bool NavigationServerBase::initializePlannerPlugin(const std::string& name,
-                                                   AbstractPlanner::Ptr) {
+bool NavigationServerBase::initializePlannerPlugin(
+    const std::string& name, const ayanami::Config&, AbstractPlanner::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeSmootherPlugin(const std::string& name,
-                                                    AbstractSmoother::Ptr) {
+bool NavigationServerBase::initializeSmootherPlugin(
+    const std::string& name, const ayanami::Config&, AbstractSmoother::Ptr) {
   (void)name;
   return true;
 }
 
 bool NavigationServerBase::initializeControllerPlugin(
-    const std::string& name, AbstractController::Ptr) {
+    const std::string& name, const ayanami::Config&, AbstractController::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeRecoveryPlugin(const std::string& name,
-                                                    AbstractRecovery::Ptr) {
+bool NavigationServerBase::initializeRecoveryPlugin(
+    const std::string& name, const ayanami::Config&, AbstractRecovery::Ptr) {
   (void)name;
   return true;
 }
 
 bool NavigationServerBase::initializeGoalCheckerPlugin(
-    const std::string& name, AbstractGoalChecker::Ptr) {
+    const std::string& name, const ayanami::Config&, AbstractGoalChecker::Ptr) {
   (void)name;
   return true;
 }
 
 bool NavigationServerBase::initializeProgressCheckerPlugin(
-    const std::string& name, AbstractProgressChecker::Ptr) {
+    const std::string& name, const ayanami::Config&,
+    AbstractProgressChecker::Ptr) {
   (void)name;
   return true;
 }

@@ -3,7 +3,7 @@
 //
 // 覆盖:
 // - configureCoreMaps 建 global/local CostmapContext + StaticLayer/InflationLayer/SimpleObstacleLayer
-// - loadPlugins 触发虚 initialize*Plugin → dynamic_pointer_cast<Costmap*> → initialize(name, ctx)
+// - loadPlugins 触发虚 initialize*Plugin → dynamic_pointer_cast<Costmap*> → configure(ctx, map)
 // - fail case: 非 costmap 族插件 → initialize*Plugin false + loadPlugins 不建 action
 // - new*Execution 返回 Costmap*Execution (绑 global/local wrapper)
 // - handleObstaclePointCloud 经 TransformStore 落 SimpleObstacleLayer + InflationLayer 重算
@@ -44,12 +44,21 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
+#include <ayanami/types.hpp>
+#include <ayanami/utility/config.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 #include <costmap_smac_planner/costmap_smac_planner.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
+using ayanami::PlannerResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::RecoveryResultT;
+using ayanami::RecoveryStatus;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::costmap::CostmapNavigationServer;
 
@@ -190,26 +199,25 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
 
   virtual ~TestCostmapPlanner() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = context.name;
   }
-  FailureCode makePlan(
+  PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::PoseStamped&, double,
-      ayanami::nav_msgs::Path&, double&, std::string&) override {
+      const ayanami::geometry_msgs::PoseStamped&, double) override {
     ++plan_calls;
-    return FailureCode::None;
+    return PlannerResultT::success(ayanami::nav_msgs::Path{});
   }
 };
 
 // 非 costmap 族 planner (dynamic_pointer_cast<CostmapPlanner> 失败)。
 class PlainAbstractPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  FailureCode makePlan(const ayanami::geometry_msgs::PoseStamped&,
-                       const ayanami::geometry_msgs::PoseStamped&, double,
-                       ayanami::nav_msgs::Path&, double&, std::string&) override {
-    return FailureCode::None;
+  PlannerResultT makePlan(const ayanami::geometry_msgs::PoseStamped&,
+                          const ayanami::geometry_msgs::PoseStamped&,
+                          double) override {
+    return PlannerResultT::success(ayanami::nav_msgs::Path{});
   }
 };
 
@@ -219,14 +227,13 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   std::string init_name;
   virtual ~TestCostmapSmoother() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = context.name;
   }
-  FailureCode smoothPath(const ayanami::nav_msgs::Path&,
-                         ayanami::nav_msgs::Path&, double, bool,
-                         std::string&) override {
-    return FailureCode::None;
+  SmootherResultT smoothPath(ayanami::nav_msgs::Path& path, double,
+                             bool) override {
+    return SmootherResultT::success(std::move(path));
   }
 };
 
@@ -235,15 +242,14 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   std::string init_name;
   virtual ~TestCostmapController() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = context.name;
   }
-  FailureCode computeVelocityCommands(
+  ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
-    return FailureCode::None;
+      const ayanami::geometry_msgs::TwistStamped&) override {
+    return ControllerResultT::success(ControllerCommand{});
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 };
@@ -253,37 +259,43 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   std::string init_name;
   virtual ~TestCostmapRecovery() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr) override {
+    init_name = context.name;
   }
-  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
+  RecoveryResultT tick() override {
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
+  }
 };
 
 // 非 costmap 族 smoother/controller/recovery (拒绝路径)。
 class PlainAbstractSmoother : public ayanami::abstract::AbstractSmoother {
  public:
-  FailureCode smoothPath(const ayanami::nav_msgs::Path&,
-                         ayanami::nav_msgs::Path&, double, bool,
-                         std::string&) override {
-    return FailureCode::None;
+  SmootherResultT smoothPath(ayanami::nav_msgs::Path& path, double,
+                             bool) override {
+    return SmootherResultT::success(std::move(path));
   }
 };
 
 class PlainAbstractController : public ayanami::abstract::AbstractController {
  public:
-  FailureCode computeVelocityCommands(
+  ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
-    return FailureCode::None;
+      const ayanami::geometry_msgs::TwistStamped&) override {
+    return ControllerResultT::success(ControllerCommand{});
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 };
 
 class PlainAbstractRecovery : public ayanami::abstract::AbstractRecovery {
  public:
-  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
+  RecoveryResultT tick() override {
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
+  }
 };
 
 // 在 sensor frame (lidar) 里造一个单点 PointCloud2 (x/y/z FLOAT32, 12B/point)。
@@ -414,7 +426,7 @@ TEST(CostmapNavigationServerTest, initializePlannerPluginInjectsContext) {
 
   auto planner = std::make_shared<TestCostmapPlanner>();
   ayanami::abstract::AbstractPlanner::Ptr base = planner;
-  EXPECT_TRUE(server.initializePlannerPlugin("my_planner", base));
+  EXPECT_TRUE(server.initializePlannerPlugin("my_planner", ayanami::Config(""), base));
 
   EXPECT_EQ(planner->init_name, "my_planner");
 }
@@ -425,7 +437,7 @@ TEST(CostmapNavigationServerTest, initializePlannerPluginRejectsNonCostmapPlanne
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractPlanner>();
-  EXPECT_FALSE(server.initializePlannerPlugin("plain", plain));
+  EXPECT_FALSE(server.initializePlannerPlugin("plain", ayanami::Config(""), plain));
 }
 
 TEST(CostmapNavigationServerTest, initializeSmootherPluginInjectsContext) {
@@ -435,7 +447,7 @@ TEST(CostmapNavigationServerTest, initializeSmootherPluginInjectsContext) {
 
   auto smoother = std::make_shared<TestCostmapSmoother>();
   ayanami::abstract::AbstractSmoother::Ptr base = smoother;
-  EXPECT_TRUE(server.initializeSmootherPlugin("my_smoother", base));
+  EXPECT_TRUE(server.initializeSmootherPlugin("my_smoother", ayanami::Config(""), base));
   EXPECT_EQ(smoother->init_name, "my_smoother");
 }
 
@@ -445,7 +457,7 @@ TEST(CostmapNavigationServerTest, initializeSmootherPluginRejectsNonCostmapSmoot
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractSmoother>();
-  EXPECT_FALSE(server.initializeSmootherPlugin("plain", plain));
+  EXPECT_FALSE(server.initializeSmootherPlugin("plain", ayanami::Config(""), plain));
 }
 
 TEST(CostmapNavigationServerTest, initializeControllerPluginInjectsContext) {
@@ -455,7 +467,7 @@ TEST(CostmapNavigationServerTest, initializeControllerPluginInjectsContext) {
 
   auto controller = std::make_shared<TestCostmapController>();
   ayanami::abstract::AbstractController::Ptr base = controller;
-  EXPECT_TRUE(server.initializeControllerPlugin("my_controller", base));
+  EXPECT_TRUE(server.initializeControllerPlugin("my_controller", ayanami::Config(""), base));
   EXPECT_EQ(controller->init_name, "my_controller");
 }
 
@@ -466,7 +478,7 @@ TEST(CostmapNavigationServerTest, initializeControllerPluginRejectsNonCostmapCon
 
   // 普通 AbstractController 不再放行 (移除 Task 12 stage C fallback)。
   auto plain = std::make_shared<PlainAbstractController>();
-  EXPECT_FALSE(server.initializeControllerPlugin("plain", plain));
+  EXPECT_FALSE(server.initializeControllerPlugin("plain", ayanami::Config(""), plain));
 }
 
 TEST(CostmapNavigationServerTest, initializeRecoveryPluginInjectsContext) {
@@ -476,7 +488,7 @@ TEST(CostmapNavigationServerTest, initializeRecoveryPluginInjectsContext) {
 
   auto recovery = std::make_shared<TestCostmapRecovery>();
   ayanami::abstract::AbstractRecovery::Ptr base = recovery;
-  EXPECT_TRUE(server.initializeRecoveryPlugin("my_recovery", base));
+  EXPECT_TRUE(server.initializeRecoveryPlugin("my_recovery", ayanami::Config(""), base));
   EXPECT_EQ(recovery->init_name, "my_recovery");
 }
 
@@ -486,14 +498,14 @@ TEST(CostmapNavigationServerTest, initializeRecoveryPluginRejectsNonCostmapRecov
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractRecovery>();
-  EXPECT_FALSE(server.initializeRecoveryPlugin("plain", plain));
+  EXPECT_FALSE(server.initializeRecoveryPlugin("plain", ayanami::Config(""), plain));
 }
 
 TEST(CostmapNavigationServerTest, initializePlannerPluginFailsWithoutConfiguredMaps) {
   CostmapNavigationServer server;  // 未 configureCoreMaps (Task 18 minor 1)
   auto planner = std::make_shared<TestCostmapPlanner>();
-  EXPECT_FALSE(server.initializePlannerPlugin("p", planner));
-  EXPECT_FALSE(server.initializeSmootherPlugin("s", nullptr));
+  EXPECT_FALSE(server.initializePlannerPlugin("p", ayanami::Config(""), planner));
+  EXPECT_FALSE(server.initializeSmootherPlugin("s", ayanami::Config(""), nullptr));
 }
 
 // ---------------- loadPlugins 端到端 ----------------
@@ -684,7 +696,8 @@ TEST(CostmapNavigationServerTest, smacPlanAvoidsObservedGlobalObstacle) {
   server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
 
 auto planner = std::make_shared<ayanami::modules::CostmapSmacPlanner>();
-  planner->initialize("smac", server.costmapContext()->getSharedConstPtr());
+  planner->configure(ayanami::PluginContext{"smac", ayanami::Config("")},
+                     server.costmapContext()->getSharedConstPtr());
   auto start = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
   start.pose.position = Eigen::Vector3d(-4.0, 0.0, 0.0);
@@ -692,12 +705,9 @@ auto planner = std::make_shared<ayanami::modules::CostmapSmacPlanner>();
       "map", Eigen::Isometry3d::Identity());
   goal.pose.position = Eigen::Vector3d(4.0, 0.0, 0.0);
 
-  ayanami::nav_msgs::Path path;
-  double cost_value = 0.0;
-  std::string message;
-  ASSERT_EQ(planner->makePlan(start, goal, 0.1, path, cost_value, message),
-            FailureCode::None)
-      << message;
+  auto plan_result = planner->makePlan(start, goal, 0.1);
+  ASSERT_TRUE(plan_result.ok) << plan_result.message;
+  const ayanami::nav_msgs::Path& path = plan_result.data;
   ASSERT_FALSE(path.poses.empty());
 
   bool deviated_from_straight_line = false;

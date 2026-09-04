@@ -1,15 +1,12 @@
 // Task 24: modules/costmap_back_up_recovery — 后退恢复模块。
 //
-// 纯 C++ (零 ROS): 周期驱动接口 (start/onCycleUpdate)。每周期返回负向线速度
+// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回负向线速度
 // 建议 (vx = -max_v), 由 RecoveryExecution 作为唯一发布者按周期发布并终态
 // 补零; 插件不自行循环等待、不直接旁路发布速度命令。M1 headless 不依赖
-// 底盘实际运动, 发完 duration 即 SUCCESS。碰撞检测 (不可变 global 快照,
+// 底盘实际运动, 发完 duration 即 SUCCESS。碰撞检测 (加锁读 global grid,
 // 机器人附近 >= 253) → FAILED(RecoveryFailed), message 含 "collision detected"。
 
 #include "costmap_back_up_recovery.hpp"
-
-#include <ayanami/messages/failure.hpp>
-#include <ayanami/utility/config.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -21,27 +18,17 @@ namespace {
 constexpr int k_lethal_threshold = 253;  // Ruling #6
 }
 
-CostmapBackUpRecovery::CostmapBackUpRecovery() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_back_up_recovery → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_back_up_recovery"));
-    param.backup_dist =
-        file.param<double>("recovery", "backup_dist", param.backup_dist);
-    param.max_v = file.param<double>("recovery", "max_v", param.max_v);
-    param.sim_cycle_dt =
-        file.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
-    param.collision_radius = file.param<double>(
-        "recovery", "collision_radius", param.collision_radius);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
-}
-
-void CostmapBackUpRecovery::initialize(const std::string& name,
-                                       ayanami::costmap::CostmapContext::ConstPtr map) {
-  (void)name;
+void CostmapBackUpRecovery::configure(
+    const ayanami::PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  param.backup_dist =
+      context.config.param<double>("recovery", "backup_dist", param.backup_dist);
+  param.max_v = context.config.param<double>("recovery", "max_v", param.max_v);
+  param.sim_cycle_dt =
+      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
+  param.collision_radius = context.config.param<double>(
+      "recovery", "collision_radius", param.collision_radius);
   map_ = std::move(map);
 }
 
@@ -63,64 +50,39 @@ void CostmapBackUpRecovery::start() {
       std::max(param.backup_dist, 0.0) / std::max(param.max_v, 1e-6) / dt));
 }
 
-ayanami::abstract::RecoveryCycleResult CostmapBackUpRecovery::tick(
-    std::string& message) {
-  message.clear();
+RecoveryResultT CostmapBackUpRecovery::tick() {
   // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
   auto costmap = map_->lockGlobal();
-
-  ayanami::abstract::RecoveryCycleResult r;  // 默认 RUNNING + 零速度。
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
   if (canceled.load()) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::CANCELED;
-    r.failure = FailureCode::Canceled;
-    message = "back up recovery canceled";
-    return r;
+    return RecoveryResultT::failure(ErrorCode::CANCELED,
+                                    "back up recovery canceled");
   }
 
   ::Eigen::Isometry3d robot_pose = ::Eigen::Isometry3d::Identity();
   const bool have_pose =
-      costmap.has_robot_pose() && [&] {
-        robot_pose = costmap.robot_pose().pose.toIsometry();
-        return true;
-      }();
+      costmap.has_robot_pose() &&
+      (robot_pose = costmap.robot_pose().pose.toIsometry(), true);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::FAILED;
-    r.failure = FailureCode::RecoveryFailed;
-    message = "collision detected";
-    return r;
+    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+                                    "collision detected");
   }
 
   if (remaining_frames <= 0) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::SUCCESS;
-    return r;
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
   --remaining_frames;
-  r.velocity.header.frame_id = frame;
-  r.velocity.twist.linear.x() = -param.max_v;
-  return r;
-}
-
-void CostmapBackUpRecovery::end() {}
-
-FailureCode CostmapBackUpRecovery::runRecovery(std::string& message) {
-  start();
-  while (true) {
-    const auto r = tick(message);
-    switch (r.status) {
-      case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
-        continue;
-      case ayanami::abstract::RecoveryCycleResult::Status::SUCCESS:
-        return FailureCode::None;
-      case ayanami::abstract::RecoveryCycleResult::Status::CANCELED:
-        return FailureCode::Canceled;
-      case ayanami::abstract::RecoveryCycleResult::Status::FAILED:
-      default:
-        return r.failure;
-    }
-  }
+  RecoveryCycleData data;
+  data.status = RecoveryStatus::RUNNING;
+  ayanami::geometry_msgs::TwistStamped velocity;
+  velocity.header.frame_id = frame;
+  velocity.twist.linear.x() = -param.max_v;
+  data.velocity = std::move(velocity);
+  return RecoveryResultT::success(std::move(data));
 }
 
 bool CostmapBackUpRecovery::cancel() {

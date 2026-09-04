@@ -20,10 +20,19 @@
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
+#include <ayanami/utility/config.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
+using ayanami::PlannerResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::RecoveryResultT;
+using ayanami::RecoveryStatus;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::costmap::CostmapView;
 
@@ -39,7 +48,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
   return std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
 }
 
-// ---- 4 个 Costmap* 派生: 实现新 initialize(name, map) + 加锁读视图 ----
+// ---- 4 个 Costmap* 派生: 实现新 configure(context, map) + 加锁读视图 ----
 
 class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
@@ -49,19 +58,18 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
 
   virtual ~TestCostmapPlanner() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+    init_name = context.name;
     map_ = std::move(map);
   }
 
-  FailureCode makePlan(
+  PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::PoseStamped&, double,
-      ayanami::nav_msgs::Path&, double&, std::string&) override {
+      const ayanami::geometry_msgs::PoseStamped&, double) override {
     ++plan_calls;
     got_view = map_ && map_->lockGlobal().valid();
-    return FailureCode::None;
+    return PlannerResultT::success(ayanami::nav_msgs::Path{});
   }
 
  private:
@@ -75,17 +83,16 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
 
   virtual ~TestCostmapSmoother() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+    init_name = context.name;
     map_ = std::move(map);
   }
 
-  FailureCode smoothPath(
-      const ayanami::nav_msgs::Path&, ayanami::nav_msgs::Path&, double, bool,
-      std::string&) override {
+  SmootherResultT smoothPath(ayanami::nav_msgs::Path& path, double,
+                             bool) override {
     got_view = map_ && map_->lockGlobal().valid();
-    return FailureCode::None;
+    return SmootherResultT::success(std::move(path));
   }
 
  private:
@@ -99,18 +106,17 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
 
   virtual ~TestCostmapController() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+    init_name = context.name;
     map_ = std::move(map);
   }
 
-  FailureCode computeVelocityCommands(
+  ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped&, std::string&) override {
+      const ayanami::geometry_msgs::TwistStamped&) override {
     got_view = map_ && map_->lockLocal().valid();
-    return FailureCode::None;
+    return ControllerResultT::success(ControllerCommand{});
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 
@@ -125,15 +131,17 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
 
   virtual ~TestCostmapRecovery() override = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
-    init_name = name;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
+    init_name = context.name;
     map_ = std::move(map);
   }
 
-  FailureCode runRecovery(std::string&) override {
+  RecoveryResultT tick() override {
     got_view = map_ && map_->lockGlobal().valid();
-    return FailureCode::None;
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
 
  private:
@@ -320,16 +328,15 @@ TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
 
   auto ctx = std::make_shared<CostmapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->initialize("test_planner", ctx->getSharedConstPtr());
+  cast->configure(ayanami::PluginContext{"test_planner", ayanami::Config("")},
+                  ctx->getSharedConstPtr());
   EXPECT_EQ(planner->init_name, "test_planner");
 
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  EXPECT_EQ(cast->makePlan(start, goal, 0.1, plan, cost, message),
-            FailureCode::None);
+  auto result = cast->makePlan(start, goal, 0.1);
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::NONE);
   EXPECT_EQ(planner->plan_calls, 1u);
   EXPECT_TRUE(planner->got_view);
 }
@@ -344,14 +351,14 @@ TEST(CostmapCoreTest, costmapSmootherInitializeAndViewSmoothPath) {
 
   auto ctx = std::make_shared<CostmapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->initialize("test_smoother", ctx->getSharedConstPtr());
+  cast->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+                  ctx->getSharedConstPtr());
   EXPECT_EQ(smoother->init_name, "test_smoother");
 
-  ayanami::nav_msgs::Path in;
-  ayanami::nav_msgs::Path out;
-  std::string message;
-  EXPECT_EQ(cast->smoothPath(in, out, 10.0, false, message),
-            FailureCode::None);
+  ayanami::nav_msgs::Path path;
+  auto result = cast->smoothPath(path, 10.0, false);
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::NONE);
   EXPECT_TRUE(smoother->got_view);
 }
 
@@ -365,14 +372,15 @@ TEST(CostmapCoreTest, costmapControllerInitializeAndViewCompute) {
 
   auto ctx = std::make_shared<CostmapContext>();
   ctx->setLocalCostmap(makeWrapper(makeGrid()));
-  cast->initialize("test_controller", ctx->getSharedConstPtr());
+  cast->configure(ayanami::PluginContext{"test_controller", ayanami::Config("")},
+                  ctx->getSharedConstPtr());
   EXPECT_EQ(controller->init_name, "test_controller");
 
   ayanami::geometry_msgs::PoseStamped pose;
-  ayanami::geometry_msgs::TwistStamped velocity, cmd;
-  std::string message;
-  EXPECT_EQ(cast->computeVelocityCommands(pose, velocity, cmd, message),
-            FailureCode::None);
+  ayanami::geometry_msgs::TwistStamped velocity;
+  auto result = cast->computeVelocityCommand(pose, velocity);
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::NONE);
   EXPECT_TRUE(controller->got_view);
 }
 
@@ -386,11 +394,13 @@ TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
 
   auto ctx = std::make_shared<CostmapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->initialize("test_recovery", ctx->getSharedConstPtr());
+  cast->configure(ayanami::PluginContext{"test_recovery", ayanami::Config("")},
+                  ctx->getSharedConstPtr());
   EXPECT_EQ(recovery->init_name, "test_recovery");
 
-  std::string message;
-  EXPECT_EQ(cast->runRecovery(message), FailureCode::None);
+  auto result = cast->tick();
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.data.status, RecoveryStatus::SUCCESS);
   EXPECT_TRUE(recovery->got_view);
 }
 

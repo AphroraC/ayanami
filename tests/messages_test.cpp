@@ -74,11 +74,11 @@ TEST(MessagesTest, pathPosesIsPoseStampedVector) {
 
 TEST(MessagesTest, failureCodeUnifiedEnumCoversRequiredCodes) {
   // 统一失败码: None=0, 必须覆盖规定的全部分量。
-  EXPECT_EQ(static_cast<uint8_t>(ayanami::FailureCode::None), 0u);
-  EXPECT_NE(static_cast<uint8_t>(ayanami::FailureCode::Canceled), 0u);
-  static_assert(static_cast<int>(ayanami::FailureCode::None) <
-                static_cast<int>(ayanami::FailureCode::InternalError));
-  using FC = ayanami::FailureCode;
+  EXPECT_EQ(static_cast<uint8_t>(ayanami::ErrorCode::NONE), 0u);
+  EXPECT_NE(static_cast<uint8_t>(ayanami::ErrorCode::CANCELED), 0u);
+  static_assert(static_cast<int>(ayanami::ErrorCode::NONE) <
+                static_cast<int>(ayanami::ErrorCode::INTERNAL_ERROR));
+  using FC = ayanami::ErrorCode;
   static_assert(static_cast<int>(FC::None) < static_cast<int>(FC::Canceled));
   static_assert(static_cast<int>(FC::Canceled) < static_cast<int>(FC::Timeout));
   static_assert(static_cast<int>(FC::Timeout) < static_cast<int>(FC::InvalidInput));
@@ -111,10 +111,10 @@ TEST(MessagesTest, actionResultsUseUniformFailureField) {
   ayanami::actions::SmoothPathResult smooth;
   ayanami::actions::ExePathResult exe;
   ayanami::actions::RecoveryResult recovery;
-  EXPECT_EQ(path.failure, ayanami::FailureCode::None);
-  EXPECT_EQ(smooth.failure, ayanami::FailureCode::None);
-  EXPECT_EQ(exe.failure, ayanami::FailureCode::None);
-  EXPECT_EQ(recovery.failure, ayanami::FailureCode::None);
+  EXPECT_EQ(path.error, ayanami::ErrorCode::NONE);
+  EXPECT_EQ(smooth.error, ayanami::ErrorCode::NONE);
+  EXPECT_EQ(exe.error, ayanami::ErrorCode::NONE);
+  EXPECT_EQ(recovery.error, ayanami::ErrorCode::NONE);
   EXPECT_TRUE(path.message.empty());
   EXPECT_TRUE(smooth.message.empty());
   EXPECT_TRUE(exe.message.empty());

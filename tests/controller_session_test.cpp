@@ -15,6 +15,7 @@
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -29,7 +30,9 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
@@ -40,12 +43,13 @@ using ayanami::nav_msgs::Path;
 // setPlan 记录收到的路径尺寸 (验证 10-pose 路径被完整应用)。
 class RecordingController : public ayanami::abstract::AbstractController {
 public:
-  FailureCode computeVelocityCommands(
-      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
-      std::string&) override {
+  ControllerResultT computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&) override {
     ++calls;
-    cmd_vel.twist.linear.x() = 0.5;
-    return FailureCode::None;
+    ControllerCommand cmd;
+    cmd.velocity = TwistStamped{};
+    cmd.velocity.twist.linear.x() = 0.5;
+    return ControllerResultT::success(std::move(cmd));
   }
 
   bool setPlan(const Path& plan) override {
@@ -163,8 +167,8 @@ TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
 
   EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   EXPECT_TRUE(task.result().reached);
-  EXPECT_EQ(task.result().failure, FailureCode::None);
-  // 持续多帧 computeVelocityCommands (至少 3 帧)
+  EXPECT_EQ(task.result().error, ErrorCode::NONE);
+  // 持续多帧 computeVelocityCommand (至少 3 帧)
   EXPECT_GE(controller->calls.load(), 3);
   // 中间帧 cmd_vel 已经 on_velocity_command 旁路发布
   EXPECT_GE(cmd_count.load(), 1);

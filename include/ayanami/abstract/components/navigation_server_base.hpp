@@ -136,20 +136,27 @@ public:
   std::shared_ptr<NavigationSessionState> sessionState() const;
 
 protected:
-  // ★ 虚钩子: 派生覆写注入地图对象 (spec §5.3 关键)。默认 return true。
+  // ★ 虚钩子: 派生覆写注入地图对象 (spec §5.3 关键)。module_config 是该插件
+  // 自身的模块 json (已解析), 派生用它构造 PluginContext 传入族级 configure。
   virtual bool initializePlannerPlugin(
-      const std::string& name, ayanami::abstract::AbstractPlanner::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractPlanner::Ptr);
   virtual bool initializeSmootherPlugin(
-      const std::string& name, ayanami::abstract::AbstractSmoother::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractSmoother::Ptr);
   virtual bool initializeControllerPlugin(
-      const std::string& name, ayanami::abstract::AbstractController::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractController::Ptr);
   virtual bool initializeRecoveryPlugin(
-      const std::string& name, ayanami::abstract::AbstractRecovery::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractRecovery::Ptr);
   // ★ checker 虚钩子: 无地图依赖, 默认 return true (spec §5.3 扩展族)。
   virtual bool initializeGoalCheckerPlugin(
-      const std::string& name, ayanami::abstract::AbstractGoalChecker::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractGoalChecker::Ptr);
   virtual bool initializeProgressCheckerPlugin(
-      const std::string& name, ayanami::abstract::AbstractProgressChecker::Ptr);
+      const std::string& name, const ayanami::Config& module_config,
+      ayanami::abstract::AbstractProgressChecker::Ptr);
 
   // ★ 工厂: 派生覆写返回带地图的 Execution。基类 createActions() 经此装配
   // abstract Action (无地图 server 与测试覆写面)。默认返回 abstract 版。

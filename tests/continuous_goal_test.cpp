@@ -10,6 +10,7 @@
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -24,7 +25,7 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::PlannerResultT;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
@@ -34,8 +35,8 @@ using ayanami::nav_msgs::Path;
 // cancel() 置 canceled 并唤醒; 每次调用后清零, 使抢占与释放语义可预测。
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                       Path& plan, double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double) override {
     ++calls;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -43,12 +44,12 @@ public:
       release_cv.wait_for(lock, std::chrono::milliseconds(500),
                        [this] { return canceled.load() || released.load(); });
     }
-    if (canceled.exchange(false)) {
-      return FailureCode::PathNotFound;
-    }
+    (void)canceled.exchange(false);
+    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
 
   bool cancel() override {

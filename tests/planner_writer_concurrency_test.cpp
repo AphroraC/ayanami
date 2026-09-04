@@ -31,10 +31,13 @@
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
+#include <ayanami/utility/config.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::PlannerResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
@@ -43,20 +46,21 @@ using ayanami::nav_msgs::Path;
 // 读窗口内写者被阻塞; 记录读到的 (2,2) 值证明读窗口内地图稳定。
 class SlowPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void initialize(const std::string&,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
+  void configure(const ayanami::PluginContext&,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
     map_ = std::move(map);
   }
-  FailureCode makePlan(
+  PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::PoseStamped&, double,
-      ayanami::nav_msgs::Path& plan, double&, std::string&) override {
+      const ayanami::geometry_msgs::PoseStamped&, double) override {
     ++calls;
     auto view = map_->lockGlobal();
     if (!view.valid()) {
-      return FailureCode::MapUnavailable;
+      return PlannerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
+                                     "no global view");
     }
     saw_cell.store(view.grid()->getCost(2, 2));
+    ayanami::nav_msgs::Path plan;
     plan.header.frame_id = "map";
     plan.poses.resize(1);
     {
@@ -66,7 +70,7 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
         return released.load();
       });
     }
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
   bool cancel() override { return true; }
 
@@ -110,7 +114,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   }
 
   auto planner = std::make_shared<SlowPlanner>();
-  planner->initialize("test_planner", ctx);
+  planner->configure(ayanami::PluginContext{"test_planner", ayanami::Config("")}, ctx);
   ayanami::costmap::CostmapPlannerExecution exec("test_planner", planner, ctx);
 
   exec.start(PoseStamped{}, PoseStamped{}, 0.1);

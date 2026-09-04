@@ -6,6 +6,7 @@
 #include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -24,7 +25,7 @@
 #include <vector>
 
 using namespace ayanami::behavior_tree;
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::ExePathResult;
 using ayanami::actions::GetPathGoal;
@@ -94,7 +95,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_path_goal = goal;
     if (path_sync) {
       GetPathResult r;
-      r.failure = path_failure;
+      r.error = path_failure;
       r.path = path_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -109,7 +110,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_smooth_goal = goal;
     if (smooth_sync) {
       SmoothPathResult r;
-      r.failure = smooth_failure;
+      r.error = smooth_failure;
       r.smoothed_path = smooth_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -126,7 +127,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(stop);
     if (exe_sync) {
       ExePathResult r;
-      r.failure = exe_failure;
+      r.error = exe_failure;
       r.reached = exe_reached;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -140,7 +141,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     last_recovery_goal = goal;
     if (recovery_sync) {
       RecoveryResult r;
-      r.failure = recovery_failure;
+      r.error = recovery_failure;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
@@ -155,22 +156,22 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   std::atomic<int> cancel_count{0};  // 先声明, 后析构 (servers 的 cancel 回调仍安全)
 
   bool path_sync = true;
-  FailureCode path_failure = FailureCode::None;
+  ErrorCode path_failure = ErrorCode::NONE;
   Path path_result;
   GetPathGoal last_path_goal;
 
   bool smooth_sync = true;
-  FailureCode smooth_failure = FailureCode::None;
+  ErrorCode smooth_failure = ErrorCode::NONE;
   Path smooth_result;
   SmoothPathGoal last_smooth_goal;
 
   bool exe_sync = true;
-  FailureCode exe_failure = FailureCode::None;
+  ErrorCode exe_failure = ErrorCode::NONE;
   bool exe_reached = true;
   ExePathGoal last_exe_goal;
 
   bool recovery_sync = true;
-  FailureCode recovery_failure = FailureCode::None;
+  ErrorCode recovery_failure = ErrorCode::NONE;
   RecoveryGoal last_recovery_goal;
 
   PathServer path_server;

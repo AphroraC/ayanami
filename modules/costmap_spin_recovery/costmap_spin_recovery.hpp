@@ -9,6 +9,7 @@
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/recovery_params.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
+#include <ayanami/types.hpp>
 
 namespace ayanami {
 namespace modules {
@@ -21,23 +22,22 @@ namespace modules {
  * 在终态补零; 插件不自行 sleep、不直接调 NavigationCallbacks。
  * 碰撞检测用时持有的地图模块加锁读的 global grid 机器人附近 cell >= 253
  * → FAILED(RecoveryFailed)。不持有 context / wrapper / 可变 grid。
+ * 参数统一从 PluginContext.config (config_recovery 指向的本模块 json) 读取。
  */
 class CostmapSpinRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapSpinRecovery() = default;
-  // Ruling #3: 基类 AbstractRecovery 无虚析构 (仅 AbstractPlanner 有),
-  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapSpinRecovery() = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override;
 
   void start() override;
   void setBehaviorParams(
       const ayanami::RecoveryBehaviorParams& params) override;
-  ayanami::abstract::RecoveryCycleResult tick(
-      std::string& message) override;
-  void end() override;
+  RecoveryResultT tick() override;
+  void finish() override {}
 
   bool cancel() override;
 

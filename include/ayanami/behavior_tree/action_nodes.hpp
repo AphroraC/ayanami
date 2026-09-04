@@ -155,10 +155,10 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-     if (r.failure != ErrorCode::NONE) {
+     if (r.error != ErrorCode::NONE) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
-      ctx.code = r.failure;
+      ctx.code = r.error;
       ctx.message = r.message;
        ctx.plugin_id = "planner";
       ctx.session_id = r.session_id;
@@ -255,12 +255,12 @@ class SmoothPathNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-     if (r.failure != ErrorCode::NONE) {
+     if (r.error != ErrorCode::NONE) {
       // 平滑失败显式化: 写入黑板 failure_context 并返回 FAILURE, 由上层
       // RecoveryNode/恢复分支处理; 不做 best-effort 降级 (不掩盖算法故障)。
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
-      ctx.code = r.failure;
+      ctx.code = r.error;
       ctx.message = r.message;
       ctx.plugin_id = "smoother";
       ctx.session_id = r.session_id;
@@ -386,7 +386,7 @@ class FollowPathNode : public BT::StatefulActionNode {
       return BT::NodeStatus::FAILURE;
     }
     // controller 成功且到达目标: 会话内即终点 (goal 已达), pending 版本差异不拒。
-     if (r.failure == ErrorCode::NONE && r.reached) {
+     if (r.error == ErrorCode::NONE && r.reached) {
       return BT::NodeStatus::SUCCESS;
     }
     if (!nav_server->planVersionIsCurrent(r.plan_version)) {
@@ -403,7 +403,7 @@ class FollowPathNode : public BT::StatefulActionNode {
     // 失败或未达标: 只依据 failure 决策, 不解析 message。
     FailureContext ctx;
     ctx.stage = FailureStage::Controller;
-     ctx.code = r.failure != ErrorCode::NONE ? r.failure
+     ctx.code = r.error != ErrorCode::NONE ? r.error
                                               : ErrorCode::GOAL_NOT_REACHED;
     ctx.message = r.message;
        ctx.plugin_id = "controller";
@@ -580,10 +580,10 @@ class RecoveryActionNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-     if (r.failure != ErrorCode::NONE) {
+     if (r.error != ErrorCode::NONE) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
-      ctx.code = r.failure;
+      ctx.code = r.error;
       ctx.message = r.message;
       ctx.plugin_id = recovery_id;
       ctx.session_id = r.session_id;

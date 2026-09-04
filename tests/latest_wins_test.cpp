@@ -12,6 +12,7 @@
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -25,7 +26,8 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::PlannerResultT;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
@@ -35,8 +37,8 @@ using ayanami::nav_msgs::Path;
 // cancel() 或 release() 才返回。被取消时返回 NO_PATH_FOUND → 执行层 CANCELED。
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                       Path& plan, double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double) override {
     ++calls;
     const int seq = ++entered_calls;
     const int running_now = ++running;
@@ -55,12 +57,12 @@ public:
     }
     --running;
     ++exited_calls;
-    if (canceled.exchange(false)) {
-      return FailureCode::PathNotFound;
-    }
+    (void)canceled.exchange(false);
+    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
 
   bool cancel() override {
@@ -119,8 +121,8 @@ bool readyWithin(Task& t, int max_ms) {
 // 阻塞到 report 释放, 被取消返回 PathNotFound, 否则把传入的最新 goal 编码进路径。
 class LatestWinsPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                       Path& plan, double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double) override {
     ++calls;
     ++entered_calls;
     const int running_now = ++running;
@@ -133,12 +135,12 @@ class LatestWinsPlanner : public ayanami::abstract::AbstractPlanner {
                           [this] { return canceled.load() || released.load(); });
     }
     --running;
-    if (canceled.exchange(false)) {
-      return FailureCode::PathNotFound;
-    }
+    (void)canceled.exchange(false);
+    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
 
   bool cancel() override {
@@ -293,7 +295,7 @@ TEST(LatestWins, setNewGoalPlannerHundredGoalsSingleExecutionLatestWins) {
   planner->release();
   ASSERT_TRUE(readyWithin(tasks[kGoals - 1], 3000));
   EXPECT_EQ(tasks[kGoals - 1].status(), GoalStatus::SUCCEEDED);
-  EXPECT_EQ(tasks[kGoals - 1].result().failure, FailureCode::None);
+  EXPECT_EQ(tasks[kGoals - 1].result().error, ErrorCode::NONE);
 
   // 结果对应最新 goal (goal id 编码 x = 100, y = 7)。
   const auto& result = tasks[kGoals - 1].result();

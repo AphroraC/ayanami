@@ -13,6 +13,8 @@
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
+#include <ayanami/utility/config.hpp>
 
 #include <Eigen/Geometry>
 
@@ -79,23 +81,27 @@ class TestNavServer : public ayanami::components::NavigationServerBase {
 public:
   using NavigationServerBase::NavigationServerBase;
 
-  bool initializePlannerPlugin(const std::string& name,
-                               ayanami::abstract::AbstractPlanner::Ptr p) override {
+  bool initializePlannerPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractPlanner::Ptr p) override {
     init_names.push_back("planner:" + name);
     return p != nullptr;
   }
-  bool initializeSmootherPlugin(const std::string& name,
-                                ayanami::abstract::AbstractSmoother::Ptr p) override {
+  bool initializeSmootherPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractSmoother::Ptr p) override {
     init_names.push_back("smoother:" + name);
     return p != nullptr;
   }
-  bool initializeControllerPlugin(const std::string& name,
-                                  ayanami::abstract::AbstractController::Ptr p) override {
+  bool initializeControllerPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractController::Ptr p) override {
     init_names.push_back("controller:" + name);
     return p != nullptr;
   }
-  bool initializeRecoveryPlugin(const std::string& name,
-                                ayanami::abstract::AbstractRecovery::Ptr p) override {
+  bool initializeRecoveryPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractRecovery::Ptr p) override {
     init_names.push_back("recovery:" + name);
     return p != nullptr;
   }
@@ -104,10 +110,8 @@ public:
       const std::string& name,
       ayanami::abstract::AbstractPlanner::Ptr p) override {
     factory_names.push_back(name);
-    auto exec =
-        NavigationServerBase::newPlannerExecution(name, std::move(p));
-    exec->setMaxRetries(0);  // 失败即放弃 → 保证失败路径终止性
-    return exec;
+    // 新 execution 无耐心/重试循环: 失败即终态 (失败即放弃语义由核心保证)。
+    return NavigationServerBase::newPlannerExecution(name, std::move(p));
   }
   std::unique_ptr<ayanami::components::ControllerExecution> newControllerExecution(
       const std::string& name,
@@ -222,18 +226,18 @@ struct Coordinator {
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
  public:
   explicit BlockingPlanner(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
-  ayanami::FailureCode makePlan(
+  ayanami::PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::PoseStamped&, double,
-      ayanami::nav_msgs::Path& plan, double&, std::string&) override {
+      const ayanami::geometry_msgs::PoseStamped&, double) override {
     coord->planner_entered.store(true);
     {
       std::unique_lock<std::mutex> lock(coord->mutex);
       coord->cv.wait(lock, [this] { return coord->planner_release; });
     }
     coord->planner_exited.store(true);
+    ayanami::nav_msgs::Path plan;
     plan.poses.push_back(ayanami::geometry_msgs::PoseStamped{});
-    return ayanami::FailureCode::None;
+    return ayanami::PlannerResultT::success(std::move(plan));
   }
   bool cancel() override {
     {
@@ -250,17 +254,15 @@ class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 class BlockingSmoother : public ayanami::abstract::AbstractSmoother {
  public:
   explicit BlockingSmoother(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
-  ayanami::FailureCode smoothPath(
-      const ayanami::nav_msgs::Path& path, ayanami::nav_msgs::Path& out,
-      double, bool, std::string&) override {
+  ayanami::SmootherResultT smoothPath(ayanami::nav_msgs::Path& path,
+                                      double, bool) override {
     coord->smoother_entered.store(true);
     {
       std::unique_lock<std::mutex> lock(coord->mutex);
       coord->cv.wait(lock, [this] { return coord->smoother_release; });
     }
     coord->smoother_exited.store(true);
-    out = path;
-    return ayanami::FailureCode::None;
+    return ayanami::SmootherResultT::success(std::move(path));
   }
   bool cancel() override {
     {
@@ -277,18 +279,19 @@ class BlockingSmoother : public ayanami::abstract::AbstractSmoother {
 class BlockingController : public ayanami::abstract::AbstractController {
  public:
   explicit BlockingController(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
-  ayanami::FailureCode computeVelocityCommands(
+  ayanami::ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::TwistStamped&,
-      ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string&) override {
+      const ayanami::geometry_msgs::TwistStamped&) override {
     coord->controller_entered.store(true);
     {
       std::unique_lock<std::mutex> lock(coord->mutex);
       coord->cv.wait(lock, [this] { return coord->controller_release; });
     }
     coord->controller_exited.store(true);
-    cmd_vel.twist.linear.x() = 0.1;
-    return ayanami::FailureCode::None;
+    ayanami::ControllerCommand cmd;
+    cmd.velocity = ayanami::geometry_msgs::TwistStamped{};
+    cmd.velocity.twist.linear.x() = 0.1;
+    return ayanami::ControllerResultT::success(std::move(cmd));
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
   bool cancel() override {
@@ -306,18 +309,18 @@ class BlockingController : public ayanami::abstract::AbstractController {
 class ActiveRecovery : public ayanami::abstract::AbstractRecovery {
  public:
   explicit ActiveRecovery(std::shared_ptr<Coordinator> c) : coord(std::move(c)) {}
-  ayanami::abstract::RecoveryCycleResult onCycleUpdate(std::string&) override {
+  ayanami::RecoveryResultT tick() override {
     if (!coord->recovery_started.exchange(true)) {
       coord->all_exited_when_recovery_started.store(
           coord->planner_exited.load() && coord->smoother_exited.load() &&
           coord->controller_exited.load());
     }
-    ayanami::abstract::RecoveryCycleResult r;
-    r.status =
+    ayanami::RecoveryCycleData d;
+    d.status =
         coord->recovery_cycles.fetch_add(1) < coord->active_recovery_cycles
-            ? ayanami::abstract::RecoveryCycleResult::Status::RUNNING
-            : ayanami::abstract::RecoveryCycleResult::Status::SUCCESS;
-    return r;
+            ? ayanami::RecoveryStatus::RUNNING
+            : ayanami::RecoveryStatus::SUCCESS;
+    return ayanami::RecoveryResultT::success(std::move(d));
   }
   bool cancel() override { return true; }
  private:
@@ -477,7 +480,7 @@ TEST(NavigationServerBaseTest, plannerResultCallbackDoesNotScheduleRecovery) {
   // fallback, 不得 out-of-band 触发 recovery action。
   ayanami::actions::GoalResult<ayanami::actions::GetPathResult> gr;
   gr.status = ayanami::actions::GoalStatus::ABORTED;
-  gr.result.failure = ayanami::FailureCode::PathNotFound;
+  gr.result.error = ayanami::ErrorCode::PATH_NOT_FOUND;
   gr.result.session_id = server.currentSessionId();
   gr.result.plan_version = server.currentPlanVersion();
   ayanami::interfaces::NavigationCallbacks::on_get_path_result(gr);
@@ -566,20 +569,20 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   ASSERT_TRUE(rp.valid());
   ASSERT_TRUE(rp.ready());
   EXPECT_EQ(rp.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(rp.result().failure, ayanami::ErrorCode::RESOURCE_BUSY);
+  EXPECT_EQ(rp.result().error, ayanami::ErrorCode::RESOURCE_BUSY);
 
   auto re = server.requestExecution(egoal);
   ASSERT_TRUE(re.valid());
   ASSERT_TRUE(re.ready());
   EXPECT_EQ(re.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(re.result().failure, ayanami::ErrorCode::RESOURCE_BUSY);
+  EXPECT_EQ(re.result().error, ayanami::ErrorCode::RESOURCE_BUSY);
 
   // 二次 recovery 同样被拒绝。
   auto rr = server.requestRecovery(rgoal);
   ASSERT_TRUE(rr.valid());
   ASSERT_TRUE(rr.ready());
   EXPECT_EQ(rr.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(rr.result().failure, ayanami::FailureCode::RecoveryFailed);
+  EXPECT_EQ(rr.result().error, ayanami::ErrorCode::RECOVERY_FAILED);
 
   // 4. recovery 完成 -> 恢复接受普通请求。
   std::atomic<bool> recovery_done{false};

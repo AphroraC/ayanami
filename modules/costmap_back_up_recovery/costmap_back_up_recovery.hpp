@@ -7,9 +7,9 @@
 #include <Eigen/Geometry>
 
 #include <ayanami/costmap/core/costmap_recovery.hpp>
-#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/recovery_params.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
+#include <ayanami/types.hpp>
 
 namespace ayanami {
 namespace modules {
@@ -17,32 +17,27 @@ namespace modules {
 /**
  * @brief 后退恢复模块 (spec §6.6 costmap_back_up_recovery)。
  *
- * 纯 C++ (零 ROS): 周期驱动接口 (start/onCycleUpdate)。每周期返回负向线速度
+ * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回负向线速度
  * 建议 (vx = -max_v), 由 RecoveryExecution 作为唯一发布者按周期发布并终态
- * 补零; 插件不自行 sleep、不直接调 NavigationCallbacks。碰撞检测用接收的
- * 不可变 CostmapSnapshot (global grid) 机器人附近 cell >= 253 →
- * FAILED(RecoveryFailed), message 含 "collision detected"。
- * 不持有 context / wrapper / 可变 grid。
+ * 补零; 插件不自行 sleep、不直接调 NavigationCallbacks。碰撞检测用地图模块
+ * 加锁读的 global grid 机器人附近 cell >= 253 → FAILED(RecoveryFailed),
+ * message 含 "collision detected"。不持有 context / wrapper / 可变 grid。
+ * 参数统一从 PluginContext.config (config_recovery 指向的本模块 json) 读取。
  */
 class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
-  using ayanami::abstract::AbstractRecovery::tick;
-  using ayanami::costmap::CostmapRecovery::runRecovery;
-  CostmapBackUpRecovery();
-  // Ruling #3: 基类 AbstractRecovery 无虚析构, 派生层补裸 virtual ~。
+  CostmapBackUpRecovery() = default;
+  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapBackUpRecovery() = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override;
-
-  FailureCode runRecovery(std::string& message) override;
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override;
 
   void start() override;
   void setBehaviorParams(
       const ayanami::RecoveryBehaviorParams& params) override;
-  ayanami::abstract::RecoveryCycleResult tick(
-      std::string& message) override;
-  void end() override;
+  RecoveryResultT tick() override;
+  void finish() override {}
 
   bool cancel() override;
 

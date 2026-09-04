@@ -12,6 +12,7 @@
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -25,7 +26,9 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::PlannerResultT;
+using ayanami::RecoveryResultT;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::actions::RecoveryGoal;
@@ -33,12 +36,11 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 // 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel() 立即释放使其
-// 快速返回。被取消时返回 FailureCode::PathNotFound, 执行层经 cancel
-// 置 CANCELED (failure 保留插件返回码)。
+// 快速返回。被取消时返回成功路径, 执行层经 cancel_requested 判 CANCELED。
 class SlowPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path&,
-                       double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
+                          double) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -47,10 +49,9 @@ public:
     std::unique_lock<std::mutex> lock(release_mutex);
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
-    if (canceled.exchange(false)) {
-      return FailureCode::PathNotFound;
-    }
-    return FailureCode::None;
+    (void)canceled.exchange(false);
+    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    return PlannerResultT::success(Path{});
   }
 
   bool cancel() override {
@@ -67,10 +68,10 @@ public:
   std::condition_variable release;
 };
 
-// 慢 recovery: runRecovery 阻塞最多 200ms; cancel() 立即释放返回 CANCELED 码。
+// 慢 recovery: tick() 首周期阻塞最多 200ms; cancel() 立即释放返回取消终态。
 class SlowRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  FailureCode runRecovery(std::string&) override {
+  RecoveryResultT tick() override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -80,9 +81,10 @@ public:
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
     if (canceled.exchange(false)) {
-      return FailureCode::Canceled;
+      return RecoveryResultT::failure(ErrorCode::CANCELED, "canceled");
     }
-    return FailureCode::None;
+    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+                                    "unexpected completion");
   }
 
   bool cancel() override {
@@ -143,8 +145,8 @@ TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
   ASSERT_TRUE(task.cancel());
   ASSERT_TRUE(readyWithin(task, 100));
   EXPECT_EQ(task.status(), GoalStatus::CANCELED);
-  // failure 是插件返回码, finish 与插件线程存在竞态 (cancel 通知到插件线程
-  // 落地 failure 之间 finish 已读); 稳定契约为 status==CANCELED。
+  // 失败码由插件返回时机决定, finish 与插件线程存在竞态; 稳定契约为
+  // status==CANCELED。
 }
 
 TEST(CancelResponsiveness, cancelDuringRecoveryReadyWithinBudget) {

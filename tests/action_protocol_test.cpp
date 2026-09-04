@@ -13,6 +13,7 @@
 #include <ayanami/abstract/components/planner_action.hpp>
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -27,7 +28,8 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::PlannerResultT;
 using ayanami::actions::GetPathFeedback;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GetPathResult;
@@ -50,13 +52,13 @@ bool waitReady(Task& t, int max_ms = 3000) {
 // 即时成功 planner: 填 path, 验 SUCCEEDED + path 非空。
 class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path& plan,
-                       double& cost, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
+                          double) override {
     calls++;
+    Path plan;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
-    cost = 1.0;
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
@@ -65,8 +67,8 @@ public:
 // 慢速成功 planner: 阻塞到 release() 才填 path (观察 ACTIVE 中间态用)。
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped& start, const PoseStamped& goal, double,
-                       Path& plan, double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -76,9 +78,10 @@ public:
     release_cv.wait_for(lock, std::chrono::seconds(2),
                      [this] { return release_flag.load(); });
     release_flag.store(false);
+    Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
   bool cancel() override { return true; }
   void release() {
@@ -96,8 +99,8 @@ public:
 // 抛异常 planner: PlannerExecution 捕获 → INTERNAL_ERROR → ABORTED 映射。
 class ThrowingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double, Path&,
-                       double&, std::string&) override {
+  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
+                          double) override {
     throw std::runtime_error("planner internal error");
   }
   bool cancel() override { return true; }
@@ -143,7 +146,7 @@ TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
 
   // → SUCCEEDED
   GetPathResult result;
-  result.failure = FailureCode::None;
+  result.error = ErrorCode::NONE;
   EXPECT_TRUE(
       server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, result));
   ASSERT_TRUE(waitReady(task));
@@ -158,11 +161,11 @@ TEST(ActionProtocol, lifecycleActiveAborted) {
   ASSERT_TRUE(server.setActive(task.goal_id()));
 
   GetPathResult result;
-  result.failure = FailureCode::PathNotFound;
+  result.error = ErrorCode::PATH_NOT_FOUND;
   EXPECT_TRUE(server.publishResult(task.goal_id(), GoalStatus::ABORTED, result));
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), GoalStatus::ABORTED);
-  EXPECT_EQ(task.result().failure, FailureCode::PathNotFound);
+  EXPECT_EQ(task.result().error, ErrorCode::PATH_NOT_FOUND);
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
 
@@ -173,7 +176,7 @@ TEST(ActionProtocol, lifecycleActiveCanceled) {
   ASSERT_TRUE(server.setActive(task.goal_id()));
 
   GetPathResult result;
-  result.failure = FailureCode::None;
+  result.error = ErrorCode::NONE;
   EXPECT_TRUE(
       server.publishResult(task.goal_id(), GoalStatus::CANCELED, result));
   ASSERT_TRUE(waitReady(task));
@@ -187,7 +190,7 @@ TEST(ActionProtocol, terminalIsAbsorbingRejectsFurtherTransitions) {
   ASSERT_TRUE(task.valid());
   ASSERT_TRUE(server.setActive(task.goal_id()));
   GetPathResult result;
-  result.failure = FailureCode::None;
+  result.error = ErrorCode::NONE;
   ASSERT_TRUE(
       server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, result));
   ASSERT_TRUE(waitReady(task));
@@ -206,7 +209,7 @@ TEST(ActionProtocol, terminalIsAbsorbingRejectsFurtherTransitions) {
 TEST(ActionProtocol, unknownGoalRejectsEveryOperation) {
   Server server;
   GetPathResult result;
-  result.failure = FailureCode::None;
+  result.error = ErrorCode::NONE;
   EXPECT_FALSE(server.setActive(9999));
   EXPECT_FALSE(server.setExecuting(9999));
   EXPECT_FALSE(server.publishResult(9999, GoalStatus::SUCCEEDED, result));

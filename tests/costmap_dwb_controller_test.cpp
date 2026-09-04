@@ -31,6 +31,7 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/utility/config.hpp>
+#include <ayanami/types.hpp>
 
 #include <costmap_dwb_controller/costmap_dwb_controller.hpp>
 #include <costmap_dwb_controller/costmap_queue/map_based_queue.hpp>
@@ -397,7 +398,9 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   ctx->setFrames("map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
-  ASSERT_NO_THROW(planner.initialize("dwb_local", ctx->getSharedConstPtr()));
+  ASSERT_NO_THROW(planner.configure(
+      ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
+      ctx->getSharedConstPtr()));
 
   // 高保真执行路径: 首次 compute 之前先 setPlan (critics 尚未绑定 costmap)。
   ayanami::nav_msgs::Path path;
@@ -413,12 +416,11 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "odom", Eigen::Isometry3d::Identity());
-  ayanami::geometry_msgs::TwistStamped vel, cmd;
-  std::string message;
-  const auto failure =
-      planner.computeVelocityCommands(pose, vel, cmd, message);
+  ayanami::geometry_msgs::TwistStamped vel;
+  const auto result = planner.computeVelocityCommand(pose, vel);
   // pose 帧 (odom) ≠ local 帧 (map) 且无 TF → 受控 TransformUnavailable, 不是内部错误/崩。
-  EXPECT_EQ(failure, ayanami::FailureCode::TransformUnavailable);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error, ayanami::ErrorCode::TRANSFORM_UNAVAILABLE);
 }
 
 TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
@@ -436,18 +438,19 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
   ctx->setFrames("map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
-  EXPECT_NO_THROW(planner.initialize("dwb_local", ctx->getSharedConstPtr()));
+  EXPECT_NO_THROW(planner.configure(
+      ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
+      ctx->getSharedConstPtr()));
 
   // compute 经 lockLocal() 绑定当前 grid → 打分路径 (受控失败而非崩)。
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "map", Eigen::Isometry3d::Identity());
-  ayanami::geometry_msgs::TwistStamped vel, cmd;
-  std::string message;
-  const auto failure =
-      planner.computeVelocityCommands(pose, vel, cmd, message);
+  ayanami::geometry_msgs::TwistStamped vel;
+  const auto result = planner.computeVelocityCommand(pose, vel);
   // 无 plan → transformGlobalPlan 抛 PlannerException → NoValidCommand (受控)。
-  EXPECT_EQ(failure, ayanami::FailureCode::NoValidCommand);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error, ayanami::ErrorCode::NO_VALID_COMMAND);
 }
 
 }  // namespace

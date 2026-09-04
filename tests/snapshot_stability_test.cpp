@@ -27,10 +27,12 @@
 #include <ayanami/costmap/components/costmap_smoother_execution.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
+#include <ayanami/utility/config.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::nav_msgs::Path;
 
@@ -58,14 +60,12 @@ class Gate {
 // (与写者获取 unique 锁的时间戳比较, 证明写者阻塞到读者释放)。
 class SlowSmoother : public ayanami::costmap::CostmapSmoother {
  public:
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
+  void configure(const ayanami::PluginContext& /*context*/,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
     this->map = std::move(map);
   }
 
-  FailureCode smoothPath(const Path& path, Path& out, double, bool,
-                         std::string&) override {
-    out = path;
+  SmootherResultT smoothPath(Path& path, double, bool) override {
     ++calls;
     {
       const auto view = map->lockGlobal();
@@ -84,7 +84,7 @@ class SlowSmoother : public ayanami::costmap::CostmapSmoother {
     }
     reader_released.store(
         std::chrono::steady_clock::now().time_since_epoch().count());
-    return FailureCode::None;
+    return SmootherResultT::success(std::move(path));
   }
 
   bool cancel() override { return true; }
@@ -134,7 +134,8 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
 
   auto smoother = std::make_shared<SlowSmoother>();
   smoother->hold_duration = std::chrono::milliseconds(200);
-  smoother->initialize("test_smoother", ctx->getSharedConstPtr());
+  smoother->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+                      ctx->getSharedConstPtr());
   ayanami::costmap::CostmapSmootherExecution exec("test_smoother", smoother,
                                                   ctx);
 
@@ -182,7 +183,8 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
 
   auto smoother = std::make_shared<SlowSmoother>();
   smoother->hold_duration = std::chrono::milliseconds(1);
-  smoother->initialize("test_smoother", ctx->getSharedConstPtr());
+  smoother->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+                      ctx->getSharedConstPtr());
   ayanami::costmap::CostmapSmootherExecution exec("test_smoother", smoother,
                                                   ctx);
 

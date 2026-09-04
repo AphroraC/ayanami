@@ -33,6 +33,7 @@
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <ayanami/utility/config.hpp>
@@ -52,7 +53,9 @@
 #include <vector>
 
 using namespace ayanami::behavior_tree;
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
 using ayanami::FailureContext;
 using ayanami::FailureStage;
 using ayanami::actions::ExePathGoal;
@@ -184,7 +187,7 @@ class MockNavServer : public NavigationServerBase {
     last_path_goal = goal;
     if (path_sync) {
       GetPathResult r;
-      r.failure = path_failure;
+      r.error = path_failure;
       r.path = path_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -199,7 +202,7 @@ class MockNavServer : public NavigationServerBase {
     last_smooth_goal = goal;
     if (smooth_sync) {
       SmoothPathResult r;
-      r.failure = smooth_failure;
+      r.error = smooth_failure;
       r.smoothed_path = smooth_result;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -215,7 +218,7 @@ class MockNavServer : public NavigationServerBase {
     last_exe_goal_id = task.goal_id();
     if (exe_sync) {
       ExePathResult r;
-      r.failure = exe_failure;
+      r.error = exe_failure;
       r.reached = exe_reached;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
@@ -225,10 +228,10 @@ class MockNavServer : public NavigationServerBase {
   }
 
   /// @brief 手动发布 ExePath 结果 (async 模式下完成在飞任务, 供竞态测试)。
-  void publishExeResult(FailureCode failure, bool reached,
+  void publishExeResult(ErrorCode error, bool reached,
                         uint64_t plan_version) {
     ExePathResult r;
-    r.failure = failure;
+    r.error = error;
     r.reached = reached;
     r.session_id = currentSessionId();
     r.plan_version = plan_version;
@@ -240,7 +243,7 @@ class MockNavServer : public NavigationServerBase {
     last_recovery_goal = goal;
     if (recovery_sync) {
       RecoveryResult r;
-      r.failure = recovery_failure;
+      r.error = recovery_failure;
       r.session_id = goal.session_id;
       r.plan_version = goal.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
@@ -258,20 +261,20 @@ class MockNavServer : public NavigationServerBase {
   int exe_requests{0};
 
   bool path_sync = true;
-  FailureCode path_failure = FailureCode::None;
+  ErrorCode path_failure = ErrorCode::NONE;
   Path path_result;
   GetPathGoal last_path_goal;
 
   bool smooth_sync = true;
-  FailureCode smooth_failure = FailureCode::None;
+  ErrorCode smooth_failure = ErrorCode::NONE;
   Path smooth_result;
   SmoothPathGoal last_smooth_goal;
 
   bool exe_sync = true;
-  FailureCode exe_failure = FailureCode::None;
+  ErrorCode exe_failure = ErrorCode::NONE;
   RecoveryGoal last_recovery_goal;
   bool recovery_sync = true;
-  FailureCode recovery_failure = FailureCode::None;
+  ErrorCode recovery_failure = ErrorCode::NONE;
   bool exe_reached = true;
   ExePathGoal last_exe_goal;
   uint64_t last_exe_goal_id{0};
@@ -348,24 +351,27 @@ class AlwaysTrueProgressChecker
 
 class DispatchServer : public NavigationServerBase {
  public:
-  bool initializePlannerPlugin(const std::string& name,
-                               ayanami::abstract::AbstractPlanner::Ptr p) override {
+  bool initializePlannerPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractPlanner::Ptr p) override {
     init_planners.push_back(name);
     return p != nullptr;
   }
-  bool initializeSmootherPlugin(const std::string& name,
-                                ayanami::abstract::AbstractSmoother::Ptr p) override {
+  bool initializeSmootherPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractSmoother::Ptr p) override {
     init_smoothers.push_back(name);
     return p != nullptr;
   }
   bool initializeControllerPlugin(
-      const std::string& name,
+      const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractController::Ptr p) override {
     init_controllers.push_back(name);
     return p != nullptr;
   }
-  bool initializeRecoveryPlugin(const std::string& name,
-                                ayanami::abstract::AbstractRecovery::Ptr p) override {
+  bool initializeRecoveryPlugin(
+      const std::string& name, const ayanami::Config& /*module_config*/,
+      ayanami::abstract::AbstractRecovery::Ptr p) override {
     init_recoveries.push_back(name);
     return p != nullptr;
   }
@@ -440,10 +446,12 @@ std::filesystem::path makeDispatchConfigDir() {
 // 永不到达 + 持续输出速度的控制器 (goal_checker 可触发式到达)。
 class LoopingController : public ayanami::abstract::AbstractController {
  public:
-  FailureCode computeVelocityCommands(const PoseStamped&, const TwistStamped&,
-                                      TwistStamped& cmd_vel, std::string&) override {
-    cmd_vel.twist.linear.x() = 0.3;
-    return FailureCode::None;
+  ControllerResultT computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&) override {
+    ControllerCommand cmd;
+    cmd.velocity = TwistStamped{};
+    cmd.velocity.twist.linear.x() = 0.3;
+    return ControllerResultT::success(std::move(cmd));
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
@@ -571,7 +579,7 @@ TEST(SessionStateDispatchTest, pilotAndServerShareSingleSessionState) {
 TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   auto server = std::make_shared<MockNavServer>();
   server->path_sync = true;
-  server->path_failure = FailureCode::PathNotFound;
+  server->path_failure = ErrorCode::PATH_NOT_FOUND;
 
   auto bb = BT::Blackboard::create();
   setNavServer(bb, server);
@@ -593,7 +601,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   FailureContext ctx;
   ASSERT_TRUE(bb->get<FailureContext>(k_failure_context, ctx));
   EXPECT_EQ(ctx.stage, FailureStage::Planner);
-  EXPECT_EQ(ctx.code, FailureCode::PathNotFound);
+  EXPECT_EQ(ctx.code, ErrorCode::PATH_NOT_FOUND);
   EXPECT_EQ(ctx.plugin_id, "planner");
   EXPECT_EQ(ctx.session_id, server->currentSessionId());
   EXPECT_EQ(ctx.plan_version, server->currentPlanVersion());
@@ -611,7 +619,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   EXPECT_EQ(server->last_recovery_goal.recovery_id, "spin");
   EXPECT_EQ(server->last_recovery_goal.cause.stage, FailureStage::Planner);
   EXPECT_EQ(server->last_recovery_goal.cause.code,
-            FailureCode::PathNotFound);
+            ErrorCode::PATH_NOT_FOUND);
   EXPECT_EQ(server->last_recovery_goal.cause.plugin_id, "planner");
 }
 
@@ -642,7 +650,7 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   // A revised goal clears the previous failure context without changing session.
   FailureContext bogus;
   bogus.stage = FailureStage::Controller;
-  bogus.code = FailureCode::Timeout;
+  bogus.code = ErrorCode::TIMEOUT;
   bogus.plugin_id = "controller_a";
   bb->set<FailureContext>(k_failure_context, bogus);
 
@@ -655,7 +663,7 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   FailureContext reset;
   ASSERT_TRUE(bb->get<FailureContext>(k_failure_context, reset));
   EXPECT_EQ(reset.stage, FailureStage::Unknown);
-  EXPECT_EQ(reset.code, FailureCode::None);
+  EXPECT_EQ(reset.code, ErrorCode::NONE);
   EXPECT_TRUE(reset.plugin_id.empty());
   EXPECT_TRUE(reset.message.empty());
 }
@@ -797,7 +805,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
     EXPECT_EQ(task.status(), GoalStatus::ABORTED);
-    EXPECT_EQ(task.result().failure, FailureCode::InvalidInput);
+    EXPECT_EQ(task.result().error, ErrorCode::INVALID_INPUT);
   };
   {
     GetPathGoal goal;
@@ -813,7 +821,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
     EXPECT_EQ(task.status(), GoalStatus::ABORTED);
-    EXPECT_EQ(task.result().failure, FailureCode::InvalidInput);
+    EXPECT_EQ(task.result().error, ErrorCode::INVALID_INPUT);
   }
   {
     ExePathGoal goal;
@@ -823,7 +831,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
     EXPECT_EQ(task.status(), GoalStatus::ABORTED);
-    EXPECT_EQ(task.result().failure, FailureCode::InvalidInput);
+    EXPECT_EQ(task.result().error, ErrorCode::INVALID_INPUT);
   }
   {
     RecoveryGoal goal;
@@ -832,7 +840,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
     EXPECT_EQ(task.status(), GoalStatus::ABORTED);
-    EXPECT_EQ(task.result().failure, FailureCode::InvalidInput);
+    EXPECT_EQ(task.result().error, ErrorCode::INVALID_INPUT);
   }
 
   // 请求期不重新读配置: 删除模块 json 后请求仍按已装载配置分派成功
@@ -925,9 +933,9 @@ TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) 
   ASSERT_TRUE(waitReady(t1));
   ASSERT_TRUE(waitReady(t2));
   // 两个任务都以 CANCELED 收尾。
-  EXPECT_EQ(t1.result().failure, FailureCode::Canceled);
+  EXPECT_EQ(t1.result().error, ErrorCode::CANCELED);
   EXPECT_EQ(t2.status(), GoalStatus::CANCELED);
-  EXPECT_EQ(t2.result().failure, FailureCode::Canceled);
+  EXPECT_EQ(t2.result().error, ErrorCode::CANCELED);
 }
 #endif
 
@@ -958,7 +966,7 @@ TEST(SessionStateDispatchTest, followPathNodeUpdateMissProcessesCompletedSuccess
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
   // 任务以"已到达"成功完成 (旧 applied 版本 0, 当前版本 1) → 重查 → SUCCESS。
-  server->publishExeResult(FailureCode::None, /*reached=*/true, /*plan_version=*/0u);
+  server->publishExeResult(ErrorCode::NONE, /*reached=*/true, /*plan_version=*/0u);
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
   for (int i = 0; i < 20 && status != BT::NodeStatus::SUCCESS; ++i) {
     status = tree.tickExactlyOnce();

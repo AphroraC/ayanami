@@ -2,6 +2,7 @@
 
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <atomic>
 #include <memory>
@@ -9,7 +10,8 @@
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::RecoveryResultT;
 
 class FakeRecovery : public ayanami::abstract::AbstractRecovery {
 public:
@@ -17,7 +19,9 @@ public:
   std::string non_pod_member{"some state longer than SSO"};
 
   ~FakeRecovery() override { ++dtor_count; }
-  FailureCode runRecovery(std::string&) override { return FailureCode::None; }
+  RecoveryResultT tick() override {
+    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED, "noop");
+  }
   bool cancel() override { return true; }
 };
 std::atomic<int> FakeRecovery::dtor_count{0};

@@ -2,22 +2,22 @@
 
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
 using ayanami::nav_msgs::Path;
+using ayanami::SmootherResultT;
 
 class SoCostmapSmoother : public ayanami::costmap::CostmapSmoother {
  public:
-  void initialize(const std::string& /*name*/,
-                  ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
-  FailureCode smoothPath(const Path& in, Path& out, double /*max_duration*/,
-      bool /*check_for_collision*/, std::string& /*message*/) override {
-    out.header.frame_id = "map";
-    out.poses = in.poses;
-    return FailureCode::None;
+  void configure(const ayanami::PluginContext& /*context*/,
+                 ayanami::costmap::CostmapContext::ConstPtr /*map*/) override {}
+  SmootherResultT smoothPath(Path& path, double /*max_duration*/,
+                             bool /*check_for_collision*/) override {
+    path.header.frame_id = "map";
+    return SmootherResultT::success(std::move(path));
   }
   bool cancel() override { return true; }
 };

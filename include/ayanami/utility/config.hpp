@@ -32,10 +32,10 @@ public:
   explicit Config(const std::string& config_filename);
   virtual ~Config();
 
-  Config(const Config&) = delete;
-  Config& operator=(const Config&) = delete;
-
-  /// @brief 可移动 (PluginContext 按值携带配置; GlobalConfig 单例不可移动)。
+  /// 可拷贝可移动 (PluginContext 按值携带配置; std::any 持有的 json 深拷贝)。
+  /// GlobalConfig 子类构造私有, 单例不可拷贝/移动不受影响。
+  Config(const Config&) = default;
+  Config& operator=(const Config&) = default;
   Config(Config&&) = default;
   Config& operator=(Config&&) = default;
 

@@ -13,25 +13,16 @@
 namespace ayanami {
 namespace modules {
 
-CostmapWaitRecovery::CostmapWaitRecovery() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_wait_recovery → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_wait_recovery"));
-    param.wait_duration =
-        file.param<double>("recovery", "wait_duration", param.wait_duration);
-    param.sim_cycle_dt =
-        file.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
-}
 
-void CostmapWaitRecovery::initialize(const std::string& name,
-                                     ayanami::costmap::CostmapContext::ConstPtr map) {
-  (void)name;
+void CostmapWaitRecovery::configure(
+    const ayanami::PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
   (void)map;  // wait 不读图。
+  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  param.wait_duration = context.config.param<double>(
+      "recovery", "wait_duration", param.wait_duration);
+  param.sim_cycle_dt =
+      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
 }
 
 void CostmapWaitRecovery::setBehaviorParams(

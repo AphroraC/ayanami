@@ -31,12 +31,15 @@
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <shared_mutex>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
@@ -44,21 +47,23 @@ using ayanami::nav_msgs::Path;
 // 加锁读视图 FakeController: 记录周期数 (写者不被读者饿死的并发验证)。
 class SnapshotController : public ayanami::costmap::CostmapController {
  public:
-  void initialize(const std::string&,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override {
+  void configure(const ayanami::PluginContext&,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override {
     map_ = std::move(map);
   }
-  FailureCode computeVelocityCommands(
-      const PoseStamped&, const TwistStamped&, TwistStamped& cmd_vel,
-      std::string&) override {
+  ControllerResultT computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&) override {
     ++cycles;
     auto view = map_->lockLocal();
     if (!view.valid()) {
       ++snapshot_missing;
-      return FailureCode::MapUnavailable;
+      return ControllerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
+                                        "no local view");
     }
-    cmd_vel.twist.linear.x() = 0.5;
-    return FailureCode::None;
+    ControllerCommand cmd;
+    cmd.velocity = TwistStamped{};
+    cmd.velocity.twist.linear.x() = 0.5;
+    return ControllerResultT::success(std::move(cmd));
   }
 
   std::atomic<int> cycles{0};
@@ -108,7 +113,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   ctx->setLocalCostmap(local);
 
   auto controller = std::make_shared<SnapshotController>();
-  controller->initialize("test_controller", ctx);
+  controller->configure(ayanami::PluginContext{"test_controller", ayanami::Config("")}, ctx);
   ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
                                                     ctx);
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());

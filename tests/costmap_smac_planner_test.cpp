@@ -1,10 +1,10 @@
 // Task 21: modules/costmap_smac_planner (CostmapPlanner 族 A* 全局路径规划)。
 //
 // 覆盖:
-// - makePlan 全 free 地图 start/goal → None, path 非空, cost>0, 起点≈start, 终点≈goal
-// - goal 在 obstacle → nearestValidGoal → None (tolerance 覆盖) / GoalInvalid (无 tolerance)
-// - start 在 obstacle / 越界 → FailureCode::StartInvalid
-// - cancel() 中途打断 → FailureCode::Canceled
+// - makePlan 全 free 地图 start/goal → ok, path 非空, 起点≈start, 终点≈goal
+// - goal 在 obstacle → nearestValidGoal → ok (tolerance 覆盖) / GOAL_INVALID (无 tolerance)
+// - start 在 obstacle / 越界 → ErrorCode::START_INVALID
+// - cancel() 中途打断 → ErrorCode::CANCELED
 // - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 
 #include <gtest/gtest.h>
@@ -27,12 +27,14 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <costmap_smac_planner/costmap_smac_planner.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::PlannerResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::modules::CostmapSmacPlanner;
 
@@ -71,7 +73,8 @@ std::shared_ptr<CostmapContext> makeContext(
 std::shared_ptr<CostmapSmacPlanner> makePlanner(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->initialize("test_smac", makeContext(wrapper)->getSharedConstPtr());
+  planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
+                     makeContext(wrapper)->getSharedConstPtr());
   return planner;
 }
 
@@ -99,14 +102,11 @@ TEST(CostmapSmacPlannerTest, makePlanSuccessOnFreeMap) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(17, 17);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  const FailureCode failure = planner->makePlan(start, goal, 0.1, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
-  ASSERT_FALSE(plan.poses.empty());
-  EXPECT_GT(cost, 0.0);
+  ASSERT_TRUE(result.ok) << result.message;
+  ASSERT_FALSE(result.data.poses.empty());
+  const ayanami::nav_msgs::Path& plan = result.data;
   EXPECT_NEAR(plan.poses.front().pose.position.x(), start.pose.position.x(), 1e-6);
   EXPECT_NEAR(plan.poses.front().pose.position.y(), start.pose.position.y(), 1e-6);
   EXPECT_NEAR(plan.poses.back().pose.position.x(), goal.pose.position.x(), 1e-6);
@@ -126,14 +126,10 @@ TEST(CostmapSmacPlannerTest, makePlanRoutesAroundObstacle) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(17, 17);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  const FailureCode failure = planner->makePlan(start, goal, 0.1, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
-  ASSERT_FALSE(plan.poses.empty());
-  EXPECT_GT(cost, 0.0);
+  ASSERT_TRUE(result.ok) << result.message;
+  ASSERT_FALSE(result.data.poses.empty());
 }
 
 // ---------- goal 在 obstacle (nearestValidGoal) ----------
@@ -151,15 +147,10 @@ TEST(CostmapSmacPlannerTest, goalInObstacleWithToleranceFindsNearest) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(10, 10);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  // tolerance=1.0m → 2 cells, 覆盖块边缘附近 free cell (8,7) 等。
-  const FailureCode failure = planner->makePlan(start, goal, 1.0, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 1.0);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
-  ASSERT_FALSE(plan.poses.empty());
-  EXPECT_GT(cost, 0.0);
+  ASSERT_TRUE(result.ok) << result.message;
+  ASSERT_FALSE(result.data.poses.empty());
 }
 
 TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
@@ -174,12 +165,10 @@ TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(10, 10);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  const FailureCode failure = planner->makePlan(start, goal, 0.0, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 0.0);
 
-  EXPECT_EQ(failure, FailureCode::GoalInvalid);
+  ASSERT_FALSE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::GOAL_INVALID);
 }
 
 // ---------- start 异常 ----------
@@ -199,10 +188,11 @@ TEST(CostmapSmacPlannerTest, startInObstacleReturnsErrorSegment) {
   ayanami::nav_msgs::Path plan;
   double cost = 0.0;
   std::string message;
-  const FailureCode failure = planner->makePlan(start, goal, 0.1, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
 
-  EXPECT_EQ(failure, FailureCode::StartInvalid);
-  EXPECT_TRUE(plan.poses.empty());
+  ASSERT_FALSE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::START_INVALID);
+  EXPECT_TRUE(result.data.poses.empty());
 }
 
 TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
@@ -214,10 +204,11 @@ TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
   ayanami::nav_msgs::Path plan;
   double cost = 0.0;
   std::string message;
-  const FailureCode failure = planner->makePlan(start, goal, 0.1, plan, cost, message);
+  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
 
-  EXPECT_EQ(failure, FailureCode::StartInvalid);
-  EXPECT_TRUE(plan.poses.empty());
+  ASSERT_FALSE(result.ok);
+  EXPECT_EQ(result.error, ErrorCode::START_INVALID);
+  EXPECT_TRUE(result.data.poses.empty());
 }
 
 // ---------- cancel() 中途打断 ----------
@@ -241,14 +232,11 @@ TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
 
   auto start = cellCenter(5, 5, 0.05);
   auto goal = cellCenter(400, 400, 0.05);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-
   std::atomic<bool> done{false};
-  std::atomic<FailureCode> failure{FailureCode::None};
+  std::atomic<ErrorCode> error{ErrorCode::NONE};
   std::thread worker([&] {
-    failure.store(planner->makePlan(start, goal, 0.0, plan, cost, message));
+    const PlannerResultT result = planner->makePlan(start, goal, 0.0);
+    error.store(result.error);
     done.store(true);
   });
 
@@ -257,7 +245,7 @@ TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
   EXPECT_TRUE(planner->cancel());
   worker.join();
   EXPECT_TRUE(done.load());
-  EXPECT_EQ(failure.load(), FailureCode::Canceled);
+  EXPECT_EQ(error.load(), ErrorCode::CANCELED);
 }
 
 // ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------

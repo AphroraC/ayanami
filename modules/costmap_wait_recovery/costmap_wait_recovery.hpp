@@ -21,15 +21,12 @@ namespace modules {
  */
 class CostmapWaitRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
-  using ayanami::abstract::AbstractRecovery::tick;
   CostmapWaitRecovery() = default;
-  // Ruling #3: 基类 AbstractRecovery 无虚析构, 派生层补裸 virtual ~。
+  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapWaitRecovery() = default;
 
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override;
-
-
+  void configure(const ayanami::PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override;
 
   void start() override;
   void setBehaviorParams(

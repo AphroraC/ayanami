@@ -12,7 +12,7 @@
 namespace ayanami {
 namespace actions {
 
-// 统一失败码: 四类 Result 都用 `failure` (FailureCode) 传达成败 (None=成功),
+// 统一失败码: 四类 Result 都用 `error` (ErrorCode) 传达成败 (NONE=成功),
 // message 仅诊断 (BT 不解析)。每个 Goal/Result 带 session_id / plan_version
 // 用于 BT 节点 onRunning 竞态校验。
 

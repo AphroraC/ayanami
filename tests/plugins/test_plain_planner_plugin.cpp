@@ -2,20 +2,21 @@
 
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
-using ayanami::FailureCode;
-using ayanami::nav_msgs::Path;
+using ayanami::PlannerResultT;
 
 class PlainPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  FailureCode makePlan(const PoseStamped& /*start*/, const PoseStamped& /*goal*/,
-                       double /*tolerance*/, Path& /*plan*/, double& /*cost*/,
-                       std::string& /*message*/) override {
-    return FailureCode::PathNotFound;
+  PlannerResultT makePlan(const PoseStamped& /*start*/,
+                          const PoseStamped& /*goal*/,
+                          double /*tolerance*/) override {
+    return PlannerResultT::failure(ayanami::ErrorCode::PATH_NOT_FOUND,
+                                   "no path found");
   }
   bool cancel() override { return true; }
 };

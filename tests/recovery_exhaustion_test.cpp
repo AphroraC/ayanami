@@ -22,6 +22,7 @@
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -38,7 +39,8 @@
 #include <vector>
 
 using namespace ayanami::behavior_tree;
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::RecoveryResultT;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::ExePathResult;
 using ayanami::actions::GetPathGoal;
@@ -70,13 +72,13 @@ Path makePath(std::size_t n) {
   return p;
 }
 
-// 恒失败 recovery: runRecovery 返回 INTERNAL_ERROR (300)。
+// 恒失败 recovery: tick() 返回 INTERNAL_ERROR 失败终态。
 class FailingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  FailureCode runRecovery(std::string& message) override {
+  RecoveryResultT tick() override {
     ++calls;
-    message = "Recovery failed";
-    return FailureCode::InternalError;
+    return RecoveryResultT::failure(ErrorCode::INTERNAL_ERROR,
+                                    "Recovery failed");
   }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
@@ -85,7 +87,7 @@ public:
 // ---- BT 层: 恒失败 Mock NavigationServer ----
 //
 // requestPath/requestSmoothing/requestExecution/requestRecovery 全部同步发布
-// ABORTED (failure 非 None), 模拟 planner 永远失败 + recovery 永远失败。
+// ABORTED (error 非 NONE), 模拟 planner 永远失败 + recovery 永远失败。
 // 记录每个 recovery id 的请求次数, 验证恢复链列表被完全遍历。
 class FailingNavServer : public ayanami::components::NavigationServerBase {
 public:
@@ -102,7 +104,7 @@ public:
     ++path_calls;
     auto task = path_server.acceptGoal(goal);
     GetPathResult r;
-    r.failure = FailureCode::PathNotFound;
+    r.error = ErrorCode::PATH_NOT_FOUND;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
     path_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
@@ -113,7 +115,7 @@ public:
       const SmoothPathGoal& goal) override {
     auto task = smooth_server.acceptGoal(goal);
     SmoothPathResult r;
-    r.failure = FailureCode::InvalidInput;
+    r.error = ErrorCode::INVALID_INPUT;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
     smooth_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
@@ -123,7 +125,7 @@ public:
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
     auto task = exe_server.acceptGoal(goal);
     ExePathResult r;
-    r.failure = FailureCode::NoValidCommand;
+    r.error = ErrorCode::NO_VALID_COMMAND;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
     exe_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
@@ -137,7 +139,7 @@ public:
     }
     auto task = recovery_server.acceptGoal(goal);
     RecoveryResult r;
-    r.failure = FailureCode::InternalError;
+    r.error = ErrorCode::INTERNAL_ERROR;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
     recovery_server.publishResult(task.goal_id(), GoalStatus::ABORTED, r);
@@ -245,8 +247,8 @@ TEST(RecoveryExhaustion, recoveryActionReportsFailure) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   ASSERT_TRUE(task.ready());
-  // 失败经 failure 传达 (统一失败码 InternalError)
-  EXPECT_EQ(task.result().failure, FailureCode::InternalError);
+  // 失败经 error 传达 (统一失败码 INTERNAL_ERROR)
+  EXPECT_EQ(task.result().error, ErrorCode::INTERNAL_ERROR);
   EXPECT_EQ(recovery->calls.load(), 1);
 }
 
@@ -263,7 +265,7 @@ TEST(RecoveryExhaustion, multipleRecoveryAttemptsAllFail) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     ASSERT_TRUE(task.ready());
-    EXPECT_EQ(task.result().failure, FailureCode::InternalError);
+    EXPECT_EQ(task.result().error, ErrorCode::INTERNAL_ERROR);
   }
   EXPECT_EQ(recovery->calls.load(), 3);
 }

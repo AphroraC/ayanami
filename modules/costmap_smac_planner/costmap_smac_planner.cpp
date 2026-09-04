@@ -189,7 +189,6 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
 
 }  // namespace
 
-CostmapSmacPlanner::CostmapSmacPlanner() = default;
 
 void CostmapSmacPlanner::configure(
     const PluginContext& context,

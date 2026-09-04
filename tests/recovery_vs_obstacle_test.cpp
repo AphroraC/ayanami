@@ -34,11 +34,13 @@
 #include <ayanami/costmap/core/costmap_command.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::RecoveryResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapContext;
@@ -175,7 +177,9 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
       ctx->getRobotFrame());
 
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->initialize("costmap_clear_costmap_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+                                        ayanami::Config("")},
+                 ctx->getSharedConstPtr());
   rec->setCommandPort(port);
 
   // 先经写者落障碍 (feed): 近处与远处都 LETHAL。
@@ -185,9 +189,9 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   EXPECT_EQ(cellCost(local, 15, 15), costmap_2d::LETHAL_OBSTACLE);
 
   // 恢复: 经命令端口提交 typed clear 命令 (仅经命令端口), 不清除远处障碍。
-  std::string message;
-  const FailureCode failure = rec->runRecovery(message);
-  EXPECT_EQ(failure, FailureCode::None) << message;
+  rec->start();
+  const RecoveryResultT outcome = rec->tick();
+  ASSERT_TRUE(outcome.ok) << outcome.message;
   EXPECT_EQ(port->submissions.load(), 1)
       << "clear 必须经命令端口提交给唯一写者执行";
 
@@ -218,7 +222,9 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
       ctx->getRobotFrame());
 
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->initialize("costmap_clear_costmap_recovery", ctx->getSharedConstPtr());
+  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+                                        ayanami::Config("")},
+                 ctx->getSharedConstPtr());
   rec->setCommandPort(port);
 
   constexpr int k_rounds = 16;
@@ -253,9 +259,11 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
     if (cellCost(local, 4, 4) != costmap_2d::LETHAL_OBSTACLE) {
       ++bad_reads;
     }
-    // 恢复: 经命令端口提交 typed clear → 唯一写者清回 FREE。
-    std::string message;
-    EXPECT_EQ(rec->runRecovery(message), FailureCode::None) << message;
+    // 恢复: 经命令端口提交 typed clear → 唯一写者清回 FREE (start 复位
+    // submitted, 每轮重新提交一次命令)。
+    rec->start();
+    const RecoveryResultT outcome = rec->tick();
+    ASSERT_TRUE(outcome.ok) << outcome.message;
     if (cellCost(local, 4, 4) != costmap_2d::FREE_SPACE) {
       ++bad_after_clear;
     }

@@ -333,7 +333,8 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
 // ---- 虚 initialize*Plugin: costmap 族注入 ----
 
 bool CostmapNavigationServer::initializePlannerPlugin(
-    const std::string& name, ayanami::abstract::AbstractPlanner::Ptr ptr) {
+    const std::string& name, const ayanami::Config& module_config,
+    ayanami::abstract::AbstractPlanner::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
         "CostmapNavigationServer::initializePlannerPlugin('{}'): costmap "
@@ -349,13 +350,14 @@ bool CostmapNavigationServer::initializePlannerPlugin(
         name);
     return false;
   }
-  cast->initialize(name, costmap_context->getSharedConstPtr());
-  cast->configure();
+  cast->configure(ayanami::PluginContext{name, module_config},
+                  costmap_context->getSharedConstPtr());
   return true;
 }
 
 bool CostmapNavigationServer::initializeSmootherPlugin(
-    const std::string& name, ayanami::abstract::AbstractSmoother::Ptr ptr) {
+    const std::string& name, const ayanami::Config& module_config,
+    ayanami::abstract::AbstractSmoother::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
         "CostmapNavigationServer::initializeSmootherPlugin('{}'): costmap "
@@ -371,13 +373,13 @@ bool CostmapNavigationServer::initializeSmootherPlugin(
         name);
     return false;
   }
-  cast->initialize(name, costmap_context->getSharedConstPtr());
-  cast->configure();
+  cast->configure(ayanami::PluginContext{name, module_config},
+                  costmap_context->getSharedConstPtr());
   return true;
 }
 
 bool CostmapNavigationServer::initializeControllerPlugin(
-    const std::string& name,
+    const std::string& name, const ayanami::Config& module_config,
     ayanami::abstract::AbstractController::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
@@ -396,13 +398,14 @@ bool CostmapNavigationServer::initializeControllerPlugin(
         name);
     return false;
   }
-  cast->initialize(name, costmap_context->getSharedConstPtr());
-  cast->configure();
+  cast->configure(ayanami::PluginContext{name, module_config},
+                  costmap_context->getSharedConstPtr());
   return true;
 }
 
 bool CostmapNavigationServer::initializeRecoveryPlugin(
-    const std::string& name, ayanami::abstract::AbstractRecovery::Ptr ptr) {
+    const std::string& name, const ayanami::Config& module_config,
+    ayanami::abstract::AbstractRecovery::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
         "CostmapNavigationServer::initializeRecoveryPlugin('{}'): costmap "
@@ -418,8 +421,8 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
         name);
     return false;
   }
-  cast->initialize(name, costmap_context->getSharedConstPtr());
-  cast->configure();
+  cast->configure(ayanami::PluginContext{name, module_config},
+                  costmap_context->getSharedConstPtr());
   // 地图变更仅经命令端口: 恢复插件拿到 port 后, 需要改图时提交 typed
   // 命令, 由本 server (唯一写者) 变更层并发布新 epoch。
   cast->setCommandPort(command_port);

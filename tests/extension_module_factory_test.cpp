@@ -35,6 +35,7 @@
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/actions.hpp>
+#include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 using namespace ayanami::behavior_tree;
@@ -112,7 +113,7 @@ class StubNavServer : public ayanami::components::NavigationServerBase {
       const ayanami::actions::GetPathGoal& goal) override {
     auto task = path_server.acceptGoal(goal);
     ayanami::actions::GetPathResult r;
-    r.failure = ayanami::FailureCode::None;
+    r.error = ayanami::ErrorCode::NONE;
     r.path.header.frame_id = "map";
     r.path.poses.push_back(pose(0.0, 0.0));
     r.path.poses.push_back(pose(1.0, 0.0));
@@ -127,7 +128,7 @@ class StubNavServer : public ayanami::components::NavigationServerBase {
   requestSmoothing(const ayanami::actions::SmoothPathGoal& goal) override {
     auto task = smooth_server.acceptGoal(goal);
     ayanami::actions::SmoothPathResult r;
-    r.failure = ayanami::FailureCode::None;
+    r.error = ayanami::ErrorCode::NONE;
     r.smoothed_path = goal.path;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
@@ -140,7 +141,7 @@ class StubNavServer : public ayanami::components::NavigationServerBase {
   requestExecution(const ayanami::actions::ExePathGoal& goal) override {
     auto task = exe_server.acceptGoal(goal);
     ayanami::actions::ExePathResult r;
-    r.failure = ayanami::FailureCode::None;
+    r.error = ayanami::ErrorCode::NONE;
     r.reached = true;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
@@ -153,7 +154,7 @@ class StubNavServer : public ayanami::components::NavigationServerBase {
   requestRecovery(const ayanami::actions::RecoveryGoal& goal) override {
     auto task = recovery_server.acceptGoal(goal);
     ayanami::actions::RecoveryResult r;
-    r.failure = ayanami::FailureCode::None;
+    r.error = ayanami::ErrorCode::NONE;
     r.session_id = goal.session_id;
     r.plan_version = goal.plan_version;
     recovery_server.publishResult(

@@ -23,10 +23,18 @@
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::ErrorCode;
+using ayanami::ControllerCommand;
+using ayanami::ControllerResultT;
+using ayanami::PlannerResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::RecoveryResultT;
+using ayanami::RecoveryStatus;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
@@ -51,9 +59,9 @@ std::shared_ptr<ayanami::costmap::CostmapContext> makeContext(
 // 阻塞直到被 cancel: 让执行停在 run 内, 便于观察 preRun/postRun 的激活状态。
 class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void initialize(const std::string&, CostmapContext::ConstPtr) override {}
-  FailureCode makePlan(const PoseStamped&, const PoseStamped&, double,
-                       Path& plan, double&, std::string&) override {
+  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
+                          double) override {
     calls++;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -61,11 +69,11 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
       release.wait_for(lock, std::chrono::milliseconds(2000),
                         [this] { return canceled.load(); });
     }
-    if (canceled.exchange(false)) {
-      return FailureCode::None;
-    }
+    // 被取消也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    (void)canceled.exchange(false);
+    ayanami::nav_msgs::Path plan;
     plan.poses.resize(2);
-    return FailureCode::None;
+    return PlannerResultT::success(std::move(plan));
   }
   bool cancel() override {
     canceled = true;
@@ -81,8 +89,8 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
 
 class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void initialize(const std::string&, CostmapContext::ConstPtr) override {}
-  FailureCode runRecovery(std::string&) override {
+  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  RecoveryResultT tick() override {
     calls++;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -90,7 +98,9 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
       release.wait_for(lock, std::chrono::milliseconds(2000),
                         [this] { return canceled.load(); });
     }
-    return FailureCode::None;
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
   bool cancel() override {
     canceled = true;
@@ -106,14 +116,14 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
 
 class TestController : public ayanami::costmap::CostmapController {
  public:
-  void initialize(const std::string&, CostmapContext::ConstPtr) override {}
-  FailureCode computeVelocityCommands(const PoseStamped&,
-                                      const TwistStamped&,
-                                      TwistStamped& cmd_vel,
-                                      std::string&) override {
+  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  ControllerResultT computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&) override {
     calls++;
-    cmd_vel.twist.linear.x() = 0.5;
-    return FailureCode::None;
+    ControllerCommand cmd;
+    cmd.velocity = TwistStamped{};
+    cmd.velocity.twist.linear.x() = 0.5;
+    return ControllerResultT::success(std::move(cmd));
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
@@ -147,9 +157,11 @@ class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 
 class TestRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void initialize(const std::string&, CostmapContext::ConstPtr) override {}
-  FailureCode runRecovery(std::string&) override {
-    return FailureCode::None;
+  void configure(const ayanami::PluginContext&, CostmapContext::ConstPtr) override {}
+  RecoveryResultT tick() override {
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
   bool cancel() override { return true; }
 };
@@ -288,7 +300,7 @@ TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   }
   EXPECT_EQ(exec.getState(),
             ayanami::components::ControllerExecution::NO_PROGRESS);
-  EXPECT_EQ(exec.getFailure(), FailureCode::NoProgress);
+  EXPECT_EQ(exec.getError(), ErrorCode::NO_PROGRESS);
   EXPECT_EQ(controller->calls, 0);
 
   exec.join();

@@ -31,12 +31,13 @@
 #include <ayanami/costmap/components/costmap_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 #include <costmap_savitzky_smoother/costmap_savitzky_smoother.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
 
-using ayanami::FailureCode;
+using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapContext;
 using ayanami::modules::CostmapSavitzkySmoother;
 using ayanami::nav_msgs::Path;
@@ -74,8 +75,9 @@ std::shared_ptr<CostmapContext> makeContext(
 std::shared_ptr<CostmapSavitzkySmoother> makeSmoother(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto smoother = std::make_shared<CostmapSavitzkySmoother>();
-  smoother->initialize(
-      "test_savitzky", makeContext(wrapper)->getSharedConstPtr());
+  smoother->configure(
+      ayanami::PluginContext{"test_savitzky", ayanami::Config("")},
+      makeContext(wrapper)->getSharedConstPtr());
   return smoother;
 }
 
@@ -131,12 +133,10 @@ TEST(CostmapSavitzkySmootherTest, smoothsLShapedPath) {
   auto smoother = makeSmoother(wrapper);
 
   const Path in = makeLPath();
-  Path out;
-  std::string message;
-  const FailureCode failure =
-      smoother->smoothPath(in, out, 10.0, false, message);
+  Path out = in;
+  const SmootherResultT result = smoother->smoothPath(out, 10.0, false);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
+  ASSERT_TRUE(result.ok) << result.message;
   EXPECT_EQ(out.poses.size(), in.poses.size());
   EXPECT_LT(pathLengthSum(out), pathLengthSum(in));
   // 两端点固定不动。
@@ -155,12 +155,10 @@ TEST(CostmapSavitzkySmootherTest, tinyMaxDurationReturnsSuccess) {
   auto smoother = makeSmoother(wrapper);
 
   const Path in = makeLPath();
-  Path out;
-  std::string message;
-  const FailureCode failure =
-      smoother->smoothPath(in, out, 0.001, false, message);
+  Path out = in;
+  const SmootherResultT result = smoother->smoothPath(out, 0.001, false);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
+  ASSERT_TRUE(result.ok) << result.message;
   EXPECT_GE(out.poses.size(), in.poses.size());
   EXPECT_FALSE(out.poses.empty());
 }
@@ -171,15 +169,13 @@ TEST(CostmapSavitzkySmootherTest, emptyPathReturnsSuccessWithEmptyOut) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
-  Path in;
-  Path out;
-  out.poses.push_back(makePose(1.0, 1.0));  // 先污染, 验证被覆盖
-  std::string message;
-  const FailureCode failure =
-      smoother->smoothPath(in, out, 10.0, false, message);
+  Path in;  // 空 path: 无可平滑窗口
+  const SmootherResultT result = smoother->smoothPath(in, 10.0, false);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
-  EXPECT_TRUE(out.poses.empty());
+  ASSERT_TRUE(result.ok) << result.message;
+  // in-place: 空 path 保持为空, 不发明新点。
+  EXPECT_TRUE(in.poses.empty());
+  EXPECT_TRUE(result.data.poses.empty());
 }
 
 TEST(CostmapSavitzkySmootherTest, shortPathReturnsSuccessWithSamePath) {
@@ -190,13 +186,11 @@ TEST(CostmapSavitzkySmootherTest, shortPathReturnsSuccessWithSamePath) {
   for (int i = 0; i < 3; ++i) {
     in.poses.push_back(makePose(static_cast<double>(i), 0.0));
   }
-  Path out;
-  std::string message;
-  const FailureCode failure =
-      smoother->smoothPath(in, out, 10.0, false, message);
+  const Path original = in;
+  const SmootherResultT result = smoother->smoothPath(in, 10.0, false);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
-  EXPECT_TRUE(posesEqual(out, in));
+  ASSERT_TRUE(result.ok) << result.message;
+  EXPECT_TRUE(posesEqual(in, original));
 }
 
 // ---------- 碰撞检查回滚 ----------
@@ -208,10 +202,8 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
   ASSERT_NE(cm, nullptr);
 
   const Path in = makeLPath();
-  Path smoothed;
-  std::string message;
-  ASSERT_EQ(smoother->smoothPath(in, smoothed, 10.0, false, message),
-            FailureCode::None);
+  Path smoothed = in;
+  ASSERT_TRUE(smoother->smoothPath(smoothed, 10.0, false).ok);
   ASSERT_FALSE(posesEqual(smoothed, in));  // 平滑确实移动了内部点
 
   // 找平滑后经过、但 original path 未经过的自由 cell, 置为 lethal。
@@ -253,15 +245,13 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
                                          costmap_2d::LETHAL_OBSTACLE);
   }
 
-  // 重平滑 + 碰撞检查 → 回滚到 original path (加锁直读含障碍)。
-  Path out;
-  message.clear();
-  const FailureCode failure =
-      smoother->smoothPath(in, out, 10.0, true, message);
+  // 重平滑 + 碰撞检查 → in-place 回滚到 original path (加锁直读含障碍)。
+  Path out = in;
+  const SmootherResultT result = smoother->smoothPath(out, 10.0, true);
 
-  EXPECT_EQ(failure, FailureCode::None) << message;
+  ASSERT_TRUE(result.ok) << result.message;
   EXPECT_TRUE(posesEqual(out, in));  // 回滚到 original
-  EXPECT_NE(message.find("collision"), std::string::npos);
+  EXPECT_NE(result.message.find("collision"), std::string::npos);
 }
 
 // ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------
