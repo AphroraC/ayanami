@@ -582,7 +582,7 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   ASSERT_TRUE(rr.valid());
   ASSERT_TRUE(rr.ready());
   EXPECT_EQ(rr.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(rr.result().error, ayanami::ErrorCode::RECOVERY_FAILED);
+  EXPECT_EQ(rr.result().error, ayanami::ErrorCode::RESOURCE_BUSY);
 
   // 4. recovery 完成 -> 恢复接受普通请求。
   std::atomic<bool> recovery_done{false};

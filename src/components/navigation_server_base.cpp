@@ -513,7 +513,7 @@ NavigationServerBase::requestRecovery(
   bool expected = false;
   if (!recovery_exclusive.compare_exchange_strong(expected, true)) {
     return rejectedHandle<ayanami::actions::RecoveryResult>(
-        ErrorCode::RECOVERY_FAILED, "another recovery is active",
+        ErrorCode::RESOURCE_BUSY, "another recovery is active",
         currentSessionId(), currentPlanVersion());
   }
   auto iter = recovery_actions.find(goal.recovery_id);

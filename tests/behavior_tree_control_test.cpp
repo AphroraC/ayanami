@@ -158,6 +158,51 @@ TEST(BehaviorTreeControlTest, recoverySequenceAdvancesOnFailureAndStopsOnSuccess
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
+TEST(BehaviorTreeControlTest, recoverySequenceRestartsFromFirstAfterSuccess) {
+  // 顺序恢复语义: 某个 recovery 成功 -> 整体 SUCCESS (外层 RecoveryNode 回主
+  // 任务); 下一次进入恢复分支时从第一个 recovery 重新开始 (脱困后恢复轮次)。
+  auto factory = makeFactory();
+  factory.registerNodeType<RecoverySequence>("RecoverySequence");
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4"><BehaviorTree ID="main">
+  <RecoverySequence><MockChild name="first"/><MockChild name="second"/></RecoverySequence>
+</BehaviorTree></root>)", BT::Blackboard::create());
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 2u);
+
+  // 第一轮: first 失败, second 成功 -> 整体 SUCCESS。
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+
+  // 第二轮 (脱困后再次卡住): 从 first 重新开始。
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 2);
+  EXPECT_EQ(mocks[1]->tick_count, 2);
+}
+
+TEST(BehaviorTreeControlTest, recoverySequenceExhaustsToFailure) {
+  // 全部 recovery 失败 -> 整体 FAILURE (恢复序列耗尽)。
+  auto factory = makeFactory();
+  factory.registerNodeType<RecoverySequence>("RecoverySequence");
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4"><BehaviorTree ID="main">
+  <RecoverySequence><MockChild name="first"/><MockChild name="second"/><MockChild name="third"/></RecoverySequence>
+</BehaviorTree></root>)", BT::Blackboard::create());
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 3u);
+  for (auto& mock : mocks) {
+    mock->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  }
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(mocks[0]->tick_count, 1);
+  EXPECT_EQ(mocks[1]->tick_count, 1);
+  EXPECT_EQ(mocks[2]->tick_count, 1);
+  // 耗尽后复位: 下一 tick 重新从 first 开始 (可再次进入恢复轮次)。
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(mocks[0]->tick_count, 2);
+}
+
 TEST(BehaviorTreeControlTest, recoveryNodeResetsRetriesAfterSuccess) {
   auto factory = makeFactory();
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
