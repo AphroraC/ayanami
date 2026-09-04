@@ -15,7 +15,7 @@ namespace ayanami {
 spdlog::level::level_enum logLevelFromString(const std::string& level);
 
 /**
- * @brief 从 config_logging.json 的 logging 段配置 spdlog 默认 logger。
+ * @brief 从根 config.json 的 logging 段配置 spdlog 默认 logger。
  *
  * 参数 (学习 asuka):
  *   - logging_level    (string, 默认 "info"): 文件/全局级别 (logger 总闸)

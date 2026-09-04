@@ -28,6 +28,7 @@
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
 #include <ayanami/costmap/components/costmap_context.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
 
@@ -98,6 +99,10 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeLocalWrapper() {
 }  // namespace
 
 TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   auto local = makeLocalWrapper();
   auto ctx = std::make_shared<ayanami::costmap::CostmapContext>();
   ctx->setLocalCostmap(local);

@@ -10,7 +10,6 @@
 
 #include "costmap_savitzky_smoother.hpp"
 
-#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -74,25 +73,19 @@ void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses)
 
 }  // namespace
 
-CostmapSavitzkySmoother::CostmapSavitzkySmoother() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_savitzky_smoother → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_savitzky_smoother"));
-    param.do_refinement =
-        file.param<bool>("costmap_savitzky_smoother", "do_refinement",
-                         param.do_refinement);
-    param.refinement_num =
-        file.param<int>("costmap_savitzky_smoother", "refinement_num",
-                        param.refinement_num);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
-}
+CostmapSavitzkySmoother::CostmapSavitzkySmoother() = default;
 
-void CostmapSavitzkySmoother::initialize(
-    const std::string& /*name*/, ayanami::costmap::CostmapContext::ConstPtr map) {
+void CostmapSavitzkySmoother::configure(
+    const PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局)。
+  const Config& file = context.config;
+  param.do_refinement =
+      file.param<bool>("costmap_savitzky_smoother", "do_refinement",
+                       param.do_refinement);
+  param.refinement_num =
+      file.param<int>("costmap_savitzky_smoother", "refinement_num",
+                      param.refinement_num);
   map_ = std::move(map);
 }
 
@@ -101,25 +94,27 @@ bool CostmapSavitzkySmoother::cancel() {
   return true;
 }
 
-FailureCode CostmapSavitzkySmoother::smoothPath(
-    const ayanami::nav_msgs::Path& in, ayanami::nav_msgs::Path& out,
-    double max_duration, bool check_for_collision, std::string& message) {
+SmootherResultT CostmapSavitzkySmoother::smoothPath(
+    ayanami::nav_msgs::Path& path, double max_duration,
+    bool check_for_collision) {
   // 碰撞检查需要读图: 需要时持 shared 锁 (整个平滑调用持有, <10ms), 零拷贝。
   std::optional<ayanami::costmap::CostmapView> costmap;
   if (check_for_collision) {
     if (!map_) {
-      message = "CostmapSavitzkySmoother has no costmap module";
-      return FailureCode::MapUnavailable;
+      return SmootherResultT::failure(
+          ErrorCode::MAP_UNAVAILABLE,
+          "CostmapSavitzkySmoother has no costmap module");
     }
     costmap = map_->lockGlobal();
   }
-  out = in;
-  message.clear();
+  const ayanami::nav_msgs::Path original = path;
   canceled.store(false);
 
-  // 空 path 或点数 < 7: 无窗口可平滑, 直接 SUCCESS, out=in。
-  if (in.poses.size() < 7) {
-    return FailureCode::None;
+  // 空 path 或点数 < 7: 无窗口可平滑, 直接 SUCCESS, path 不变。
+  if (path.poses.size() < 7) {
+    auto result = SmootherResultT::success(path);
+    result.message = "path too short to smooth";
+    return result;
   }
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -132,11 +127,11 @@ FailureCode CostmapSavitzkySmoother::smoothPath(
 
   // 预算耗尽仍未开始: SUCCESS + 部分平滑 (= 无)。
   if (timed && elapsed() > max_duration) {
-    return FailureCode::None;
+    return SmootherResultT::success(path);
   }
 
   // 名义一轮过滤 (核心平滑)。
-  applySmoothPass(out.poses);
+  applySmoothPass(path.poses);
 
   // 精化轮 (时间预算 / cancel 约束下提前停止, 已平滑部分保留)。
   if (param.do_refinement) {
@@ -144,18 +139,17 @@ FailureCode CostmapSavitzkySmoother::smoothPath(
       if (canceled.load() || (timed && elapsed() >= max_duration)) {
         break;
       }
-      applySmoothPass(out.poses);
+      applySmoothPass(path.poses);
     }
   }
 
-  updateOrientations(out.poses);
+  updateOrientations(path.poses);
 
-  // 碰撞检查: 平滑后逐点查不可变 global 快照, 命中 lethal 回滚到 original。
+  // 碰撞检查: 平滑后逐点查加锁读视图, 命中 lethal 回滚到 original。
   if (check_for_collision) {
     const costmap_2d::Costmap2D* cm = costmap ? costmap->grid() : nullptr;
     if (cm) {
-      bool collision = false;
-      for (const auto& p : out.poses) {
+      for (const auto& p : path.poses) {
         unsigned int mx = 0;
         unsigned int my = 0;
         if (!cm->worldToMap(p.pose.position.x(), p.pose.position.y(),
@@ -163,20 +157,17 @@ FailureCode CostmapSavitzkySmoother::smoothPath(
           continue;
         }
         if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
-          collision = true;
-          break;
+          path = original;
+          auto result = SmootherResultT::success(path);
+          result.message = "collision detected; rolled back to original path";
+          return result;
         }
-      }
-      if (collision) {
-        out = in;
-        message = "collision detected";
-        return FailureCode::None;
       }
     }
   }
 
   // 与 original 完全一致时同样退化为 SUCCESS。
-  return FailureCode::None;
+  return SmootherResultT::success(path);
 }
 
 }  // namespace modules

@@ -1,12 +1,10 @@
 // Task 24: modules/costmap_wait_recovery — 等待恢复模块。
 //
-// 纯 C++ (零 ROS): 周期驱动接口 (start/onCycleUpdate)。每周期返回 RUNNING +
-// 零速度, 直到 wait_duration 届满返回 SUCCESS; 无运动占用。插件不自行 sleep,
-// 由 RecoveryExecution 按周期驱动。M1 headless 用, 无真底盘依赖。
+// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回 RUNNING
+// (不携带速度), 直到 wait_duration 届满返回 SUCCESS; 无运动占用。
 
 #include "costmap_wait_recovery.hpp"
 
-#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -51,42 +49,18 @@ void CostmapWaitRecovery::start() {
       std::max(param.wait_duration, 0.0) / dt));
 }
 
-ayanami::abstract::RecoveryCycleResult CostmapWaitRecovery::onCycleUpdate(
-    std::string& message) {
-  message.clear();
-  ayanami::abstract::RecoveryCycleResult r;  // 默认 RUNNING + 零速度。
+RecoveryResultT CostmapWaitRecovery::tick() {
   if (canceled.load()) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::CANCELED;
-    r.failure = FailureCode::Canceled;
-    message = "wait recovery canceled";
-    return r;
+    return RecoveryResultT::failure(ErrorCode::CANCELED,
+                                    "wait recovery canceled");
   }
   if (remaining_frames <= 0) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::SUCCESS;
-    return r;
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
   --remaining_frames;
-  return r;
-}
-
-void CostmapWaitRecovery::end() {}
-
-FailureCode CostmapWaitRecovery::runRecovery(std::string& message) {
-  start();
-  while (true) {
-    const auto r = onCycleUpdate(message);
-    switch (r.status) {
-      case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
-        continue;
-      case ayanami::abstract::RecoveryCycleResult::Status::SUCCESS:
-        return FailureCode::None;
-      case ayanami::abstract::RecoveryCycleResult::Status::CANCELED:
-        return FailureCode::Canceled;
-      case ayanami::abstract::RecoveryCycleResult::Status::FAILED:
-      default:
-        return r.failure;
-    }
-  }
+  return RecoveryResultT::success(RecoveryCycleData{});
 }
 
 bool CostmapWaitRecovery::cancel() {

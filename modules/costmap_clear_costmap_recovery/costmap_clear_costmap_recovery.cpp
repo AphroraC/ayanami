@@ -49,7 +49,7 @@ void CostmapClearCostmapRecovery::start() {
   submitted = false;
 }
 
-ayanami::abstract::RecoveryCycleResult CostmapClearCostmapRecovery::onCycleUpdate(
+ayanami::abstract::RecoveryCycleResult CostmapClearCostmapRecovery::tick(
     std::string& message) {
   message.clear();
   ayanami::abstract::RecoveryCycleResult r;  // 默认 RUNNING + 零速度。
@@ -88,7 +88,7 @@ void CostmapClearCostmapRecovery::end() {}
 
 FailureCode CostmapClearCostmapRecovery::runRecovery(std::string& message) {
   start();
-  const auto r = onCycleUpdate(message);
+  const auto r = tick(message);
   switch (r.status) {
     case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
     case ayanami::abstract::RecoveryCycleResult::Status::SUCCESS:

@@ -6,10 +6,8 @@
 //
 // 分派纪律: planner/smoother/controller 支持 multiple loaded plugin configs
 // (main config.json 的 global 段里 config_* string-or-list 已是 array-capable),
-// 每个装载插件一个 Action (map key = 插件逻辑名)。request* 按 goal.plugin_id
-// 分派; id 为空时填默认 (navigation.{planner_id,smoother_id,controller_id},
-// 缺省回退到装载列表首个插件名); 无效 id 返回结构化失败 TaskHandle
-// (ABORTED + 失败码), 不静默回退默认。
+// Planner, smoother and controller each use one configured plugin/action.
+// Recovery remains an ordered set of independently addressable actions.
 
 #include "ayanami/abstract/components/navigation_server_base.hpp"
 
@@ -47,21 +45,33 @@ std::string loadedNames(const ActionMap& actions) {
 // 严格单层索引的插件文件族枚举: 主 config.json 的 global 段里
 // global[family_key] 为单字符串或字符串数组 (数组即多插件文件族)。
 // 返回相对 config_path 解析后的完整路径 (绝对路径原样保留)。
-std::vector<std::string> moduleConfigFiles(const std::string& family_key) {
+std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
+                                           const std::string& family_key) {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
   std::vector<std::string> entries;
-  if (g->hasParam("global", family_key)) {
+  if (navigation.hasParam("navigation", family_key)) {
     try {
-      entries = g->param<std::vector<std::string>>("global", family_key, {});
+      entries = navigation.param<std::vector<std::string>>(
+          "navigation", family_key, {});
     } catch (const std::exception&) {
-      // global[family_key] 是单字符串。
+      // navigation[family_key] 是单字符串。
     }
     if (entries.empty()) {
       const std::string single =
-          g->param<std::string>("global", family_key, "");
+          navigation.param<std::string>("navigation", family_key, "");
       if (!single.empty()) {
         entries.push_back(single);
       }
+    }
+  }
+  // Keep old externally supplied configurations readable during migration.
+  // The installed configuration no longer uses this branch.
+  if (entries.empty() && g->hasParam("global", family_key)) {
+    try {
+      entries = g->param<std::vector<std::string>>("global", family_key, {});
+    } catch (const std::exception&) {
+      const std::string single = g->param<std::string>("global", family_key, "");
+      if (!single.empty()) entries.push_back(single);
     }
   }
   const std::string directory =
@@ -75,13 +85,44 @@ std::vector<std::string> moduleConfigFiles(const std::string& family_key) {
   return paths;
 }
 
+void registerModuleConfigAliases(const std::string& family_key,
+                                 const std::string& path,
+                                 const ayanami::Config& cfg) {
+  ayanami::GlobalConfig::registerConfigPath(family_key, path);
+  // Existing modules use their historical configuration stem internally. Keep
+  // that implementation detail in the resolved-path registry, not in the
+  // public root configuration schema.
+  const std::string stem =
+      std::filesystem::path(path).stem().string();
+  if (!stem.empty()) {
+    ayanami::GlobalConfig::registerConfigPath(stem, path);
+  }
+  const char* section = nullptr;
+  if (family_key == "config_planner") section = "planner";
+  if (family_key == "config_smoother") section = "smoother";
+  if (family_key == "config_controller") section = "controller";
+  if (family_key == "config_recovery") section = "recovery";
+  if (family_key == "config_goal_checker") section = "goal_checker";
+  if (family_key == "config_progress_checker") section = "progress_checker";
+  if (section == nullptr) return;
+  const std::string name = cfg.param<std::string>(section, "name", "");
+  if (!name.empty()) ayanami::GlobalConfig::registerConfigPath(name, path);
+
+  // Legacy module keys are derived from the individual file name. Do not
+  // register one family-wide alias here: recovery contains several files and
+  // such an alias would make every recovery read the last file in the list.
+  if (stem.rfind("costmap_", 0) == 0) {
+    ayanami::GlobalConfig::registerConfigPath("config_" + stem.substr(8), path);
+  }
+}
+
 }  // namespace
 
 NavigationServerBase::~NavigationServerBase() {
   stop();
-  planner_actions.clear();
-  smoother_actions.clear();
-  controller_actions.clear();
+  planner_action.reset();
+  smoother_action.reset();
+  controller_action.reset();
   recovery_actions.clear();
   for (const auto& name : planner_plugins.getLoadedNames()) {
     if (auto plugin = planner_plugins.getPlugin(name)) plugin->cleanup();
@@ -116,12 +157,22 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
       nav_cfg.param<std::string>("navigation", "smoother_id", "");
   default_controller =
       nav_cfg.param<std::string>("navigation", "controller_id", "");
-  default_recovery =
-      nav_cfg.param<std::string>("navigation", "recovery_id", "");
+  recovery_sequence.clear();
   default_goal_checker =
       nav_cfg.param<std::string>("navigation", "goal_checker_id", "");
   default_progress_checker =
       nav_cfg.param<std::string>("navigation", "progress_checker_id", "");
+
+  // Resolve every module path before constructing any plugin. Several legacy
+  // plugins read their own file from GlobalConfig during construction; the
+  // registry must therefore be populated before the first factory call.
+  for (const auto& family : {"config_planner", "config_smoother",
+                             "config_controller", "config_recovery",
+                             "config_goal_checker", "config_progress_checker"}) {
+    for (const auto& path : moduleConfigFiles(nav_cfg, family)) {
+      registerModuleConfigAliases(family, path, ayanami::Config(path));
+    }
+  }
 
   // 速度上限单一来源 = navigation.{max_vel_x,max_vel_y,max_vel_theta}:
   // 缓存为成员, createActions controller execution factory 注入
@@ -131,9 +182,10 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   max_vel_theta =
       nav_cfg.param<double>("navigation", "max_vel_theta", max_vel_theta);
 
-  // planner: global.config_planner 支持 string 或 list (multiple configs)
-  for (const auto& path : moduleConfigFiles("config_planner")) {
+  // planner/smoother/controller each have exactly one configured plugin.
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
     ayanami::Config cfg(path);
+    registerModuleConfigAliases("config_planner", path, cfg);
     const std::string name = cfg.param<std::string>("planner", "name", "");
     if (name.empty()) {
       continue;
@@ -148,8 +200,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   // smoother
-  for (const auto& path : moduleConfigFiles("config_smoother")) {
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_smoother")) {
     ayanami::Config cfg(path);
+    registerModuleConfigAliases("config_smoother", path, cfg);
     const std::string name = cfg.param<std::string>("smoother", "name", "");
     if (name.empty()) {
       continue;
@@ -164,8 +217,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   // controller
-  for (const auto& path : moduleConfigFiles("config_controller")) {
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_controller")) {
     ayanami::Config cfg(path);
+    registerModuleConfigAliases("config_controller", path, cfg);
     const std::string name = cfg.param<std::string>("controller", "name", "");
     if (name.empty()) {
       continue;
@@ -180,13 +234,12 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   // recovery (role 决定默认: clear_costmap 优先)
-  for (const auto& path : moduleConfigFiles("config_recovery")) {
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_recovery")) {
     ayanami::Config cfg(path);
+    registerModuleConfigAliases("config_recovery", path, cfg);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     const std::string role = cfg.param<std::string>("recovery", "role", "");
-    if (default_recovery.empty() || role == "clear_costmap") {
-      default_recovery = name;
-    }
+    if (!name.empty()) recovery_sequence.push_back(name);
     recovery_plugins.loadSingleFromConfig(
         cfg, "recovery", name,
         [this](const std::string& loaded_name, AbstractRecovery::Ptr plugin) {
@@ -194,8 +247,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
         });
   }
   {
-    for (const auto& path : moduleConfigFiles("config_goal_checker")) {
+      for (const auto& path : moduleConfigFiles(nav_cfg, "config_goal_checker")) {
       ayanami::Config cfg(path);
+      registerModuleConfigAliases("config_goal_checker", path, cfg);
       const std::string name =
           cfg.param<std::string>("goal_checker", "name", "");
       if (name.empty()) {
@@ -213,8 +267,9 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     }
   }
   {
-    for (const auto& path : moduleConfigFiles("config_progress_checker")) {
+      for (const auto& path : moduleConfigFiles(nav_cfg, "config_progress_checker")) {
       ayanami::Config cfg(path);
+      registerModuleConfigAliases("config_progress_checker", path, cfg);
       const std::string name =
           cfg.param<std::string>("progress_checker", "name", "");
       if (name.empty()) {
@@ -254,15 +309,9 @@ void NavigationServerBase::start() {
 
 void NavigationServerBase::stop() {
   if (!running.exchange(false)) return;
-  for (auto& kv : planner_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
-  for (auto& kv : smoother_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
-  for (auto& kv : controller_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
+  if (planner_action) planner_action->cancelAll();
+  if (smoother_action) smoother_action->cancelAll();
+  if (controller_action) controller_action->cancelAll();
   for (auto& kv : recovery_actions) {
     if (kv.second) kv.second->cancelAll();
   }
@@ -281,25 +330,18 @@ void NavigationServerBase::stop() {
 }
 
 void NavigationServerBase::createActions() {
-  planner_actions.clear();
-  smoother_actions.clear();
-  controller_actions.clear();
+  planner_action.reset();
+  smoother_action.reset();
+  controller_action.reset();
   recovery_actions.clear();
 
-  // planner: 为每个已装载插件建 action (map key = 插件名)。execution 经
-  // setExecutionFactory → 虚 new*Execution 钩子装配 (测试/无地图 server 覆写
-  // 该钩子; costmap 派生覆写 createActions 直接构造 Costmap*Action, 不走这里)。
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    auto planner = planner_plugins.getPlugin(name);
-    if (!planner) {
-      continue;
-    }
+  if (auto planner = planner_plugins.getPlugin(default_planner)) {
     auto action = std::make_unique<PlannerAction>(planner);
-    action->setExecutionFactory([this, name]() {
+    action->setExecutionFactory([this]() {
       return std::shared_ptr<PlannerExecution>(
-          newPlannerExecution(name, planner_plugins.getPlugin(name)));
+          newPlannerExecution(default_planner, planner_plugins.getPlugin(default_planner)));
     });
-    planner_actions[name] = std::move(action);
+    planner_action = std::move(action);
   }
   if (!planner_plugins.hasPlugin(default_planner)) {
     spdlog::error("NavigationServerBase::createActions: default planner '{}' "
@@ -307,17 +349,13 @@ void NavigationServerBase::createActions() {
                   default_planner);
   }
 
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    auto smoother = smoother_plugins.getPlugin(name);
-    if (!smoother) {
-      continue;
-    }
+  if (auto smoother = smoother_plugins.getPlugin(default_smoother)) {
     auto action = std::make_unique<SmootherAction>(smoother);
-    action->setExecutionFactory([this, name]() {
+    action->setExecutionFactory([this]() {
       return std::shared_ptr<SmootherExecution>(
-          newSmootherExecution(name, smoother_plugins.getPlugin(name)));
+          newSmootherExecution(default_smoother, smoother_plugins.getPlugin(default_smoother)));
     });
-    smoother_actions[name] = std::move(action);
+    smoother_action = std::move(action);
   }
   if (!smoother_plugins.hasPlugin(default_smoother)) {
     spdlog::error("NavigationServerBase::createActions: default smoother '{}' "
@@ -325,19 +363,15 @@ void NavigationServerBase::createActions() {
                   default_smoother);
   }
 
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    auto controller = controller_plugins.getPlugin(name);
-    if (!controller) {
-      continue;
-    }
+  if (auto controller = controller_plugins.getPlugin(default_controller)) {
     auto action = std::make_unique<ControllerAction>(controller);
-    action->setExecutionFactory([this, name]() {
+    action->setExecutionFactory([this]() {
       auto exec = std::shared_ptr<ControllerExecution>(newControllerExecution(
-          name, controller_plugins.getPlugin(name)));
+          default_controller, controller_plugins.getPlugin(default_controller)));
       configureControllerExecution(exec);
       return exec;
     });
-    controller_actions[name] = std::move(action);
+    controller_action = std::move(action);
   }
   if (!controller_plugins.hasPlugin(default_controller)) {
     spdlog::error("NavigationServerBase::createActions: default controller "
@@ -360,10 +394,8 @@ void NavigationServerBase::createActions() {
     });
     recovery_actions[name] = std::move(action);
   }
-  if (!recovery_plugins.hasPlugin(default_recovery)) {
-    spdlog::error("NavigationServerBase::createActions: default recovery '{}' "
-                  "not loaded",
-                  default_recovery);
+  if (recovery_actions.empty()) {
+    spdlog::warn("NavigationServerBase::createActions: no recovery plugins loaded");
   }
 }
 
@@ -398,22 +430,22 @@ void NavigationServerBase::configureRecoveryExecution(
 PlannerAction* NavigationServerBase::plannerAction(
     const std::string& id) const {
   const std::string key = id.empty() ? default_planner : id;
-  auto iter = planner_actions.find(key);
-  return iter == planner_actions.end() ? nullptr : iter->second.get();
+  (void)key;
+  return planner_action.get();
 }
 
 SmootherAction* NavigationServerBase::smootherAction(
     const std::string& id) const {
   const std::string key = id.empty() ? default_smoother : id;
-  auto iter = smoother_actions.find(key);
-  return iter == smoother_actions.end() ? nullptr : iter->second.get();
+  (void)key;
+  return smoother_action.get();
 }
 
 ControllerAction* NavigationServerBase::controllerAction(
     const std::string& id) const {
   const std::string key = id.empty() ? default_controller : id;
-  auto iter = controller_actions.find(key);
-  return iter == controller_actions.end() ? nullptr : iter->second.get();
+  (void)key;
+  return controller_action.get();
 }
 
 RecoveryAction* NavigationServerBase::recoveryAction(
@@ -431,68 +463,48 @@ std::vector<std::string> NavigationServerBase::recoveryActionNames() const {
   return names;
 }
 
-template <typename GoalT, typename ResultT, typename ActionT>
-TaskHandle<ResultT> NavigationServerBase::dispatchSimpleRequest(
-    std::mutex& request_mutex,
-    std::map<std::string, std::unique_ptr<ActionT>>& actions,
-    const GoalT& goal, const std::string& default_id,
-    const char* family_label, const std::string& error_prefix) {
-  std::lock_guard<std::mutex> request_lock(request_mutex);
-  if (recovery_exclusive.load()) {
-    return rejectedHandle<ResultT>(FailureCode::RecoveryFailed,
-                                   "recovery is active", currentSessionId(),
-                                   currentPlanVersion());
-  }
-  const std::string id =
-      goal.plugin_id.empty() ? default_id : goal.plugin_id;
-  auto iter = actions.find(id);
-  if (iter == actions.end() || !iter->second) {
-    spdlog::error("{}: no {} action for '{}' (loaded: {})", error_prefix,
-                  family_label, id, loadedNames(actions));
-    return rejectedHandle<ResultT>(
-        FailureCode::InvalidInput,
-        "unknown " + std::string(family_label) + " plugin id: " + id,
-        currentSessionId(), currentPlanVersion());
-  }
-  // 同族其它插件的抢占取消: 同一时刻每族只跑一个 action。
-  for (auto& entry : actions) {
-    if (entry.first != id && entry.second) entry.second->cancelAll();
-  }
-  GoalT g = goal;
-  if (g.plugin_id.empty()) {
-    g.plugin_id = id;  // 显式 id 保留; 仅空时填默认
-  }
-  g.session_id = currentSessionId();
-  g.plan_version = currentPlanVersion();
-  return iter->second->acceptGoal(g);
-}
-
 TaskHandle<ayanami::actions::GetPathResult> NavigationServerBase::requestPath(
     const ayanami::actions::GetPathGoal& goal) {
-  return dispatchSimpleRequest<ayanami::actions::GetPathGoal,
-                               ayanami::actions::GetPathResult, PlannerAction>(
-      planner_request_mutex, planner_actions, goal, default_planner, "planner",
-      "NavigationServerBase::requestPath");
+  std::lock_guard<std::mutex> lock(planner_request_mutex);
+  if (recovery_exclusive.load() || !planner_action) {
+    return rejectedHandle<ayanami::actions::GetPathResult>(
+        ErrorCode::RESOURCE_BUSY, "planner unavailable", currentSessionId(),
+        currentPlanVersion());
+  }
+  auto g = goal;
+  g.session_id = currentSessionId();
+  g.plan_version = currentPlanVersion();
+  return planner_action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::SmoothPathResult>
 NavigationServerBase::requestSmoothing(
     const ayanami::actions::SmoothPathGoal& goal) {
-  return dispatchSimpleRequest<ayanami::actions::SmoothPathGoal,
-                               ayanami::actions::SmoothPathResult,
-                               SmootherAction>(
-      smoother_request_mutex, smoother_actions, goal, default_smoother,
-      "smoother", "NavigationServerBase::requestSmoothing");
+  std::lock_guard<std::mutex> lock(smoother_request_mutex);
+  if (recovery_exclusive.load() || !smoother_action) {
+    return rejectedHandle<ayanami::actions::SmoothPathResult>(
+        ErrorCode::RESOURCE_BUSY, "smoother unavailable", currentSessionId(),
+        currentPlanVersion());
+  }
+  auto g = goal;
+  g.session_id = currentSessionId();
+  g.plan_version = currentPlanVersion();
+  return smoother_action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::ExePathResult>
 NavigationServerBase::requestExecution(
     const ayanami::actions::ExePathGoal& goal) {
-  return dispatchSimpleRequest<ayanami::actions::ExePathGoal,
-                               ayanami::actions::ExePathResult,
-                               ControllerAction>(
-      controller_request_mutex, controller_actions, goal, default_controller,
-      "controller", "NavigationServerBase::requestExecution");
+  std::lock_guard<std::mutex> lock(controller_request_mutex);
+  if (recovery_exclusive.load() || !controller_action) {
+    return rejectedHandle<ayanami::actions::ExePathResult>(
+        ErrorCode::RESOURCE_BUSY, "controller unavailable", currentSessionId(),
+        currentPlanVersion());
+  }
+  auto g = goal;
+  g.session_id = currentSessionId();
+  g.plan_version = currentPlanVersion();
+  return controller_action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::RecoveryResult>
@@ -501,12 +513,9 @@ NavigationServerBase::requestRecovery(
   bool expected = false;
   if (!recovery_exclusive.compare_exchange_strong(expected, true)) {
     return rejectedHandle<ayanami::actions::RecoveryResult>(
-        FailureCode::RecoveryFailed, "another recovery is active",
+        ErrorCode::RECOVERY_FAILED, "another recovery is active",
         currentSessionId(), currentPlanVersion());
   }
-  // Recovery 排他: 同一时刻只允许一个恢复执行。跨族抢占 (controller 暂停等)
-  // 不在本层实现 —— 由行为树负责 (树中 <Recovery/> 前放置 <HaltControllers/>:
-  // cancel+join 全部 controller action)。本层只拒绝并发请求。
   auto iter = recovery_actions.find(goal.recovery_id);
   if (iter == recovery_actions.end() || !iter->second) {
     recovery_exclusive.store(false);
@@ -514,10 +523,13 @@ NavigationServerBase::requestRecovery(
                   "for '{}'",
                   goal.recovery_id);
     return rejectedHandle<ayanami::actions::RecoveryResult>(
-        FailureCode::InvalidInput,
+        ErrorCode::INVALID_INPUT,
         "unknown recovery plugin id: " + goal.recovery_id, currentSessionId(),
         currentPlanVersion());
   }
+  // Stop the controller only after validating the recovery id. This is
+  // synchronous and guarantees no controller can publish during recovery.
+  cancelAllControllers();
   ayanami::actions::RecoveryGoal g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
@@ -528,13 +540,11 @@ NavigationServerBase::requestRecovery(
 
 bool NavigationServerBase::requestPlanUpdate(
     uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) {
-  const std::string id =
-      goal.plugin_id.empty() ? default_controller : goal.plugin_id;
-  ControllerAction* action = controllerAction(id);
+  ControllerAction* action = controllerAction();
   if (!action) {
     spdlog::error("NavigationServerBase::requestPlanUpdate: no controller "
                   "action for '{}'",
-                  id);
+                  default_controller);
     return false;
   }
   return action->updatePlan(goal_id, goal.path, goal.plan_version);
@@ -545,25 +555,17 @@ void NavigationServerBase::cancelAllControllers() {
   // 抢占/新会话/halt 纪律: 取消所有装载 controller 的 action map, 而不只是
   // 默认 id 的那一个 —— multiple controller configs 下默认 id 之外的控制器
   // 任务同样必须停止, 否则抢占后残留速度输出。
-  for (auto& kv : controller_actions) {
-    if (kv.second) {
-      kv.second->cancelAll();
-    }
-  }
+  if (controller_action) controller_action->cancelAll();
 }
 
 void NavigationServerBase::cancelAllPlanners() {
   std::lock_guard<std::mutex> request_lock(planner_request_mutex);
-  for (auto& kv : planner_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
+  if (planner_action) planner_action->cancelAll();
 }
 
 void NavigationServerBase::cancelAllSmoothers() {
   std::lock_guard<std::mutex> request_lock(smoother_request_mutex);
-  for (auto& kv : smoother_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
+  if (smoother_action) smoother_action->cancelAll();
 }
 
 uint64_t NavigationServerBase::currentSessionId() const {
@@ -603,15 +605,11 @@ std::shared_ptr<NavigationSessionState> NavigationServerBase::sessionState()
   return session_state;
 }
 
-RobotStateProvider& NavigationServerBase::robotStateProvider() {
-  return robot_state_provider;
-}
-
 // ---- 语义: 无效插件 id 的结构化失败 TaskHandle ----
 
 template <typename Result>
 TaskHandle<Result> NavigationServerBase::rejectedHandle(
-    FailureCode code, const std::string& message, uint64_t session_id,
+    ErrorCode code, const std::string& message, uint64_t session_id,
     uint64_t plan_version) const {
   using Completion = ayanami::actions::GoalResult<Result>;
   auto state = std::make_shared<TaskState<Result>>();

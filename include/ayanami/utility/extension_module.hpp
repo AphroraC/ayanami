@@ -2,6 +2,8 @@
 #include <memory>
 #include <string>
 
+#include "ayanami/utility/loaded_module.hpp"
+
 namespace ayanami {
 
 /**
@@ -25,6 +27,11 @@ public:
    *         or nullptr on failure.
    */
   static Ptr load_module(const std::string& so_name);
+
+  /// Future unload gate. Current modules remain resident by design.
+  static bool can_unload(const LoadedModule::Ptr& module) noexcept {
+    return module && module->unloadable();
+  }
 };
 
 } // namespace ayanami

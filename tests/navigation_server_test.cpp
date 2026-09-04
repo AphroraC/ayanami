@@ -2,6 +2,7 @@
 
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/components/planner_action.hpp>
 #include <ayanami/abstract/components/recovery_action.hpp>
 #include <ayanami/abstract/components/smoother_action.hpp>
@@ -359,11 +360,11 @@ class RecoveryExclusiveServer : public ayanami::components::NavigationServerBase
     default_planner = "blocker";
     default_smoother = "blocker";
     default_controller = "blocker";
-    planner_actions["blocker"] = std::make_unique<ayanami::components::PlannerAction>(
+    planner_action = std::make_unique<ayanami::components::PlannerAction>(
         std::make_shared<BlockingPlanner>(coord));
-    smoother_actions["blocker"] = std::make_unique<ayanami::components::SmootherAction>(
+    smoother_action = std::make_unique<ayanami::components::SmootherAction>(
         std::make_shared<BlockingSmoother>(coord));
-    controller_actions["blocker"] = std::make_unique<RecoveryTestControllerAction>(
+    controller_action = std::make_unique<RecoveryTestControllerAction>(
         std::make_shared<BlockingController>(coord));
     recovery_actions["test_recovery"] = std::make_unique<ayanami::components::RecoveryAction>(
         std::make_shared<ActiveRecovery>(coord));
@@ -428,6 +429,10 @@ TEST(NavigationServerBaseTest, requestPathSucceedsAndFillsSessionAndVersion) {
 }
 
 TEST(NavigationServerBaseTest, requestExecutionAndRecoveryAndSmoothingSucceed) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
   server.loadPlugins(dir.string());
@@ -515,10 +520,13 @@ TEST(NavigationServerBaseTest, destructorStopsActionsAndDoesNotCrash) {
 }
 
 TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption) {
-  // recovery 跨族抢占 (controller 暂停) 已由行为树实现 (树中 <Recovery/> 前放
-  // <HaltControllers/>, 调 server.cancelAllControllers())。server 层 requestRecovery
-  // 只做排他: 拒绝并发恢复与并发普通请求, 不主动 cancel 其它族。
+  // requestRecovery owns the controller/recovery resource boundary. It stops
+  // controller execution before starting the recovery action.
   auto coord = std::make_shared<recovery_exclusive::Coordinator>();
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   recovery_exclusive::RecoveryExclusiveServer server(coord);
 
   // 1. 启动三个阻塞任务 (进入插件后一直阻塞)。
@@ -543,18 +551,14 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   ASSERT_TRUE(recovery_exclusive::waitFlag(coord->smoother_entered));
   ASSERT_TRUE(recovery_exclusive::waitFlag(coord->controller_entered));
 
-  // 2. requestRecovery: 不抢占三族 (树负责暂停); 恢复正常执行完成。
+  // 2. requestRecovery: synchronously stops controller before recovery starts.
   ayanami::actions::RecoveryGoal rgoal;
   rgoal.recovery_id = "test_recovery";
   auto rtask = server.requestRecovery(rgoal);
   ASSERT_TRUE(rtask.valid());
 
   ASSERT_TRUE(recovery_exclusive::waitFlag(coord->recovery_started, 5000));
-  // 恢复启动时三族仍在运行 —— server 不主动 cancel。
-  EXPECT_FALSE(coord->planner_exited.load());
-  EXPECT_FALSE(coord->smoother_exited.load());
-  EXPECT_FALSE(coord->controller_exited.load());
-  EXPECT_FALSE(coord->all_exited_when_recovery_started.load());
+  EXPECT_TRUE(coord->controller_exited.load());
 
   // 3. recovery active 期间: 普通 request 被结构化拒绝 (ABORTED +
   // FailureCode::RecoveryFailed)。
@@ -562,13 +566,13 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   ASSERT_TRUE(rp.valid());
   ASSERT_TRUE(rp.ready());
   EXPECT_EQ(rp.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(rp.result().failure, ayanami::FailureCode::RecoveryFailed);
+  EXPECT_EQ(rp.result().failure, ayanami::ErrorCode::RESOURCE_BUSY);
 
   auto re = server.requestExecution(egoal);
   ASSERT_TRUE(re.valid());
   ASSERT_TRUE(re.ready());
   EXPECT_EQ(re.status(), ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(re.result().failure, ayanami::FailureCode::RecoveryFailed);
+  EXPECT_EQ(re.result().failure, ayanami::ErrorCode::RESOURCE_BUSY);
 
   // 二次 recovery 同样被拒绝。
   auto rr = server.requestRecovery(rgoal);

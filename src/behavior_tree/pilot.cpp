@@ -78,18 +78,14 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   smoother_id = cfg.param<std::string>(k_sec, "smoother_id", "");
   controller_id = cfg.param<std::string>(k_sec, "controller_id", "");
 
-  Config planner_cfg(GlobalConfig::getConfigPath("config_planner"));
-  Config smoother_cfg(GlobalConfig::getConfigPath("config_smoother"));
-  Config controller_cfg(GlobalConfig::getConfigPath("config_controller"));
   if (planner_id.empty()) {
-    planner_id = planner_cfg.param<std::string>("planner", "name", "");
+    planner_id = cfg.param<std::string>(k_sec, "planner_id", "");
   }
   if (smoother_id.empty()) {
-    smoother_id = smoother_cfg.param<std::string>("smoother", "name", "");
+    smoother_id = cfg.param<std::string>(k_sec, "smoother_id", "");
   }
   if (controller_id.empty()) {
-    controller_id =
-        controller_cfg.param<std::string>("controller", "name", "");
+    controller_id = cfg.param<std::string>(k_sec, "controller_id", "");
   }
 
   recovery_id.clear();
@@ -97,17 +93,39 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   spin_id.clear();
   wait_id.clear();
   backup_id.clear();
-  // 严格单层索引: global.config_recovery 为 string 或 string 数组。
+  // Navigation config owns the ordered recovery configuration list.
   std::vector<std::string> recovery_files;
   try {
-    recovery_files = GlobalConfig::instance()->param<std::vector<std::string>>(
-        "global", "config_recovery", {});
+    recovery_files = cfg.param<std::vector<std::string>>(
+        k_sec, "config_recovery", {});
   } catch (const std::exception&) {
   }
   if (recovery_files.empty()) {
-    recovery_files.push_back(
-        GlobalConfig::instance()->param<std::string>("global",
-                                                     "config_recovery", ""));
+    recovery_files.push_back(cfg.param<std::string>(k_sec, "config_recovery", ""));
+  }
+  // Accept legacy test/embedding configurations while the public schema is
+  // migrated: production configuration keeps this list in navigation.json.
+  if (recovery_files.empty()) {
+    try {
+      recovery_files = GlobalConfig::instance()->param<std::vector<std::string>>(
+          "global", "config_recovery", {});
+    } catch (const std::exception&) {
+      const std::string legacy = GlobalConfig::instance()->param<std::string>(
+          "global", "config_recovery", "");
+      if (!legacy.empty()) recovery_files.push_back(legacy);
+    }
+  }
+  if (recovery_files.empty()) {
+    // Compatibility for pre-navigation.json embedders. This is deliberately
+    // read-only fallback; the installed schema keeps the ordered vector in
+    // navigation.config_recovery.
+    for (const auto* key : {"config_clear_costmap_recovery",
+                            "config_spin_recovery", "config_wait_recovery",
+                            "config_back_up_recovery"}) {
+      const std::string file = GlobalConfig::instance()->param<std::string>(
+          "global", key, "");
+      if (!file.empty()) recovery_files.push_back(file);
+    }
   }
   const std::string directory =
       GlobalConfig::instance()->param<std::string>("global", "config_path", ".");

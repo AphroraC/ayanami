@@ -326,3 +326,15 @@ TEST(CallbackSlotTest, nontrivialLvalueArgumentReachesAllObservers) {
 
   EXPECT_EQ(order, "okok");
 }
+
+TEST(CallbackSlotTest, subscriptionUnregistersOnDestruction) {
+  ayanami::CallbackSlot<void()> slot;
+  int calls = 0;
+  {
+    auto subscription = slot.subscribe([&] { ++calls; });
+    slot();
+    EXPECT_EQ(calls, 1);
+  }
+  slot();
+  EXPECT_EQ(calls, 1);
+}

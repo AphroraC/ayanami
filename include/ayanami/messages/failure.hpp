@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "ayanami/types.hpp"
+
 namespace ayanami {
 
 /**
@@ -15,25 +17,10 @@ namespace ayanami {
  *   GoalStatus::SUCCEEDED);
  * - GoalStatus 保留; message 仅作诊断, BT/宿主只依据 failure 决策, 不解析 message。
  */
-enum class FailureCode : uint8_t {
-  None = 0,             ///< 成功 (无失败)。
-  Canceled,             ///< 被取消。
-  Timeout,              ///< 耐心/预算超时 (PAT_EXCEEDED)。
-  InvalidInput,         ///< 输入非法 (空路径等)。
-  TransformUnavailable, ///< 坐标变换不可用 / frame 不匹配。
-  MapUnavailable,       ///< 地图未就绪。
-  MapStale,             ///< 地图过期 (isCurrent 不满足)。
-  StartInvalid,         ///< 起点非法 (越界 / 被阻挡)。
-  GoalInvalid,          ///< 目标非法 (越界 / 被阻挡 / 无可行目标)。
-  PathNotFound,         ///< 未找到路径。
-  PathInvalid,          ///< 路径非法 (无法跟踪)。
-  SmoothingFailed,      ///< 平滑失败。
-  NoValidCommand,       ///< 控制器无有效速度命令。
-  NoProgress,           ///< 无进展 (卡住)。
-  GoalNotReached,       ///< 未到达目标。
-  RecoveryFailed,       ///< 恢复行为失败。
-  InternalError,        ///< 内部错误 / 插件未初始化。
-};
+// Kept only as a source-compatibility alias for message adapters and old
+// plugins. BT and all new core APIs use ErrorCode directly.
+using FailureCode = ErrorCode;
+
 
 /**
  * @brief 失败发生的处理阶段 (BT action 节点写 FailureContext 用)。
@@ -59,7 +46,7 @@ enum class FailureStage : uint8_t {
  */
 struct FailureContext {
   FailureStage stage = FailureStage::Unknown;
-  FailureCode code = FailureCode::None;
+  ErrorCode code = ErrorCode::NONE;
   std::string plugin_id;   ///< 触发失败的插件逻辑名
   std::string message;     ///< 诊断消息 (仅供日志, BT/宿主不解析)
   uint64_t session_id = 0;  ///< 失败所属会话

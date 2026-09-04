@@ -12,6 +12,7 @@
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
 
@@ -138,6 +139,10 @@ bool waitReady(Task& t, int max_ms = 5000) {
 }  // namespace
 
 TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<RecordingController>();
   TestControllerAction action(controller);
   action.initCheckers(

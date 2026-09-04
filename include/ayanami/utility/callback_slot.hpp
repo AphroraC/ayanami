@@ -24,6 +24,40 @@ namespace ayanami {
  */
 using callback_exception_handler = void (*)(std::exception_ptr) noexcept;
 
+/** RAII handle for one callback subscription. */
+class CallbackSubscription {
+ public:
+  CallbackSubscription() = default;
+  explicit CallbackSubscription(std::function<void()> reset)
+      : reset_(std::move(reset)) {}
+  ~CallbackSubscription() { reset(); }
+
+  CallbackSubscription(const CallbackSubscription&) = delete;
+  CallbackSubscription& operator=(const CallbackSubscription&) = delete;
+  CallbackSubscription(CallbackSubscription&& other) noexcept
+      : reset_(std::move(other.reset_)) {}
+  CallbackSubscription& operator=(CallbackSubscription&& other) noexcept {
+    if (this != &other) {
+      reset();
+      reset_ = std::move(other.reset_);
+    }
+    return *this;
+  }
+
+  void reset() noexcept {
+    if (!reset_) return;
+    auto reset = std::move(reset_);
+    try {
+      reset();
+    } catch (...) {
+      // Unsubscription must never throw during object destruction.
+    }
+  }
+
+ private:
+  std::function<void()> reset_;
+};
+
 namespace detail {
 
 inline std::atomic<callback_exception_handler>& callbackExceptionSink() {
@@ -133,6 +167,12 @@ public:
     publish(std::move(fresh));
     subscriber_count.fetch_add(1, std::memory_order_release);
     return id;
+  }
+
+  /** Register a callback whose lifetime is tied to the returned handle. */
+  CallbackSubscription subscribe(std::function<Func> cb) {
+    const int id = add(std::move(cb));
+    return CallbackSubscription([this, id] { remove(id); });
   }
 
   /**

@@ -17,12 +17,12 @@ namespace modules {
  * @brief 3 轴 PID 局部控制器模块 (spec §5.5 controller costmap 族)。
  *
  * 纯 path tracker: 只读 robot pose + path, 算法本身不读图; 但按 costmap 族
- * 严格约束继承 costmap::CostmapController 并实现 initialize(name) + 快照化
- * computeVelocityCommands (costmap 宿主只接受 Costmap* 类型)。参考 _legacy
+ * 严格约束继承 costmap::CostmapController 并实现 configure(context, map) +
+ * computeVelocityCommand (costmap 宿主只接受 Costmap* 类型)。参考 _legacy
  * pid_controller 重写。
  *
  * 历史五项控制修复收尾:
- * - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
+ * - computeVelocityCommand 入口 cmd_vel 强制清零 (脏内存 bug)
  * - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
  * - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
  * - linear 按 max_acc_x/max_decel_x 分开限幅; angular 受 max_acc_theta 限幅
@@ -38,17 +38,14 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
 
   virtual ~CostmapPidController() = default;
 
-  /// @brief costmap 族初始化契约。算法不读图, 仅持有地图模块指针 (配置已在
-  /// 构造期读取)。
-  /// @param name 插件名。
-  /// @param map 地图模块 const 智能指针 (宿主持有所有权)。
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override;
+  /// @brief costmap 族注入契约。算法不读图, 仅持有地图模块指针; 参数经
+  /// PluginContext 注入的自身配置读取。
+  void configure(const PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override;
 
-  FailureCode computeVelocityCommands(
+  ControllerResultT computeVelocityCommand(
       const geometry_msgs::PoseStamped& pose,
-      const geometry_msgs::TwistStamped& velocity,
-      geometry_msgs::TwistStamped& cmd_vel, std::string& message) override;
+      const geometry_msgs::TwistStamped& velocity) override;
 
   bool setPlan(const nav_msgs::Path& plan) override;
 

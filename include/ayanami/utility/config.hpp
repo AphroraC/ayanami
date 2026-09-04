@@ -35,6 +35,10 @@ public:
   Config(const Config&) = delete;
   Config& operator=(const Config&) = delete;
 
+  /// @brief 可移动 (PluginContext 按值携带配置; GlobalConfig 单例不可移动)。
+  Config(Config&&) = default;
+  Config& operator=(Config&&) = default;
+
   /**
    * @brief Check if a parameter exists.
    */
@@ -107,6 +111,11 @@ public:
    *        directory + "/" + param("global", config_name, config_name + ".json")
    */
   static std::string getConfigPath(const std::string& config_name);
+
+  /// Register a resolved module configuration path for the current process.
+  /// This keeps module files independent from the root global index.
+  static void registerConfigPath(const std::string& config_name,
+                                 const std::string& path);
 };
 
 } // namespace ayanami

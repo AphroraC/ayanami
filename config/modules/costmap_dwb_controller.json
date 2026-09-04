@@ -1,9 +1,9 @@
 {
   "controller": {
-    "name": "dwb_local",
+    "name": "costmap_dwb_controller",
     "so_name": "libayanami_costmap_dwb_controller.so"
   },
-  "dwb_local": {
+  "costmap_dwb_controller": {
     "critics": [
       "RotateToGoal",
       "Oscillation",

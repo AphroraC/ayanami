@@ -7,6 +7,7 @@
 #include <Eigen/Geometry>
 
 #include <ayanami/costmap/core/costmap_recovery.hpp>
+#include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/recovery_params.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 
@@ -25,6 +26,7 @@ namespace modules {
  */
 class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
+  using ayanami::abstract::AbstractRecovery::tick;
   using ayanami::costmap::CostmapRecovery::runRecovery;
   CostmapBackUpRecovery();
   // Ruling #3: 基类 AbstractRecovery 无虚析构, 派生层补裸 virtual ~。
@@ -38,7 +40,7 @@ class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
   void start() override;
   void setBehaviorParams(
       const ayanami::RecoveryBehaviorParams& params) override;
-  ayanami::abstract::RecoveryCycleResult onCycleUpdate(
+  ayanami::abstract::RecoveryCycleResult tick(
       std::string& message) override;
   void end() override;
 

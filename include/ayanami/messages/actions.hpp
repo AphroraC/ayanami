@@ -20,8 +20,6 @@ struct GetPathGoal {
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
   double tolerance = 0.1;
-  /// @brief 目标规划插件逻辑名; 空表示用 server 默认 (request 时填充)。
-  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<GetPathGoal>;
@@ -29,7 +27,7 @@ struct GetPathGoal {
 };
 
 struct GetPathResult {
-  FailureCode failure = FailureCode::None;
+  ErrorCode error = ErrorCode::NONE;
   std::string message;
   ayanami::nav_msgs::Path path;
   double cost = 0.0;
@@ -49,8 +47,6 @@ struct SmoothPathGoal {
   ayanami::nav_msgs::Path path;
   double max_duration = 2.0;
   bool check_for_collision = false;
-  /// @brief 平滑插件逻辑名; 空表示用 server 默认 (request 时填充)。
-  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<SmoothPathGoal>;
@@ -58,7 +54,7 @@ struct SmoothPathGoal {
 };
 
 struct SmoothPathResult {
-  FailureCode failure = FailureCode::None;
+  ErrorCode error = ErrorCode::NONE;
   std::string message;
   ayanami::nav_msgs::Path smoothed_path;
   uint64_t session_id = 0;
@@ -75,8 +71,6 @@ struct SmoothPathFeedback {
 
 struct ExePathGoal {
   ayanami::nav_msgs::Path path;
-  /// @brief 控制器插件逻辑名; 空表示用 server 默认 (request 时填充)。
-  std::string plugin_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<ExePathGoal>;
@@ -84,7 +78,7 @@ struct ExePathGoal {
 };
 
 struct ExePathResult {
-  FailureCode failure = FailureCode::None;
+  ErrorCode error = ErrorCode::NONE;
   std::string message;
   bool reached = false;
   uint64_t session_id = 0;
@@ -112,7 +106,7 @@ struct RecoveryGoal {
 };
 
 struct RecoveryResult {
-  FailureCode failure = FailureCode::None;
+  ErrorCode error = ErrorCode::NONE;
   std::string message;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;

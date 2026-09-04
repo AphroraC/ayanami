@@ -61,21 +61,20 @@ bool transformPose(ayanami::components::RobotStateController* state_controller,
 CostmapDwBLocalPlanner::CostmapDwBLocalPlanner() {
   registerAllCritics();
   registerAllTrajectoryGenerators();
+}
 
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_dwb_controller → 本插件 json 文件。json 段 = controller.name
-  // (插件实例名)。
-  std::string config_path;
-  try {
-    config_path = GlobalConfig::getConfigPath("config_dwb_controller");
-  } catch (const std::exception&) {
-    config_path.clear();
-  }
-  config_ = std::make_unique<Config>(config_path);
+void CostmapDwBLocalPlanner::configure(
+    const PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  dwb_plugin_name = context.name;
+  map_ = std::move(map);
+
+  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局)。
+  // json 段 = controller.name (插件实例名)。
+  config_ = std::make_unique<Config>(std::move(context.config));
   const ayanami::Config& cfg = *config_;
   const std::string section =
-      cfg.param<std::string>("controller", "name", "dwb_local");
+      cfg.param<std::string>("controller", "name", "costmap_dwb_controller");
   param.transform_tolerance =
       cfg.param<double>(section, "transform_tolerance", 0.1);
   param.prune_plan = cfg.param<bool>(section, "prune_plan", true);
@@ -96,16 +95,9 @@ CostmapDwBLocalPlanner::CostmapDwBLocalPlanner() {
       cfg.param<std::vector<std::string>>(section, "default_critic_namespaces",
                                           {});
   param.critics = cfg.param<std::vector<std::string>>(section, "critics", {});
-}
 
-void CostmapDwBLocalPlanner::initialize(
-    const std::string& name, ayanami::costmap::CostmapContext::ConstPtr map) {
-  dwb_plugin_name = name;
-  map_ = std::move(map);
-
-  // 模块参数已在构造函数读取; 此处仅创建运行资源 (trajectory generator +
-  // critics)。子插件 (generator/critic) 自身参数由其 initialize 读取。
-  const ayanami::Config& cfg = *config_;
+  // 创建运行资源 (trajectory generator + critics)。子插件 (generator/critic)
+  // 自身参数由其 initialize 读取。
 
   spdlog::info("Setting transform_tolerance to {}", param.transform_tolerance);
 
@@ -224,23 +216,24 @@ bool CostmapDwBLocalPlanner::setPlan(const ayanami::nav_msgs::Path& path) {
   return true;
 }
 
-FailureCode CostmapDwBLocalPlanner::computeVelocityCommands(
+ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
     const ayanami::geometry_msgs::PoseStamped& pose,
-    const ayanami::geometry_msgs::TwistStamped& velocity,
-    ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string& message) {
-  // 入口清零 (框架纪律): cmd_vel 全字段清零。
-  cmd_vel = ayanami::geometry_msgs::TwistStamped{};
+    const ayanami::geometry_msgs::TwistStamped& velocity) {
+  // 入口清零 (框架纪律)。
+  ayanami::geometry_msgs::TwistStamped cmd_vel = {};
 
   // 锁纪律: 持 shared 锁的 local 读视图 (整个打分周期), 零拷贝; 地图写者
   // 等锁写入。视图析构释放锁。
   if (!map_) {
-    message = "CostmapDwBLocalPlanner: no costmap module";
-    return FailureCode::MapUnavailable;
+    return ControllerResultT::failure(
+        ErrorCode::MAP_UNAVAILABLE,
+        "CostmapDwBLocalPlanner: no costmap module");
   }
   local_view = map_->lockLocal();
   if (!local_view.valid()) {
-    message = "CostmapDwBLocalPlanner: no local costmap available";
-    return FailureCode::MapUnavailable;
+    return ControllerResultT::failure(
+        ErrorCode::MAP_UNAVAILABLE,
+        "CostmapDwBLocalPlanner: no local costmap available");
   }
   local_grid = local_view.grid();
   local_frame = local_view.frame();
@@ -270,9 +263,10 @@ FailureCode CostmapDwBLocalPlanner::computeVelocityCommands(
       nav_2d_msgs::Pose2DStamped pose_local;
       if (!transformPose(&ayanami::components::RobotStateController::instance(),
                          local_frame, pose2d, pose_local)) {
-        message = "CostmapDwBLocalPlanner: unable to transform robot pose "
-                  "into local costmap frame";
-        return FailureCode::TransformUnavailable;
+        return ControllerResultT::failure(
+            ErrorCode::TRANSFORM_UNAVAILABLE,
+            "CostmapDwBLocalPlanner: unable to transform robot pose into "
+            "local costmap frame");
       }
       pose2d = pose_local;
     }
@@ -280,16 +274,14 @@ FailureCode CostmapDwBLocalPlanner::computeVelocityCommands(
         pose2d, dwb_core::conversions::twist3Dto2D(velocity.twist), results);
     cmd_vel.header.frame_id = cmd_vel2d.frame_id;
     cmd_vel.twist = dwb_core::conversions::twist2Dto3D(cmd_vel2d.velocity);
-    return FailureCode::None;
+    return ControllerResultT::success(ControllerCommand{cmd_vel});
   } catch (const dwb_core::PlannerTFException& e) {
-    message = e.what();
-    return FailureCode::TransformUnavailable;
+    return ControllerResultT::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
+                                      e.what());
   } catch (const dwb_core::PlannerException& e) {
-    message = e.what();
-    return FailureCode::NoValidCommand;
+    return ControllerResultT::failure(ErrorCode::NO_VALID_COMMAND, e.what());
   } catch (const std::exception& e) {
-    message = e.what();
-    return FailureCode::InternalError;
+    return ControllerResultT::failure(ErrorCode::INTERNAL_ERROR, e.what());
   }
 }
 

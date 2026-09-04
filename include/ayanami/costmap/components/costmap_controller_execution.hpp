@@ -4,8 +4,6 @@
 #include <string>
 #include <utility>
 
-#include <costmap_server/costmap_wrapper.hpp>
-
 #include "ayanami/abstract/components/controller_execution.hpp"
 #include "ayanami/costmap/components/costmap_context.hpp"
 #include "ayanami/costmap/core/costmap_controller.hpp"
@@ -14,14 +12,14 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 局部控制的 costmap 版执行 (spec §5.4, 对标 MBF ControllerCostmapExecution)。
+ * @brief 局部控制的 costmap 版执行。
  *
  * 在 ControllerExecution 之上绑定 costmap 上下文:
  * - preRun: checkActivate() 幂等激活 local costmap;
  * - postRun: checkDeactivate() 幂等停用 local costmap;
  * - safetyCheck: local wrapper isCurrent(); 非 current 时基类循环发布清零
  *   停止命令 (不发速度);
- * - callController: 每 cycle 经 abstract 签名直调插件; 插件内部加锁读
+ * - callController: 每 cycle typed 调用 CostmapController; 插件内部加锁读
  *   local master grid (shared 锁, 周期结束释放)。
  */
 class CostmapControllerExecution : public ayanami::components::ControllerExecution {
@@ -54,20 +52,21 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
   }
 
  protected:
-  FailureCode callController(const ayanami::geometry_msgs::PoseStamped& pose,
-                             const ayanami::geometry_msgs::TwistStamped& velocity,
-                             ayanami::geometry_msgs::TwistStamped& cmd_vel,
-                             std::string& message) override {
+  ControllerResultT callController(
+      const ayanami::geometry_msgs::PoseStamped& pose,
+      const ayanami::geometry_msgs::TwistStamped& velocity) override {
     auto* typed = dynamic_cast<CostmapController*>(controller.get());
     if (!typed) {
-      message = "CostmapControllerExecution: plugin is not a CostmapController";
-      return FailureCode::InternalError;
+      return ControllerResultT::failure(
+          ErrorCode::INTERNAL_ERROR,
+          "CostmapControllerExecution: plugin is not a CostmapController");
     }
     if (!ctx) {
-      message = "CostmapControllerExecution: no costmap module";
-      return FailureCode::MapUnavailable;
+      return ControllerResultT::failure(
+          ErrorCode::MAP_UNAVAILABLE,
+          "CostmapControllerExecution: no costmap module");
     }
-    return typed->computeVelocityCommands(pose, velocity, cmd_vel, message);
+    return typed->computeVelocityCommand(pose, velocity);
   }
 
  private:

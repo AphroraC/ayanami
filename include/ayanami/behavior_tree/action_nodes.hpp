@@ -45,23 +45,6 @@ inline void writeFailureContext(const BT::TreeNode& node,
   }
 }
 
-/// @brief 已请求的插件 id: 优先 plugin_id 端口 (XML 显式 remap), 空则回退黑板
-/// 默认族 id (k_planner_id/k_smoother_id/k_controller_id, pilot 写黑板)。
-inline std::string resolvePluginId(const BT::TreeNode& node,
-                                   const char* fallback_key) {
-  std::string id;
-  if (node.getInput("plugin_id", id) && !id.empty()) {
-    return id;
-  }
-  if (node.config().blackboard) {
-    std::string board_id;
-    if (node.config().blackboard->get<std::string>(fallback_key, board_id)) {
-      return board_id;
-    }
-  }
-  return "";
-}
-
 /// @brief NaN = "端口未提供" 哨兵 (BT InputPort double 缺省值)。
 inline constexpr double k_behavior_param_unspecified =
     std::numeric_limits<double>::quiet_NaN();
@@ -79,13 +62,13 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
  * @brief ComputePathToPose 异步 action (spec §6.2): TaskHandle 直连主流。
  *
  * onStart: 读 goal 端口, 组 GetPathGoal (填 server 当前 session/plan_version +
- * 已解析 plugin_id), requestPath 持 TaskHandle, 注册 onComplete ->
+  * requestPath 持 TaskHandle, 注册 onComplete ->
  * emitWakeUpSignal。onRunning: 等 task ready; sessionIsCurrent +
  * planVersionIsCurrent 双校验防 stale 竞态 (spec §6.2 关键纪律), 通过后写 path
  * 端口 (XML 绑定 {raw_path}) 并 incrementPlanVersion。onHalted: 取消在飞 task。
  * 任何 FAILURE 前把精确 FailureContext 写入黑板 (使 Recovery 可获得 cause)。
  *
- * 端口: goal={goal} (输入), path={raw_path} (输出), plugin_id={planner_id}
+  * 端口: goal={goal} (输入), path={raw_path} (输出)
  * (输入,可选, 空时回退黑板 k_planner_id)。
  */
 class ComputePathToPoseNode : public BT::StatefulActionNode {
@@ -98,8 +81,6 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
     return {
       BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal"),
       BT::OutputPort<nav_msgs::Path>("path", "planned path"),
-      BT::InputPort<std::string>("plugin_id", "",
-                                 "explicit planner plugin id"),
     };
   }
 
@@ -108,7 +89,7 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
     if (!nav_server) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "navigation server not injected";
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
@@ -117,27 +98,25 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
     if (!getInput(k_goal, goal)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
-      ctx.code = FailureCode::InvalidInput;
+       ctx.code = ErrorCode::INVALID_INPUT;
       ctx.message = "goal port missing";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    plugin_id = resolvePluginId(*this, k_planner_id);
     submitted_goal = goal;
     actions::GetPathGoal g;
     g.goal = goal;
-    g.plugin_id = plugin_id;
     g.session_id = nav_server->currentSessionId();
     g.plan_version = nav_server->currentPlanVersion();
     task = nav_server->requestPath(g);
     if (!task.valid()) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "requestPath returned invalid task";
-      ctx.plugin_id = plugin_id;
+      ctx.plugin_id = "planner";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
       writeFailureContext(*this, ctx);
@@ -152,7 +131,6 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
     if (getInput(k_goal, current_goal) && !goalEquals(current_goal, submitted_goal)) {
       actions::GetPathGoal update;
       update.goal = current_goal;
-      update.plugin_id = plugin_id;
       update.session_id = nav_server->currentSessionId();
       update.plan_version = nav_server->currentPlanVersion();
       task = nav_server->requestPath(update);
@@ -169,20 +147,20 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
         !nav_server->planVersionIsCurrent(r.plan_version)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "stale session/plan_version result rejected";
-      ctx.plugin_id = plugin_id;
+       ctx.plugin_id = "planner";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    if (r.failure != FailureCode::None) {
+     if (r.failure != ErrorCode::NONE) {
       FailureContext ctx;
       ctx.stage = FailureStage::Planner;
       ctx.code = r.failure;
       ctx.message = r.message;
-      ctx.plugin_id = plugin_id;
+       ctx.plugin_id = "planner";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
@@ -197,7 +175,6 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
  private:
   components::NavigationRuntime::Ptr nav_server;
   components::TaskHandle<actions::GetPathResult> task;
-  std::string plugin_id;
   geometry_msgs::PoseStamped submitted_goal;
 };
 
@@ -205,7 +182,7 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
  * @brief SmoothPath 一次性异步 action (spec §6.2 同构)。
  *
  * 端口: input_path={raw_path} (输入), path={smoothed_path} (输出),
- * plugin_id={smoother_id} (输入,可选)。
+  * 使用配置期唯一 smoother。
  */
 class SmoothPathNode : public BT::StatefulActionNode {
  public:
@@ -217,8 +194,6 @@ class SmoothPathNode : public BT::StatefulActionNode {
     return {
       BT::InputPort<nav_msgs::Path>("input_path", "path to smooth"),
       BT::OutputPort<nav_msgs::Path>("path", "smoothed path"),
-      BT::InputPort<std::string>("plugin_id", "",
-                                 "explicit smoother plugin id"),
     };
   }
 
@@ -227,7 +202,7 @@ class SmoothPathNode : public BT::StatefulActionNode {
     if (!nav_server) {
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "navigation server not injected";
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
@@ -236,26 +211,24 @@ class SmoothPathNode : public BT::StatefulActionNode {
     if (!getInput("input_path", path)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
-      ctx.code = FailureCode::InvalidInput;
+       ctx.code = ErrorCode::INVALID_INPUT;
       ctx.message = "input_path port missing";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    plugin_id = resolvePluginId(*this, k_smoother_id);
     actions::SmoothPathGoal g;
     g.path = path;
-    g.plugin_id = plugin_id;
     g.session_id = nav_server->currentSessionId();
     g.plan_version = nav_server->currentPlanVersion();
     task = nav_server->requestSmoothing(g);
     if (!task.valid()) {
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "requestSmoothing returned invalid task";
-      ctx.plugin_id = plugin_id;
+      ctx.plugin_id = "smoother";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
       writeFailureContext(*this, ctx);
@@ -274,22 +247,22 @@ class SmoothPathNode : public BT::StatefulActionNode {
         !nav_server->planVersionIsCurrent(r.plan_version)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "stale session/plan_version result rejected";
-      ctx.plugin_id = plugin_id;
+      ctx.plugin_id = "smoother";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    if (r.failure != FailureCode::None) {
+     if (r.failure != ErrorCode::NONE) {
       // 平滑失败显式化: 写入黑板 failure_context 并返回 FAILURE, 由上层
       // RecoveryNode/恢复分支处理; 不做 best-effort 降级 (不掩盖算法故障)。
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
       ctx.code = r.failure;
       ctx.message = r.message;
-      ctx.plugin_id = plugin_id;
+      ctx.plugin_id = "smoother";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
@@ -305,7 +278,6 @@ class SmoothPathNode : public BT::StatefulActionNode {
  private:
   components::NavigationRuntime::Ptr nav_server;
   components::TaskHandle<actions::SmoothPathResult> task;
-  std::string plugin_id;
 };
 
 /**
@@ -317,7 +289,7 @@ class SmoothPathNode : public BT::StatefulActionNode {
  * 中间停止 (无 cancel → 无中间零速发布)。
  *
  * 端口: path={smoothed_path} (输入), frequency={controller_frequency} (输入),
- * plugin_id={controller_id} (输入,可选)。
+  * 使用配置期唯一 controller。
  */
 class FollowPathNode : public BT::StatefulActionNode {
  public:
@@ -329,8 +301,6 @@ class FollowPathNode : public BT::StatefulActionNode {
     return {
       BT::InputPort<nav_msgs::Path>("path", "path to follow"),
       BT::InputPort<double>("frequency", 20.0, "controller frequency in Hz"),
-      BT::InputPort<std::string>("plugin_id", "",
-                                 "explicit controller plugin id"),
     };
   }
 
@@ -339,7 +309,7 @@ class FollowPathNode : public BT::StatefulActionNode {
     if (!nav_server) {
       FailureContext ctx;
       ctx.stage = FailureStage::Controller;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "navigation server not injected";
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
@@ -348,14 +318,13 @@ class FollowPathNode : public BT::StatefulActionNode {
     if (!getInput("path", path)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Controller;
-      ctx.code = FailureCode::InvalidInput;
+       ctx.code = ErrorCode::INVALID_INPUT;
       ctx.message = "path port missing";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    plugin_id = resolvePluginId(*this, k_controller_id);
     return startExecution(path) ? BT::NodeStatus::RUNNING
                                 : BT::NodeStatus::FAILURE;
   }
@@ -373,9 +342,9 @@ class FollowPathNode : public BT::StatefulActionNode {
       if (!getInput("path", path)) {
         FailureContext ctx;
         ctx.stage = FailureStage::Controller;
-        ctx.code = FailureCode::InvalidInput;
+         ctx.code = ErrorCode::INVALID_INPUT;
         ctx.message = "path port missing";
-        ctx.plugin_id = plugin_id;
+        ctx.plugin_id = "controller";
         ctx.session_id = nav_server->currentSessionId();
         ctx.plan_version = nav_server->currentPlanVersion();
         writeFailureContext(*this, ctx);
@@ -408,24 +377,24 @@ class FollowPathNode : public BT::StatefulActionNode {
     if (!nav_server->sessionIsCurrent(r.session_id)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Controller;
-      ctx.code = FailureCode::InternalError;
+         ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "stale session result rejected";
-      ctx.plugin_id = plugin_id;
+         ctx.plugin_id = "controller";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
     // controller 成功且到达目标: 会话内即终点 (goal 已达), pending 版本差异不拒。
-    if (r.failure == FailureCode::None && r.reached) {
+     if (r.failure == ErrorCode::NONE && r.reached) {
       return BT::NodeStatus::SUCCESS;
     }
     if (!nav_server->planVersionIsCurrent(r.plan_version)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Controller;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "stale session/plan_version result rejected";
-      ctx.plugin_id = plugin_id;
+       ctx.plugin_id = "controller";
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
@@ -434,10 +403,10 @@ class FollowPathNode : public BT::StatefulActionNode {
     // 失败或未达标: 只依据 failure 决策, 不解析 message。
     FailureContext ctx;
     ctx.stage = FailureStage::Controller;
-    ctx.code = r.failure != FailureCode::None ? r.failure
-                                              : FailureCode::GoalNotReached;
+     ctx.code = r.failure != ErrorCode::NONE ? r.failure
+                                              : ErrorCode::GOAL_NOT_REACHED;
     ctx.message = r.message;
-    ctx.plugin_id = plugin_id;
+       ctx.plugin_id = "controller";
     ctx.session_id = r.session_id;
     ctx.plan_version = r.plan_version;
     writeFailureContext(*this, ctx);
@@ -447,7 +416,6 @@ class FollowPathNode : public BT::StatefulActionNode {
   bool startExecution(const nav_msgs::Path& path) {
     actions::ExePathGoal goal;
     goal.path = path;
-    goal.plugin_id = plugin_id;
     goal.session_id = nav_server->currentSessionId();
     goal.plan_version = nav_server->currentPlanVersion();
     submitted_plan_version = goal.plan_version;
@@ -455,9 +423,9 @@ class FollowPathNode : public BT::StatefulActionNode {
     if (!task.valid()) {
       FailureContext ctx;
       ctx.stage = FailureStage::Controller;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "requestExecution returned invalid task";
-      ctx.plugin_id = plugin_id;
+       ctx.plugin_id = "controller";
       ctx.session_id = goal.session_id;
       ctx.plan_version = goal.plan_version;
       writeFailureContext(*this, ctx);
@@ -472,7 +440,6 @@ class FollowPathNode : public BT::StatefulActionNode {
   bool updateExecutionPlan(const nav_msgs::Path& path) {
     actions::ExePathGoal goal;
     goal.path = path;
-    goal.plugin_id = plugin_id;
     goal.session_id = nav_server->currentSessionId();
     goal.plan_version = nav_server->currentPlanVersion();
     if (!nav_server->requestPlanUpdate(task.goal_id(), goal)) {
@@ -485,7 +452,6 @@ class FollowPathNode : public BT::StatefulActionNode {
   components::NavigationRuntime::Ptr nav_server;
   components::TaskHandle<actions::ExePathResult> task;
   uint64_t submitted_plan_version{0};
-  std::string plugin_id;
 };
 
 /**
@@ -555,7 +521,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
     if (!nav_server) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "navigation server not injected";
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
@@ -564,7 +530,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
     if (!getInput("recovery", recovery_id)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
-      ctx.code = FailureCode::InvalidInput;
+       ctx.code = ErrorCode::INVALID_INPUT;
       ctx.message = "recovery port missing";
       ctx.session_id = nav_server->currentSessionId();
       ctx.plan_version = nav_server->currentPlanVersion();
@@ -585,7 +551,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
     if (!task.valid()) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "requestRecovery returned invalid task";
       ctx.plugin_id = recovery_id;
       ctx.session_id = nav_server->currentSessionId();
@@ -606,7 +572,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
         !nav_server->planVersionIsCurrent(r.plan_version)) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
-      ctx.code = FailureCode::InternalError;
+       ctx.code = ErrorCode::INTERNAL_ERROR;
       ctx.message = "stale session/plan_version result rejected";
       ctx.plugin_id = recovery_id;
       ctx.session_id = r.session_id;
@@ -614,7 +580,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    if (r.failure != FailureCode::None) {
+     if (r.failure != ErrorCode::NONE) {
       FailureContext ctx;
       ctx.stage = FailureStage::Recovery;
       ctx.code = r.failure;

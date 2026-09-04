@@ -8,7 +8,6 @@
 #include "ayanami/abstract/components/plugin_manager.hpp"
 #include "ayanami/abstract/components/recovery_action.hpp"
 #include "ayanami/abstract/components/recovery_execution.hpp"
-#include "ayanami/abstract/components/robot_state_provider.hpp"
 #include "ayanami/abstract/components/smoother_action.hpp"
 #include "ayanami/abstract/components/smoother_execution.hpp"
 #include "ayanami/abstract/core/abstract_controller.hpp"
@@ -61,7 +60,7 @@ public:
 /**
  * @brief 导航服务基类 (spec §5.3, 无地图依赖)。
  *
- * 持 6 个 PluginManager + 4 个 Action + RobotStateProvider。
+ * 持插件管理器、四类 Action 和共享导航会话。
  * 地图对象 (costmap/gridmap) 由派生 server (如 CostmapNavigationServer, §5.4)
  * 覆写 virtual initialize*Plugin 注入; 派生覆写 createActions() 构造带地图的
  * Action (生产路径 = costmap_action)。基类 createActions() 经虚 new*Execution
@@ -91,15 +90,16 @@ public:
   /// @brief 停止服务: 取消并 join 所有 RUNNING action (幂等)。
   void stop();
 
-  /// @brief 按逻辑 id 取 action; id 为空时用默认插件 id。未装载/不存在返回 nullptr。
+  /// @brief Return the single configured action for the first three families.
+  /// Recovery actions remain selectable by their configured recovery id.
   PlannerAction* plannerAction(const std::string& id = "") const;
   SmootherAction* smootherAction(const std::string& id = "") const;
   ControllerAction* controllerAction(const std::string& id = "") const;
   RecoveryAction* recoveryAction(const std::string& name) const;
   std::vector<std::string> recoveryActionNames() const;
 
-  /// @brief 主流 TaskHandle 直连 (spec §3.4): 以 server 当前 session/plan_version
-  /// 填充 Goal (plugin_id 仅在其为空时填默认), 按 plugin_id 分派 action。
+  /// @brief Mainline TaskHandle requests. Planner, smoother and controller each
+  /// dispatch to their one configured action; recovery uses recovery_id.
   /// virtual 供测试 Mock 覆写 (Task 13)。
   virtual TaskHandle<ayanami::actions::GetPathResult> requestPath(
       const ayanami::actions::GetPathGoal& goal);
@@ -134,8 +134,6 @@ public:
   /// 使 pilot 与 server 使用同一 session/plan_version 计数); 未注入用内置实例。
   void setSessionState(std::shared_ptr<NavigationSessionState> session);
   std::shared_ptr<NavigationSessionState> sessionState() const;
-
-  RobotStateProvider& robotStateProvider();
 
 protected:
   // ★ 虚钩子: 派生覆写注入地图对象 (spec §5.3 关键)。默认 return true。
@@ -174,17 +172,7 @@ protected:
   void configureRecoveryExecution(
       std::shared_ptr<RecoveryExecution> exec) const;
 
-  /// @brief 三族 (planner/smoother/controller) request* 的公共分派模板:
-  /// per-family 互斥 + recovery 排他守卫 + id 解析/默认填充 + action 查找 +
-  /// 同族其它插件的抢占取消 + session/plan_version 填充。此模板把三个
-  /// 几乎同构的 request* 收敛为一处 (recovery 语义不同, 单独实现)。
-  template <typename GoalT, typename ResultT, typename ActionT>
-  TaskHandle<ResultT> dispatchSimpleRequest(
-      std::mutex& request_mutex,
-      std::map<std::string, std::unique_ptr<ActionT>>& actions,
-      const GoalT& goal, const std::string& default_id,
-      const char* family_label, const std::string& error_prefix);
-
+  /// @brief Shared dispatch for the three single-plugin families.
   PluginManager<ayanami::abstract::AbstractPlanner> planner_plugins;
   PluginManager<ayanami::abstract::AbstractSmoother> smoother_plugins;
   PluginManager<ayanami::abstract::AbstractController> controller_plugins;
@@ -192,17 +180,15 @@ protected:
   PluginManager<ayanami::abstract::AbstractGoalChecker> goal_checker_plugins;
   PluginManager<ayanami::abstract::AbstractProgressChecker>
       progress_checker_plugins;
-  // 每插件一个 action: key = 插件逻辑名 (PluginManager 装载名)。multiple loaded
-  // plugin configs 时按 request id 分派。
-  std::map<std::string, std::unique_ptr<PlannerAction>> planner_actions;
-  std::map<std::string, std::unique_ptr<SmootherAction>> smoother_actions;
-  std::map<std::string, std::unique_ptr<ControllerAction>> controller_actions;
+  // The first three families each contain one configured plugin/action.
+  std::unique_ptr<PlannerAction> planner_action;
+  std::unique_ptr<SmootherAction> smoother_action;
+  std::unique_ptr<ControllerAction> controller_action;
   std::map<std::string, std::unique_ptr<RecoveryAction>> recovery_actions;
-  RobotStateProvider robot_state_provider;
   std::string default_planner;
   std::string default_smoother;
   std::string default_controller;
-  std::string default_recovery;
+  std::vector<std::string> recovery_sequence;
   std::string default_goal_checker;
   std::string default_progress_checker;
   // 速度上限缓存 (navigation.max_vel_x/max_vel_y/max_vel_theta, 参数非负;
@@ -228,7 +214,7 @@ protected:
   /// @brief 构造立即失败的 TaskHandle (无效插件 id 等): valid()==true,
   /// ready()==true, status=ABORTED, result.failure 结构化失败码。
   template <typename Result>
-  TaskHandle<Result> rejectedHandle(FailureCode code,
+  TaskHandle<Result> rejectedHandle(ErrorCode code,
                                     const std::string& message,
                                     uint64_t session_id,
                                     uint64_t plan_version) const;

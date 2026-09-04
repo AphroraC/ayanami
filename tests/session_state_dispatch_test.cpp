@@ -21,6 +21,7 @@
 
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/components/navigation_session_state.hpp>
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
@@ -494,7 +495,7 @@ class InPlaceControllerAction : public ayanami::components::ControllerAction {
 class FollowServer : public NavigationServerBase {
  public:
   std::shared_ptr<FlagGoalChecker> goal_checker;
-  InPlaceControllerAction* controller_action = nullptr;
+  InPlaceControllerAction* controller_action_ptr = nullptr;
 
   void installController() {
     default_controller = "test_controller";
@@ -503,15 +504,15 @@ class FollowServer : public NavigationServerBase {
     auto controller = std::make_shared<LoopingController>();
     auto action = std::unique_ptr<InPlaceControllerAction>(
         new InPlaceControllerAction(controller, goal_checker, progress));
-    controller_action = action.get();
-    controller_actions["test_controller"] = std::move(action);
+    controller_action_ptr = action.get();
+    controller_action = std::move(action);
   }
 };
 
 constexpr const char* k_follow_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
-    <FollowPath path="{smoothed_path}" plugin_id="{controller_id}"/>
+    <FollowPath path="{smoothed_path}"/>
   </BehaviorTree>
 </root>)";
 
@@ -593,7 +594,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   ASSERT_TRUE(bb->get<FailureContext>(k_failure_context, ctx));
   EXPECT_EQ(ctx.stage, FailureStage::Planner);
   EXPECT_EQ(ctx.code, FailureCode::PathNotFound);
-  EXPECT_EQ(ctx.plugin_id, "test_planner");  // 黑板默认族 id 已填入 plugin_id
+  EXPECT_EQ(ctx.plugin_id, "planner");
   EXPECT_EQ(ctx.session_id, server->currentSessionId());
   EXPECT_EQ(ctx.plan_version, server->currentPlanVersion());
 
@@ -611,7 +612,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   EXPECT_EQ(server->last_recovery_goal.cause.stage, FailureStage::Planner);
   EXPECT_EQ(server->last_recovery_goal.cause.code,
             FailureCode::PathNotFound);
-  EXPECT_EQ(server->last_recovery_goal.cause.plugin_id, "test_planner");
+  EXPECT_EQ(server->last_recovery_goal.cause.plugin_id, "planner");
 }
 
 // ========== C. pilot 每会话重置 failure_context ==========
@@ -659,8 +660,9 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   EXPECT_TRUE(reset.message.empty());
 }
 
-// ========== D. plugin_id: 空填默认 / 显式保留 (server 层) ==========
-
+/* Legacy multi-plugin dispatch tests are intentionally removed: the public
+ * navigation model has one planner, smoother and controller per server. */
+#if 0
 TEST(SessionStateDispatchTest, pluginIdDefaultedOnlyWhenEmpty) {
   auto dir = makeDispatchConfigDir();
   auto server = std::make_shared<DispatchServer>();
@@ -703,10 +705,15 @@ TEST(SessionStateDispatchTest, pluginIdDefaultedOnlyWhenEmpty) {
     EXPECT_EQ(server->factory_controllers.back(), "controller_b");
   }
 }
+#endif
 
 // ========== E. 控制器 in-place plan update 端到端 ==========
 
 TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   auto server = std::make_shared<FollowServer>();
   server->installController();
 
@@ -730,7 +737,7 @@ TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
 
   // tick 1: onStart → 提交 v0 路径, 真实 ControllerAction 起执行。
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  EXPECT_EQ(server->controller_action->executions.load(), 1);
+  EXPECT_EQ(server->controller_action_ptr->executions.load(), 1);
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
   // plan_version 变化: FollowPathNode 走 in-place 更新 (requestPlanUpdate)。
@@ -739,7 +746,7 @@ TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
   // 断言: 无 cancel / 无新建 Execution / 无中间停止。
-  EXPECT_EQ(server->controller_action->executions.load(), 1);
+  EXPECT_EQ(server->controller_action_ptr->executions.load(), 1);
   EXPECT_EQ(zero_cmds.load(), 0);  // 更新阶段没有中间零速 (in-place, 无停止)
 
   // 到达标记打开 → 执行消费 setNewPlan 后到达; 最终结果携带最新 plan_version。
@@ -749,19 +756,22 @@ TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
   for (int i = 0; i < 50 && status != BT::NodeStatus::SUCCESS; ++i) {
     status = tree.tickExactlyOnce();
+    if (status == BT::NodeStatus::RUNNING) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
   }
   EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
 
   // 无中间停止: 全程只有最终到达那一次零速。
   EXPECT_EQ(zero_cmds.load(), 1);
   // 单一 Execution 贯穿 (未 cancel/未 join/未重建)。
-  EXPECT_EQ(server->controller_action->executions.load(), 1);
+  EXPECT_EQ(server->controller_action_ptr->executions.load(), 1);
 
   ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(zero_cb);
 }
 
-// ========== F. 按 id 分派多配置 + 无效 id 结构化失败 + 无热路径配置读 ==========
-
+// Recovery remains the only runtime-selectable plugin family.
+#if 0
 TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) {
   auto dir = makeDispatchConfigDir();
   auto server = std::make_shared<DispatchServer>();
@@ -839,6 +849,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
     EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   }
 }
+#endif
 
 // ========== G. 完成/更新竞态 + 多 controller 取消 (review 修复) ==========
 
@@ -849,7 +860,7 @@ TEST(SessionStateDispatchTest, updatePlanRejectedWhenExecutionTerminalKeepsAppli
   server->installController();
   server->goal_checker->ready.store(true);  // 首周期即判到达 (终态前无新 plan 消费)
 
-  const auto action = server->controller_action;
+  const auto action = server->controller_action_ptr;
   ExePathGoal goal;
   goal.path = makePath(2);
   goal.session_id = server->currentSessionId();
@@ -863,6 +874,7 @@ TEST(SessionStateDispatchTest, updatePlanRejectedWhenExecutionTerminalKeepsAppli
 }
 
 // LoopingController + FlagGoalChecker(ready=false) → 永不到达保持 RUNNING。
+#if 0
 TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) {
   class MultiServer : public NavigationServerBase {
    public:
@@ -917,6 +929,7 @@ TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) 
   EXPECT_EQ(t2.status(), GoalStatus::CANCELED);
   EXPECT_EQ(t2.result().failure, FailureCode::Canceled);
 }
+#endif
 
 // FollowPathNode update miss: registration 期 (execution 已终态/释放) requestPlanUpdate
 // 返回 false 时, 节点不得误报 FAILURE; 重查已完成任务并消费成功结果 (SUCCESS)。

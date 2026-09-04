@@ -21,7 +21,7 @@ namespace components {
  * 一次性 initialize() 时读 Config 并缓存; hot getRobotState() 永不读 Config。
  *
  * 语义: 位姿恒取最新 TF; 速度取最新 odom, 距上次写入超过 velocity_timeout
- * 视为过期 → 返回零速度但位姿仍有效 (对标 MBF RobotStateProvider 速度超时)。
+ * 视为过期 → 返回零速度但位姿仍有效。
  *
  * 单例纪律 (spec §3.2 同类): instance() 与全部方法定义只在 libayanami 的
  * src/components/robot_state_controller.cpp 内 (不 header-inline), 使 ayanami_ros

@@ -244,8 +244,9 @@ TEST(MinorCarryWiring, robotFrameSingleSourceFromCostmapNavigationJson) {
   ASSERT_NE(server.costmapContext(), nullptr);
   // costmap.json 无 robot_frame → 单一来源 = costmap_navigation.json。
   EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_footprint");
-  // RobotStateProvider 也用同一 robot_frame。
-  EXPECT_EQ(server.robotStateProvider().getRobotFrame(), "base_footprint");
+  // RobotStateController is the single configured robot-state source.
+  EXPECT_EQ(ayanami::components::RobotStateController::instance().getRobotFrame(),
+            "base_footprint");
 }
 
 // ---------------- Test 3 ----------------

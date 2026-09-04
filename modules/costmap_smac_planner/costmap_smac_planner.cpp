@@ -5,12 +5,10 @@
 // - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
 // - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
 // - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
-// - cancel(): 搜索循环逐节点检查, 打断后返回统一失败码 FailureCode::Canceled
+// - cancel(): 搜索循环逐节点检查, 打断后返回 ErrorCode::CANCELED
 
 #include "costmap_smac_planner.hpp"
 
-#include <ayanami/messages/actions.hpp>
-#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -191,32 +189,27 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
 
 }  // namespace
 
-CostmapSmacPlanner::CostmapSmacPlanner() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_smac_planner → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_smac_planner"));
-    param.use_diagonal = file.param<bool>("costmap_smac_planner", "use_diagonal",
-                                          param.use_diagonal);
-    param.tolerance = file.param<double>("costmap_smac_planner", "tolerance",
-                                         param.tolerance);
-    param.cost_factor = file.param<double>("costmap_smac_planner", "cost_factor",
-                                           param.cost_factor);
-    param.lethal_cost = file.param<int>("costmap_smac_planner", "lethal_cost",
-                                        param.lethal_cost);
-    param.neutral_cost = file.param<double>("costmap_smac_planner",
-                                            "neutral_cost", param.neutral_cost);
-    param.use_final_approach =
-        file.param<bool>("costmap_smac_planner", "use_final_approach",
-                         param.use_final_approach);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
-}
+CostmapSmacPlanner::CostmapSmacPlanner() = default;
 
-void CostmapSmacPlanner::initialize(
-    const std::string& /*name*/, ayanami::costmap::CostmapContext::ConstPtr map) {
+void CostmapSmacPlanner::configure(
+    const PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
+  // 配置键缺失时保持默认值。
+  const Config& file = context.config;
+  param.use_diagonal = file.param<bool>("costmap_smac_planner", "use_diagonal",
+                                        param.use_diagonal);
+  param.tolerance = file.param<double>("costmap_smac_planner", "tolerance",
+                                       param.tolerance);
+  param.cost_factor = file.param<double>("costmap_smac_planner", "cost_factor",
+                                         param.cost_factor);
+  param.lethal_cost = file.param<int>("costmap_smac_planner", "lethal_cost",
+                                      param.lethal_cost);
+  param.neutral_cost = file.param<double>("costmap_smac_planner",
+                                          "neutral_cost", param.neutral_cost);
+  param.use_final_approach =
+      file.param<bool>("costmap_smac_planner", "use_final_approach",
+                       param.use_final_approach);
   map_ = std::move(map);
 }
 
@@ -235,30 +228,26 @@ bool CostmapSmacPlanner::setNewGoal(
   return true;
 }
 
-FailureCode CostmapSmacPlanner::makePlan(
+PlannerResultT CostmapSmacPlanner::makePlan(
     const geometry_msgs::PoseStamped& start,
-    const geometry_msgs::PoseStamped& goal, double tolerance,
-    nav_msgs::Path& plan, double& cost, std::string& message) {
-  plan.poses.clear();
-  cost = 0.0;
-  message.clear();
+    const geometry_msgs::PoseStamped& goal, double tolerance) {
   canceled.store(false);
 
   if (!map_) {
-    message = "CostmapSmacPlanner has no costmap module";
-    return FailureCode::MapUnavailable;
+    return PlannerResultT::failure(
+        ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no costmap module");
   }
   // 持 shared 锁读图 (整个规划持有, <10ms), 零拷贝; 地图写者等锁写入。
   auto costmap = map_->lockGlobal();
 
   const costmap_2d::Costmap2D* cm = costmap.grid();
   if (!cm) {
-    message = "CostmapSmacPlanner has no global costmap";
-    return FailureCode::MapUnavailable;
+    return PlannerResultT::failure(
+        ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no global costmap");
   }
 
   // 3.1 minor carry: start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
-  // 快照解析的机器人位姿 (execution 在构建快照时经 TransformStore 解析)。
+  // 读视图解析的机器人位姿 (视图构建时经 TransformStore 解析)。
   geometry_msgs::PoseStamped start_pose = start;
   if (start_pose.pose.position.norm() == 0.0 &&
       start_pose.header.frame_id.empty() && costmap.has_robot_pose()) {
@@ -267,8 +256,8 @@ FailureCode CostmapSmacPlanner::makePlan(
 
   if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&
       start_pose.header.frame_id != goal.header.frame_id) {
-    message = "Start and goal frames do not match";
-    return FailureCode::TransformUnavailable;
+    return PlannerResultT::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
+                                   "Start and goal frames do not match");
   }
 
   unsigned int sx = 0;
@@ -277,18 +266,18 @@ FailureCode CostmapSmacPlanner::makePlan(
   unsigned int gy = 0;
   if (!cm->worldToMap(start_pose.pose.position.x(),
                       start_pose.pose.position.y(), sx, sy)) {
-    message = "Start pose is outside the global costmap";
-    return FailureCode::StartInvalid;
+    return PlannerResultT::failure(ErrorCode::START_INVALID,
+                                   "Start pose is outside the global costmap");
   }
   if (!cm->worldToMap(goal.pose.position.x(), goal.pose.position.y(),
                       gx, gy)) {
-    message = "Goal pose is outside the global costmap";
-    return FailureCode::GoalInvalid;
+    return PlannerResultT::failure(ErrorCode::GOAL_INVALID,
+                                   "Goal pose is outside the global costmap");
   }
 
   if (isBlocked(cm, sx, sy)) {
-    message = "Start pose is blocked";
-    return FailureCode::StartInvalid;
+    return PlannerResultT::failure(ErrorCode::START_INVALID,
+                                   "Start pose is blocked");
   }
 
   const double tolerance_m = tolerance > 0.0 ? tolerance : param.tolerance;
@@ -301,8 +290,9 @@ FailureCode CostmapSmacPlanner::makePlan(
   bool approximate = false;
   if (isBlocked(cm, gx, gy)) {
     if (!nearestValidGoal(cm, gx, gy, tolerance_cells, target_x, target_y)) {
-      message = "Goal pose is blocked and no valid cell within tolerance";
-      return FailureCode::GoalInvalid;
+      return PlannerResultT::failure(
+          ErrorCode::GOAL_INVALID,
+          "Goal pose is blocked and no valid cell within tolerance");
     }
     approximate = true;
   }
@@ -315,15 +305,15 @@ FailureCode CostmapSmacPlanner::makePlan(
   const AStarResult result =
       runAStar(cm, params, sx, sy, target_x, target_y, canceled);
   if (canceled.load()) {
-    message = "Planning canceled";
-    return FailureCode::Canceled;
+    return PlannerResultT::failure(ErrorCode::CANCELED, "Planning canceled");
   }
   if (!result.found || result.cells.empty()) {
-    message = "No path found";
-    return FailureCode::PathNotFound;
+    return PlannerResultT::failure(ErrorCode::PATH_NOT_FOUND,
+                                   "No path found");
   }
 
   // 构建 plan: cell → world pose。
+  nav_msgs::Path plan;
   plan.header.frame_id =
       start_pose.header.frame_id.empty() ? "map" : start_pose.header.frame_id;
   plan.poses.reserve(result.cells.size());
@@ -355,10 +345,10 @@ FailureCode CostmapSmacPlanner::makePlan(
     }
   }
 
-  cost = result.cost;
-  message = approximate ? "Smac planner found an approximate path"
-                        : "Smac planner found a path";
-  return FailureCode::None;
+  auto out = PlannerResultT::success(std::move(plan));
+  out.message = approximate ? "Smac planner found an approximate path"
+                            : "Smac planner found a path";
+  return out;
 }
 
 }  // namespace modules

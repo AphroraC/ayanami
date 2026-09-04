@@ -12,6 +12,7 @@
 #include <costmap_server/costmap_wrapper.hpp>
 
 #include "ayanami/abstract/components/robot_state_controller.hpp"
+#include "ayanami/map/abstract_map_context.hpp"
 #include "ayanami/costmap/core/costmap_view.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 
@@ -35,12 +36,35 @@ namespace costmap {
  *   (checkActivate/checkDeactivate/isCurrent); 规则插件绝不使用。
  * - 字段私有, 只暴露窄 accessor。
  */
-class CostmapContext : public std::enable_shared_from_this<CostmapContext> {
+class CostmapContext : public map::AbstractMapContext,
+                       public std::enable_shared_from_this<CostmapContext> {
  public:
   using Ptr = std::shared_ptr<CostmapContext>;
   using ConstPtr = std::shared_ptr<const CostmapContext>;
 
   CostmapContext() = default;
+
+  std::string mapFamily() const override { return "costmap"; }
+  std::string globalFrame() const override { return global_frame; }
+  std::string localFrame() const override { return local_frame; }
+  std::string robotFrame() const override { return robot_frame; }
+  bool isCurrent() const override { return mapsAreCurrent(); }
+  std::uint64_t version() const override { return map_version; }
+  void bumpVersion() { ++map_version; }
+  std::uint32_t capabilities() const override {
+    using Capability = map::MapCapability;
+    return static_cast<std::uint32_t>(Capability::CollisionQuery) |
+           static_cast<std::uint32_t>(Capability::GlobalPlanning) |
+           static_cast<std::uint32_t>(Capability::LocalPlanning) |
+           static_cast<std::uint32_t>(Capability::DynamicObstacleUpdate) |
+           static_cast<std::uint32_t>(Capability::ClearRegion);
+  }
+  map::MapCommandPort::Ptr commandPort() const override { return nullptr; }
+  bool getRobotState(geometry_msgs::PoseStamped& pose,
+                     geometry_msgs::TwistStamped& velocity) const override {
+    return components::RobotStateController::instance().getRobotState(
+        pose, velocity);
+  }
 
   // ---- 配置 (写者 / 测试注入) ----
   void setGlobalCostmap(costmap_2d::CostmapWrapper::Ptr wrapper) {
@@ -51,6 +75,13 @@ class CostmapContext : public std::enable_shared_from_this<CostmapContext> {
   }
   void setFrames(std::string global_frame, std::string robot_frame) {
     this->global_frame = std::move(global_frame);
+    this->local_frame = this->global_frame;
+    this->robot_frame = std::move(robot_frame);
+  }
+  void setFrames(std::string global_frame, std::string local_frame,
+                 std::string robot_frame) {
+    this->global_frame = std::move(global_frame);
+    this->local_frame = std::move(local_frame);
     this->robot_frame = std::move(robot_frame);
   }
 
@@ -65,7 +96,7 @@ class CostmapContext : public std::enable_shared_from_this<CostmapContext> {
   const std::string& getRobotFrame() const { return robot_frame; }
 
   /// @brief 任一 wrapper 非 current 则 false; 无 wrapper 视为 current。
-  bool isCurrent() const {
+  bool mapsAreCurrent() const {
     return (!global_costmap || global_costmap->isCurrent()) &&
            (!local_costmap || local_costmap->isCurrent());
   }
@@ -110,8 +141,8 @@ class CostmapContext : public std::enable_shared_from_this<CostmapContext> {
   /// invalid view)。
   CostmapView lockGlobal() const { return buildView(global_costmap, global_frame); }
 
-  /// @brief 持 shared 锁的 local 读视图 (帧名使用 global frame)。
-  CostmapView lockLocal() const { return buildView(local_costmap, global_frame); }
+  /// @brief 持 shared 锁的 local 读视图 (使用 local frame)。
+  CostmapView lockLocal() const { return buildView(local_costmap, local_frame); }
 
   /// @brief Hold the selected map's read lock without copying the map. The
   /// returned guard must not outlive the plugin call that requested it.
@@ -182,7 +213,9 @@ class CostmapContext : public std::enable_shared_from_this<CostmapContext> {
   costmap_2d::CostmapWrapper::Ptr global_costmap;
   costmap_2d::CostmapWrapper::Ptr local_costmap;
   std::string global_frame{"map"};
+  std::string local_frame{"map"};
   std::string robot_frame{"base_link"};
+  std::uint64_t map_version{0};
   costmap_2d::Footprint footprint_;
 };
 

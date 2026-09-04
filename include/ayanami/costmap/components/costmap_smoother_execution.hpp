@@ -4,8 +4,6 @@
 #include <string>
 #include <utility>
 
-#include <costmap_server/costmap_wrapper.hpp>
-
 #include "ayanami/abstract/components/smoother_execution.hpp"
 #include "ayanami/costmap/components/costmap_context.hpp"
 #include "ayanami/costmap/core/costmap_smoother.hpp"
@@ -14,12 +12,12 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 路径平滑的 costmap 版执行 (spec §5.4)。
+ * @brief 路径平滑的 costmap 版执行。
  *
  * 在 SmootherExecution 之上绑定 costmap 上下文:
  * - preRun/postRun: checkActivate/checkDeactivate (global costmap);
  * - safetyCheck: global wrapper isCurrent();
- * - callSmoother: 经 abstract 签名直调插件; 插件内部按需加锁读图。
+ * - callSmoother: typed in-place 调用 CostmapSmoother; 插件内部按需加锁读图。
  */
 class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
  public:
@@ -51,21 +49,21 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
   }
 
  protected:
-  FailureCode callSmoother(const ayanami::nav_msgs::Path& in,
-                           ayanami::nav_msgs::Path& out, double max_duration,
-                           bool check_for_collision,
-                           std::string& message) override {
+  SmootherResultT callSmoother(aayanami::nav_msgs::Path& path,
+                               double max_duration,
+                               bool check_for_collision) override {
     auto* typed = dynamic_cast<CostmapSmoother*>(smoother.get());
     if (!typed) {
-      message = "CostmapSmootherExecution: plugin is not a CostmapSmoother";
-      return FailureCode::InternalError;
+      return SmootherResultT::failure(
+          ErrorCode::INTERNAL_ERROR,
+          "CostmapSmootherExecution: plugin is not a CostmapSmoother");
     }
     if (!ctx) {
-      message = "CostmapSmootherExecution: no costmap module";
-      return FailureCode::MapUnavailable;
+      return SmootherResultT::failure(
+          ErrorCode::MAP_UNAVAILABLE,
+          "CostmapSmootherExecution: no costmap module");
     }
-    return typed->smoothPath(in, out, max_duration, check_for_collision,
-                             message);
+    return typed->smoothPath(path, max_duration, check_for_collision);
   }
 
  private:

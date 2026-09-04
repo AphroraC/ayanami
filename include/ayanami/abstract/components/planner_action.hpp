@@ -18,13 +18,13 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局路径规划 Action (对标 MBF PlannerAction, spec §5.1)。
+ * @brief 全局路径规划 Action (对标 MBF PlannerAction)。
  *
  * acceptGoal 返回 TaskHandle 直连调用者 (主流, BT 节点); 结果同时 emit 到
  * NavigationCallbacks::on_get_path_result 作旁路 (rviz 扩展/回退/监控)。
  * ExecutionState→GoalStatus 映射 (Ruling #2): FOUND_PLAN→SUCCEEDED,
- * CANCELED→CANCELED, 其余 terminal (MAX_RETRIES/PAT_EXCEEDED/NO_PLAN_FOUND/
- * STOPPED/INTERNAL_ERROR)→ABORTED + outcome。
+ * CANCELED→CANCELED, 其余 terminal (NO_PLAN_FOUND/STOPPED/INTERNAL_ERROR)
+ * →ABORTED + ErrorCode。
  */
 class PlannerAction : public ActionBase<ayanami::actions::GetPathGoal,
                                         PlannerExecution> {
@@ -57,6 +57,8 @@ public:
   ~PlannerAction() override { cancelAll(); }
 
   /// @brief 主流: 接受 goal 并拿 TaskHandle 直连 (spec §3.4)。
+  /// 同一 execution 在跑且插件支持 in-place 目标更新时走 latest-wins seam
+  /// (不 cancel / 不新建 execution), 旧 goal 立即以 CANCELED 结算。
   Task acceptGoal(const Goal& goal) {
     auto task = action_server->acceptGoal(goal);
     auto gh = action_server->getGoal(task.goal_id());
@@ -65,7 +67,7 @@ public:
     }
     if (!planner) {
       Result result;
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::INTERNAL_ERROR;
       result.message = "Planner plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
@@ -80,7 +82,7 @@ public:
                                        goal.tolerance)) {
         if (active_goal_id != 0) {
           Result canceled;
-          canceled.failure = FailureCode::Canceled;
+          canceled.error = ErrorCode::CANCELED;
           canceled.message = "Superseded by a newer planner goal";
           canceled.session_id = active_goal.session_id;
           canceled.plan_version = active_goal.plan_version;
@@ -110,9 +112,8 @@ public:
 
   ServerPtr server() const { return action_server; }
 
-  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子返回带
-  /// 地图的 execution)。取代旧的 Server*Action 私有子类间接层。未注入时
-  /// createExecution 默认构造 abstract execution。
+  /// @brief 注入 execution 工厂 (server 装配用: 经地图族工厂返回带地图的
+  /// execution)。未注入时 createExecution 默认构造 abstract execution。
   void setExecutionFactory(std::function<PlannerExecution::Ptr()> factory) {
     execution_factory = std::move(factory);
   }
@@ -155,8 +156,6 @@ protected:
         return;
       }
       switch (exec.getState()) {
-        case PlannerExecution::MAX_RETRIES:
-        case PlannerExecution::PAT_EXCEEDED:
         case PlannerExecution::NO_PLAN_FOUND:
         case PlannerExecution::STOPPED:
         case PlannerExecution::INTERNAL_ERROR:
@@ -188,19 +187,18 @@ private:
                     ayanami::actions::GoalStatus status) {
     if (goal_id == 0) return;
     Result result;
-    result.failure = exec.getFailure();
+    result.error = exec.getError();
     if (status == ayanami::actions::GoalStatus::CANCELED) {
-      result.failure = FailureCode::Canceled;
+      result.error = ErrorCode::CANCELED;
     } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
-      result.failure = FailureCode::None;
-    } else if (result.failure == FailureCode::None ||
-               result.failure == FailureCode::Canceled) {
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::NONE;
+    } else if (result.error == ErrorCode::NONE ||
+               result.error == ErrorCode::CANCELED) {
+      result.error = ErrorCode::INTERNAL_ERROR;
     }
     result.message = exec.getMessage();
     result.path.header = goal.goal.header;
     result.path.poses = exec.getPlan().poses;
-    result.cost = exec.getCost();
     result.session_id = goal.session_id;
     result.plan_version = goal.plan_version;
     action_server->publishResult(goal_id, status, result);

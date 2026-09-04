@@ -60,7 +60,7 @@ public:
     }
     if (!smoother) {
       Result result;
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::INTERNAL_ERROR;
       result.message = "Smoother plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
@@ -111,8 +111,6 @@ protected:
             return true;
           }
           switch (exec.getState()) {
-            case SmootherExecution::MAX_RETRIES:
-            case SmootherExecution::PAT_EXCEEDED:
             case SmootherExecution::NO_SMOOTHED_PATH:
             case SmootherExecution::STOPPED:
             case SmootherExecution::INTERNAL_ERROR:
@@ -139,14 +137,14 @@ private:
   void finishResult(const GoalHandleType& gh, const SmootherExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
-    result.failure = exec.getFailure();
+    result.error = exec.getError();
     if (status == ayanami::actions::GoalStatus::CANCELED) {
-      result.failure = FailureCode::Canceled;
+      result.error = ErrorCode::CANCELED;
     } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
-      result.failure = FailureCode::None;
-    } else if (result.failure == FailureCode::None ||
-               result.failure == FailureCode::Canceled) {
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::NONE;
+    } else if (result.error == ErrorCode::NONE ||
+               result.error == ErrorCode::CANCELED) {
+      result.error = ErrorCode::INTERNAL_ERROR;
     }
     result.message = exec.getMessage();
     result.smoothed_path = exec.getSmoothedPath();

@@ -2,22 +2,28 @@
 
 #include "ayanami/abstract/components/execution_base.hpp"
 #include "ayanami/abstract/core/abstract_planner.hpp"
+#include "ayanami/types.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <thread>
 
 namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局路径规划执行 (对标 MBF AbstractPlannerExecution, spec §5.1)。
+ * @brief 全局路径规划执行 (单次执行, 对标 MBF AbstractPlannerExecution)。
  *
- * 内部状态机枚举独立于 actions::GoalStatus (Ruling #2):
- * INITIALIZED→STARTED→PLANNING→(FOUND_PLAN | MAX_RETRIES | PAT_EXCEEDED |
- * NO_PLAN_FOUND | CANCELED | STOPPED | INTERNAL_ERROR)。
+ * 职责表: 插件只做路径搜索; 失败立即映射为 ErrorCode 终态, 重试由 BT
+ * (RecoveryNode) 决定 —— execution 层不做重试/耐心循环。
+ *
+ * latest-wins 目标 seam: setNewGoal 把最新 start/goal/tolerance 存入 pending
+ * 槽; run() 在每次插件调用前采纳最新 pending 目标, 插件调用返回后若
+ * revision 已推进则以最新目标重新开始 (不 cancel / 不 join / 不新建线程)。
+ *
+ * 内部状态机独立于 actions::GoalStatus (Ruling #2):
+ * INITIALIZED→STARTED→PLANNING→(FOUND_PLAN | NO_PLAN_FOUND | CANCELED |
+ * STOPPED | INTERNAL_ERROR)。
  */
 class PlannerExecution : public ExecutionBase {
 public:
@@ -28,8 +34,6 @@ public:
     STARTED,
     PLANNING,
     FOUND_PLAN,
-    MAX_RETRIES,
-    PAT_EXCEEDED,
     NO_PLAN_FOUND,
     CANCELED,
     STOPPED,
@@ -49,22 +53,16 @@ public:
     ExecutionBase::start();
   }
 
-  /// @brief 取消: 置 cancel_requested 并透传到 planner 插件 (virtual cancel_requested)。
+  /// @brief 取消: 置 cancel_requested 并透传到 planner 插件 (协作式)。
   void cancel() override {
     cancel_requested = true;
     if (planner) planner->cancel();
     condition.notify_all();
   }
 
-  /// @brief 运行中 in-place 更新目标 (latest-wins update seam, 对标 controller
-  /// updatePlan)。线程安全: 把最新 start/goal/tolerance 存入 pending 槽并递增
-  /// goal_revision; run() 在 (a) 每次规划前采纳最新 pending 目标, (b) 每次
-  /// callPlanner 返回后若 revision 已推进则同一 execution 线程以最新目标重新
-  /// 开始 (不 cancel / 不 join / 不新建线程)。同时透传到插件
-  /// AbstractPlanner::setNewGoal (CostmapSmacPlanner 用其线程安全 latest goal
-  /// revision 在搜索期间检测更新并中止陈旧搜索)。
-  /// @return false 表示 execution 已到终态 (run 已返回), 新目标不会被消费,
-  /// 调用方应回退到新建 execution。
+  /// @brief 运行中 in-place 更新目标 (latest-wins update seam)。
+  /// @return false 表示 execution 已到终态或插件不支持, 调用方应回退到
+  /// 新建 execution。
   virtual bool setNewGoal(const geometry_msgs::PoseStamped& start,
                           const geometry_msgs::PoseStamped& goal,
                           double tolerance) {
@@ -90,59 +88,38 @@ public:
     return static_cast<PlanningState>(state.load());
   }
 
-  /// @brief 最近一次有效路径的代价。
-  double getCost() const { return cost; }
-
   /// @brief 最近一次算出的路径。
   const nav_msgs::Path& getPlan() const { return plan; }
 
-  /// @brief 失败重试次数; -1 无限重试, 0 失败即放弃。
-  void setMaxRetries(int retries) { max_retries = retries; }
-
-  /// @brief 规划耐心 (秒); <=0 关闭。
-  void setPatience(double seconds) { patience = std::chrono::duration<double>(seconds); }
-
-  bool isPatienceExceeded() const {
-    if (patience <= std::chrono::duration<double>(0)) return false;
-    return std::chrono::steady_clock::now() - start_time > patience;
-  }
-
 protected:
   /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
-  /// 带快照的 typed 调用 (在执行层完成快照获取, 插件不接触地图)。
-  virtual FailureCode callPlanner(
+  /// typed 调用 (执行层完成地图访问, 插件不接触地图模块)。
+  virtual PlannerResultT callPlanner(
       const geometry_msgs::PoseStamped& start,
-      const geometry_msgs::PoseStamped& goal, double tolerance,
-      nav_msgs::Path& plan, double& cost, std::string& message) {
-    return planner->makePlan(start, goal, tolerance, plan, cost, message);
+      const geometry_msgs::PoseStamped& goal, double tolerance) {
+    return planner->makePlan(start, goal, tolerance);
   }
 
   void run() override {
     setState(STARTED, false);
-    start_time = std::chrono::steady_clock::now();
-    int retries = 0;
     // 当前已采纳的 goal revision (latest-wins): 每次循环采纳最新 pending 目标。
     uint64_t adopted_revision = 0;
-    // 本循环使用的 start/goal/tolerance (初始 = start() 传入; 之后随 revision
-    // 采纳而切换)。CostmapPlannerExecution::callPlanner 用其构建快照, 故每次
-    // 重新规划都基于最新目标。
     ayanami::geometry_msgs::PoseStamped cur_start = this->start_pose;
     ayanami::geometry_msgs::PoseStamped cur_goal = this->goal_pose;
     double cur_tolerance = this->goal_tolerance;
     try {
       while (true) {
         if (cancel_requested) {
-          failure = FailureCode::Canceled;
+          error = ErrorCode::CANCELED;
           setState(CANCELED, true);
           return;
         }
         if (should_exit) {
-          failure = FailureCode::Canceled;
+          error = ErrorCode::CANCELED;
           setState(STOPPED, true);
           return;
         }
         // latest-wins: 若 setNewGoal 已推入新 revision, 采纳最新 pending 目标。
-        // 锁内读取并拷贝, 与 setNewGoal 写入互斥。
         {
           std::lock_guard<std::mutex> lock(goal_mutex);
           if (goal_revision.load() != adopted_revision) {
@@ -150,20 +127,15 @@ protected:
             cur_goal = pending_goal;
             cur_tolerance = pending_tolerance;
             adopted_revision = goal_revision.load();
-            retries = 0;  // 新目标重新计重试预算 (latest-wins)
-            message.clear();
           }
         }
         setState(PLANNING, false);
 
-        double cost = 0.0;
-        failure = callPlanner(cur_start, cur_goal, cur_tolerance, plan, cost,
-                              message);
-        this->cost = cost;
-        bool success = failure == FailureCode::None;
+        const PlannerResultT result =
+            callPlanner(cur_start, cur_goal, cur_tolerance);
 
-        // 搜索期间来了新目标 (revision 推进): 不提交本结果, 以同一 execution
-        // 线程重新开始规划最新目标 (latest-wins, 无 cancel/join/新线程)。
+        // 插件调用期间来了新目标 (revision 推进): 不提交本结果, 以同一
+        // execution 线程重新规划最新目标 (latest-wins, 无 cancel/新线程)。
         {
           std::lock_guard<std::mutex> lock(goal_mutex);
           if (goal_revision.load() != adopted_revision) {
@@ -171,31 +143,26 @@ protected:
           }
         }
 
-        if (cancel_requested && !isPatienceExceeded()) {
-          failure = FailureCode::Canceled;
+        if (cancel_requested) {
+          error = ErrorCode::CANCELED;
           setState(CANCELED, true);
           return;
-        } else if (success) {
+        }
+        if (result.ok) {
+          plan = result.data;
+          error = ErrorCode::NONE;
+          message = result.message;
           setState(FOUND_PLAN, true);
           return;
-        } else if (max_retries > 0 && ++retries > max_retries) {
-          if (failure == FailureCode::None) failure = FailureCode::Timeout;
-          setState(MAX_RETRIES, true);
-          return;
-        } else if (isPatienceExceeded()) {
-          failure = FailureCode::Timeout;
-          setState(PAT_EXCEEDED, true);
-          return;
-        } else if (max_retries == 0) {
-          setState(NO_PLAN_FOUND, true);
-          return;
-        } else {
-          // 重试
-          std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
+        // 失败立即返回错误码 (重试由 BT 决定)。
+        error = result.error;
+        message = result.message;
+        setState(NO_PLAN_FOUND, true);
+        return;
       }
     } catch (...) {
-      failure = FailureCode::InternalError;
+      error = ErrorCode::INTERNAL_ERROR;
       message = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);
     }
@@ -204,9 +171,8 @@ protected:
   /// @brief 当前状态是否已到终态 (run 已退出 / 不再消费新目标)。
   bool isTerminalState() const {
     const auto s = static_cast<PlanningState>(state.load());
-    return s == FOUND_PLAN || s == MAX_RETRIES || s == PAT_EXCEEDED ||
-           s == NO_PLAN_FOUND || s == CANCELED || s == STOPPED ||
-           s == INTERNAL_ERROR;
+    return s == FOUND_PLAN || s == NO_PLAN_FOUND || s == CANCELED ||
+           s == STOPPED || s == INTERNAL_ERROR;
   }
 
 protected:
@@ -215,13 +181,8 @@ protected:
   geometry_msgs::PoseStamped goal_pose;
   double goal_tolerance{0.0};
   nav_msgs::Path plan;
-  double cost{0.0};
-  int max_retries{-1};
-  std::chrono::duration<double> patience{0};
-  std::chrono::steady_clock::time_point start_time;
 
   // ---- latest-wins update seam 状态 (线程安全) ----
-  // pending_* 由 setNewGoal 在 goal_mutex 保护下写入, run() 在锁内采纳。
   mutable std::mutex goal_mutex;
   geometry_msgs::PoseStamped pending_start;
   geometry_msgs::PoseStamped pending_goal;

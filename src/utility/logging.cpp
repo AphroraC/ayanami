@@ -11,6 +11,7 @@
 #include <cctype>
 #include <filesystem>
 #include <vector>
+#include <memory>
 
 namespace ayanami {
 
@@ -61,15 +62,24 @@ spdlog::level::level_enum logLevelFromString(const std::string& level) {
 }
 
 void configureLogging() {
-  const Config config(GlobalConfig::getConfigPath("config_logging"));
+  const GlobalConfig* global = GlobalConfig::instance();
+  std::unique_ptr<Config> legacy_config;
+  const Config* config = global;
+  // Transitional support for callers that still provide a separate logging
+  // file. New configurations keep logging in the root config.json.
+  if (global->hasParam("global", "config_logging")) {
+    legacy_config = std::make_unique<Config>(
+        GlobalConfig::getConfigPath("config_logging"));
+    config = legacy_config.get();
+  }
 
   const auto logging_level = logLevelFromString(
-      config.param<std::string>("logging", "logging_level", std::string("info")));
+      config->param<std::string>("logging", "logging_level", std::string("info")));
   const auto console_level = logLevelFromString(
-      config.param<std::string>("logging", "console_level", std::string("info")));
+      config->param<std::string>("logging", "console_level", std::string("info")));
   const bool console_output =
-      config.param<bool>("logging", "console_output", true);
-  const bool file_output = config.param<bool>("logging", "file_output", true);
+      config->param<bool>("logging", "console_output", true);
+  const bool file_output = config->param<bool>("logging", "file_output", true);
 
   auto logger = spdlog::default_logger();
   if (logger) {
@@ -83,21 +93,21 @@ void configureLogging() {
     }
 
     if (file_output) {
-      const std::string log_dir = config.param<std::string>(
+      const std::string log_dir = config->param<std::string>(
           "logging", "logging_dir", std::string("logs"));
       std::error_code ec;
       std::filesystem::create_directories(log_dir, ec);
       if (!ec) {
         const bool rotate_logs =
-            config.param<bool>("logging", "rotate_logs", true);
+            config->param<bool>("logging", "rotate_logs", true);
         spdlog::sink_ptr file_sink;
         const std::string log_path = log_dir + "/ayanami.log";
         if (rotate_logs) {
           const size_t max_file_size_bytes = static_cast<size_t>(
-              config.param<int>("logging", "max_file_size_kb", 8192)) *
+              config->param<int>("logging", "max_file_size_kb", 8192)) *
               1024;
           const size_t max_files =
-              static_cast<size_t>(config.param<int>("logging", "max_files", 10));
+              static_cast<size_t>(config->param<int>("logging", "max_files", 10));
           file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
               log_path, max_file_size_bytes, max_files);
         } else {

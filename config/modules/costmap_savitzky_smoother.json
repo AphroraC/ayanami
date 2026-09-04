@@ -1,6 +1,6 @@
 {
   "smoother": {
-    "name": "costmap_savitzky",
+    "name": "costmap_savitzky_smoother",
     "so_name": "libayanami_costmap_savitzky_smoother.so"
   },
   "costmap_savitzky_smoother": {

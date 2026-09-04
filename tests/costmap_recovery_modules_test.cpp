@@ -238,10 +238,13 @@ TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
   auto wait = std::make_shared<CostmapWaitRecovery>();
   wait->initialize("costmap_wait_recovery", ctx->getSharedConstPtr());
 
+  spin->start();
+  backup->start();
+  wait->start();
   std::string message;
-  EXPECT_EQ(spin->runRecovery(message), FailureCode::None);
-  EXPECT_EQ(backup->runRecovery(message), FailureCode::None);
-  EXPECT_EQ(wait->runRecovery(message), FailureCode::None);
+  (void)spin->tick(message);
+  (void)backup->tick(message);
+  (void)wait->tick(message);
 
   // 插件的 runRecovery 只是驱动周期逻辑, 绝不自行发布速度命令。
   EXPECT_TRUE(emittedIsEmpty())

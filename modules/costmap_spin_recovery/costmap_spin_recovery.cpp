@@ -1,6 +1,6 @@
 // Task 24: modules/costmap_spin_recovery — 原地旋转恢复模块。
 //
-// 纯 C++ (零 ROS): 周期驱动接口 (start/onCycleUpdate)。每周期返回纯角速度
+// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回纯角速度
 // 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
 // 在终态补零。插件不自行循环等待、不直接旁路发布速度命令。M1 headless
 // 无真底盘: 不依赖底盘实际运动, 发完 spin_dist/max_w 时长即 SUCCESS。
@@ -8,7 +8,6 @@
 
 #include "costmap_spin_recovery.hpp"
 
-#include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -65,63 +64,40 @@ void CostmapSpinRecovery::start() {
       std::max(param.spin_dist, 0.0) / std::max(param.max_w, 1e-6) / dt));
 }
 
-ayanami::abstract::RecoveryCycleResult CostmapSpinRecovery::onCycleUpdate(
-    std::string& message) {
-  message.clear();
+RecoveryResultT CostmapSpinRecovery::tick() {
   // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
   auto costmap = map_->lockGlobal();
-
-  ayanami::abstract::RecoveryCycleResult r;  // 默认 RUNNING + 零速度。
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
   if (canceled.load()) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::CANCELED;
-    r.failure = FailureCode::Canceled;
-    message = "spin recovery canceled";
-    return r;
+    return RecoveryResultT::failure(ErrorCode::CANCELED,
+                                    "spin recovery canceled");
   }
 
-  // 只取一次机器人位姿 (M1 headless 无底盘运动, 视为静态; 由快照解析)。
+  // 只取一次机器人位姿 (M1 headless 无底盘运动, 视为静态; 由读视图解析)。
   ::Eigen::Isometry3d robot_pose = ::Eigen::Isometry3d::Identity();
   const bool have_pose =
       costmap.has_robot_pose() &&
       poseToIsometry(costmap.robot_pose(), robot_pose);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::FAILED;
-    r.failure = FailureCode::RecoveryFailed;
-    message = "collision detected during spin";
-    return r;
+    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+                                    "collision detected during spin");
   }
 
   if (remaining_frames <= 0) {
-    r.status = ayanami::abstract::RecoveryCycleResult::Status::SUCCESS;
-    return r;
+    RecoveryCycleData data;
+    data.status = RecoveryStatus::SUCCESS;
+    return RecoveryResultT::success(std::move(data));
   }
   --remaining_frames;
-  r.velocity.header.frame_id = frame;
-  r.velocity.twist.angular.z() = param.max_w;
-  return r;
-}
-
-void CostmapSpinRecovery::end() {}
-
-FailureCode CostmapSpinRecovery::runRecovery(std::string& message) {
-  start();
-  while (true) {
-    const auto r = onCycleUpdate(message);
-    switch (r.status) {
-      case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
-        continue;
-      case ayanami::abstract::RecoveryCycleResult::Status::SUCCESS:
-        return FailureCode::None;
-      case ayanami::abstract::RecoveryCycleResult::Status::CANCELED:
-        return FailureCode::Canceled;
-      case ayanami::abstract::RecoveryCycleResult::Status::FAILED:
-      default:
-        return r.failure;
-    }
-  }
+  RecoveryCycleData data;
+  data.status = RecoveryStatus::RUNNING;
+  ayanami::geometry_msgs::TwistStamped velocity;
+  velocity.header.frame_id = frame;
+  velocity.twist.angular.z() = param.max_w;
+  data.velocity = std::move(velocity);
+  return RecoveryResultT::success(std::move(data));
 }
 
 bool CostmapSpinRecovery::cancel() {

@@ -1,7 +1,7 @@
 // Task 23: modules/costmap_pid_controller — 3 轴 PID 局部控制器模块。
 //
 // 纯 C++ (零 ROS): 继承 costmap::CostmapController (costmap 族 controller,
-// 只读 pose+path, 算法不读图但按族契约实现 initialize)。
+// 只读 pose+path, 算法不读图但按族契约实现 configure)。
 // 参考 _legacy pid_controller 语义重写, 收尾历史五项控制修复:
 // - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
 // - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
@@ -94,12 +94,15 @@ double CostmapPidController::PidAxis::compute(double error, double dt) {
   return kp * error + ki * integral + kd * derivative;
 }
 
-CostmapPidController::CostmapPidController() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_pid_controller → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_pid_controller"));
+CostmapPidController::CostmapPidController() = default;
+
+void CostmapPidController::configure(
+    const PluginContext& context,
+    ayanami::costmap::CostmapContext::ConstPtr map) {
+  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
+  // 键缺失时保持默认值。
+  {
+    const Config& file = context.config;
     param.max_vel_x = file.param<double>("costmap_pid_controller", "max_vel_x",
                                          param.max_vel_x);
     param.max_vel_theta =
@@ -142,9 +145,10 @@ CostmapPidController::CostmapPidController() {
                            param.rotate_in_place_angle);
     param.mode = file.param<std::string>("costmap_pid_controller", "mode",
                                          param.mode);
-  } catch (...) {
-    // 配置不可读时保持默认值。
   }
+
+  // 纯 path tracker 不读图: 满足 costmap 族契约仅持有地图指针。
+  map_ = std::move(map);
 
   pid_x.kp = param.kp_v;
   pid_x.ki = param.ki_v;
@@ -155,14 +159,6 @@ CostmapPidController::CostmapPidController() {
   pid_w.kp = param.kp_w;
   pid_w.ki = param.ki_w;
   pid_w.kd = param.kd_w;
-}
-
-void CostmapPidController::initialize(
-    const std::string& name, ayanami::costmap::CostmapContext::ConstPtr map) {
-  // 纯 path tracker 不读图: 满足 costmap 族契约 (spec §5.5) 仅持有地图指针。
-  // config 在构造函数读取, name 无需持久化。
-  (void)name;
-  map_ = std::move(map);
 }
 
 bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
@@ -182,24 +178,22 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   return true;
 }
 
-FailureCode CostmapPidController::computeVelocityCommands(
+ControllerResultT CostmapPidController::computeVelocityCommand(
     const geometry_msgs::PoseStamped& pose,
-    const geometry_msgs::TwistStamped& velocity,
-    geometry_msgs::TwistStamped& cmd_vel, std::string& message) {
+    const geometry_msgs::TwistStamped& velocity) {
   // 历史脏内存 bug: 入口强制清零后填充。
-  cmd_vel = geometry_msgs::TwistStamped{};
+  geometry_msgs::TwistStamped cmd_vel = geometry_msgs::TwistStamped{};
   cmd_vel.twist = geometry_msgs::Twist{};
   cmd_vel.header = pose.header;
-  message.clear();
 
   if (plan.poses.empty()) {
-    message = "PID controller has no plan";
-    return FailureCode::NoValidCommand;
+    return ControllerResultT::failure(ErrorCode::NO_VALID_COMMAND,
+                                      "PID controller has no plan");
   }
   if (canceled.load()) {
     resetTrackingState();
-    message = "PID controller canceled";
-    return FailureCode::Canceled;
+    return ControllerResultT::failure(ErrorCode::CANCELED,
+                                      "PID controller canceled");
   }
 
   last_pose = pose;
@@ -225,8 +219,9 @@ FailureCode CostmapPidController::computeVelocityCommands(
     cmd_vel.twist.linear.x() = 0.0;
     cmd_vel.twist.linear.y() = 0.0;
     cmd_vel.twist.angular.z() = angular_w;
-    message = "PID controller reached goal position, aligning heading";
-    return FailureCode::None;
+    auto result = ControllerResultT::success(ControllerCommand{cmd_vel});
+    result.message = "PID controller reached goal position, aligning heading";
+    return result;
   }
 
   // ---- 选择局部跟踪目标 (最近点 + lookahead 窗口) ----
@@ -322,8 +317,9 @@ FailureCode CostmapPidController::computeVelocityCommands(
   cmd_vel.twist.linear.y() = linear_y;
   cmd_vel.twist.angular.z() = angular_w;
 
-  message = "PID controller generated velocity command";
-  return FailureCode::None;
+  auto result = ControllerResultT::success(ControllerCommand{cmd_vel});
+  result.message = "PID controller generated velocity command";
+  return result;
 }
 
 bool CostmapPidController::cancel() {

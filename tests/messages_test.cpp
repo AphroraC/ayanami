@@ -5,6 +5,7 @@
 #include <ayanami/messages/sensor_msgs.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/types.hpp>
 
 #include <Eigen/Geometry>
 
@@ -27,6 +28,19 @@ TEST(MessagesTest, poseStampedHasHeaderAndIsometry) {
   EXPECT_DOUBLE_EQ(p.pose.position.x(), 1.0);
   EXPECT_DOUBLE_EQ(p.pose.position.y(), 0.0);
   EXPECT_EQ(p.toIsometry().matrix(), p.pose.toIsometry().matrix());
+}
+
+TEST(MessagesTest, abstractResultFactoryPreservesTypedOutcome) {
+  auto result = ayanami::PlannerResultT::success(Path{});
+  EXPECT_TRUE(result.ok);
+  EXPECT_EQ(result.error, ayanami::ErrorCode::NONE);
+  EXPECT_TRUE(static_cast<bool>(result));
+
+  auto failure = ayanami::PlannerResultT::failure(
+      ayanami::ErrorCode::PATH_NOT_FOUND, "no route");
+  EXPECT_FALSE(failure.ok);
+  EXPECT_EQ(failure.error, ayanami::ErrorCode::PATH_NOT_FOUND);
+  EXPECT_EQ(failure.message, "no route");
 }
 
 TEST(MessagesTest, headerStampDefaultsToLatestSentinel) {

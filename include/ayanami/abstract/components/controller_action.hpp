@@ -61,7 +61,7 @@ public:
     }
     if (!controller) {
       Result result;
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::INTERNAL_ERROR;
       result.message = "Controller plugin is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
@@ -129,8 +129,6 @@ protected:
             case ControllerExecution::NO_PLAN:
             case ControllerExecution::EMPTY_PLAN:
             case ControllerExecution::INVALID_PLAN:
-            case ControllerExecution::MAX_RETRIES:
-            case ControllerExecution::PAT_EXCEEDED:
             case ControllerExecution::NO_PROGRESS:
             case ControllerExecution::STOPPED:
             case ControllerExecution::INTERNAL_ERROR:
@@ -158,14 +156,14 @@ private:
   void finishResult(const GoalHandleType& gh, const ControllerExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
-    result.failure = exec.getFailure();
+    result.error = exec.getError();
     if (status == ayanami::actions::GoalStatus::CANCELED) {
-      result.failure = FailureCode::Canceled;
+      result.error = ErrorCode::CANCELED;
     } else if (status == ayanami::actions::GoalStatus::SUCCEEDED) {
-      result.failure = FailureCode::None;
-    } else if (result.failure == FailureCode::None ||
-               result.failure == FailureCode::Canceled) {
-      result.failure = FailureCode::InternalError;
+      result.error = ErrorCode::NONE;
+    } else if (result.error == ErrorCode::NONE ||
+               result.error == ErrorCode::CANCELED) {
+      result.error = ErrorCode::INTERNAL_ERROR;
     }
     result.message = exec.getMessage();
     result.reached = exec.getState() == ControllerExecution::ARRIVED_GOAL;

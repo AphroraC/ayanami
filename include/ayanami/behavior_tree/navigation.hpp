@@ -61,6 +61,43 @@ class RoundRobin : public BT::ControlNode {
   size_t current_child_idx;
 };
 
+/// Tries recovery children in declaration order. A successful recovery returns
+/// SUCCESS to its parent so the surrounding RecoveryNode retries navigation;
+/// a failed recovery advances to the next child.
+class RecoverySequence : public BT::ControlNode {
+ public:
+  RecoverySequence(const std::string& name, const BT::NodeConfig& config)
+      : BT::ControlNode(name, config), current_child_idx(0) {}
+
+  static BT::PortsList providedPorts() { return {}; }
+
+  BT::NodeStatus tick() override {
+    while (current_child_idx < childrenCount()) {
+      const auto status = children_nodes_[current_child_idx]->executeTick();
+      if (status == BT::NodeStatus::RUNNING) return status;
+      if (status == BT::NodeStatus::SUCCESS) {
+        haltChildren();
+        current_child_idx = 0;
+        return BT::NodeStatus::SUCCESS;
+      }
+      if (status != BT::NodeStatus::FAILURE) return status;
+      children_nodes_[current_child_idx]->haltNode();
+      ++current_child_idx;
+    }
+    haltChildren();
+    current_child_idx = 0;
+    return BT::NodeStatus::FAILURE;
+  }
+
+  void halt() override {
+    BT::ControlNode::halt();
+    current_child_idx = 0;
+  }
+
+ private:
+  std::size_t current_child_idx;
+};
+
 /// @brief 注册导航 BT 节点类 (spec §6.3 保留节点 + Task 12 控制/条件节点)。
 /// action 节点经 blackboard 注入 NavigationRuntime::Ptr (action_nodes.hpp)。
 ///
@@ -86,6 +123,7 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   factory.registerNodeType<RoundRobin>("RoundRobin");
+  factory.registerNodeType<RecoverySequence>("RecoverySequence");
 }
 
 } // namespace behavior_tree

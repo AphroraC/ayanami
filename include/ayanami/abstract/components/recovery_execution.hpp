@@ -4,26 +4,27 @@
 #include "ayanami/abstract/core/abstract_recovery.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
+#include "ayanami/messages/recovery_params.hpp"
+#include "ayanami/types.hpp"
 
 #include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
-#include <thread>
 
 namespace ayanami {
 namespace components {
 
 /**
- * @brief 恢复行为执行 (对标 MBF AbstractRecoveryExecution, spec §5.1)。
+ * @brief 恢复行为执行 (统一协议: start → tick 循环 → finish)。
  *
- * 按固定周期驱动恢复插件 (start → onCycleUpdate 反复 → end), 状态机:
- * INITIALIZED→STARTED→RECOVERING→RECOVERY_DONE (或 CANCELED/STOPPED/
- * INTERNAL_ERROR/PAT_EXCEEDED)。
+ * 状态机: INITIALIZED→STARTED→RECOVERING→RECOVERY_DONE (或 RECOVERY_FAILED/
+ * CANCELED/STOPPED/INTERNAL_ERROR/PAT_EXCEEDED)。
  *
- * 自 Task (recovery 发布收口): 本执行是恢复期间的唯一 velocity command
- * 发布者。插件只返回每周期期望速度, 执行层在这里做 finite + max_vel_x/y/theta
- * 安全校验并发布; 成功/失败/取消/超时/异常等所有终态路径一律先发布零速度。
+ * 本执行是恢复期间的唯一 velocity command 发布者: 插件 tick() 只返回本周期
+ * 期望速度 (optional), 执行层校验 finite + max_vel 后发布; 非运动恢复
+ * (velocity=nullopt) 不发布。成功/失败/取消/超时/异常等所有终态路径一律先
+ * 发布零速度。
  */
 class RecoveryExecution : public ExecutionBase {
 public:
@@ -53,7 +54,7 @@ public:
     return static_cast<RecoveryState>(state.load());
   }
 
-  /// @brief 取消: 置 cancel_requested 并透传到 recovery 插件 (virtual cancel_requested)。
+  /// @brief 取消: 置 cancel_requested 并透传到 recovery 插件 (协作式)。
   void cancel() override {
     cancel_requested = true;
     if (recovery) recovery->cancel();
@@ -61,7 +62,7 @@ public:
     condition.notify_all();
   }
 
-  /// @brief 恢复耐心 (秒); <=0 关闭。取消时等待该时长后仍不返回则超时。
+  /// @brief 恢复耐心 (秒); <=0 关闭。
   void setRecoveryPatience(double seconds) {
     recovery_patience = std::chrono::duration<double>(seconds);
   }
@@ -91,15 +92,12 @@ public:
   }
 
 protected:
-  /// @brief 插件调用钩子: 默认调 abstract 周期签名; 地图族 execution 覆写为
-  /// 带快照的 typed 调用 (在执行层完成快照获取, 插件不接触地图)。
-  virtual ayanami::abstract::RecoveryCycleResult callRecoveryCycle(
-      std::string& message) {
-    return recovery->onCycleUpdate(message);
-  }
+  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
+  /// typed 调用 (执行层完成地图访问, 插件不接触地图模块)。
+  virtual RecoveryResultT callRecoveryTick() { return recovery->tick(); }
 
   void run() override {
-    // 注意: 不在 run() 内 reset cancel_requested。start() 期已复位, 这里只读 cancel_requested;
+    // 注意: 不在 run() 内 reset cancel_requested。start() 期已复位, 这里只读;
     // 若在 run() 开头复位会把 start() 后刚发生的 cancel() 丢掉 (TOCTOU)。
     setState(STARTED, false);
     start_time = std::chrono::steady_clock::now();
@@ -111,53 +109,70 @@ protected:
     try {
       while (true) {
         if (cancel_requested) {
-          failure = FailureCode::Canceled;
+          error = ErrorCode::CANCELED;
           publishStopCommand();
           setState(CANCELED, true);
           break;
         }
         if (should_exit) {
-          failure = FailureCode::Canceled;
+          error = ErrorCode::CANCELED;
           publishStopCommand();
           setState(STOPPED, true);
           break;
         }
         if (isPatienceExceeded()) {
-          failure = FailureCode::Timeout;
+          error = ErrorCode::TIMEOUT;
           publishStopCommand();
           setState(PAT_EXCEEDED, true);
           break;
         }
 
-        const auto outcome = callRecoveryCycle(message);
+        const RecoveryResultT outcome = callRecoveryTick();
         // 若周期调用期间发生取消, 以取消为准 (阻塞恢复/透传取消的插件)。
         if (cancel_requested) {
-          failure = FailureCode::Canceled;
+          error = ErrorCode::CANCELED;
           publishStopCommand();
           setState(CANCELED, true);
           break;
         }
 
-        // 唯一发布: 校验 (finite + max_vel) 后发布本周期建议速度。
-        publishRecoveryVelocity(outcome.velocity);
+        if (!outcome.ok) {
+          // 恢复失败/被取消: error=CANCELED → CANCELED 状态, 其余 RECOVERY_FAILED。
+          error = outcome.error;
+          message = outcome.message;
+          publishStopCommand();
+          setState(outcome.error == ErrorCode::CANCELED ? CANCELED
+                                                        : RECOVERY_FAILED,
+                   true);
+          break;
+        }
 
-        switch (outcome.status) {
-          case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
-            std::this_thread::sleep_for(cycle_period);
+        // 唯一发布: 校验 (finite + max_vel) 后发布本周期建议速度;
+        // 非运动恢复 (nullopt) 不发布。
+        if (outcome.data.velocity) {
+          publishRecoveryVelocity(*outcome.data.velocity);
+        }
+
+        switch (outcome.data.status) {
+          case RecoveryStatus::RUNNING:
+            sleepInterruptibly(cycle_period);
             continue;
-          case ayanami::abstract::RecoveryCycleResult::Status::SUCCESS:
-            failure = FailureCode::None;
+          case RecoveryStatus::SUCCESS:
+            error = ErrorCode::NONE;
+            message = outcome.message;
             publishStopCommand();
             setState(RECOVERY_DONE, true);
             break;
-          case ayanami::abstract::RecoveryCycleResult::Status::CANCELED:
-            failure = FailureCode::Canceled;
+          case RecoveryStatus::CANCELED:
+            error = ErrorCode::CANCELED;
             publishStopCommand();
             setState(CANCELED, true);
             break;
-          case ayanami::abstract::RecoveryCycleResult::Status::FAILED:
+          case RecoveryStatus::FAILED:
           default:
-            failure = outcome.failure;
+            error = outcome.error == ErrorCode::NONE ? ErrorCode::RECOVERY_FAILED
+                                                     : outcome.error;
+            message = outcome.message;
             publishStopCommand();
             setState(RECOVERY_FAILED, true);
             break;
@@ -165,12 +180,12 @@ protected:
         break;  // 终态退出循环
       }
     } catch (...) {
-      failure = FailureCode::InternalError;
+      error = ErrorCode::INTERNAL_ERROR;
       message = "Unknown error occurred";
       publishStopCommand();
       setState(INTERNAL_ERROR, true);
     }
-    if (recovery) recovery->end();
+    if (recovery) recovery->finish();
   }
 
   /// @brief 校验 (finite + max_vel 上限) 后发布建议速度; 非法命令清零。
@@ -194,6 +209,14 @@ protected:
            std::abs(linear.x()) <= max_linear_x &&
            std::abs(linear.y()) <= max_linear_y &&
            std::abs(angular.z()) <= max_angular_z;
+  }
+
+  /// @brief 周期等待; cancel/stop 立即打断 (不等满周期)。
+  void sleepInterruptibly(std::chrono::microseconds period) {
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait_for(lock, period, [this] {
+      return cancel_requested.load() || should_exit.load();
+    });
   }
 
 protected:

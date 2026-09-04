@@ -1,6 +1,6 @@
 {
   "planner": {
-    "name": "costmap_smac",
+    "name": "costmap_smac_planner",
     "so_name": "libayanami_costmap_smac_planner.so"
   },
   "costmap_smac_planner": {

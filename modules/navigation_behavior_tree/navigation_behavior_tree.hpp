@@ -52,7 +52,7 @@ class NavigationBehaviorTreeExtension
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-              <ComputePathToPose goal="{goal}" path="{raw_path}" plugin_id="{planner_id}"/>
+               <ComputePathToPose goal="{goal}" path="{raw_path}"/>
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
@@ -62,10 +62,10 @@ class NavigationBehaviorTreeExtension
           </RecoveryNode>
         </RateController>
         <RateController hz="{smoother_frequency}" reset_token="{goal_revision}">
-          <SmoothPath input_path="{raw_path}" path="{smoothed_path}" plugin_id="{smoother_id}"/>
+               <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
         </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1">
-          <FollowPath path="{smoothed_path}" frequency="{controller_frequency}" plugin_id="{controller_id}"/>
+           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
             <HaltControllers/>
             <Recovery recovery="{clear_costmap_id}"/>
@@ -74,7 +74,7 @@ class NavigationBehaviorTreeExtension
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RoundRobin name="RecoveryActions">
+         <RecoverySequence name="RecoveryActions">
           <Sequence>
             <HaltControllers/>
             <Recovery recovery="{spin_id}"/>
@@ -87,7 +87,7 @@ class NavigationBehaviorTreeExtension
             <HaltControllers/>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
-        </RoundRobin>
+         </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

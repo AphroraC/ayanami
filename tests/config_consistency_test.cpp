@@ -118,22 +118,35 @@ std::vector<std::string> recoveryFamilyFiles() {
 
 NavIds readNavIds() {
   NavIds ids;
+  const ayanami::GlobalConfig* global = ayanami::GlobalConfig::instance();
+  const std::string directory =
+      global->param<std::string>("global", "config_path", ".");
+  const ayanami::Config navigation(ayanami::GlobalConfig::getConfigPath(
+      "config_navigation"));
+  const auto navPath = [&](const char* key) {
+    const auto relative = navigation.param<std::string>("navigation", key, "");
+    const std::filesystem::path path(relative);
+    return path.is_absolute() ? path.string() : directory + "/" + relative;
+  };
   {
-    ayanami::Config cfg(
-        ayanami::GlobalConfig::getConfigPath("config_planner"));
+    ayanami::Config cfg(navPath("config_planner"));
     ids.planner_id = cfg.param<std::string>("planner", "name", "");
   }
   {
-    ayanami::Config cfg(
-        ayanami::GlobalConfig::getConfigPath("config_smoother"));
+    ayanami::Config cfg(navPath("config_smoother"));
     ids.smoother_id = cfg.param<std::string>("smoother", "name", "");
   }
   {
-    ayanami::Config cfg(
-        ayanami::GlobalConfig::getConfigPath("config_controller"));
+    ayanami::Config cfg(navPath("config_controller"));
     ids.controller_id = cfg.param<std::string>("controller", "name", "");
   }
-  for (const auto& path : recoveryFamilyFiles()) {
+  std::vector<std::string> recovery_files = navigation.param<std::vector<std::string>>(
+      "navigation", "config_recovery", {});
+  for (const auto& relative : recovery_files) {
+    const std::filesystem::path candidate(relative);
+    const std::string path = candidate.is_absolute()
+                                 ? candidate.string()
+                                 : directory + "/" + relative;
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     const std::string role = cfg.param<std::string>("recovery", "role", "");
@@ -151,14 +164,28 @@ NavIds readNavIds() {
 // 读某插件 json 的 name 字段。module_section 为 json 顶层段名。
 std::string pluginName(const std::string& config_key,
                        const std::string& module_section) {
-  ayanami::Config cfg(
-      ayanami::GlobalConfig::getConfigPath(config_key));
+  const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
+      "config_navigation"));
+  const std::string directory = ayanami::GlobalConfig::instance()->param<std::string>(
+      "global", "config_path", ".");
+  const std::string relative = nav.param<std::string>(
+      "navigation", config_key, "");
+  const std::filesystem::path p(relative);
+  ayanami::Config cfg(p.is_absolute() ? p.string() : directory + "/" + relative);
   return cfg.param<std::string>(module_section, "name", "");
 }
 
 // config_recovery 数组按 role 定位插件 json, 读 name (工厂统一公共符号)。
 std::string recoveryPluginName(const std::string& role) {
-  for (const auto& path : recoveryFamilyFiles()) {
+  const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
+      "config_navigation"));
+  const std::string directory = ayanami::GlobalConfig::instance()->param<std::string>(
+      "global", "config_path", ".");
+  const auto files = nav.param<std::vector<std::string>>(
+      "navigation", "config_recovery", {});
+  for (const auto& relative : files) {
+    const std::filesystem::path p(relative);
+    const std::string path = p.is_absolute() ? p.string() : directory + "/" + relative;
     ayanami::Config cfg(path);
     if (cfg.param<std::string>("recovery", "role", "") == role) {
       return cfg.param<std::string>("recovery", "name", "");

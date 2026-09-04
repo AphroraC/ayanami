@@ -309,15 +309,13 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
       "costmap_local", "raytrace_range", local_raytrace_range);
 
   costmap_context = std::make_shared<CostmapContext>();
+  costmap_context->bumpVersion();
   costmap_context->setGlobalCostmap(global_wrapper);
   costmap_context->setLocalCostmap(local_wrapper);
-  costmap_context->setFrames(global_frame, robot_frame);
+  costmap_context->setFrames(global_frame, local_frame, robot_frame);
   // footprint 缓存为不可变副本: 快照构建只读此缓存 (写锁外绝不读 live
   // LayeredCostmap 的 footprint)。
   costmap_context->setFootprint(footprint);
-
-  // 3.2 minor carry: RobotStateProvider 也用同一 robot_frame (单一来源)。
-  robot_state_provider.setFrames(global_frame, local_frame, robot_frame);
 
   // 全局 RobotStateController 一次性配置: 帧名 + 速度超时只在此缓存,
   // hot getRobotState() 永不读 Config (spec §5.3 扩展)。
@@ -431,18 +429,14 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
 // ---- createActions: 生产路径 = Costmap*Action ----
 
 void CostmapNavigationServer::createActions() {
-  planner_actions.clear();
-  smoother_actions.clear();
-  controller_actions.clear();
+  planner_action.reset();
+  smoother_action.reset();
+  controller_action.reset();
   recovery_actions.clear();
 
   // planner/smoother: Costmap*Action (带 ctx 的 Costmap*Execution)。
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    auto planner = planner_plugins.getPlugin(name);
-    if (!planner) {
-      continue;
-    }
-    planner_actions[name] = std::make_unique<CostmapPlannerAction>(
+  if (auto planner = planner_plugins.getPlugin(default_planner)) {
+    planner_action = std::make_unique<CostmapPlannerAction>(
         planner, costmap_context);
   }
   if (!planner_plugins.hasPlugin(default_planner)) {
@@ -451,12 +445,8 @@ void CostmapNavigationServer::createActions() {
                   default_planner);
   }
 
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    auto smoother = smoother_plugins.getPlugin(name);
-    if (!smoother) {
-      continue;
-    }
-    smoother_actions[name] = std::make_unique<CostmapSmootherAction>(
+  if (auto smoother = smoother_plugins.getPlugin(default_smoother)) {
+    smoother_action = std::make_unique<CostmapSmootherAction>(
         smoother, costmap_context);
   }
   if (!smoother_plugins.hasPlugin(default_smoother)) {
@@ -466,27 +456,13 @@ void CostmapNavigationServer::createActions() {
   }
 
   // controller: CostmapControllerExecution + checker/速度上限/真实位姿源装配。
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    auto controller = controller_plugins.getPlugin(name);
-    if (!controller) {
-      continue;
-    }
+  if (auto controller = controller_plugins.getPlugin(default_controller)) {
     auto action = std::make_unique<CostmapControllerAction>(
         controller, costmap_context,
         [this](ayanami::components::ControllerExecution::Ptr exec) {
           configureControllerExecution(exec);
-          // 控制器真实机器人位姿/速度源: 全局 RobotStateController 单例 ——
-          // 位姿取最新 TF (TransformStore map←robot_frame), 速度取最新 odom
-          // (过期→零速度)。替换原硬编码零速度 (速度不再恒零, pid/dwb 可消费
-          // 真实线速度)。
-          auto& rsc = ayanami::components::RobotStateController::instance();
-          exec->setRobotStateProvider(
-              [&rsc](ayanami::geometry_msgs::PoseStamped& pose,
-                     ayanami::geometry_msgs::TwistStamped& velocity) {
-                return rsc.getRobotState(pose, velocity);
-              });
         });
-    controller_actions[name] = std::move(action);
+    controller_action = std::move(action);
   }
   if (!controller_plugins.hasPlugin(default_controller)) {
     spdlog::error("CostmapNavigationServer::createActions: default controller "
@@ -506,11 +482,6 @@ void CostmapNavigationServer::createActions() {
           configureRecoveryExecution(exec);
         });
     recovery_actions[name] = std::move(action);
-  }
-  if (!recovery_plugins.hasPlugin(default_recovery)) {
-    spdlog::error("CostmapNavigationServer::createActions: default recovery "
-                  "'{}' not loaded",
-                  default_recovery);
   }
 }
 

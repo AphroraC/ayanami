@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace ayanami {
 namespace components {
@@ -29,8 +30,9 @@ public:
 
   virtual ~ExecutionBase();
 
-  /// @brief 提交 run() 任务到 WorkerPool 异步执行。
-  /// 若上一次 run 任务仍在跑, 先等其结束再重启 (等价旧 start() 的 stop+join)。
+  /// @brief 在 execution 自有线程中异步执行。
+  /// 长时 controller/recovery 不占用 action driver 的 worker，避免嵌套
+  /// WorkerPool 任务造成 starvation。
   virtual void start();
 
   /// @brief 请求退出 run() (rigorous), run() 以 STOPPED 状态退出。
@@ -48,8 +50,8 @@ public:
   /// @brief 当前内部状态 (原子读)。
   int getState() const { return state.load(); }
 
-  /// @brief 最近一次插件调用的统一失败码 (None=成功)。
-  FailureCode getFailure() const { return failure; }
+  /// @brief 最近一次插件调用的统一错误码 (NONE=成功)。
+  ErrorCode getError() const { return error; }
 
   /// @brief 最近一次的人类可读消息。
   std::string getMessage() const { return message; }
@@ -81,7 +83,7 @@ protected:
   std::atomic<bool> should_exit{false};
   std::atomic<bool> cancel_requested{false};
   std::atomic<int> state{0};
-  FailureCode failure{FailureCode::None};
+  ErrorCode error{ErrorCode::NONE};
   std::string message;
 
 private:
@@ -90,6 +92,7 @@ private:
 
   /// @brief 是否仍有 run 任务在跑 (mutex 保护, 供 start/join 谓词等待)。
   bool running{false};
+  std::thread execution_thread;
 };
 
 } // namespace components

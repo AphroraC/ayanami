@@ -5,6 +5,7 @@
 #include <ayanami/behavior_tree/pipeline_sequence.hpp>
 #include <ayanami/behavior_tree/rate_controller.hpp>
 #include <ayanami/behavior_tree/recovery_node.hpp>
+#include <ayanami/behavior_tree/navigation.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 
@@ -139,6 +140,22 @@ TEST(BehaviorTreeControlTest, pipelineSequenceReticksPlannerWhileControllerRuns)
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 2);
+}
+
+TEST(BehaviorTreeControlTest, recoverySequenceAdvancesOnFailureAndStopsOnSuccess) {
+  auto factory = makeFactory();
+  factory.registerNodeType<RecoverySequence>("RecoverySequence");
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4"><BehaviorTree ID="main">
+  <RecoverySequence><MockChild name="first"/><MockChild name="second"/></RecoverySequence>
+</BehaviorTree></root>)", BT::Blackboard::create());
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 2u);
+  mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 1);
+  EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
 TEST(BehaviorTreeControlTest, recoveryNodeResetsRetriesAfterSuccess) {

@@ -1,7 +1,5 @@
 #include "ayanami/abstract/components/execution_base.hpp"
 
-#include "ayanami/abstract/components/worker_pool.hpp"
-
 namespace ayanami {
 namespace components {
 
@@ -21,8 +19,7 @@ void ExecutionBase::start() {
     std::lock_guard<std::mutex> lock(mutex);
     running = true;
   }
-  // 状态机任务提交到进程级 WorkerPool, 不再自建 std::thread。
-  WorkerPool::instance().submit([this]() { runTask(); });
+  execution_thread = std::thread([this]() { runTask(); });
 }
 
 void ExecutionBase::runTask() {
@@ -54,8 +51,9 @@ void ExecutionBase::cancel() {
 }
 
 void ExecutionBase::join() {
-  std::unique_lock<std::mutex> lock(mutex);
-  condition.wait(lock, [this] { return !running; });
+  if (execution_thread.joinable()) {
+    execution_thread.join();
+  }
 }
 
 bool ExecutionBase::waitForStateUpdate(std::chrono::microseconds const& duration) {

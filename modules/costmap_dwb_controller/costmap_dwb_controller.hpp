@@ -1,9 +1,9 @@
 // costmap_dwb_controller.hpp — nav2 dwb_core::DWBLocalPlanner 的 ayanami 迁移。
 //
 // 算法逻辑与 nav2_dwb_controller (dwb_core) 逐函数对应:
-//   configure        → initialize(name)
+//   configure        → configure(PluginContext, map)
 //   setPlan          → setPlan (Path → Path2D, reset critics + generator)
-//   computeVelocityCommands → computeVelocityCommands (abstract 签名;
+//   computeVelocityCommands → computeVelocityCommand (abstract 签名;
 //                             插件经持有的地图模块加锁读 local grid)
 //   prepareGlobalPlan / coreScoringAlgorithm / scoreTrajectory /
 //   transformGlobalPlan / loadCritics 保留原名与语义
@@ -51,19 +51,18 @@ public:
 
   virtual ~CostmapDwBLocalPlanner() = default;
 
-  /// @brief costmap 族初始化契约 (等价 nav2 configure): 读配置、创建
-  /// trajectory generator 并 initialize、loadCritics。
-  void initialize(const std::string& name,
-                  ayanami::costmap::CostmapContext::ConstPtr map) override;
+  /// @brief costmap 族注入契约 (等价 nav2 configure): 经 PluginContext 读
+  /// 自身配置、创建 trajectory generator 并 initialize、loadCritics。
+  void configure(const PluginContext& context,
+                 ayanami::costmap::CostmapContext::ConstPtr map) override;
 
   /// @brief nav2 setPlan 等价。
   bool setPlan(const ayanami::nav_msgs::Path& plan) override;
 
   /// @brief nav2 computeVelocityCommands 等价 (abstract 签名; 内部加锁读图)。
-  FailureCode computeVelocityCommands(
+  ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped& pose,
-      const ayanami::geometry_msgs::TwistStamped& velocity,
-      ayanami::geometry_msgs::TwistStamped& cmd_vel, std::string& message) override;
+      const ayanami::geometry_msgs::TwistStamped& velocity) override;
 
   bool cancel() override { return false; }
 
@@ -102,8 +101,8 @@ protected:
 
   virtual void loadCritics();
 
-  /// @brief 模块参数 (json 段 = controller.name; 构造时经 glim 式显式
-  /// Config 读取并拷贝进成员; initialize 不再重复读配置)。
+  /// @brief 模块参数 (json 段 = controller.name; configure 时经
+  /// PluginContext 注入的自身配置读取并拷贝进成员)。
   struct CostmapDwBLocalPlannerParam {
     double transform_tolerance{0.1};
     bool prune_plan{true};
@@ -121,8 +120,8 @@ protected:
   nav_2d_msgs::Path2D global_plan;  ///< Saved Global Plan
   CostmapDwBLocalPlannerParam param;
 
-  /// @brief 本插件配置 (构造时装载; initialize/loadCritics 复用同一实例,
-  /// 无 thread_local 注入)。
+  /// @brief 本插件配置 (configure 时由 PluginContext 移入; loadCritics
+  /// 复用同一实例, 无 thread_local 注入)。
   std::unique_ptr<ayanami::Config> config_;
 
   std::vector<TrajectoryCritic::Ptr> critics;

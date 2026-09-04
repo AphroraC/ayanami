@@ -8,6 +8,7 @@
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/messages/failure.hpp>
 
 #include <Eigen/Geometry>
@@ -334,6 +335,10 @@ TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
 // ---- 其余 3 个 action 最小验收 ----
 
 TEST(ControllerAction, runsOneCycleAndSucceeds) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                           Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<TestController>();
   TestControllerAction action(controller);
   action.initCheckers(

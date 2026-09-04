@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <ayanami/abstract/components/plugin_manager.hpp>
-#include <ayanami/abstract/components/robot_state_provider.hpp>
 #include <ayanami/abstract/core/abstract_planner.hpp>
 
 #include <Eigen/Geometry>
@@ -112,46 +111,6 @@ TEST(PluginManagerTest, loadFailureReturnsFalse) {
   EXPECT_FALSE(ok);
   EXPECT_FALSE(mgr.hasPlugin("bad"));
   EXPECT_TRUE(mgr.getLoadedNames().empty());
-}
-
-TEST(RobotStateProviderTest, defaultReturnsIdentity) {
-  ayanami::components::RobotStateProvider rsp;
-  auto pose = rsp.getRobotPose();
-  EXPECT_TRUE(pose.toIsometry().isApprox(Eigen::Isometry3d::Identity(), 1e-9));
-  auto velocity = rsp.getRobotVelocity();
-  EXPECT_EQ(velocity.twist.linear.x(), 0.0);
-  EXPECT_EQ(velocity.twist.angular.z(), 0.0);
-}
-
-TEST(RobotStateProviderTest, framesRoundTrip) {
-  ayanami::components::RobotStateProvider rsp;
-  rsp.setFrames("map", "odom", "base_link");
-  EXPECT_EQ(rsp.getGlobalFrame(), "map");
-  EXPECT_EQ(rsp.getOdomFrame(), "odom");
-  EXPECT_EQ(rsp.getRobotFrame(), "base_link");
-}
-
-TEST(RobotStateProviderTest, setRobotStateRoundTrip) {
-  ayanami::components::RobotStateProvider rsp;
-  ayanami::geometry_msgs::PoseStamped pose;
-  pose.header.frame_id = "map";
-  pose.pose = ayanami::geometry_msgs::Pose::fromIsometry(Eigen::Isometry3d::Identity());
-  pose.pose.position = Eigen::Vector3d(1.0, 2.0, 0.0);
-
-  ayanami::geometry_msgs::TwistStamped velocity;
-  velocity.header.frame_id = "base_link";
-  velocity.twist.linear = Eigen::Vector3d(0.5, 0.0, 0.0);
-
-  rsp.setRobotState(pose, velocity);
-
-  auto out_pose = rsp.getRobotPose();
-  EXPECT_EQ(out_pose.header.frame_id, "map");
-  EXPECT_NEAR(out_pose.pose.position.x(), 1.0, 1e-9);
-  EXPECT_NEAR(out_pose.pose.position.y(), 2.0, 1e-9);
-
-  auto out_velocity = rsp.getRobotVelocity();
-  EXPECT_EQ(out_velocity.header.frame_id, "base_link");
-  EXPECT_NEAR(out_velocity.twist.linear.x(), 0.5, 1e-9);
 }
 
 int main(int argc, char** argv) {

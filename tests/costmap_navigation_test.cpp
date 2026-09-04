@@ -128,16 +128,7 @@ std::filesystem::path makeConfigDir() {
 
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_planner\": \"planner.json\",\n"
-             "    \"config_smoother\": \"smoother.json\",\n"
-             "    \"config_controller\": \"controller.json\",\n"
-             "    \"config_recovery\": [\"recovery.json\"],\n"
-             "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\",\n"
-             "    \"config_smac_planner\": \"planner.json\",\n"
-             "    \"config_savitzky_smoother\": \"smoother.json\",\n"
-             "    \"config_spin_recovery\": \"recovery.json\"\n"
+              "    \"config_navigation\": \"costmap_navigation.json\"\n"
              "  }\n}\n");
 
   write_file(dir / "planner.json",
@@ -201,7 +192,12 @@ std::filesystem::path makeConfigDir() {
         << "    \"planner_id\": \"test_planner\",\n"
         << "    \"smoother_id\": \"test_smoother\",\n"
         << "    \"controller_id\": \"test_controller\",\n"
-        << "    \"recovery_id\": \"test_spin\",\n"
+        << "    \"config_planner\": \"planner.json\",\n"
+        << "    \"config_smoother\": \"smoother.json\",\n"
+        << "    \"config_controller\": \"controller.json\",\n"
+        << "    \"config_goal_checker\": \"goal_checker.json\",\n"
+        << "    \"config_progress_checker\": \"progress_checker.json\",\n"
+        << "    \"config_recovery\": [\"recovery.json\"],\n"
         << "    \"clear_costmap_id\": \"test_spin\",\n"
         << "    \"spin_id\": \"test_spin\",\n"
         << "    \"wait_id\": \"test_spin\",\n"

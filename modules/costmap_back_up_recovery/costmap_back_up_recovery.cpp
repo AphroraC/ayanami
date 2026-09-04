@@ -63,7 +63,7 @@ void CostmapBackUpRecovery::start() {
       std::max(param.backup_dist, 0.0) / std::max(param.max_v, 1e-6) / dt));
 }
 
-ayanami::abstract::RecoveryCycleResult CostmapBackUpRecovery::onCycleUpdate(
+ayanami::abstract::RecoveryCycleResult CostmapBackUpRecovery::tick(
     std::string& message) {
   message.clear();
   // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
@@ -108,7 +108,7 @@ void CostmapBackUpRecovery::end() {}
 FailureCode CostmapBackUpRecovery::runRecovery(std::string& message) {
   start();
   while (true) {
-    const auto r = onCycleUpdate(message);
+    const auto r = tick(message);
     switch (r.status) {
       case ayanami::abstract::RecoveryCycleResult::Status::RUNNING:
         continue;
