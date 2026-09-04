@@ -65,14 +65,12 @@ std::string g_progress_checker_so;
 // 捕获 on_velocity_command 事件。
 std::vector<TwistStamped> g_cmds;
 std::mutex g_cmd_mutex;
-int g_cmd_cb_id = -1;
 // 抢占标记: setGoal 预抢占后观察者记录零速度计数。
 std::atomic<bool> g_preempt_armed{false};
 std::atomic<int> g_zero_after_preempt{0};
 // 可视化捕获。
 std::vector<std::string> g_viz_names;
 std::mutex g_viz_mutex;
-int g_viz_cb_id = -1;
 
 // ---------------- 测试工具 ----------------
 
@@ -278,11 +276,15 @@ std::filesystem::path makeConfigDir() {
   return dir;
 }
 
+// RAII 订阅句柄: attach 时替换, detach 时析构退订 (无悬挂 id)。
+ayanami::CallbackSubscription g_cmd_cb;
+ayanami::CallbackSubscription g_viz_cb;
+
 void attachObservers() {
   g_cmds.clear();
   g_zero_after_preempt.store(0);
   g_preempt_armed.store(false);
-  g_cmd_cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  g_cmd_cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [](const TwistStamped& t) {
         std::lock_guard<std::mutex> lock(g_cmd_mutex);
         g_cmds.push_back(t);
@@ -291,8 +293,8 @@ void attachObservers() {
         }
       });
   g_viz_names.clear();
-  g_viz_cb_id =
-      ayanami::interfaces::NavigationCallbacks::on_costmap_visualization.add(
+  g_viz_cb =
+      ayanami::interfaces::NavigationCallbacks::on_costmap_visualization.subscribe(
           [](const std::string& name, const ayanami::nav_msgs::OccupancyGrid&) {
             std::lock_guard<std::mutex> lock(g_viz_mutex);
             g_viz_names.push_back(name);
@@ -300,16 +302,8 @@ void attachObservers() {
 }
 
 void detachObservers() {
-  if (g_cmd_cb_id >= 0) {
-    ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(
-        g_cmd_cb_id);
-    g_cmd_cb_id = -1;
-  }
-  if (g_viz_cb_id >= 0) {
-    ayanami::interfaces::NavigationCallbacks::on_costmap_visualization.remove(
-        g_viz_cb_id);
-    g_viz_cb_id = -1;
-  }
+  g_cmd_cb.reset();
+  g_viz_cb.reset();
 }
 
 int nonZeroCmdCount() {

@@ -328,7 +328,7 @@ TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
   std::atomic<int> bypass_hits{0};
   ayanami::actions::GoalStatus bypass_status =
       ayanami::actions::GoalStatus::PENDING;
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_get_path_result.add(
+  ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_get_path_result.subscribe(
       [&](const ayanami::actions::GoalResult<ayanami::actions::GetPathResult>& gr) {
         bypass_hits++;
         bypass_status = gr.status;
@@ -340,7 +340,7 @@ TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
   EXPECT_GE(bypass_hits.load(), 1);
   EXPECT_EQ(bypass_status, ayanami::actions::GoalStatus::SUCCEEDED);
 
-  ayanami::interfaces::NavigationCallbacks::on_get_path_result.remove(cb_id);
+  // cb 析构自动退订
 }
 
 // ---- 其余 3 个 action 最小验收 ----

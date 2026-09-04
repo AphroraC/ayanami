@@ -51,6 +51,39 @@ TEST(NavigationCallbacksTest, threadSafeAcrossAddRemoveCall) {
   NavigationCallbacks::on_get_path_result.remove(id);
 }
 
+TEST(NavigationCallbacksTest, subscriptionHandleUnsubscribesOnDestruction) {
+  // RAII 生命周期: CallbackSubscription 析构即退订, 其后的 emit 不再送达;
+  // 移动赋值只保留最新一份订阅 (旧的被替换退订)。
+  std::atomic<int> hits{0};
+  {
+    ayanami::CallbackSubscription sub =
+        NavigationCallbacks::on_get_path_result.subscribe(
+            [&](const auto&) { hits++; });
+    GoalResult<GetPathResult> result{};
+    NavigationCallbacks::on_get_path_result(result);
+    EXPECT_EQ(hits.load(), 1);
+  }  // sub 析构 → 退订
+  GoalResult<GetPathResult> result{};
+  NavigationCallbacks::on_get_path_result(result);
+  EXPECT_EQ(hits.load(), 1);
+
+  // 移动赋值: 旧订阅退订, 新订阅生效。
+  ayanami::CallbackSubscription outer;
+  {
+    ayanami::CallbackSubscription first =
+        NavigationCallbacks::on_get_path_result.subscribe(
+            [&](const auto&) { hits++; });
+    NavigationCallbacks::on_get_path_result(result);
+    EXPECT_EQ(hits.load(), 2);
+    outer = std::move(first);  // first 变空, 订阅转移给 outer
+  }
+  NavigationCallbacks::on_get_path_result(result);
+  EXPECT_EQ(hits.load(), 3);
+  outer.reset();  // 显式退订 (等价析构)
+  NavigationCallbacks::on_get_path_result(result);
+  EXPECT_EQ(hits.load(), 3);
+}
+
 TEST(NavigationCallbacksTest, callbackVisibleAcrossSoBoundary) {
   // dlopen echo_extension.so (链接 libayanami): 其构造期 add 到
   // NavigationCallbacks::on_get_path_result。本测试 emit 槽后, echo .so

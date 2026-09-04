@@ -225,7 +225,8 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   bool received_cmd = false;
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  ayanami::CallbackSubscription cmd_cb =
+      ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&received_cmd](const TwistStamped& cmd) {
         received_cmd = true;
         // Global Constraint: 发布前清零 ⇒ linear.x 等字段已初始化 (非 NaN/Inf)
@@ -247,8 +248,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   EXPECT_TRUE(received_cmd);
 
   exec.join();
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
-}
+}  // cmd_cb 析构自动退订
 
 TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
@@ -259,7 +259,7 @@ TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
   ayanami::components::ControllerExecution exec(controller);
 
   bool received = false;
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&received](const TwistStamped& cmd) {
         received = true;
         EXPECT_EQ(cmd.twist.linear.x(), 0.0);
@@ -273,7 +273,7 @@ TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
   exec.cancel();  // 触发 publishStopCommand (safety cancel)
 
   EXPECT_TRUE(received);
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
+  // cb 析构自动退订
 }
 
 TEST(ExecutionRecovery, runRecoveryReachesDone) {
@@ -423,7 +423,7 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   exec.setMaximumVelocity(1.0, 0.0, 1.0);
 
   std::atomic<int> overspeed_cmds{0};
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&](const TwistStamped& cmd) {
         if (cmd.twist.linear.x() > 1.0 ||
             std::abs(cmd.twist.linear.y()) > 1e-9 ||
@@ -452,8 +452,7 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
 
   exec.cancel();
   exec.join();
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
-}
+}  // cmd_cb 析构自动退订
 
 // setMaximumVelocity 上限宽松时超限被放行 (对照: 拒绝路径真因上限而非其他)。
 TEST(ExecutionController, velocityWithinMaxIsPublished) {
@@ -478,7 +477,7 @@ TEST(ExecutionController, velocityWithinMaxIsPublished) {
   exec.setMaximumVelocity(1.0, 0.0, 1.0);
 
   bool received = false;
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&](const TwistStamped&) { received = true; });
 
   Path plan;
@@ -491,5 +490,4 @@ TEST(ExecutionController, velocityWithinMaxIsPublished) {
   EXPECT_TRUE(received);
 
   exec.join();
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
-}
+}  // cmd_cb 析构自动退订

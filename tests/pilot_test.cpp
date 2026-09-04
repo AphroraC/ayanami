@@ -295,8 +295,8 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
   pilot.setNavigationRuntime(server);
 
   std::atomic<int> vel_count{0};
-  const int vel_id =
-      ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  ayanami::CallbackSubscription vel_cb =
+      ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
           [&vel_count](const ayanami::geometry_msgs::TwistStamped&) {
             vel_count.fetch_add(1);
           });
@@ -323,9 +323,7 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
 
   // cmd_vel 旁路被触发 (mock requestExecution 里 emit on_velocity_command)
   EXPECT_GE(vel_count.load(), 1);
-
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(vel_id);
-}
+}  // vel_cb 析构自动退订
 
 TEST(BehaviorTreePilotTest, newGoalRevisesTaskWithoutStoppingController) {
   const auto dir = makeConfigDir();

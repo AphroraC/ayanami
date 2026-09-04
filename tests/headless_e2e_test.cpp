@@ -349,10 +349,11 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
 
   // 5. 收集 map visualization (验证 start/限频触发 on_costmap_visualization 旁路)
   std::atomic<int> map_count{0};
-  int map_cb_id = NavigationCallbacks::on_costmap_visualization.add(
-      [&map_count](const std::string&, const ayanami::nav_msgs::OccupancyGrid&) {
-        ++map_count;
-      });
+  ayanami::CallbackSubscription map_cb =
+      NavigationCallbacks::on_costmap_visualization.subscribe(
+          [&map_count](const std::string&, const ayanami::nav_msgs::OccupancyGrid&) {
+            ++map_count;
+          });
 
   // 6. 启动
   nav->initialize(dir.string());
@@ -386,7 +387,6 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
 
   // 11. nav->stop() + cleanup; 析构不崩 (Ruling #3)
   nav->stop();
-  NavigationCallbacks::on_costmap_visualization.remove(map_cb_id);
   detachCollectors();
   nav.reset();  // ~CostmapNavigation → stop() (幂等) + join, 不得崩
 }

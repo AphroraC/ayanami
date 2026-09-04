@@ -431,13 +431,14 @@ constexpr const char* k_recovery_only_xml = R"(
 </root>)";
 
 std::atomic<int> g_spin_velocity_cmds{0};
-int g_spin_cb_id = -1;
+// RAII 订阅句柄: attach 时替换, detach 时析构退订 (无悬挂 id)。
+ayanami::CallbackSubscription g_spin_cb;
 
 void attachSpinObserver() {
   g_spin_velocity_cmds.store(0);
-  g_spin_cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
+  g_spin_cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [](const TwistStamped& t) {
-        // spin recovery runRecovery 每帧发非零角速度 → 证明插件被实际调用。
+        // spin recovery tick 每帧发非零角速度 → 证明插件被实际调用。
         if (std::abs(t.twist.angular.z()) > 1e-6) {
           g_spin_velocity_cmds.fetch_add(1);
         }
@@ -445,11 +446,7 @@ void attachSpinObserver() {
 }
 
 void detachSpinObserver() {
-  if (g_spin_cb_id >= 0) {
-    ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(
-        g_spin_cb_id);
-    g_spin_cb_id = -1;
-  }
+  g_spin_cb.reset();
 }
 
 void writeFile(const std::filesystem::path& path,

@@ -156,8 +156,9 @@ TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
 
   // 捕获 on_velocity_command 旁路 (controller execution 每帧发布 cmd_vel)。
   std::atomic<int> cmd_count{0};
-  int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
-      [&](const TwistStamped&) { ++cmd_count; });
+  ayanami::CallbackSubscription cmd_cb =
+      ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
+          [&](const TwistStamped&) { ++cmd_count; });
 
   ExePathGoal goal;
   goal.path = makePath(10);
@@ -180,5 +181,4 @@ TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
     EXPECT_EQ(controller->applied_sizes.back(), 10u);
   }
 
-  ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
-}
+}  // cmd_cb 析构自动退订
