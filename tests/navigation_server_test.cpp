@@ -564,7 +564,7 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   EXPECT_TRUE(coord->controller_exited.load());
 
   // 3. recovery active 期间: 普通 request 被结构化拒绝 (ABORTED +
-  // FailureCode::RecoveryFailed)。
+  // ErrorCode::RESOURCE_BUSY)。
   auto rp = server.requestPath(pgoal);
   ASSERT_TRUE(rp.valid());
   ASSERT_TRUE(rp.ready());
@@ -599,9 +599,9 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
     ASSERT_TRUE(recovery_done.load());
   }
 
-  // 5. 清理: 树节点的 <HaltControllers/> 语义等价于调 server.cancelAllControllers()
-  // (cancel+join)。这里直接调用验证 join 语义; planner/smoother 由树 halt 清理,
-  // 测试侧同样调用以保证线程退出。
+  // 5. 清理: 运行时资源协议里 recovery 启动前由 requestRecovery 内部调
+  // cancelAllControllers (cancel+join)。这里直接调用验证 join 语义;
+  // planner/smoother 同样调用以保证线程退出。
   server.cancelAllControllers();
   server.cancelAllPlanners();
   server.cancelAllSmoothers();

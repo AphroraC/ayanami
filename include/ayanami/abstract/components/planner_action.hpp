@@ -105,6 +105,18 @@ public:
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
+  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  void abortGoal(const GoalHandleType& gh) override {
+    Result result;
+    result.error = ErrorCode::INTERNAL_ERROR;
+    result.message = "planner action driver exception";
+    result.session_id = gh.goal.session_id;
+    result.plan_version = gh.goal.plan_version;
+    action_server->publishResult(gh.id,
+                                 ayanami::actions::GoalStatus::ABORTED, result);
+    clearActiveExecution(gh.id, active_execution.get());
+  }
+
   void cancelAll() {
     action_server->cancelAll();
     Base::cancelAll();

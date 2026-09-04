@@ -76,6 +76,18 @@ public:
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
+  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  /// 结果完成回调触发 requestRecovery 的互斥释放, 异常路径不得悬挂资源协议。
+  void abortGoal(const GoalHandleType& gh) override {
+    Result result;
+    result.error = ErrorCode::INTERNAL_ERROR;
+    result.message = "recovery action driver exception";
+    result.session_id = gh.goal.session_id;
+    result.plan_version = gh.goal.plan_version;
+    action_server->publishResult(gh.id,
+                                 ayanami::actions::GoalStatus::ABORTED, result);
+  }
+
   void cancelAll() {
     action_server->cancelAll();
     Base::cancelAll();

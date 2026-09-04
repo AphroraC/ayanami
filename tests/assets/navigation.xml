@@ -9,7 +9,6 @@
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
-              <HaltControllers/>
               <Recovery recovery="{clear_costmap_id}"/>
             </Sequence>
           </RecoveryNode>
@@ -20,7 +19,6 @@
         <RecoveryNode name="FollowPath" number_of_retries="1">
           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{clear_costmap_id}"/>
           </Sequence>
         </RecoveryNode>
@@ -29,15 +27,12 @@
         <GoalUpdated goal="{goal}"/>
         <RoundRobin name="RecoveryActions">
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{wait_id}"/>
           </Sequence>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
         </RoundRobin>

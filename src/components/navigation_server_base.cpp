@@ -533,9 +533,17 @@ NavigationServerBase::requestRecovery(
   ayanami::actions::RecoveryGoal g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
-  auto task = iter->second->acceptGoal(g);
-  task.onComplete([this] { recovery_exclusive.store(false); });
-  return task;
+  try {
+    auto task = iter->second->acceptGoal(g);
+    // 资源协议: recovery 结束 (含异常兜底路径的 publishResult) 后才允许
+    // controller 恢复接受请求。
+    task.onComplete([this] { recovery_exclusive.store(false); });
+    return task;
+  } catch (...) {
+    // acceptGoal 异常: 无 TaskHandle 可挂释放回调, 立即归还互斥再抛出。
+    recovery_exclusive.store(false);
+    throw;
+  }
 }
 
 bool NavigationServerBase::requestPlanUpdate(

@@ -75,6 +75,17 @@ public:
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
+  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  void abortGoal(const GoalHandleType& gh) override {
+    Result result;
+    result.error = ErrorCode::INTERNAL_ERROR;
+    result.message = "controller action driver exception";
+    result.session_id = gh.goal.session_id;
+    result.plan_version = gh.goal.plan_version;
+    action_server->publishResult(gh.id,
+                                 ayanami::actions::GoalStatus::ABORTED, result);
+  }
+
   /// @brief 运行中 in-place 更新目标路径 + 规划版本 (spec in-place plan update)。
   /// 不 cancel / 不 join / 不新建 Execution; 线程安全 (execution plan_mutex)。
   /// 返回 false 表示 goal 已不在跑 (任务已完成/取消) 或 execution 已到终态

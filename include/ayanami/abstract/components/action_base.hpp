@@ -78,6 +78,13 @@ protected:
     (void)execution;
   }
 
+  /// @brief runImpl 异常兜底: 派生发布 ABORTED 结果, 保证 TaskHandle 完成
+  /// (不发布会使等待方悬挂, recovery 互斥等 onComplete 释放的资源协议也会
+  /// 卡死)。对已完成 goal 幂等 no-op。默认 no-op (纯测试桩可不覆写)。
+  virtual void abortGoal(const GoalHandleType& goal_handle) {
+    (void)goal_handle;
+  }
+
   /**
    * @brief runImpl 公共轮询骨架 (Ruling #4 DRY 收敛)。
    *
@@ -304,8 +311,13 @@ void ActionBase<Goal, Execution>::run(const GoalHandleType& goal_handle,
   }
   try {
     runImpl(goal_handle, *exec);
+  } catch (const std::exception& e) {
+    // runImpl 内部不抛; 兜底发布 ABORTED 保证 TaskHandle 完成 (等待方与
+    // onComplete 资源协议不悬挂)。
+    abortGoal(goal_handle);
+    (void)e;
   } catch (...) {
-    // runImpl 内部不抛; 兜底避免任务异常逃逸
+    abortGoal(goal_handle);
   }
   exec->join();
   // 收尾 (等价旧槽线程退出): 若仍占有该槽则置空闲并释放 execution; 无论是否

@@ -110,8 +110,6 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   factory.registerNodeType<SmoothPathNode>("SmoothPath");
   factory.registerNodeType<FollowPathNode>("FollowPath");
   factory.registerNodeType<RecoveryActionNode>("Recovery");
-  // recovery 前置暂停节点 (spec: recovery 暂停 controller 由 BT 实现)
-  factory.registerNodeType<HaltControllersNode>("HaltControllers");
   // 5 个条件节点 (Task 12)
   factory.registerNodeType<IsPathValid>("IsPathValid");
   factory.registerNodeType<IsGoalReached>("IsGoalReached");

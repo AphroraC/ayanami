@@ -455,34 +455,6 @@ class FollowPathNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief 恢复前的控制器暂停节点 (spec: recovery 暂停 controller 由 BT 实现)。
- *
- * 树中每个 <Recovery .../> 之前放置 <HaltControllers/>: 同步调用
- * NavigationRuntime::cancelAllControllers() (cancel + join 全部 controller
- * action, 在 tick 线程内完成), 返回后控制器已完全退出、不再发布速度, 恢复
- * 动作成为唯一 velocity 发布者。幂等: 无活跃控制器时立即 SUCCESS。
- */
-class HaltControllersNode : public BT::SyncActionNode {
- public:
-  HaltControllersNode(const std::string& name, const BT::NodeConfig& config)
-    : BT::SyncActionNode(name, config),
-      nav_server(lookupNavigationRuntime(config)) {}
-
-  static BT::PortsList providedPorts() { return {}; }
-
-  BT::NodeStatus tick() override {
-    if (!nav_server) {
-      return BT::NodeStatus::FAILURE;
-    }
-    nav_server->cancelAllControllers();
-    return BT::NodeStatus::SUCCESS;
-  }
-
- private:
-  components::NavigationRuntime::Ptr nav_server;
-};
-
-/**
  * @brief Recovery 一次性异步 action (spec §6.2 同构)。
  *
  * 端口: recovery={recovery_id}/{clear_costmap_id}/{spin_id}/{wait_id}/{backup_id}

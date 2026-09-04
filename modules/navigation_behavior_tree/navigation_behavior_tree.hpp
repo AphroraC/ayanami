@@ -56,7 +56,6 @@ class NavigationBehaviorTreeExtension
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
-              <HaltControllers/>
               <Recovery recovery="{clear_costmap_id}"/>
             </Sequence>
           </RecoveryNode>
@@ -67,7 +66,6 @@ class NavigationBehaviorTreeExtension
         <RecoveryNode name="FollowPath" number_of_retries="1">
            <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{clear_costmap_id}"/>
           </Sequence>
         </RecoveryNode>
@@ -76,15 +74,12 @@ class NavigationBehaviorTreeExtension
         <GoalUpdated goal="{goal}"/>
          <RecoverySequence name="RecoveryActions">
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{wait_id}"/>
           </Sequence>
           <Sequence>
-            <HaltControllers/>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
          </RecoverySequence>
