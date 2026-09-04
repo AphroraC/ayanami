@@ -22,7 +22,6 @@
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/costmap/components/costmap_commands.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
-#include "ayanami/interfaces/transform_store.hpp"
 #include "ayanami/utility/config.hpp"
 
 #include <algorithm>
