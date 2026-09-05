@@ -1,0 +1,126 @@
+# 一次导航的完整生命周期
+
+以 RViz/Gazebo 下发目标 `(-7, -3)`、机器人从 `(0, 0)` 出发为例，梳理从目标
+下发到导航完成的每一步（含涉及的线程与组件）。
+
+## 1. 目标进入（latest-wins 邮箱链）
+
+```
+RViz/Gazebo ──/move_base_simple/goal──► AyanamiROS::goalCallback（ros::spinOnce 线程）
+    └─ submitGoal(pose)                 # mutex + pending_goal 覆写（不排队）
+loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一条
+    └─ CostmapNavigation::setGoal(pose)
+         ├─ current_goal = pose（+ state=RUNNING）
+         └─ bt_pilot.beginNavigation(pose)   # pending_goal 覆写 + emitWakeUpSignal
+              └─ 若 navigation_thread 未建则创建（bt_pilot.run 常驻循环）
+```
+
+**绝不跨线程 halt 树**：抢占（halt/cancel/零速度）全部落在 tick 线程的
+`applyPendingGoal` 中完成。
+
+## 2. applyPendingGoal（tick 线程）
+
+- 首个 goal：`session_state->startNewSession()`（session+1，plan_version=0），
+  `goal_revision = 0`。
+- 后续 goal：`++goal_revision`（同一会话内的目标修订）。
+- 重写黑板：`goal / goal_revision / session_id / plan_version /
+  reset_stuck_token / failure_context(清零)`。
+- goal_revision 的变化同时是树上 RateController(planner/smoother 分支) 与
+  RecoverySequence/RoundRobin 的 **reset_token**（新导航轮重置游标与缓存）。
+
+## 3. 规划 → 平滑 → 跟随（Pipeline 流水线）
+
+生产默认树（内嵌于 navigation_behavior_tree 扩展，`spec §6.3`）：
+
+```xml
+<RecoveryNode name="NavigateRecovery" number_of_retries="6">
+  <PipelineSequence name="NavigateWithReplanning">
+    <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
+      <RecoveryNode name="ComputePath" number_of_retries="1">
+        <Sequence>
+          <ComputePathToPose goal="{goal}" path="{raw_path}" path_id="{path_id}"/>
+          <IsPathValid path="{raw_path}"/>
+        </Sequence>
+        <Sequence><Recovery recovery="{clear_costmap_id}"/></Sequence>
+      </RecoveryNode>
+    </RateController>
+    <RateController hz="{smoother_frequency}" reset_token="{path_id}">
+      <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+    </RateController>
+    <RecoveryNode name="FollowPath" number_of_retries="1">
+      <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
+      <Sequence><Recovery recovery="{clear_costmap_id}"/></Sequence>
+    </RecoveryNode>
+  </PipelineSequence>
+  <ReactiveFallback name="RecoveryActions">
+    <GoalUpdated goal="{goal}"/>
+    <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
+      <Sequence><Recovery recovery="{spin_id}"/></Sequence>
+      <Sequence><Recovery recovery="{wait_id}"/></Sequence>
+      <Sequence><Recovery recovery="{backup_id}"/></Sequence>
+    </RecoverySequence>
+  </ReactiveFallback>
+</RecoveryNode>
+```
+
+节点与执行层的协作（全部经 `NavigationRuntime::request*` 返回 TaskHandle）：
+
+| BT 节点 | onStart | onRunning |
+|---|---|---|
+| ComputePathToPose | `requestPath`，注册 `onComplete → emitWakeUpSignal` | goal 端口变化 → 重发请求；`sessionIsCurrent && planVersionIsCurrent` 双校验；成功写 `raw_path` + `path_id++` |
+| SmoothPath | `requestSmoothing` | 同上校验；成功写 `smoothed_path` 并 `incrementPlanVersion` |
+| FollowPath | `requestExecution`（记录 submitted_plan_version） | **先查 task.ready()**；plan_version 变化 → `requestPlanUpdate`（in-place，不 cancel）——update miss 时不误报失败，重查已完成结果或下一 tick 重试 |
+| Recovery | `requestRecovery`（cause=黑板 failure_context；支持按次覆盖端口 target_yaw/backup_distance/backup_speed/wait_duration） | 成功即 SUCCESS |
+
+**plan_version 纪律**：SmoothPath 成功后才 `incrementPlanVersion`；
+FollowPath 发现有新版本时对运行中的 controller 执行 in-place `updatePlan`
+（无 cancel/无新 Execution/无中间零速），机器人持续跟随旧路径直到新路径
+落地——这就是"已重规划但机器人不跟随"问题的修复机制。
+
+## 4. 控制器周期（ControllerExecution::run，独立线程）
+
+每个周期（1/controller_frequency，默认 20Hz）：
+
+1. cancel/stop 检查；`safetyCheck()`（costmap 地图族 = wrapper isCurrent）。
+2. `hasNewPlan()` → 原子取 `(plan, plan_version)` → `controller->setPlan` →
+   **goal 位姿快照 + goal_checker/progress_checker reset** → applied 版本推进。
+3. `RobotStateController::getRobotState`（位姿 = TF map←base 最新；速度 = 最新
+   odom，超 `velocity_timeout` 返回零速）；失败 → TRANSFORM_UNAVAILABLE 终态。
+4. `goal_checker->isGoalReached`（唯一到达判定）→ 到达：零速 + ARRIVED_GOAL。
+5. `progress_checker->check`（无进展判定，patience 内清零重试）→ 失败：
+   NO_PROGRESS 终态。
+6. `callController`（地图族 execution 覆写为 typed 直调，含 global/local 视图
+   加锁）→ 有效命令：清零后经 `on_velocity_command` 发布；**发布前复查
+   cancel/stop**，防止恢复启动瞬间漏出一条旧命令。
+7. 无效命令（非有限/超限）：清零发布，patience > 0 时按累计时长终态上报
+   （对标 nav2 failure_tolerance；默认 0 = 关闭）。
+
+## 5. 恢复（资源协议）
+
+- **requestRecovery 独占**：CAS `recovery_exclusive`（true=占住）→ 校验
+  recovery_id → **同步 `cancelAllControllers()`** → acceptGoal →
+  `task.onComplete(释放互斥)`。恢复期间 request* 返回
+  `RESOURCE_BUSY` 结构化拒绝（不发旁路事件）。
+- RecoveryExecution 驱动插件统一协议 `start → tick×N → finish`，是恢复期间
+  **唯一速度发布者**（插件 tick 只返回期望速度 optional，执行层校验
+  finite+max_vel 后发布；终态一律先零速）。
+- 恢复成功后外层 RecoveryNode `++retry_count` 并 `resetChildren()`，回到
+  主任务重试；预算耗尽树返回 FAILURE，pilot 调 `resetNavigationTreeState()`
+  后进入全新树生命（planner 重新规划）。
+
+## 6. 完成与失败
+
+- FollowPath 结果 `reached=true && error==NONE` 且 session 当前 → 整树
+  SUCCESS → pilot 重置树状态 → 待命（等待下一个 goal）。
+- 任一分支结构性失败（如 stale session、预算耗尽）→ 树 FAILURE → 重置 →
+  待命；全局动态层已按累计运动自动清理，下一次导航从干净状态开始。
+
+## 与 nav2 的语义对照
+
+| 场景 | nav2 | ayanami |
+|---|---|---|
+| 目标抢占 | preemption + 新树 | 常驻树 + goal_revision reset_token + 邮箱 |
+| 重规划 | RateController 1Hz | RateController hz 可配（1.0），单发模式由 reset_token 补偿 |
+| 恢复 | RecoveryNode + ClearCostmap 服务 | RecoveryNode 语义一致 + 命令端口清图 |
+| 代价图失同步 | 手动/恢复清除 | 累计旋转/平移自动清全局动态层 |
+| error 传递 | error code 字段 | ErrorCode + FailureContext（黑板）+ 结构化拒绝 |

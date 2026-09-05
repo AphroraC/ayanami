@@ -1,0 +1,94 @@
+# ROS 集成层（ayanami_ros）
+
+ayanami_ros 是整个系统**唯一接触 ROS 的地方**。职责：把 ROS 数据转成
+ayanami 消息送入核心、以固定频率驱动核心、承载 ROS 侧扩展。核心侧红线：
+零 ROS 头文件。
+
+## AyanamiROS（ayanami_ros.hpp / ayanami_ros.cpp）
+
+对外接口（供宿主/测试调用，与 ROS 回调共用）：
+
+| 方法 | 语义 |
+|---|---|
+| `setTransform(parent, child, stamp, T, is_static)` | 直写核心 `RobotStateController`（→ TransformStore） |
+| `setOdometry(TwistStamped)` | 直写核心 `RobotStateController::setOdometry`（控制器读最新速度） |
+| `submitSensor(PointCloud2 / LaserScan)` | 先 `syncTransformsToCore(Time(0), 0)`，再直递宿主 `setPointcloud/setLaserScan` |
+| `submitGoal(PoseStamped)` | goal 邮箱覆写（latest-wins，不排队） |
+| `drainPendingGoal() / hasPendingGoal()` | loop 线程每周期投递最新一条 |
+| `start() / stop()` | loop 线程生命周期（50Hz） |
+
+loop 线程每周期：`syncTransformsToCore()` → `checkTfHealth()`（1Hz）→
+`navigation_plugin->spinOnce()`（costmap 可视化 1Hz）→ `drainPendingGoal()`
+→ `ros::spinOnce()`（触发 scan/odom/goal 回调）→ WallRate sleep。
+
+扩展加载顺序（M2-P1）：扩展（rviz_viewer，构造期注册旁路订阅）**先于**
+navigation_plugin->start()（首波可视化 emit 不丢）。
+
+### 定位修正累计漂移 → 清全局动态层
+
+loop 的 TF 同步中对 `odom←base_footprint` 边累计机器人旋转/平移（自上次
+清空起），超过阈值（`localization_clear_yaw_threshold=1.0 rad` /
+`localization_clear_pos_threshold=2.0 m`）调用宿主
+`onLocalizationJump()` 清空全局动态层。
+
+背景（实测）：原地旋转时轮式里程计打滑欠报转角 ~6%，AMCL 修正渐进追赶，
+期间 map 系 scan 持续偏转、全局动态标记整体错位。注意信号必须是**机器人
+运动量**而非修正增量——修正渐进且可能长期不收敛，增量恒为小值。
+
+### TF 同步（syncTransformsToCore）
+
+- 对 `tf_sync_edges` 每条边 `lookupTransform(target, source, Time(0),
+  timeout=0)`——**timeout 必须为 0**：tf2 带超时等待以 ros::Time（sim time）
+  计时，/clock 停摆时会无限阻塞循环。缺边由 `checkTfHealth`（1Hz，附完整
+  帧树）与"同步缺边"诊断兜底，下一周期重试。
+- 静态边分类一次并固化（`tf_edge_static` map）：tf2 对静态边返回 stamp=0，
+  fast_tf 禁止静态/动态互换，故每条边首查后固定 is_static。
+- 边写入 fast_tf：动态边用 tf 消息真实 stamp；静态边用 latest。
+- fast_tf 注意：动态边同时间戳 set 不覆盖（emplace 语义）；新父帧挂载需
+  经已存在中间帧（与同步边序一致）。
+
+## goal 链路与 AMCL
+
+```
+/move_base_simple/goal ──► submitGoal（邮箱）──► loop drain ──► setGoal
+                                                                   └─► BT 邮箱
+AMCL (map←odom) ── tf_sync ──► TransformStore ◄── 全部核心 TF 查询唯一入口
+```
+
+AMCL 集成要点（`nav_demo/launch/amcl_diff.launch`，参数均已源码验证）：
+
+| 参数 | 值 | 原因 |
+|---|---|---|
+| `odom_model_type` | diff | |
+| `odom_alpha1` | **1.0** | 源码 bug 补偿：DIFF 模型把方差当 sigma 传给 pf_ran_gaussian（缺 sqrt），0.2 时纯旋转粒子角噪声过小，滤波器跟随打滑里程计 |
+| `laser_max_beams` | **60** | 344° FOV 航向分辨率 5.7°（30 束仅 11.5°） |
+| `recovery_alpha_slow / fast` | **0.001 / 0.1** | 0/0 会永久禁用随机粒子注入（pf.c: w_diff=1-w_fast/w_slow 恒 0），滤波器塌缩后无法恢复 |
+| `initial_cov_aa` | **0.15** | 打滑旋转后真值可偏离初值 0.5+ rad，紧先验锁死粒子群 |
+| `initial_pose_x/y/a` | ≈(0,0,0) | 必须用 `initial_pose_a`（不是 _yaw，否则内部 NaN，不发布 map→odom） |
+| `update_min_d/a` | 0.05 / 0.1 | 触发滤波更新的最小运动 |
+| `transform_tolerance` | 0.5 | |
+
+map_server 加载 `nav_demo/map/ayanami.yaml` → 指向
+`ayanami/config/assets/nav.pgm`（GIMP 精确裁剪的 SLAM 图，与 ayanami 静态层
+同一张图、同一原点，逐像素一致）。
+
+## rviz_viewer（可视化扩展）
+
+- 构造期注册全部旁路 `CallbackSubscription`（RAII）：
+  12 个 action 流槽（goal/feedback/result × 4 族）+ `on_velocity_command`
+  + `on_costmap_visualization`。
+- 发布 ROS topic（topic 名全部来自 config_ros.json）：
+  `/ayanami/planner/path`、`/ayanami/smoother/path`、`/ayanami/controller/
+  path|status`、`/ayanami/recovery/goal|status`、`/cmd_vel`（+ stamped）、
+  `/ayanami/global_costmap`、`/ayanami/local_costmap` 等。
+- costmap 发布：shared 锁直读 master grid → 拷贝进 OccupancyGrid
+  （lethal→100、NO_INFORMATION→-1、线性映射其余）→ 帧取 wrapper 帧
+  （核心单一来源，无本地兜底）。
+- 导出 `extern "C"` 计数器（rvizViewerGlobalCostmapPubCount 等）供测试
+  dlsym 验证加载顺序与发布行为。
+
+## 消息转换（ros_msg_converter.hpp）
+
+纯函数转换：fromRosPose / fromRosTwist / fromRosPointCloud2 / fromRosLaserScan
+/ toRosPath / toRosOccupancyGrid；`ros::Time(0) ↔ Timestamp::latest()`。
+scan/pointcloud 的 frame_id 原样保留，落图时由核心经 TransformStore 解析。
