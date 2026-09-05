@@ -148,7 +148,7 @@ void CostmapPidController::configure(
   }
 
   // 纯 path tracker 不读图: 满足 costmap 族契约仅持有地图指针。
-  map_ = std::move(map);
+  map_context = std::move(map);
 
   pid_x.kp = param.kp_v;
   pid_x.ki = param.ki_v;

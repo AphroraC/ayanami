@@ -48,40 +48,40 @@ class GridCommandPort : public MapCommandPort {
 class GridMapContext final : public AbstractMapContext {
  public:
   GridMapContext(std::string global_frame, std::string robot_frame)
-      : global_frame_(std::move(global_frame)),
-        robot_frame_(std::move(robot_frame)) {}
+      : global_frame(std::move(global_frame)),
+        robot_frame(std::move(robot_frame)) {}
 
   std::string mapFamily() const override { return "grid"; }
-  std::string globalFrame() const override { return global_frame_; }
-  std::string localFrame() const override { return global_frame_; }
-  std::string robotFrame() const override { return robot_frame_; }
-  bool isCurrent() const override { return current_.load(); }
-  std::uint64_t version() const override { return version_.load(); }
+  std::string globalFrame() const override { return global_frame; }
+  std::string localFrame() const override { return global_frame; }
+  std::string robotFrame() const override { return robot_frame; }
+  bool isCurrent() const override { return is_current.load(); }
+  std::uint64_t version() const override { return context_version.load(); }
   std::uint32_t capabilities() const override {
     return static_cast<std::uint32_t>(MapCapability::GlobalPlanning) |
            static_cast<std::uint32_t>(MapCapability::ClearRegion);
   }
-  MapCommandPort::Ptr commandPort() const override { return port_; }
+  MapCommandPort::Ptr commandPort() const override { return command_port; }
   bool getRobotState(ayanami::geometry_msgs::PoseStamped& pose,
                      ayanami::geometry_msgs::TwistStamped&) const override {
-    pose.header.frame_id = global_frame_;
-    pose.pose.position.x() = robot_x_;
-    pose.pose.position.y() = robot_y_;
+    pose.header.frame_id = global_frame;
+    pose.pose.position.x() = robot_x;
+    pose.pose.position.y() = robot_y;
     return true;
   }
 
-  void setCommandPort(GridCommandPort::Ptr port) { port_ = std::move(port); }
-  void setCurrent(bool value) { current_ = value; }
-  void bumpVersion() { ++version_; }
+  void setCommandPort(GridCommandPort::Ptr port) { command_port = std::move(port); }
+  void setCurrent(bool value) { is_current = value; }
+  void bumpVersion() { ++context_version; }
 
  private:
-  std::string global_frame_;
-  std::string robot_frame_;
-  std::atomic<bool> current_{true};
-  std::atomic<std::uint64_t> version_{1};
-  double robot_x_{1.0};
-  double robot_y_{2.0};
-  GridCommandPort::Ptr port_;
+  std::string global_frame;
+  std::string robot_frame;
+  std::atomic<bool> is_current{true};
+  std::atomic<std::uint64_t> context_version{1};
+  double robot_x{1.0};
+  double robot_y{2.0};
+  GridCommandPort::Ptr command_port;
 };
 
 // ---- fake 族的族级插件层 (抽象层零地图, 族层绑定 GridMapContext) ----
@@ -92,16 +92,16 @@ class GridPlanner : public ayanami::abstract::AbstractPlanner {
                          std::shared_ptr<const GridMapContext> map) = 0;
 
  protected:
-  std::shared_ptr<const GridMapContext> map_;
-  std::string configured_name_;
+  std::shared_ptr<const GridMapContext> map_context;
+  std::string configured_name;
 };
 
 class StraightLineGridPlanner final : public GridPlanner {
  public:
   void configure(const ayanami::PluginContext& context,
                  std::shared_ptr<const GridMapContext> map) override {
-    configured_name_ = context.name;
-    map_ = std::move(map);
+    configured_name = context.name;
+    map_context = std::move(map);
     configured = true;
   }
 
@@ -129,26 +129,26 @@ class GridRecovery : public ayanami::abstract::AbstractRecovery {
                          std::shared_ptr<const GridMapContext> map) = 0;
 
  protected:
-  std::shared_ptr<const GridMapContext> map_;
+  std::shared_ptr<const GridMapContext> map_context;
 };
 
 class GridClearRecovery final : public GridRecovery {
  public:
   void configure(const ayanami::PluginContext& context,
                  std::shared_ptr<const GridMapContext> map) override {
-    configured_name_ = context.name;
-    map_ = std::move(map);
-    port_ = std::dynamic_pointer_cast<GridCommandPort>(map_->commandPort());
+    configured_name = context.name;
+    map_context = std::move(map);
+    command_port = std::dynamic_pointer_cast<GridCommandPort>(map_context->commandPort());
   }
 
   ayanami::RecoveryResultT tick() override {
-    if (!port_) {
+    if (!command_port) {
       return ayanami::RecoveryResultT::failure(
           ErrorCode::INTERNAL_ERROR, "grid recovery has no command port");
     }
     GridWriteCommand command;
     command.clear_radius = 0.75;
-    if (!port_->submit(command)) {
+    if (!command_port->submit(command)) {
       return ayanami::RecoveryResultT::failure(
           ErrorCode::RECOVERY_FAILED, "grid write command rejected");
     }
@@ -157,10 +157,10 @@ class GridClearRecovery final : public GridRecovery {
     return ayanami::RecoveryResultT::success(std::move(data));
   }
 
-  std::string configured_name_;
+  std::string configured_name;
 
  private:
-  GridCommandPort::Ptr port_;
+  GridCommandPort::Ptr command_port;
 };
 
 // ---- fake 族的派生 server: 与 CostmapNavigationServer 平行的注入层 ----
@@ -259,7 +259,7 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   ayanami::abstract::AbstractRecovery::Ptr recovery_base = recovery;
   EXPECT_TRUE(server.initializeRecoveryPlugin(
       "grid_clear", ayanami::Config(""), recovery_base));
-  EXPECT_EQ(recovery->configured_name_, "grid_clear");
+  EXPECT_EQ(recovery->configured_name, "grid_clear");
 
   const auto outcome = recovery_base->tick();
   ASSERT_TRUE(outcome.ok) << outcome.message;

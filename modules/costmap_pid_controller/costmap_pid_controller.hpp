@@ -103,7 +103,7 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   double last_angular_vel = 0.0;
   size_t last_track_idx = 1;
   uint64_t plan_signature = 0;
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 
   std::atomic<bool> canceled{false};
 };

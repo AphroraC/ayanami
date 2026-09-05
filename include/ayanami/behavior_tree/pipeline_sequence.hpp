@@ -52,6 +52,10 @@ class PipelineSequence : public BT::ControlNode {
     current_child_idx = 0;
   }
 
+  /// @brief 树生命终端后的逻辑重置 (v4 halt 只传播到 RUNNING child, 见
+  /// RateController::resetState 注释)。
+  void resetState() { current_child_idx = 0; }
+
  private:
   size_t current_child_idx;
 };

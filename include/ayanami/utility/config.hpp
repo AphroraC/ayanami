@@ -111,11 +111,6 @@ public:
    *        directory + "/" + param("global", config_name, config_name + ".json")
    */
   static std::string getConfigPath(const std::string& config_name);
-
-  /// Register a resolved module configuration path for the current process.
-  /// This keeps module files independent from the root global index.
-  static void registerConfigPath(const std::string& config_name,
-                                 const std::string& path);
 };
 
 } // namespace ayanami

@@ -74,10 +74,6 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<double>(k_planner_frequency, 10.0);
   bb->set<double>(k_smoother_frequency, -1.0);
   bb->set<double>(k_controller_frequency, 20.0);
-  bb->set<std::string>(k_planner_id, "test_planner");
-  bb->set<std::string>(k_smoother_id, "test_smoother");
-  bb->set<std::string>(k_controller_id, "test_controller");
-  bb->set<std::string>(k_recovery_id, "test_recovery");
   bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
   bb->set<std::string>(k_spin_id, "spin");
   bb->set<std::string>(k_wait_id, "wait");

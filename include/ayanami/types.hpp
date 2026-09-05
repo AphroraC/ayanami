@@ -41,27 +41,6 @@ enum class ErrorCode : std::uint8_t {
   INTERNAL_ERROR,
   STALE_RESULT,
   RESOURCE_BUSY,
-
-  // Transitional spellings for the existing public API.
-  None = NONE,
-  Canceled = CANCELED,
-  Timeout = TIMEOUT,
-  InvalidInput = INVALID_INPUT,
-  TransformUnavailable = TRANSFORM_UNAVAILABLE,
-  MapUnavailable = MAP_UNAVAILABLE,
-  MapStale = MAP_STALE,
-  StartInvalid = START_INVALID,
-  GoalInvalid = GOAL_INVALID,
-  PathNotFound = PATH_NOT_FOUND,
-  PathInvalid = PATH_INVALID,
-  SmoothingFailed = SMOOTHING_FAILED,
-  NoValidCommand = NO_VALID_COMMAND,
-  NoProgress = NO_PROGRESS,
-  GoalNotReached = GOAL_NOT_REACHED,
-  RecoveryFailed = RECOVERY_FAILED,
-  InternalError = INTERNAL_ERROR,
-  StaleResult = STALE_RESULT,
-  ResourceBusy = RESOURCE_BUSY,
 };
 
 template <typename DataT>

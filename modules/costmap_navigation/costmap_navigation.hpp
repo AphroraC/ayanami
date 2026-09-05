@@ -47,6 +47,11 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
   void setPointcloud(const ayanami::sensor_msgs::PointCloud2& cloud) override;
   void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) override;
 
+  /// @brief 定位修正跳变: 清空全局代价图动态层 (旧修正下的标记不可信;
+  /// 静态层保留, 后续扫描按新修正重建)。local 为 odom 系, 不受 AMCL 跳变
+  /// 影响, 不清。
+  void onLocalizationJump() override;
+
   // ---- 测试/宿主支撑访问器 ----
   behavior_tree::BehaviorTreePilot& pilot() { return bt_pilot; }
    costmap::CostmapNavigationServer& navigationServer() {

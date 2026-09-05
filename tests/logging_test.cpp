@@ -67,13 +67,9 @@ bool has_file_sink(const std::shared_ptr<spdlog::logger>& logger) {
   return false;
 }
 
-// 写最小 config 目录: config.json + config_logging.json。
+// 写最小 config 目录: config.json (logging 段内联, 单一来源)。
 std::filesystem::path makeConfigDir(const std::string& logging_json) {
   const auto dir = makeTempDir();
-  write_file(dir / "config.json",
-             "{\n  \"global\": {\n"
-             "    \"config_logging\": \"config_logging.json\"\n"
-             "  }\n}\n");
   // logging_dir 占位符替换为实际测试目录。
   std::string json = logging_json;
   const std::string k_placeholder = "LOGGING_DIR_PLACEHOLDER";
@@ -81,7 +77,10 @@ std::filesystem::path makeConfigDir(const std::string& logging_json) {
   if (pos != std::string::npos) {
     json.replace(pos, k_placeholder.size(), dir.string());
   }
-  write_file(dir / "config_logging.json", json);
+  // 调用方传入完整 {"logging": {...}} 对象: 剥掉外层花括号后与 global 段
+  // 同级合并, 保证合法 JSON。
+  write_file(dir / "config.json",
+             "{\n  \"global\": {}," + json.substr(1) + "\n");
   return dir;
 }
 

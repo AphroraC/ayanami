@@ -28,6 +28,9 @@
 
 #include <costmap_2d/costmap_2d.hpp>
 #include <costmap_2d_layers/inflation_layer.hpp>
+
+#include <ayanami/costmap/components/costmap_map_family_factory.hpp>
+#include <ayanami/map/map_family_factory.hpp>
 #include <costmap_2d_layers/simple_obstacle_layer.hpp>
 #include <costmap_2d_layers/static_layer.hpp>
 
@@ -105,9 +108,13 @@ std::filesystem::path makeConfigDir(
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
 
+  // config_* 插件文件指针统一在 navigation.json 的 navigation 段 (单一来源)。
   writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
+             "  }\n}\n");
+  writeJson(dir / "navigation.json",
+             "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
@@ -143,13 +150,15 @@ std::filesystem::path makeConfigDir(
 
   // 20x20 @ 0.5m → 10m x 10m。local inflation_radius=1.5 → 3 cells。
   // costmap 参数并入 navigation.json (原 costmap.json 移除)。
+  // 注意: 这里是 navigation.json 的最终内容 (覆盖前面 config_* 版本),
+  // 必须同时携带插件文件指针。
   {
     std::ofstream nav(dir / "navigation.json");
     nav << "{\n  \"navigation\": {\n"
-        << "    \"planner_id\": \"test_costmap_planner\",\n"
-        << "    \"smoother_id\": \"test_costmap_smoother\",\n"
-        << "    \"controller_id\": \"test_costmap_controller\",\n"
-        << "    \"recovery_id\": \"test_costmap_recovery\"\n"
+        << "    \"config_planner\": \"planner.json\",\n"
+        << "    \"config_smoother\": \"smoother.json\",\n"
+        << "    \"config_controller\": \"controller.json\",\n"
+        << "    \"config_recovery\": [\"recovery.json\"]\n"
         << "  },\n"
         << "  \"costmap\": {\n"
         << "    \"global_frame\": \"map\",\n"
@@ -345,6 +354,18 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   ASSERT_NE(server.localCostmap(), nullptr);
   EXPECT_EQ(server.costmapContext()->getGlobalFrame(), "map");
   EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
+  // 帧单一来源一致性: context 帧 == wrapper 帧 == RobotStateController 缓存帧
+  // (local_frame 经 AbstractMapContext::localFrame 抽象面读取)。
+  {
+    const ayanami::map::AbstractMapContext::Ptr& ctx = server.costmapContext();
+    EXPECT_EQ(ctx->localFrame(), "odom");
+    EXPECT_EQ(ctx->localFrame(), server.localCostmap()->getGlobalFrame());
+    EXPECT_EQ(ctx->globalFrame(), server.globalCostmap()->getGlobalFrame());
+    auto& rsc = ayanami::components::RobotStateController::instance();
+    EXPECT_EQ(rsc.getGlobalFrame(), ctx->globalFrame());
+    EXPECT_EQ(rsc.getLocalFrame(), ctx->localFrame());
+    EXPECT_EQ(rsc.getRobotFrame(), ctx->robotFrame());
+  }
   EXPECT_DOUBLE_EQ(server.globalCostmap()->get().getCostmap()->getOriginX(),
                    -5.0);
   EXPECT_DOUBLE_EQ(server.globalCostmap()->get().getCostmap()->getOriginY(),
@@ -386,6 +407,48 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   }
   EXPECT_TRUE(has_obstacle);
   EXPECT_TRUE(has_local_inflation);
+}
+
+// ---- 地图族工厂: context 唯一创建点 (宿主经工厂创建, 核心只认抽象工厂面) ----
+
+TEST(CostmapNavigationServerTest, configureCoreMapsCreatesContextViaFactory) {
+  class RecordingFactory final : public ayanami::map::MapFamilyFactory {
+   public:
+    std::string familyName() const override { return "costmap"; }
+    ayanami::map::AbstractMapContext::Ptr createContext() override {
+      auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
+      created = ctx;
+      ++creations;
+      return ctx;
+    }
+    ayanami::costmap::CostmapMapContext::Ptr created;
+    std::atomic<int> creations{0};
+  };
+
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
+  auto factory = std::make_shared<RecordingFactory>();
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string(), factory);
+
+  EXPECT_EQ(factory->creations.load(), 1);
+  ASSERT_NE(factory->created, nullptr);
+  EXPECT_EQ(server.costmapContext(), factory->created);
+  ASSERT_NE(server.mapFamilyFactory(), nullptr);
+  EXPECT_EQ(server.mapFamilyFactory(), factory);
+  EXPECT_EQ(server.mapFamilyFactory()->familyName(), "costmap");
+}
+
+TEST(CostmapMapFamilyFactoryTest, factoryCreatesDefaultCostmapContext) {
+  ayanami::costmap::CostmapMapFamilyFactory factory;
+  EXPECT_EQ(factory.familyName(), "costmap");
+  auto ctx = factory.createContext();
+  ASSERT_NE(ctx, nullptr);
+  EXPECT_EQ(ctx->mapFamily(), "costmap");
+  // 默认帧与 costmap_navigation.json 默认一致 (local=odom, nav2 语义)。
+  EXPECT_EQ(ctx->globalFrame(), "map");
+  EXPECT_EQ(ctx->localFrame(), "odom");
+  EXPECT_EQ(ctx->robotFrame(), "base_link");
 }
 
 TEST(CostmapNavigationServerTest, defaultConfigMatchesNavPgmGeometry) {

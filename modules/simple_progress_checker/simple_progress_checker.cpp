@@ -5,8 +5,6 @@
 
 #include "simple_progress_checker.hpp"
 
-#include <ayanami/utility/config.hpp>
-
 #include <cmath>
 
 namespace ayanami {
@@ -16,23 +14,16 @@ namespace {
 constexpr double k_pi = 3.14159265358979323846;
 }
 
-SimpleProgressChecker::SimpleProgressChecker() {
-  // 参数在构造时经 glim 式显式 Config 读取并拷贝进成员 (无 thread_local 注入,
-  // 配置不可读时保持默认值): 主 config.json 的 global 单层索引
-  // config_progress_checker → 本插件 json 文件。
-  try {
-    const Config file(GlobalConfig::getConfigPath("config_progress_checker"));
-    param.required_movement =
-        file.param<double>("progress_checker", "required_movement",
-                           param.required_movement);
-    param.movement_angle_required =
-        file.param<double>("progress_checker", "movement_angle_required",
-                           param.movement_angle_required);
-    param.time_period = file.param<double>("progress_checker", "time_period",
-                                           param.time_period);
-  } catch (...) {
-    // 配置不可读时保持默认值。
-  }
+void SimpleProgressChecker::configure(const ayanami::PluginContext& context) {
+  // 参数单一来源: 本模块 json (config_progress_checker 指向文件) 的
+  // simple_progress_checker 段。
+  param.required_movement = context.config.param<double>(
+      "simple_progress_checker", "required_movement", param.required_movement);
+  param.movement_angle_required = context.config.param<double>(
+      "simple_progress_checker", "movement_angle_required",
+      param.movement_angle_required);
+  param.time_period = context.config.param<double>(
+      "simple_progress_checker", "time_period", param.time_period);
 }
 
 void SimpleProgressChecker::reset() {

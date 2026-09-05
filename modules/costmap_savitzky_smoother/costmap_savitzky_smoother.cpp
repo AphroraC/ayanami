@@ -1,6 +1,6 @@
 // Task 22: modules/costmap_savitzky_smoother — 7 点 Savitzky-Golay 路径平滑。
 //
-// 纯 C++ (零 ROS): 在入参不可变 CostmapSnapshot (global grid) 上做
+// 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
 // 碰撞检查。核心为 7 点 SG 卷积 (nav2 SavitzkyGolaySmoother 语义):
 // - 系数 [-2, 3, 6, 7, 6, 3, -2] / 21, 首尾端点固定, 内部点按窗口卷积
 // - 边界不足窗口处用重复填充 (clamp 到端点)
@@ -85,7 +85,7 @@ void CostmapSavitzkySmoother::configure(
   param.refinement_num =
       file.param<int>("costmap_savitzky_smoother", "refinement_num",
                       param.refinement_num);
-  map_ = std::move(map);
+  map_context = std::move(map);
 }
 
 bool CostmapSavitzkySmoother::cancel() {
@@ -99,12 +99,12 @@ SmootherResultT CostmapSavitzkySmoother::smoothPath(
   // 碰撞检查需要读图: 需要时持 shared 锁 (整个平滑调用持有, <10ms), 零拷贝。
   std::optional<ayanami::costmap::CostmapView> costmap;
   if (check_for_collision) {
-    if (!map_) {
+    if (!map_context) {
       return SmootherResultT::failure(
           ErrorCode::MAP_UNAVAILABLE,
           "CostmapSavitzkySmoother has no costmap module");
     }
-    costmap = map_->lockGlobal();
+    costmap = map_context->lockGlobal();
   }
   const ayanami::nav_msgs::Path original = path;
   canceled.store(false);

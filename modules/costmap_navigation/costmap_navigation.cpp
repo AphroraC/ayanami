@@ -15,6 +15,9 @@
 
 #include "costmap_navigation.hpp"
 
+#include "ayanami/costmap/components/costmap_map_family_factory.hpp"
+#include "ayanami/costmap/core/costmap_command.hpp"
+
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
@@ -42,7 +45,9 @@ void CostmapNavigation::initialize(const std::string& config_path) {
   GlobalConfig::instance(config_path, /*override_path=*/true);
   ayanami::configureLogging();
 
-  navigation_server->configureCoreMaps(config_path);
+  // 地图族工厂由宿主构造 (context 唯一创建点); 核心装配链只认抽象工厂面。
+  navigation_server->configureCoreMaps(
+      config_path, std::make_shared<costmap::CostmapMapFamilyFactory>());
   // loadPlugins 内部已触发 4 虚 initialize*Plugin + createActions() (review 修复:
   // 不再显式二次调用 createActions, 避免 action map 重建)。
   navigation_server->loadPlugins(config_path);
@@ -119,6 +124,27 @@ void CostmapNavigation::setPointcloud(
 void CostmapNavigation::setLaserScan(
     const ayanami::sensor_msgs::LaserScan& scan) {
   navigation_server->handleObstacleLaserScan(scan);
+}
+
+void CostmapNavigation::onLocalizationJump() {
+  // 定位修正跳变: 全局图动态层整体清空 (clear_radius<=0 = 全图动态层),
+  // 静态层 bounds 重标记后由 updateMap 恢复。经唯一写者命令端口执行。
+  if (!navigation_server) {
+    return;
+  }
+  costmap::ClearCostmapCommand command;
+  command.affected_maps = "global";
+  command.clear_radius = 0.0;  // <=0: 清空整个动态层
+  command.enabled = true;
+  if (navigation_server->executeClearCommand(command)) {
+    spdlog::info(
+        "onLocalizationJump: cleared global dynamic costmap after "
+        "localization correction jump");
+  } else {
+    spdlog::warn(
+        "onLocalizationJump: global dynamic costmap clear failed (TF or "
+        "map unavailable)");
+  }
 }
 
 void CostmapNavigation::publishMapsForVisualization() {

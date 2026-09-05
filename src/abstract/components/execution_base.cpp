@@ -27,8 +27,13 @@ void ExecutionBase::runTask() {
   try {
     run();
   } catch (...) {
-    message = "Unknown error occurred";
-    condition.notify_all();
+    // run()/preRun()/postRun() 逃逸异常的最后防线: 置统一兜底终态 + 安全
+    // 停止。若停在中间态, action 驱动任务将永远轮询不到终态 —— 槽占用、
+    // recovery 互斥 (recovery_exclusive) 等资源协议随之死锁, 整条导航挂死。
+    error = ErrorCode::INTERNAL_ERROR;
+    message = "Execution aborted by uncaught exception";
+    publishStopCommand();
+    setState(k_aborted, true);
   }
   postRun();
   {

@@ -78,6 +78,13 @@ class RecoveryNode : public BT::ControlNode {
     recovering = false;
   }
 
+  /// @brief 树生命终端后的逻辑重置 (v4 halt 只传播到 RUNNING child, 见
+  /// RateController::resetState 注释)。
+  void resetState() {
+    retry_count = 0;
+    recovering = false;
+  }
+
  private:
   uint32_t max_retries;
   uint32_t retry_count;

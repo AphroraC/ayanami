@@ -62,16 +62,8 @@ spdlog::level::level_enum logLevelFromString(const std::string& level) {
 }
 
 void configureLogging() {
-  const GlobalConfig* global = GlobalConfig::instance();
-  std::unique_ptr<Config> legacy_config;
-  const Config* config = global;
-  // Transitional support for callers that still provide a separate logging
-  // file. New configurations keep logging in the root config.json.
-  if (global->hasParam("global", "config_logging")) {
-    legacy_config = std::make_unique<Config>(
-        GlobalConfig::getConfigPath("config_logging"));
-    config = legacy_config.get();
-  }
+  // logging 段单一来源: 根 config.json (无独立 config_logging 文件)。
+  const Config* config = GlobalConfig::instance();
 
   const auto logging_level = logLevelFromString(
       config->param<std::string>("logging", "logging_level", std::string("info")));

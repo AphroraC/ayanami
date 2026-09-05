@@ -48,13 +48,13 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
   PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::PoseStamped&, double) override {
     ++calls;
-    auto view = map_->lockGlobal();
+    auto view = map_context->lockGlobal();
     if (!view.valid()) {
       return PlannerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
                                      "no global view");
@@ -87,7 +87,7 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
   std::atomic<bool> released{false};
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeGlobalWrapper() {

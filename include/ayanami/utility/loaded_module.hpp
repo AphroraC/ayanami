@@ -19,18 +19,18 @@ class LoadedModule {
   using Ptr = std::shared_ptr<LoadedModule>;
 
   LoadedModule(void* handle, std::string name)
-      : handle_(handle), name_(std::move(name)) {}
+      : dl_handle(handle), module_name(std::move(name)) {}
 
-  void* handle() const noexcept { return handle_; }
-  const std::string& name() const noexcept { return name_; }
+  void* handle() const noexcept { return dl_handle; }
+  const std::string& name() const noexcept { return module_name; }
 
   // Unload is deliberately not implemented yet. A non-null handle means the
   // module image is resident for the process lifetime.
   bool unloadable() const noexcept { return false; }
 
  private:
-  void* handle_{nullptr};
-  std::string name_;
+  void* dl_handle{nullptr};
+  std::string module_name;
 };
 
 }  // namespace ayanami

@@ -14,11 +14,14 @@ namespace modules {
  *
  * 纯 C++ (零 ROS): xy 距离 < pose.position 且相对转角 < pose.angle,
  * 且线速度 < velocity.linear 且角速度 < velocity.angular → 到达。
- * 容差经 simple_goal_checker.json 的 goal_checker 段配置。
+ * 容差经 simple_goal_checker.json 的 simple_goal_checker 段配置
+ * (configure 期从 PluginContext 注入)。
  */
 class SimpleGoalChecker final : public ayanami::abstract::AbstractGoalChecker {
  public:
-  SimpleGoalChecker();
+  SimpleGoalChecker() = default;
+
+  void configure(const ayanami::PluginContext& context) override;
 
   void reset() override;
 

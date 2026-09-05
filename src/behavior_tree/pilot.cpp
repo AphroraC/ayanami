@@ -12,6 +12,7 @@
 #include "ayanami/behavior_tree/pilot.hpp"
 
 #include "ayanami/behavior_tree/action_nodes.hpp"
+#include "ayanami/behavior_tree/navigation.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
 #include "ayanami/utility/config.hpp"
 #include "ayanami/utility/extension_module.hpp"
@@ -72,28 +73,14 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
     tree_extension_so_names.push_back(k_default_tree_extension_so);
   }
 
-  // 默认插件 id: 显式 navigation.{planner_id,smoother_id,controller_id};
-  // 缺省回退模块 json 的 name (兼容历史配置)。
-  planner_id = cfg.param<std::string>(k_sec, "planner_id", "");
-  smoother_id = cfg.param<std::string>(k_sec, "smoother_id", "");
-  controller_id = cfg.param<std::string>(k_sec, "controller_id", "");
+  // 模块 id 单一来源 = 各模块 json 的 name 字段 (无独立 *_id 配置键)。
+  // recovery 角色映射 (clear_costmap/spin/wait/backup) 由 config_recovery
+  // 有序文件族内每个文件的 recovery.role 字段决定, 供默认树按角色引用。
 
-  if (planner_id.empty()) {
-    planner_id = cfg.param<std::string>(k_sec, "planner_id", "");
-  }
-  if (smoother_id.empty()) {
-    smoother_id = cfg.param<std::string>(k_sec, "smoother_id", "");
-  }
-  if (controller_id.empty()) {
-    controller_id = cfg.param<std::string>(k_sec, "controller_id", "");
-  }
-
-  recovery_id.clear();
   clear_costmap_id.clear();
   spin_id.clear();
   wait_id.clear();
   backup_id.clear();
-  // Navigation config owns the ordered recovery configuration list.
   std::vector<std::string> recovery_files;
   try {
     recovery_files = cfg.param<std::vector<std::string>>(
@@ -102,30 +89,6 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   }
   if (recovery_files.empty()) {
     recovery_files.push_back(cfg.param<std::string>(k_sec, "config_recovery", ""));
-  }
-  // Accept legacy test/embedding configurations while the public schema is
-  // migrated: production configuration keeps this list in navigation.json.
-  if (recovery_files.empty()) {
-    try {
-      recovery_files = GlobalConfig::instance()->param<std::vector<std::string>>(
-          "global", "config_recovery", {});
-    } catch (const std::exception&) {
-      const std::string legacy = GlobalConfig::instance()->param<std::string>(
-          "global", "config_recovery", "");
-      if (!legacy.empty()) recovery_files.push_back(legacy);
-    }
-  }
-  if (recovery_files.empty()) {
-    // Compatibility for pre-navigation.json embedders. This is deliberately
-    // read-only fallback; the installed schema keeps the ordered vector in
-    // navigation.config_recovery.
-    for (const auto* key : {"config_clear_costmap_recovery",
-                            "config_spin_recovery", "config_wait_recovery",
-                            "config_back_up_recovery"}) {
-      const std::string file = GlobalConfig::instance()->param<std::string>(
-          "global", key, "");
-      if (!file.empty()) recovery_files.push_back(file);
-    }
   }
   const std::string directory =
       GlobalConfig::instance()->param<std::string>("global", "config_path", ".");
@@ -140,7 +103,6 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
         recovery_cfg.param<std::string>("recovery", "name", "");
     const std::string role =
         recovery_cfg.param<std::string>("recovery", "role", "");
-    if (recovery_id.empty() || role == "clear_costmap") recovery_id = name;
     if (role == "clear_costmap") clear_costmap_id = name;
     if (role == "spin") spin_id = name;
     if (role == "wait") wait_id = name;
@@ -214,7 +176,16 @@ void BehaviorTreePilot::run() {
     consumeHaltRequest();
     if (kill_switch.load()) break;
     applyPendingGoal();
-    bt_tree.tickOnce();
+    const BT::NodeStatus tick_status = bt_tree.tickOnce();
+    // 树生命终端复位 (v4 halt 语义适配): BT.CPP v4 的 halt 只传播到 RUNNING
+    // 子节点, 终态缓存的子树 (RateController 单次缓存 / RecoveryNode 重试计数
+    // / RecoverySequence 游标) 不会被重置 —— 不复位则 planner 永不重规划、恢
+    // 复风暴跨树生命持续 (rviz 恢复风暴 bug 根因, 见
+    // production_tree_recovery_test)。SUCCESS/FAILURE 后等价 nav2 v3
+    // haltAllActions: 下一 tick 全新树生命 (planner 重规划)。
+    if (tick_status != BT::NodeStatus::RUNNING) {
+      resetNavigationTreeState(bt_tree);
+    }
     // 唤醒竞态修复: tickOnce 内层可能把 beginNavigation 的唤醒信号用旧黑板
     // 消费掉, 使随后 sleep 睡满一个周期。若 tick 期间又有新 goal 投递, 立即
     // 消费并补一次 tick, 保证新 goal 至迟一个 tick 周期内生效。
@@ -351,14 +322,11 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal,
                                                geometry_msgs::PoseStamped{});
   bt_blackboard->set<nav_msgs::Path>(k_raw_path, nav_msgs::Path{});
+  bt_blackboard->set<uint64_t>(k_path_id, 0u);
   bt_blackboard->set<nav_msgs::Path>(k_smoothed_path, nav_msgs::Path{});
   bt_blackboard->set<double>(k_planner_frequency, planner_frequency);
   bt_blackboard->set<double>(k_smoother_frequency, smoother_frequency);
   bt_blackboard->set<double>(k_controller_frequency, controller_frequency);
-  bt_blackboard->set<std::string>(k_planner_id, planner_id);
-  bt_blackboard->set<std::string>(k_smoother_id, smoother_id);
-  bt_blackboard->set<std::string>(k_controller_id, controller_id);
-  bt_blackboard->set<std::string>(k_recovery_id, recovery_id);
   bt_blackboard->set<std::string>(k_clear_costmap_id, clear_costmap_id);
   bt_blackboard->set<std::string>(k_spin_id, spin_id);
   bt_blackboard->set<std::string>(k_wait_id, wait_id);

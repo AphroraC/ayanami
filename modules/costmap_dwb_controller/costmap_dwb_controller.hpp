@@ -122,7 +122,7 @@ protected:
 
   /// @brief 本插件配置 (configure 时由 PluginContext 移入; loadCritics
   /// 复用同一实例, 无 thread_local 注入)。
-  std::unique_ptr<ayanami::Config> config_;
+  std::unique_ptr<ayanami::Config> module_config;
 
   std::vector<TrajectoryCritic::Ptr> critics;
 
@@ -132,8 +132,7 @@ protected:
   std::string dwb_plugin_name;
 
   // ayanami 注入 (地图模块 const 指针 + 当前周期持锁读视图)
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
-  ayanami::costmap::CostmapView local_view;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
   const costmap_2d::Costmap2D* local_grid{nullptr};
   std::string local_frame;
   std::vector<::geometry_msgs::Point> footprint_spec;

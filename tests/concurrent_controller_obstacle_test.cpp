@@ -49,12 +49,12 @@ class SnapshotController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
   ControllerResultT computeVelocityCommand(const PoseStamped&,
                                            const TwistStamped&) override {
     ++cycles;
-    auto view = map_->lockLocal();
+    auto view = map_context->lockLocal();
     if (!view.valid()) {
       ++snapshot_missing;
       return ControllerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
@@ -70,7 +70,7 @@ class SnapshotController : public ayanami::costmap::CostmapController {
   std::atomic<int> snapshot_missing{0};
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
 };

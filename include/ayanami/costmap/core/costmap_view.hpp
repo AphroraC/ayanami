@@ -39,41 +39,41 @@ class CostmapView {
               ayanami::geometry_msgs::PoseStamped robot_pose,
               bool has_robot_pose, bool current)
       : lock(std::move(lock)),
-        grid_(grid),
-        frame_(std::move(frame)),
-        footprint_(footprint),
-        robot_pose_(std::move(robot_pose)),
-        has_robot_pose_(has_robot_pose),
-        current_(current) {}
+        costmap_grid(grid),
+        view_frame(std::move(frame)),
+        cached_footprint(footprint),
+        view_robot_pose(std::move(robot_pose)),
+        robot_pose_valid(has_robot_pose),
+        is_current(current) {}
 
   /// @brief master grid (只读; 仅在本视图存活期内有效, 可能为 null)。
-  const costmap_2d::Costmap2D* grid() const { return grid_; }
+  const costmap_2d::Costmap2D* grid() const { return costmap_grid; }
 
   /// @brief 视图帧名。
-  const std::string& frame() const { return frame_; }
+  const std::string& frame() const { return view_frame; }
 
   /// @brief 车体 footprint (configure 期缓存, 不可变; 可能为 null)。
-  const costmap_2d::Footprint* footprint() const { return footprint_; }
+  const costmap_2d::Footprint* footprint() const { return cached_footprint; }
 
   /// @brief 机器人 (frame) 位姿。
   const ayanami::geometry_msgs::PoseStamped& robot_pose() const {
-    return robot_pose_;
+    return view_robot_pose;
   }
-  bool has_robot_pose() const { return has_robot_pose_; }
+  bool has_robot_pose() const { return robot_pose_valid; }
 
   /// @brief 构建时刻的地图新鲜度。
-  bool current() const { return current_; }
+  bool current() const { return is_current; }
 
-  bool valid() const { return grid_ != nullptr; }
+  bool valid() const { return costmap_grid != nullptr; }
 
  private:
   std::shared_lock<std::shared_mutex> lock;
-  const costmap_2d::Costmap2D* grid_{nullptr};
-  std::string frame_;
-  const costmap_2d::Footprint* footprint_{nullptr};
-  ayanami::geometry_msgs::PoseStamped robot_pose_;
-  bool has_robot_pose_{false};
-  bool current_{true};
+  const costmap_2d::Costmap2D* costmap_grid{nullptr};
+  std::string view_frame;
+  const costmap_2d::Footprint* cached_footprint{nullptr};
+  ayanami::geometry_msgs::PoseStamped view_robot_pose;
+  bool robot_pose_valid{false};
+  bool is_current{true};
 };
 
 }  // namespace costmap

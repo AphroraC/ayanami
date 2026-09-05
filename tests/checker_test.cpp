@@ -78,24 +78,16 @@ std::filesystem::path makeModuleConfigDir() {
   const auto dir = makeTempDir() / "module_cfg";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
-  // 严格单层索引: 模块构造时经 getConfigPath("config_goal_checker") 等显式读取。
-  write_file(dir / "config.json",
-             "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
-             "    \"config_goal_checker\": \"simple_goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"simple_progress_checker.json\"\n"
-             "  }\n}\n");
-  write_file(dir / "navigation.json",
-             "{\n  \"navigation\": {}\n}\n");
+  // 参数段 = 插件同名段 (configure 期经 PluginContext 注入)。
   write_file(dir / "simple_goal_checker.json",
-             "{\n  \"goal_checker\": {\n"
+             "{\n  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.1,\n"
              "    \"angle_tolerance\": 0.2,\n"
              "    \"linear_tolerance\": 0.1,\n"
              "    \"angular_tolerance\": 0.1\n"
              "  }\n}\n");
   write_file(dir / "simple_progress_checker.json",
-             "{\n  \"progress_checker\": {\n"
+             "{\n  \"simple_progress_checker\": {\n"
              "    \"required_movement\": 0.5,\n"
              "    \"movement_angle_required\": 0.2,\n"
              "    \"time_period\": 0.01\n"
@@ -103,10 +95,18 @@ std::filesystem::path makeModuleConfigDir() {
   return dir;
 }
 
+// 直连模块测试统一注入: 构造后显式 configure(PluginContext)。
+ayanami::PluginContext checkerContext(const std::filesystem::path& dir,
+                                      const std::string& json_name,
+                                      const std::string& name) {
+  return ayanami::PluginContext{name, ayanami::Config((dir / json_name).string())};
+}
+
 TEST(SimpleGoalCheckerTest, reachedWithinTolerances) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleGoalChecker checker;
+  checker.configure(checkerContext(dir, "simple_goal_checker.json",
+                                   "simple_goal_checker"));
   checker.reset();
 
   EXPECT_TRUE(checker.isGoalReached(pose(0.0, 0.0), pose(0.05, 0.0),
@@ -116,9 +116,10 @@ TEST(SimpleGoalCheckerTest, reachedWithinTolerances) {
 }
 
 TEST(SimpleGoalCheckerTest, notReachedOutsideTolerances) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleGoalChecker checker;
+  checker.configure(checkerContext(dir, "simple_goal_checker.json",
+                                   "simple_goal_checker"));
   checker.reset();
 
   EXPECT_FALSE(checker.isGoalReached(pose(0.0, 0.0), pose(1.0, 0.0),
@@ -133,9 +134,10 @@ TEST(SimpleGoalCheckerTest, notReachedOutsideTolerances) {
 }
 
 TEST(SimpleGoalCheckerTest, getTolerancesLoadedFromConfig) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleGoalChecker checker;
+  checker.configure(checkerContext(dir, "simple_goal_checker.json",
+                                   "simple_goal_checker"));
   const auto tol = checker.getTolerances();
   EXPECT_DOUBLE_EQ(tol.pose.position, 0.1);
   EXPECT_DOUBLE_EQ(tol.pose.angle, 0.2);
@@ -144,9 +146,10 @@ TEST(SimpleGoalCheckerTest, getTolerancesLoadedFromConfig) {
 }
 
 TEST(SimpleProgressCheckerTest, movesWithinPeriodHasProgress) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleProgressChecker checker;
+  checker.configure(checkerContext(dir, "simple_progress_checker.json",
+                                   "simple_progress_checker"));
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
   // 时间窗内移动超过 required_movement → 有进展。
@@ -154,9 +157,10 @@ TEST(SimpleProgressCheckerTest, movesWithinPeriodHasProgress) {
 }
 
 TEST(SimpleProgressCheckerTest, noMovementWithinPeriodIsNoProgress) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleProgressChecker checker;
+  checker.configure(checkerContext(dir, "simple_progress_checker.json",
+                                   "simple_progress_checker"));
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -165,9 +169,10 @@ TEST(SimpleProgressCheckerTest, noMovementWithinPeriodIsNoProgress) {
 }
 
 TEST(SimpleProgressCheckerTest, angleMovementCountsAsProgress) {
-  ayanami::GlobalConfig::instance(makeModuleConfigDir().string(),
-                                  /*override_path=*/true);
+  const auto dir = makeModuleConfigDir();
   SimpleProgressChecker checker;
+  checker.configure(checkerContext(dir, "simple_progress_checker.json",
+                                   "simple_progress_checker"));
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
   // 转角 > movement_angle_required → 有进展。
@@ -252,22 +257,17 @@ std::filesystem::path makeServerConfigDir() {
   std::filesystem::create_directories(dir);
   write_file(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
+             "  }\n}\n");
+  // 插件文件指针统一在 navigation 段 (单一来源), 无独立 *_id 键。
+  write_file(dir / "navigation.json",
+             "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
              "    \"config_recovery\": [\"recovery.json\"],\n"
              "    \"config_goal_checker\": \"goal_checker.json\",\n"
-             "    \"config_progress_checker\": \"progress_checker.json\"\n"
-             "  }\n}\n");
-  write_file(dir / "navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"planner_id\": \"test_planner\",\n"
-             "    \"smoother_id\": \"test_smoother\",\n"
-             "    \"controller_id\": \"test_controller\",\n"
-             "    \"recovery_id\": \"test_recovery\",\n"
-             "    \"goal_checker_id\": \"simple_goal_checker\",\n"
-             "    \"progress_checker_id\": \"simple_progress_checker\",\n"
+             "    \"config_progress_checker\": \"progress_checker.json\",\n"
              "    \"max_vel_x\": 0.5,\n"
              "    \"max_vel_y\": 0.0,\n"
              "    \"max_vel_theta\": 1.5\n"

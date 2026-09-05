@@ -15,11 +15,13 @@ namespace components {
 /**
  * @brief 抽象执行基类 (对标 MBF AbstractExecutionBase, spec §5 components/)。
  *
- * run() 状态机以"任务"方式提交到进程级 WorkerPool, 由池内常驻 worker 执行
- * preRun()→run()→postRun(); 不再自建专用 std::thread。内部状态机 (atomic<int>)
- * + condition_variable 向控制线程发布状态更新 (waitForStateUpdate 事件驱动,
- * cancel/stop/setState 均 notify)。派生类覆写 run()/preRun()/postRun()/
- * safetyCheck()/publishStopCommand() 钩子 (map 层覆写, 对标 MBF §2.2 模式)。
+ * 每个 execution 独占一条执行线程: start() 现场 spawn, runTask() 依次执行
+ * preRun()→run()→postRun()。内部状态机 (atomic<int>) + condition_variable 向
+ * 控制线程发布状态更新 (waitForStateUpdate 事件驱动, cancel/stop/setState 均
+ * notify)。派生类覆写 run()/preRun()/postRun()/safetyCheck()/
+ * publishStopCommand() 钩子 (map 层覆写, 对标 MBF §2.2 模式)。
+ * 线程模型: 每个长任务一线程 (与 Action 驱动线程同构), 单导航并发上限
+ * = 四族 action 各 ≤1 驱动线程 + ≤1 execution 线程, 无进程级线程池。
  *
  * Ruling #2: 本类内部状态机独立于 actions::GoalStatus (5 态); Task 9 action
  * 层才做 ExecutionState→GoalStatus 映射 (active 合并)。
@@ -30,9 +32,16 @@ public:
 
   virtual ~ExecutionBase();
 
-  /// @brief 在 execution 自有线程中异步执行。
-  /// 长时 controller/recovery 不占用 action driver 的 worker，避免嵌套
-  /// WorkerPool 任务造成 starvation。
+  /// @brief runTask 兜底终态值 (不与任何派生状态机枚举冲突): run()/preRun()/
+  /// postRun() 逃逸异常时由 runTask catch 统一置入。Action 驱动轮询必须把它
+  /// 视为终态 (runImplCommon 前置检查 / PlannerAction 自定义循环同), 否则
+  /// 槽占用与 recovery 互斥等资源协议将死锁。
+  static constexpr int k_aborted{250};
+
+  /// @brief 当前是否处于兜底异常终态 (见 k_aborted)。
+  bool aborted() const { return state.load() == k_aborted; }
+
+  /// @brief 在 execution 自有线程中异步执行 (旧线程未结束时先 join)。
   virtual void start();
 
   /// @brief 请求退出 run() (rigorous), run() 以 STOPPED 状态退出。
@@ -87,7 +96,7 @@ protected:
   std::string message;
 
 private:
-  /// @brief WorkerPool 任务体: preRun → run → postRun, 结束后解挂 running。
+  /// @brief 执行线程体: preRun → run → postRun, 结束后解挂 running。
   void runTask();
 
   /// @brief 是否仍有 run 任务在跑 (mutex 保护, 供 start/join 谓词等待)。

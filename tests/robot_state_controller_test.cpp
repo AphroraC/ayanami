@@ -127,7 +127,7 @@ TEST(RobotStateControllerTest, hotPathNeverReadsConfig) {
   RobotStateController& rsc = RobotStateController::instance();
   EXPECT_EQ(rsc.getGlobalFrame(), "map");
   EXPECT_EQ(rsc.getRobotFrame(), "base_link");
-  EXPECT_EQ(rsc.getOdomFrame(), "odom");
+  EXPECT_EQ(rsc.getLocalFrame(), "odom");
   EXPECT_EQ(rsc.getVelocityTimeout(), 0.25);
 
   PoseStamped pose;

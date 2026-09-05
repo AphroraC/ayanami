@@ -175,10 +175,6 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<double>(k_planner_frequency, -1.0);
   bb->set<double>(k_smoother_frequency, -1.0);
   bb->set<double>(k_controller_frequency, 20.0);
-  bb->set<std::string>(k_planner_id, "test_planner");
-  bb->set<std::string>(k_smoother_id, "test_smoother");
-  bb->set<std::string>(k_controller_id, "test_controller");
-  bb->set<std::string>(k_recovery_id, "clear_costmap");
   bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
   bb->set<std::string>(k_spin_id, "spin");
   bb->set<std::string>(k_wait_id, "wait");
@@ -190,7 +186,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
 
-// 以实际导航树同构结构 (config/BT/navigation.xml) 建树, 外层 RecoveryNode
+// 以实际导航树同构结构 (生产内嵌默认树) 建树, 外层 RecoveryNode
 // retries=2。去掉 RateController (其 tick 门控会缓存 RUNNING, 不适合本测试
 // 紧循环 tick); 恢复链结构 (PipelineSequence + ReactiveFallback) 保持原样。
 constexpr const char* k_exhaustion_tree_xml = R"(

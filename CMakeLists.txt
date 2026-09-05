@@ -69,7 +69,6 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/interfaces/callbacks.cpp
   src/interfaces/transform_store.cpp
   src/abstract/components/execution_base.cpp
-  src/abstract/components/worker_pool.cpp
   src/abstract/components/plugin_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/robot_state_controller.cpp
@@ -311,6 +310,20 @@ if(BUILD_TESTING)
     add_library(test_recovery_plugin SHARED tests/plugins/test_recovery_plugin.cpp)
     target_link_libraries(test_recovery_plugin PRIVATE ayanami)
     set_target_properties(test_recovery_plugin PROPERTIES PREFIX "lib")
+    # 异常注入: start() 抛异常的 recovery (异常路径闭合回归)。
+    add_library(test_throwing_recovery_plugin SHARED
+      tests/plugins/test_throwing_recovery_plugin.cpp)
+    target_link_libraries(test_throwing_recovery_plugin PRIVATE ayanami)
+    set_target_properties(test_throwing_recovery_plugin PROPERTIES PREFIX "lib")
+
+    add_executable(recovery_exception_test tests/recovery_exception_test.cpp)
+    target_link_libraries(recovery_exception_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(recovery_exception_test PRIVATE
+      AYANAMI_TEST_THROWING_RECOVERY_SO="$<TARGET_FILE:test_throwing_recovery_plugin>"
+      AYANAMI_TEST_PLANNER_SO="$<TARGET_FILE:test_planner_plugin>")
+    add_test(NAME RecoveryException COMMAND recovery_exception_test)
+    set_tests_properties(RecoveryException PROPERTIES TIMEOUT 30)
 
     add_executable(navigation_server_test tests/navigation_server_test.cpp)
     target_link_libraries(navigation_server_test PRIVATE ayanami GTest::gtest)
@@ -645,6 +658,51 @@ if(BUILD_TESTING)
       $<TARGET_FILE:test_smoother_plugin>
       $<TARGET_FILE:test_controller_plugin>
       $<TARGET_FILE:test_recovery_plugin>)
+
+    # PipelineSequence / RecoveryNode / RateController reset 关键场景专项测试
+    # (nav2 语义对照: planner+controller 并行、重规划不中断跟踪、recovery 重试)。
+    add_executable(pipeline_sequence_scenarios_test
+      tests/pipeline_sequence_scenarios_test.cpp)
+    target_link_libraries(pipeline_sequence_scenarios_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME PipelineSequenceScenarios COMMAND pipeline_sequence_scenarios_test)
+
+    # goal_update_follow_test: 导航中 goal 更新 -> planner 重规划 + smoother
+    # 重平滑 + controller in-place 跟随新路径 (rviz 抢占场景回归, 生产默认树)。
+    foreach(role PLANNER SMOOTHER CONTROLLER)
+      add_library(goal_update_${role} SHARED
+        tests/plugins/goal_update_follow_plugins.cpp)
+      target_link_libraries(goal_update_${role} PRIVATE ayanami)
+      target_compile_definitions(goal_update_${role} PRIVATE
+        AYANAMI_GOAL_UPDATE_ROLE_${role})
+      set_target_properties(goal_update_${role} PROPERTIES PREFIX "lib")
+    endforeach()
+
+    add_executable(goal_update_follow_test tests/goal_update_follow_test.cpp)
+    target_link_libraries(goal_update_follow_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(goal_update_follow_test PRIVATE
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>"
+      AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO="$<TARGET_FILE:goal_update_PLANNER>"
+      AYANAMI_TEST_GOAL_UPDATE_SMOOTHER_SO="$<TARGET_FILE:goal_update_SMOOTHER>"
+      AYANAMI_TEST_GOAL_UPDATE_CONTROLLER_SO="$<TARGET_FILE:goal_update_CONTROLLER>")
+    add_test(NAME GoalUpdateFollow COMMAND goal_update_follow_test)
+    set_tests_properties(GoalUpdateFollow PROPERTIES TIMEOUT 60)
+
+    # production_tree_recovery_test: 生产默认树 + MockRuntime 恢复重入集成
+    # 测试 (rviz 恢复风暴 bug 回归: FollowPath 必须重入 + 重试预算有界)。
+    add_executable(production_tree_recovery_test
+      tests/production_tree_recovery_test.cpp)
+    target_link_libraries(production_tree_recovery_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ProductionTreeRecovery COMMAND production_tree_recovery_test)
+
+    # local_window_rolling_test: 局部滚动窗口跟随机器人 (卡死 bug 回归)。
+    add_executable(local_window_rolling_test
+      tests/local_window_rolling_test.cpp)
+    target_link_libraries(local_window_rolling_test PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME LocalWindowRolling COMMAND local_window_rolling_test)
   else()
     message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
   endif()

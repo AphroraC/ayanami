@@ -136,7 +136,6 @@ class BehaviorTreePilot {
   bool navigation_started{false};
 
   // configure() 缓存 (loadFromFile 写黑板所需, spec §9.3)
-  std::string planner_id, smoother_id, controller_id, recovery_id;
   std::string clear_costmap_id, spin_id, wait_id, backup_id;
   double planner_frequency = 10.0;
   double smoother_frequency = -1.0;

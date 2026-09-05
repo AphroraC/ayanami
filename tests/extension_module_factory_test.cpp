@@ -204,14 +204,11 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   bb->set<ayanami::geometry_msgs::PoseStamped>(k_goal,
       ayanami::geometry_msgs::PoseStamped{});
   bb->set<ayanami::nav_msgs::Path>(k_raw_path, ayanami::nav_msgs::Path{});
+  bb->set<uint64_t>(k_path_id, 0u);
   bb->set<ayanami::nav_msgs::Path>(k_smoothed_path, ayanami::nav_msgs::Path{});
   bb->set<double>(k_planner_frequency, 100.0);
   bb->set<double>(k_smoother_frequency, -1.0);
   bb->set<double>(k_controller_frequency, 20.0);
-  bb->set<std::string>(k_planner_id, "x");
-  bb->set<std::string>(k_smoother_id, "x");
-  bb->set<std::string>(k_controller_id, "x");
-  bb->set<std::string>(k_recovery_id, "x");
   bb->set<std::string>(k_clear_costmap_id, "x");
   bb->set<std::string>(k_spin_id, "x");
   bb->set<std::string>(k_wait_id, "x");

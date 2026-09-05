@@ -49,6 +49,14 @@ public:
   virtual void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) {
     (void)scan;
   }
+
+  /// @brief 定位修正跳变通知 (中间件适配层检测到 map<-odom 修正相对上一
+  /// 发布值突变 —— 典型为重定位/大角度原地旋转后 AMCL 重新收敛)。
+  ///
+  /// 跳变意味着跳变前按旧修正落图的动态标记 (全局代价图) 已不可信; 具体宿主
+  /// 应清空全局代价图动态层 (静态层不受影响), 由后续扫描按新修正重建。默认
+  /// no-op (测试 stub 可不管)。
+  virtual void onLocalizationJump() {}
 };
 
 } // namespace abstract

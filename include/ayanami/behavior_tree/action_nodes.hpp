@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
+#include "ayanami/behavior_tree/runtime_lookup.hpp"
 #include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/messages/actions.hpp"
 #include "ayanami/messages/failure.hpp"
@@ -17,24 +18,6 @@
 
 namespace ayanami {
 namespace behavior_tree {
-
-// 黑板注入键: BT action 节点构造期从 blackboard 取 NavigationRuntime (spec
-// §6.2 "构造期注入"; registerNodeType 无参 + createTree 时黑板已就绪)。
-// 不属于 17 个必需板项 (requiredBlackboardEntries 由 pilot/测试显式 set)。
-inline constexpr const char* k_navigation_runtime = "navigation_runtime";
-
-/// @brief 构造期从 blackboard 注入 NavigationRuntime; 缺失返回 nullptr
-/// (节点 onStart 判空 FAILURE, 不 abort)。
-inline components::NavigationRuntime::Ptr lookupNavigationRuntime(
-    const BT::NodeConfig& config) {
-  if (!config.blackboard) {
-    return nullptr;
-  }
-  components::NavigationRuntime::Ptr nav_server{nullptr};
-  (void)config.blackboard->get<components::NavigationRuntime::Ptr>(
-      k_navigation_runtime, nav_server);
-  return nav_server;
-}
 
 /// @brief 把结构化失败上下文写入黑板 (spec §6.2 关键纪律扩展)。节点在返回
 /// FAILURE 前调用, 使 Recovery 节点能读取到精确 cause。
@@ -68,8 +51,8 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
  * 端口 (XML 绑定 {raw_path}) 并 incrementPlanVersion。onHalted: 取消在飞 task。
  * 任何 FAILURE 前把精确 FailureContext 写入黑板 (使 Recovery 可获得 cause)。
  *
-  * 端口: goal={goal} (输入), path={raw_path} (输出)
- * (输入,可选, 空时回退黑板 k_planner_id)。
+ * 端口: goal={goal} (输入), path={raw_path} (输出),
+ * path_id={path_id} (输出, 每次成功规划单调递增; smoother 分支以此为准重新平滑)。
  */
 class ComputePathToPoseNode : public BT::StatefulActionNode {
  public:
@@ -81,6 +64,8 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
     return {
       BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal"),
       BT::OutputPort<nav_msgs::Path>("path", "planned path"),
+      BT::OutputPort<uint64_t>(k_path_id,
+                               "monotonic id bumped on every fresh plan"),
     };
   }
 
@@ -167,6 +152,10 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
       return BT::NodeStatus::FAILURE;  // 只依据 failure 决策, 不解析 message
     }
     setOutput("path", r.path);
+    // path_id 单调递增 (本次规划 ≠ 上一次): 下游 smoother 分支的 RateController
+    // 以 {path_id} 为 reset_token, 新路径落地即重新平滑并 bump plan_version,
+    // controller 经 in-place updatePlan 跟上; goal 未变时的重规划同样触发。
+    setOutput(k_path_id, ++planned_path_id);
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -176,6 +165,7 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
   components::NavigationRuntime::Ptr nav_server;
   components::TaskHandle<actions::GetPathResult> task;
   geometry_msgs::PoseStamped submitted_goal;
+  uint64_t planned_path_id{0};
 };
 
 /**

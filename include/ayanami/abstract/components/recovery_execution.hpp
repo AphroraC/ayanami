@@ -12,6 +12,8 @@
 #include <limits>
 #include <memory>
 
+#include <spdlog/spdlog.h>
+
 namespace ayanami {
 namespace components {
 
@@ -101,12 +103,15 @@ protected:
     // 若在 run() 开头复位会把 start() 后刚发生的 cancel() 丢掉 (TOCTOU)。
     setState(STARTED, false);
     start_time = std::chrono::steady_clock::now();
-    if (recovery) {
-      recovery->setBehaviorParams(behavior_params);
-      recovery->start();
-    }
-    setState(RECOVERING, false);
+    // 插件 start()/setBehaviorParams() 与 tick 同受异常兜底保护: start() 抛
+    // 异常若逃逸 run(), 状态机将停在 STARTED 中间态, action 驱动任务永远
+    // 轮询不到终态 → recovery 互斥死锁 (runTask 兜底是最后防线, 不作依赖)。
     try {
+      if (recovery) {
+        recovery->setBehaviorParams(behavior_params);
+        recovery->start();
+      }
+      setState(RECOVERING, false);
       while (true) {
         if (cancel_requested) {
           error = ErrorCode::CANCELED;
@@ -185,7 +190,17 @@ protected:
       publishStopCommand();
       setState(INTERNAL_ERROR, true);
     }
-    if (recovery) recovery->finish();
+    if (recovery) {
+      // 清理异常就地吞掉 (记日志): 终态已结算, 清理失败不得改写结果, 也不得
+      // 逃逸 run() 触发 k_aborted 覆盖 (首个终态优先纪律)。
+      try {
+        recovery->finish();
+      } catch (const std::exception& e) {
+        spdlog::warn("RecoveryExecution: recovery finish() threw: {}", e.what());
+      } catch (...) {
+        spdlog::warn("RecoveryExecution: recovery finish() threw (unknown)");
+      }
+    }
   }
 
   /// @brief 校验 (finite + max_vel 上限) 后发布建议速度; 非法命令清零。

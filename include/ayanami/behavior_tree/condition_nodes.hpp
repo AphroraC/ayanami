@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
+#include "ayanami/behavior_tree/runtime_lookup.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
 
@@ -12,12 +13,17 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief 路径有效性条件: 黑板路径存在且 poses 非空 -> SUCCESS。
+ * @brief 路径有效性条件。
+ *
+ * 有 NavigationRuntime 注入 (常驻树装配) 时走地图族真实校验
+ * (NavigationRuntime::isPathValid → AbstractMapContext::isPathValid:
+ * costmap = 界内且非 lethal/unknown); 无注入 (纯黑板单测) 退化为非空检查。
  */
 class IsPathValid : public BT::ConditionNode {
  public:
   IsPathValid(const std::string& name, const BT::NodeConfig& config)
-    : BT::ConditionNode(name, config) {}
+    : BT::ConditionNode(name, config),
+      nav_server(lookupNavigationRuntime(config)) {}
 
   static BT::PortsList providedPorts() {
     return { BT::InputPort<nav_msgs::Path>("path", "path to validate") };
@@ -25,11 +31,17 @@ class IsPathValid : public BT::ConditionNode {
 
   BT::NodeStatus tick() override {
     nav_msgs::Path path;
-    if (!getInput("path", path)) {
+    if (!getInput("path", path) || path.poses.empty()) {
       return BT::NodeStatus::FAILURE;
     }
-    return path.poses.empty() ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
+    if (nav_server && !nav_server->isPathValid(path)) {
+      return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::SUCCESS;
   }
+
+ private:
+  components::NavigationRuntime::Ptr nav_server;
 };
 
 /**

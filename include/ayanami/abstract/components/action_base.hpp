@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ayanami/abstract/components/action_server.hpp"
-#include "ayanami/abstract/components/worker_pool.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -9,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -18,14 +18,14 @@ namespace components {
 /**
  * @brief Action 基类: 并发槽 + 抢占语义 (对标 MBF AbstractActionBase, spec §5)。
  *
- * 每个并发槽 (slot) 持一个 execution + 每次 goal 提交一个"驱动任务"到进程级
- * WorkerPool (runImpl 一次完整执行)。槽线程模型被取消: 不再为每次请求创建
- * 临时 std::thread, 而是把 run() 作为任务交给池内常驻 worker, 常驻 worker 驱动
- * runImpl() (子类配置 execution 并轮询其状态机分派到 finish), 之后等待 execution
- * 状态机任务结束。同槽新 goal 到达时必须先 preempt 旧 execution (cancel) 并等
- * 旧驱动任务 (含旧 execution 状态机) 完全退出后才允许提交新任务, 因此同槽插件
- * 绝不会重入 (latest_wins 强串行 / max_running==1); 不同 slot 由池内多 worker
- * 并行。
+ * 每个并发槽 (slot) 持一个 execution + 一条"驱动线程" (runImpl 一次完整执行,
+ * 由 start() 现场创建、退出后由本槽回收)。线程模型与 ExecutionBase 同构:
+ * 每个长任务一线程 —— 单导航并发上限 = 四族 action 各 ≤1 驱动线程 + ≤1
+ * execution 状态机线程, 天然有界, 无需进程级线程池。
+ *
+ * 同槽新 goal 到达时必须先 preempt 旧 execution (cancel) 并等旧驱动任务
+ * (含旧 execution 状态机) 完全退出 (join) 后才允许提交新任务, 因此同槽插件
+ * 绝不会重入 (latest_wins 强串行 / max_running==1); 不同 slot 各自独立并行。
  *
  * 并发控制: 每个 slot 一个独立的 per-slot handoff mutex (slot_handoffs), 把
  * start/cancel/cancelGoal 对同 slot 的 "cancel+等旧任务结束 → 启动新任务" 事务
@@ -102,6 +102,13 @@ protected:
   void runImplCommon(const GoalHandleType& gh, Execution& exec,
                      StateMapper mapper) {
     while (true) {
+      // 兜底异常终态优先于 mapper: run()/preRun() 逃逸异常的 execution 停在
+      // k_aborted, 不被任何派生状态机枚举识别 —— 不在此结算则驱动任务死轮询,
+      // 槽占用与 recovery 互斥等资源协议死锁。
+      if (exec.aborted()) {
+        abortGoal(gh);
+        return;
+      }
       if (mapper(gh, exec)) {
         return;
       }
@@ -109,17 +116,19 @@ protected:
     }
   }
 
-  /// @brief 驱动任务入口 (WorkerPool worker 上跑): runImpl → 等 execution 状态机
-  /// 结束 → 释放槽并发布完成信号。
+  /// @brief 驱动任务入口 (本槽驱动线程上跑): runImpl → 等 execution 状态机
+  /// 结束 → 释放槽、置 task_done 并发布完成信号 (供 start/cancelAll join)。
   void run(const GoalHandleType& goal_handle, ExecutionPtr exec, uint8_t slot);
 
 private:
   struct ConcurrencySlot {
     ExecutionPtr execution;
+    /// @brief 本槽驱动线程 (runImpl 一次完整执行; 退出后由本槽 join 回收)。
+    std::thread worker;
     Goal goal;
     bool in_use{false};
     uint64_t goal_id{0};
-    /// @brief 本槽最近一次驱动任务是否已完全退出 (等价旧实现线程已 join)。
+    /// @brief 本槽最近一次驱动任务是否已完全退出 (run() 末尾置位, join 前置)。
     bool task_done{true};
   };
 
@@ -177,21 +186,27 @@ void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
     old_exec->cancel();
   }
   {
-    // 事件驱动等待旧驱动任务完全退出 (等价旧实现的 join 旧槽线程): 旧任务即
+    // 事件驱动等待旧驱动任务完全退出 (等价 join 旧槽线程): 旧任务即
     // ActionBase::run(), 其末尾 (含 exec->join() 等旧 execution 状态机完全退出
     // 之后再置 task_done) 才算结束, 之后才允许新的进入插件 (同槽绝不重入)。
+    // 退出中的线程不再触碰 slots_mutex, 持锁 join 无死锁。
     std::unique_lock<std::mutex> lock(slots_mutex);
     auto& s = slots[slot];
     slots_cv.wait(lock, [&s] { return s.task_done; });
+    if (s.worker.joinable()) {
+      s.worker.join();
+    }
     s.execution = exec;
     s.goal = goal_handle.goal;
     s.goal_id = goal_handle.id;
     s.task_done = false;  // 新驱动任务在飞
     s.in_use = true;
+    // 驱动任务 = 本槽一条临时线程 ("runImpl 一次完整执行"); 线程模型与
+    // ExecutionBase 同构, 槽级生命周期由 task_done + join 管理。
+    s.worker = std::thread([this, goal_handle, exec, slot]() {
+      run(goal_handle, exec, slot);
+    });
   }
-  // 把 "runImpl 一次完整执行" 作为任务提交到进程级 WorkerPool, 不再临时建线程。
-  WorkerPool::instance().submit(
-      [this, goal_handle, exec, slot]() { run(goal_handle, exec, slot); });
 }
 
 template <typename Goal, typename Execution>
@@ -273,7 +288,7 @@ void ActionBase<Goal, Execution>::cancelAll() {
   for (auto& e : to_cancel) {
     e->cancel();
   }
-  // 事件驱动等待所有槽驱动任务完全退出 (等价 join 全部旧槽线程)。
+  // 事件驱动等待所有槽驱动任务完全退出, join 回收全部驱动线程。
   std::unique_lock<std::mutex> lock(slots_mutex);
   slots_cv.wait(lock, [this] {
     for (const auto& kv : slots) {
@@ -284,6 +299,9 @@ void ActionBase<Goal, Execution>::cancelAll() {
     return true;
   });
   for (auto& kv : slots) {
+    if (kv.second.worker.joinable()) {
+      kv.second.worker.join();
+    }
     kv.second.execution.reset();
   }
 }
@@ -320,8 +338,9 @@ void ActionBase<Goal, Execution>::run(const GoalHandleType& goal_handle,
     abortGoal(goal_handle);
   }
   exec->join();
-  // 收尾 (等价旧槽线程退出): 若仍占有该槽则置空闲并释放 execution; 无论是否
-  // 仍占有 (被新 start/cancelAll 抢占时已 in_use=false), 都发布本槽完成信号。
+  // 收尾 (本驱动线程退出前): 若仍占有该槽则置空闲并释放 execution; 无论是否
+  // 仍占有 (被新 start/cancelAll 抢占时已 in_use=false), 都发布本槽完成信号
+  // 供 start/cancelAll join 回收本线程。
   {
     std::lock_guard<std::mutex> lock(slots_mutex);
     auto& s = slots[slot];

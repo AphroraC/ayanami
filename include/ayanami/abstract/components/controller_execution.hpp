@@ -28,6 +28,11 @@ namespace components {
  *
  * 关键纪律 (Global Constraints): 每次发布前强制清零 TwistStamped, 修脏内存
  * 历史 bug; publishStopCommand() 也显式清零。
+ *
+ * 失败语义 (职责表): 插件返回失败码或无效命令时, 执行层清零发布并继续循环
+ * (execution 内部不做重试计数); 只有 patience > 0 且从 start 起算超过该时长
+ * 仍无有效命令时才终态上报 (对标 nav2 controller failure_tolerance), 重试
+ * 与恢复决策一律由 BT 决定。
  */
 class ControllerExecution : public ExecutionBase {
 public:
@@ -107,10 +112,8 @@ public:
 
   double getControllerFrequency() const { return controller_frequency; }
 
-  /// @brief 无有效命令时的重试预算 (<=0: 无限重试, 失败继续循环)。
-  void setMaxRetries(int retries) { max_retries = retries; }
-
-  /// @brief 无有效命令的耐心 (秒); <=0 关闭。
+  /// @brief 无有效命令的耐心 (秒, 对标 nav2 failure_tolerance); <=0 关闭
+  ///        (默认): 失败清零发布并继续循环, 终态只由到达/进展/取消/停止决定。
   void setPatience(double seconds) {
     patience = std::chrono::duration<double>(seconds);
   }
@@ -200,7 +203,6 @@ protected:
       return;
     }
 
-    int retries = 0;
     try {
       while (true) {
         if (cancel_requested) {
@@ -284,6 +286,12 @@ protected:
         const ControllerResultT result =
             callController(robot_pose, robot_velocity);
 
+        // 插件调用期间发生取消/停止: 不发布本轮命令 (防止 recovery 启动瞬间
+        // 漏出一条旧速度命令), 下一轮循环顶部统一结算 CANCELED/STOPPED。
+        if (cancel_requested || should_exit) {
+          continue;
+        }
+
         if (result.ok) {
           // 关键: 发布前清零 (Global Constraints, 修脏内存 bug)
           geometry_msgs::TwistStamped cmd_vel = {};
@@ -297,7 +305,6 @@ protected:
             message = result.message;
             setState(GOT_LOCAL_CMD, false);
             ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd_vel);
-            retries = 0;
           }
         } else {
           error = result.error;
@@ -305,11 +312,6 @@ protected:
         }
 
         if (error != ErrorCode::NONE) {
-          if (max_retries > 0 && ++retries > max_retries) {
-            publishStopCommand();
-            setState(INTERNAL_ERROR, true);
-            return;
-          }
           if (isPatienceExceeded()) {
             error = ErrorCode::TIMEOUT;
             publishStopCommand();
@@ -374,7 +376,6 @@ protected:
   double max_linear_x{std::numeric_limits<double>::infinity()};
   double max_linear_y{std::numeric_limits<double>::infinity()};
   double max_angular_z{std::numeric_limits<double>::infinity()};
-  int max_retries{-1};
   std::chrono::duration<double> patience{0};
   std::chrono::steady_clock::time_point start_time;
 

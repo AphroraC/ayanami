@@ -30,14 +30,11 @@ inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
 // 变成编译期/启动期失败。
 inline constexpr const char* k_goal = "goal";
 inline constexpr const char* k_raw_path = "raw_path";
+inline constexpr const char* k_path_id = "path_id";
 inline constexpr const char* k_smoothed_path = "smoothed_path";
 inline constexpr const char* k_planner_frequency = "planner_frequency";
 inline constexpr const char* k_smoother_frequency = "smoother_frequency";
 inline constexpr const char* k_controller_frequency = "controller_frequency";
-inline constexpr const char* k_planner_id = "planner_id";
-inline constexpr const char* k_smoother_id = "smoother_id";
-inline constexpr const char* k_controller_id = "controller_id";
-inline constexpr const char* k_recovery_id = "recovery_id";
 inline constexpr const char* k_clear_costmap_id = "clear_costmap_id";
 inline constexpr const char* k_spin_id = "spin_id";
 inline constexpr const char* k_wait_id = "wait_id";
@@ -51,9 +48,9 @@ inline constexpr const char* k_failure_context = "failure_context";
 /// 全部必需黑板项 (createTree 之后 validateRequiredBlackboardEntries 扫一遍)。
 inline const std::vector<const char*>& requiredBlackboardEntries() {
   static const std::vector<const char*> k_required = {
-    k_goal, k_raw_path, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
+    k_goal, k_raw_path, k_path_id, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
-    k_planner_id, k_smoother_id, k_controller_id, k_recovery_id, k_clear_costmap_id,
+    k_clear_costmap_id,
     k_spin_id, k_wait_id, k_backup_id, k_session_id, k_plan_version, k_reset_stuck_token,
     k_failure_context, k_goal_revision,
   };

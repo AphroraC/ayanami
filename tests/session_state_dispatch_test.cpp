@@ -123,10 +123,6 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<double>(k_planner_frequency, 10.0);
   bb->set<double>(k_smoother_frequency, -1.0);
   bb->set<double>(k_controller_frequency, 20.0);
-  bb->set<std::string>(k_planner_id, "test_planner");
-  bb->set<std::string>(k_smoother_id, "test_smoother");
-  bb->set<std::string>(k_controller_id, "test_controller");
-  bb->set<std::string>(k_recovery_id, "test_recovery");
   bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
   bb->set<std::string>(k_spin_id, "spin");
   bb->set<std::string>(k_wait_id, "wait");
@@ -314,9 +310,8 @@ std::filesystem::path makePilotConfigDir() {
     "navigation": {
       "behavior_tree_extension": ")") + AYANAMI_TEST_BT_EXT_SO + R"(",
       "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
-      "planner_id": "test_planner",
-      "smoother_id": "test_smoother",
-      "controller_id": "test_controller",
+
+
       "planner_frequency": 100.0,
       "smoother_frequency": -1.0,
       "controller_frequency": 20.0,
@@ -416,9 +411,8 @@ std::filesystem::path makeDispatchConfigDir() {
              "  }\n}\n");
   writeJson(dir / "nav.json", R"({
     "navigation": {
-      "planner_id": "planner_a",
-      "smoother_id": "smoother_a",
-      "controller_id": "controller_a",
+
+
       "recovery_id": "recovery_a"
     }
   })");

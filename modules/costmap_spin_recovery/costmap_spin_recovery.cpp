@@ -38,7 +38,7 @@ void CostmapSpinRecovery::configure(
       context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
   param.collision_radius = context.config.param<double>(
       "recovery", "collision_radius", param.collision_radius);
-  map_ = std::move(map);
+  map_context = std::move(map);
 }
 
 void CostmapSpinRecovery::setBehaviorParams(
@@ -58,7 +58,7 @@ void CostmapSpinRecovery::start() {
 
 RecoveryResultT CostmapSpinRecovery::tick() {
   // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
-  auto costmap = map_->lockGlobal();
+  auto costmap = map_context->lockGlobal();
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 

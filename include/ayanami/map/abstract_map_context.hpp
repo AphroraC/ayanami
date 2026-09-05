@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ayanami/messages/geometry_msgs.hpp"
+#include "ayanami/messages/nav_msgs.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,6 +41,15 @@ class AbstractMapContext {
   virtual bool getRobotState(
       geometry_msgs::PoseStamped& pose,
       geometry_msgs::TwistStamped& velocity) const = 0;
+
+  /// @brief 路径有效性查询 (collision/query capability, MapCapability::
+  /// CollisionQuery): 路径各点是否可通行由地图族定义 (costmap = 无 lethal/
+  /// unknown 且在界内)。
+  /// 默认实现: 非空即有效 —— 无碰撞查询能力的地图族的保守退化, 供 BT
+  /// IsPathValid 条件在无 runtime/无地图环境回退。
+  virtual bool isPathValid(const ayanami::nav_msgs::Path& path) const {
+    return !path.poses.empty();
+  }
 };
 
 }  // namespace ayanami::map

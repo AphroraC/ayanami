@@ -157,18 +157,15 @@ std::filesystem::path makeConfigDir(const std::string& planner_so) {
 
   writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"navigation.json\",\n"
+             "    \"config_navigation\": \"navigation.json\"\n"
+             "  }\n}\n");
+  // 插件文件指针统一在 navigation 段; 模块 id = 各模块 json 的 name。
+  writeJson(dir / "navigation.json",
+             "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
              "    \"config_smoother\": \"smoother.json\",\n"
              "    \"config_controller\": \"controller.json\",\n"
              "    \"config_recovery\": [\"recovery.json\"]\n"
-             "  }\n}\n");
-  writeJson(dir / "navigation.json",
-             "{\n  \"navigation\": {\n"
-             "    \"planner_id\": \"test_planner\",\n"
-             "    \"smoother_id\": \"test_smoother\",\n"
-             "    \"controller_id\": \"test_controller\",\n"
-             "    \"recovery_id\": \"test_recovery\"\n"
              "  }\n}\n");
   writeJson(dir / "planner.json",
              pluginJson("planner", "test_planner", planner_so));

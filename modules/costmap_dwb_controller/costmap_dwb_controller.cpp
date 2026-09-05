@@ -67,12 +67,12 @@ void CostmapDwBLocalPlanner::configure(
     const PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   dwb_plugin_name = context.name;
-  map_ = std::move(map);
+  map_context = std::move(map);
 
   // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局)。
   // json 段 = controller.name (插件实例名)。
-  config_ = std::make_unique<Config>(std::move(context.config));
-  const ayanami::Config& cfg = *config_;
+  module_config = std::make_unique<Config>(std::move(context.config));
+  const ayanami::Config& cfg = *module_config;
   const std::string section =
       cfg.param<std::string>("controller", "name", "costmap_dwb_controller");
   param.transform_tolerance =
@@ -156,7 +156,7 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
 void CostmapDwBLocalPlanner::loadCritics() {
   // loadCritics 在 initialize (configure) 调用链内创建 critic 运行资源;
   // 模块级参数 default_critic_namespaces / critics 已在构造函数读入 param。
-  const ayanami::Config& cfg = *config_;
+  const ayanami::Config& cfg = *module_config;
 
   std::vector<std::string> default_critic_namespaces =
       param.default_critic_namespaces;
@@ -223,13 +223,15 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
   ayanami::geometry_msgs::TwistStamped cmd_vel = {};
 
   // 锁纪律: 持 shared 锁的 local 读视图 (整个打分周期), 零拷贝; 地图写者
-  // 等锁写入。视图析构释放锁。
-  if (!map_) {
+  // 等锁写入。视图必须为函数局部变量 —— 析构于本周期结束, 立即释放读锁;
+  // 存成成员会把 shared 锁持有到插件销毁, 地图写者 (落图/滚动/清图) 永久
+  // 阻塞 (实测卡死根因)。
+  if (!map_context) {
     return ControllerResultT::failure(
         ErrorCode::MAP_UNAVAILABLE,
         "CostmapDwBLocalPlanner: no costmap module");
   }
-  local_view = map_->lockLocal();
+  auto local_view = map_context->lockLocal();
   if (!local_view.valid()) {
     return ControllerResultT::failure(
         ErrorCode::MAP_UNAVAILABLE,
@@ -240,7 +242,7 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
 
   // 每周期刷新 footprint (critics 持有 footprint_spec 地址, 内容就地更新)。
   footprint_spec.clear();
-  const auto& fp = map_->footprint();
+  const auto& fp = map_context->footprint();
   footprint_spec.reserve(fp.size());
   for (const auto& point : fp) {
     footprint_spec.push_back(

@@ -19,7 +19,9 @@ namespace modules {
  */
 class SimpleProgressChecker final : public ayanami::abstract::AbstractProgressChecker {
  public:
-  SimpleProgressChecker();
+  SimpleProgressChecker() = default;
+
+  void configure(const ayanami::PluginContext& context) override;
 
   void reset() override;
 

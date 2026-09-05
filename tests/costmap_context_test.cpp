@@ -61,19 +61,19 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
   void configure(const ayanami::PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
 
   PlannerResultT makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::PoseStamped&, double) override {
     ++plan_calls;
-    got_view = map_ && map_->lockGlobal().valid();
+    got_view = map_context && map_context->lockGlobal().valid();
     return PlannerResultT::success(ayanami::nav_msgs::Path{});
   }
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
 
 class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
@@ -86,17 +86,17 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   void configure(const ayanami::PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
 
   SmootherResultT smoothPath(ayanami::nav_msgs::Path& path, double,
                              bool) override {
-    got_view = map_ && map_->lockGlobal().valid();
+    got_view = map_context && map_context->lockGlobal().valid();
     return SmootherResultT::success(std::move(path));
   }
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
 
 class TestCostmapController : public ayanami::costmap::CostmapController {
@@ -109,19 +109,19 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   void configure(const ayanami::PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
 
   ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::TwistStamped&) override {
-    got_view = map_ && map_->lockLocal().valid();
+    got_view = map_context && map_context->lockLocal().valid();
     return ControllerResultT::success(ControllerCommand{});
   }
   bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
 
 class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
@@ -134,18 +134,18 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   void configure(const ayanami::PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
-    map_ = std::move(map);
+    map_context = std::move(map);
   }
 
   RecoveryResultT tick() override {
-    got_view = map_ && map_->lockGlobal().valid();
+    got_view = map_context && map_context->lockGlobal().valid();
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
     return RecoveryResultT::success(std::move(data));
   }
 
  private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
 
 }  // namespace
@@ -451,4 +451,61 @@ TEST(CostmapMapContextTest, mapFamilyIgnorantInterfaceOnly) {
   ctx.setFrames("isolated_map", "isolated_map", "isolated_base");
   ayanami::geometry_msgs::PoseStamped pose;
   EXPECT_FALSE(ctx.getRobotPose(pose));
+}
+// ---------- isPathValid: 地图族碰撞查询能力 (职责表"路径是否过期") ----------
+
+namespace {
+
+ayanami::nav_msgs::Path makePathAt(std::vector<std::pair<double, double>> pts) {
+  ayanami::nav_msgs::Path path;
+  path.header.frame_id = "map";
+  for (const auto& [x, y] : pts) {
+    ayanami::geometry_msgs::PoseStamped p;
+    p.header.frame_id = "map";
+    p.pose.position = Eigen::Vector3d(x, y, 0.0);
+    path.poses.push_back(p);
+  }
+  return path;
+}
+
+}  // namespace
+
+TEST(CostmapMapContextTest, isPathValidRejectsEmptyUnknownLethalAndOutOfBounds) {
+  auto lm = makeGrid();  // 10x10 @ 0.5m, origin (0,0) -> 覆盖 0..5m
+  auto* grid = lm->getCostmap();
+  // world (1.0,1.0) -> cell (2,2) 置 lethal; cell (3,2) 置 NO_INFORMATION。
+  grid->setCost(2, 2, costmap_2d::LETHAL_OBSTACLE);
+  grid->setCost(3, 2, costmap_2d::NO_INFORMATION);
+
+  CostmapMapContext ctx;
+  ctx.setGlobalCostmap(makeWrapper(lm));
+
+  // 空路径无效。
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({})));
+  // 自由空间路径有效。
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{0.5, 0.5}, {2.0, 0.5}})));
+  // lethal 点无效。
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{0.5, 0.5}, {1.0, 1.0}})));
+  // unknown 点无效。
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));  // world(1.5,1.0)->cell(3,2)
+  // 出界点无效。
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{9.0, 9.0}})));
+  // 高 inflation (非 lethal) 代价不判无效 (controller 层裁决)。
+  grid->setCost(4, 4, 200);
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{2.0, 2.0}})));
+}
+
+TEST(CostmapMapContextTest, isPathValidDegeneratesWithoutMap) {
+  CostmapMapContext ctx;  // 无 global wrapper
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({})));
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.0, 1.0}})));
+}
+
+TEST(CostmapMapContextTest, abstractMapContextDefaultIsNonEmptySemantics) {
+  ayanami::map::AbstractMapContext::Ptr ctx =
+      std::make_shared<CostmapMapContext>();  // 未覆写前的地图族默认
+  ayanami::nav_msgs::Path path;
+  EXPECT_FALSE(ctx->isPathValid(path));
+  path.poses.push_back(ayanami::geometry_msgs::PoseStamped{});
+  EXPECT_TRUE(ctx->isPathValid(path));
 }

@@ -12,6 +12,7 @@
 // 膨胀带在 master grid 中清为 FREE, 再 markObstacles + updateMap 让
 // InflationLayer 在 recompute window 内全量重算, 无 stale 带残留。
 
+#include "ayanami/costmap/components/costmap_map_family_factory.hpp"
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
 
 #include <costmap_2d_layers/inflation_layer.hpp>
@@ -102,7 +103,12 @@ CostmapNavigationServer::CostmapNavigationServer() {
 
 CostmapNavigationServer::~CostmapNavigationServer() = default;
 
-void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) {
+void CostmapNavigationServer::configureCoreMaps(
+    const std::string& config_path, ayanami::map::MapFamilyFactory::Ptr factory) {
+  // context 唯一创建点 = 地图族工厂 (缺省回退 costmap 工厂; 核心与宿主只认
+  // MapFamilyFactory 抽象面, CostmapMapContext 族面仅存在于本 server 内)。
+  map_family_factory = factory ? std::move(factory)
+                               : std::make_shared<CostmapMapFamilyFactory>();
   // 3.3 minor carry: 二次 configureCoreMaps 守护。已有已构 context 时忽略重入:
   // 重建会替换 costmap_context, 使已注入插件的 wrapper 引用悬挂 (旧 context 被
   // 新对象替换后, 插件仍指向旧 wrapper)。
@@ -143,6 +149,17 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
                     robot_frame, ros_frame);
     }
     assert(robot_frame == ros_frame);
+  }
+  // local frame 单一来源 = costmap.local_frame; config_ros.odom_frame 只是
+  // ROS TF 同步边配置, 二者语义应一致 (不一致时告警, 不静默分叉)。
+  const std::string ros_odom_frame =
+      ros_cfg.param<std::string>("ayanami_ros", "odom_frame", std::string{});
+  if (!ros_odom_frame.empty() && local_frame != ros_odom_frame) {
+    spdlog::error(
+        "local_frame mismatch: costmap.local_frame '{}' vs ayanami_ros "
+        "odom_frame '{}'; 局部地图与 TF 同步将分叉",
+        local_frame, ros_odom_frame);
+    assert(local_frame == ros_odom_frame);
   }
 
   // ---- global: StaticLayer + SimpleObstacleLayer + InflationLayer ----
@@ -307,7 +324,13 @@ void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) 
   local_raytrace_range = cfg.param<double>(
       "costmap_local", "raytrace_range", local_raytrace_range);
 
-  costmap_context = std::make_shared<CostmapMapContext>();
+  costmap_context =
+      std::dynamic_pointer_cast<CostmapMapContext>(map_family_factory->createContext());
+  if (!costmap_context) {
+    throw std::runtime_error(
+        "map family factory '" + map_family_factory->familyName() +
+        "' did not create a CostmapMapContext");
+  }
   costmap_context->bumpVersion();
   costmap_context->setGlobalCostmap(global_wrapper);
   costmap_context->setLocalCostmap(local_wrapper);
@@ -709,6 +732,13 @@ void CostmapNavigationServer::markObstaclesInFrame(
 
     costmap_context->localCostmap()->updateMapUnlocked(robot_x, robot_y, robot_yaw);
     if (robotDiagDue(local_robot_diag_at)) {
+      const auto* probe_grid =
+          costmap_context->localCostmap()->get().getCostmap();
+      spdlog::debug(
+          "roll updateMap robot=({:.3f},{:.3f}) origin=({:.3f},{:.3f}) "
+          "rolling={}",
+          robot_x, robot_y, probe_grid->getOriginX(), probe_grid->getOriginY(),
+          costmap_context->localCostmap()->isRollingWindow() ? 1 : 0);
       spdlog::debug("roll updateMap robot=({:.3f},{:.3f}) rolling={}", robot_x,
                     robot_y,
                     costmap_context->localCostmap()->isRollingWindow() ? 1 : 0);

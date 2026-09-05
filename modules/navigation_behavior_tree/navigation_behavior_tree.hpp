@@ -42,6 +42,12 @@ class NavigationBehaviorTreeExtension
 
  private:
   // 内嵌默认导航树 (spec §6.3 verbatim, 生产单一来源; 文件版不在生产安装)。
+  //
+  // goal 更新纪律: planner 分支以 {goal_revision} 为 reset_token (新 goal 即重
+  // 规划); smoother 分支以 {path_id} 为 reset_token (ComputePathToPose 每次成功
+  // 规划 bump path_id, 新路径落地即重新平滑 + bump plan_version), FollowPath 在
+  // plan_version 变化时对运行中 controller 做 in-place updatePlan —— 机器人持续
+  // 跟随旧路径直到新路径可用, 不会出现"已重规划但不跟随"的陈旧平滑缓存。
   static constexpr const char* k_default_tree_id =
       "NavigateWithReplanningAndSmoothing";
   static constexpr const char* k_default_navigation_xml = R"(
@@ -52,7 +58,7 @@ class NavigationBehaviorTreeExtension
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-               <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+               <ComputePathToPose goal="{goal}" path="{raw_path}" path_id="{path_id}"/>
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
@@ -60,7 +66,7 @@ class NavigationBehaviorTreeExtension
             </Sequence>
           </RecoveryNode>
         </RateController>
-        <RateController hz="{smoother_frequency}" reset_token="{goal_revision}">
+        <RateController hz="{smoother_frequency}" reset_token="{path_id}">
                <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
         </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1">
@@ -72,7 +78,7 @@ class NavigationBehaviorTreeExtension
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-         <RecoverySequence name="RecoveryActions">
+         <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
           <Sequence>
             <Recovery recovery="{spin_id}"/>
           </Sequence>

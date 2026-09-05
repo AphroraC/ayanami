@@ -46,9 +46,13 @@ class RateController : public BT::DecoratorNode {
     uint64_t token = 0;
     (void)getInput("reset_token", token);
     if (token != reset_token) {
+      // 令牌变化 = 语义上"一个新的上游产物需要重新经过本分支"。必须 halt
+      // 在飞 child (StatefulActionNode 走 onHalted → task.cancel), 否则仍在
+      // RUNNING 的 child 只会继续消费旧输入直至完成, 新输入被跳过。
       reset_token = token;
       started = false;
       last_status = BT::NodeStatus::FAILURE;
+      haltChild();
     }
 
     if (hz <= 0.0) {
@@ -90,6 +94,17 @@ class RateController : public BT::DecoratorNode {
 
   void halt() override {
     BT::DecoratorNode::halt();
+    started = false;
+    last_status = BT::NodeStatus::FAILURE;
+  }
+
+  /// @brief 树生命终端后的逻辑重置 (pilot 调 resetNavigationTreeState)。
+  ///
+  /// BT.CPP v4 的 ControlNode::haltChildren 只对 status==RUNNING 的 child 调
+  /// haltNode, 终态 (SUCCESS/FAILURE 缓存) 的子树不会被 halt —— 常驻树模型下
+  /// 缓存标志必须由 pilot 在树生命结束时显式重置, 否则 planner/smoother 分支
+  /// 永不重新执行 (恢复风暴 bug 根因)。reset_token 缓存保留 (变更检测语义)。
+  void resetState() {
     started = false;
     last_status = BT::NodeStatus::FAILURE;
   }

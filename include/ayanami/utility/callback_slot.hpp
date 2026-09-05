@@ -29,24 +29,24 @@ class CallbackSubscription {
  public:
   CallbackSubscription() = default;
   explicit CallbackSubscription(std::function<void()> reset)
-      : reset_(std::move(reset)) {}
+      : unbind(std::move(reset)) {}
   ~CallbackSubscription() { reset(); }
 
   CallbackSubscription(const CallbackSubscription&) = delete;
   CallbackSubscription& operator=(const CallbackSubscription&) = delete;
   CallbackSubscription(CallbackSubscription&& other) noexcept
-      : reset_(std::move(other.reset_)) {}
+      : unbind(std::move(other.unbind)) {}
   CallbackSubscription& operator=(CallbackSubscription&& other) noexcept {
     if (this != &other) {
       reset();
-      reset_ = std::move(other.reset_);
+      unbind = std::move(other.unbind);
     }
     return *this;
   }
 
   void reset() noexcept {
-    if (!reset_) return;
-    auto reset = std::move(reset_);
+    if (!unbind) return;
+    auto reset = std::move(unbind);
     try {
       reset();
     } catch (...) {
@@ -55,7 +55,7 @@ class CallbackSubscription {
   }
 
  private:
-  std::function<void()> reset_;
+  std::function<void()> unbind;
 };
 
 namespace detail {

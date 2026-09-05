@@ -35,8 +35,11 @@ class RobotStateController {
   static RobotStateController& instance();
 
   /// @brief 一次性初始化: 缓存帧名 + 速度超时 (hot path 不再读 Config)。
+  /// @param local_frame 局部地图/局部视图解析机器人位姿的帧 (语义上通常是
+  ///        odom 帧; 与 costmap.local_frame 单一来源对齐, 非独立的 ROS TF
+  ///        odom 帧配置)。
   void initialize(const std::string& global_frame,
-                  const std::string& odom_frame,
+                  const std::string& local_frame,
                   const std::string& robot_frame, double velocity_timeout);
 
   /// @brief 更新最新速度 (ayanami_ros odomCallback 直写入口)。线程安全。
@@ -70,7 +73,7 @@ class RobotStateController {
   void resetVelocity();
 
   std::string getGlobalFrame() const;
-  std::string getOdomFrame() const;
+  std::string getLocalFrame() const;
   std::string getRobotFrame() const;
   double getVelocityTimeout() const;
 
@@ -87,7 +90,7 @@ class RobotStateController {
 
   mutable std::mutex mutex;
   std::string global_frame{"map"};
-  std::string odom_frame{"odom"};
+  std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};
   double velocity_timeout_s{0.25};
   std::optional<geometry_msgs::TwistStamped> last_velocity;

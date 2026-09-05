@@ -53,6 +53,12 @@ public:
   virtual void cancelAllControllers() = 0;
   virtual void cancelAllPlanners() {}
   virtual void cancelAllSmoothers() {}
+  /// @brief 路径有效性查询 (BT IsPathValid 条件节点消费; 职责表"路径是否
+  /// 过期"的 BT 可读面)。默认 = 非空即有效; 地图族宿主覆写为真实校验
+  /// (CostmapNavigationServer → AbstractMapContext::isPathValid)。
+  virtual bool isPathValid(const ayanami::nav_msgs::Path& path) const {
+    return !path.poses.empty();
+  }
   virtual void setSessionState(
       std::shared_ptr<NavigationSessionState> session) = 0;
 };
@@ -171,12 +177,13 @@ protected:
       const std::string& name, ayanami::abstract::AbstractRecovery::Ptr);
 
   /// @brief 对 controller execution 施加 server 级装配 (goal/progress checker
-  /// 注入 + 速度上限)。基类与 costmap 派生 createActions 共用。
-  void configureControllerExecution(
+  /// 注入 + 速度上限)。基类与 costmap 派生 createActions 共用; virtual 供
+  /// 派生/测试注入自定义 checker 装配。
+  virtual void configureControllerExecution(
       std::shared_ptr<ControllerExecution> exec) const;
 
   /// @brief 对 recovery execution 施加 server 级装配 (速度上限)。同上。
-  void configureRecoveryExecution(
+  virtual void configureRecoveryExecution(
       std::shared_ptr<RecoveryExecution> exec) const;
 
   /// @brief Shared dispatch for the three single-plugin families.

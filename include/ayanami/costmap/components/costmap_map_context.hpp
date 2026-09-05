@@ -60,11 +60,39 @@ class CostmapMapContext : public map::AbstractMapContext,
            static_cast<std::uint32_t>(Capability::DynamicObstacleUpdate) |
            static_cast<std::uint32_t>(Capability::ClearRegion);
   }
-  map::MapCommandPort::Ptr commandPort() const override { return command_port_; }
+  map::MapCommandPort::Ptr commandPort() const override { return command_port; }
   bool getRobotState(geometry_msgs::PoseStamped& pose,
                      geometry_msgs::TwistStamped& velocity) const override {
     return components::RobotStateController::instance().getRobotState(
         pose, velocity);
+  }
+
+  /// @brief 路径有效性: global costmap 语义 = 每个路径点在界内且代价既非
+  /// NO_INFORMATION 也非 lethal (inflation 高代价不判无效 —— planner 已避开
+  /// lethal, 贴障碍的合法代价路径留给 controller 层裁决)。
+  /// 持 shared 锁零拷贝校验; 无 global wrapper 时退化为非空检查。
+  bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
+    if (path.poses.empty()) {
+      return false;
+    }
+    if (!global_costmap) {
+      return true;
+    }
+    return readGlobal([&path](const costmap_2d::Costmap2D& grid) {
+      for (const auto& pose : path.poses) {
+        unsigned int mx = 0;
+        unsigned int my = 0;
+        if (!grid.worldToMap(pose.pose.position.x(), pose.pose.position.y(),
+                             mx, my)) {
+          return false;  // 出界: 路径点落在地图外
+        }
+        const auto cost = grid.getCost(mx, my);
+        if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
   // ---- 配置 (写者 / 测试注入) ----
@@ -84,13 +112,13 @@ class CostmapMapContext : public map::AbstractMapContext,
   /// @brief setup 期缓存不可变 footprint (configureCoreMaps 注入)。读者只从
   /// 此缓存取 footprint, 绝不读 live LayeredCostmap (写锁外读可变状态)。
   void setFootprint(costmap_2d::Footprint footprint) {
-    footprint_ = std::move(footprint);
+    cached_footprint = std::move(footprint);
   }
 
   /// @brief 注入地图写命令端口 (configureCoreMaps 期, 唯一写者创建后立即)。
   /// recovery 等地图族插件经 commandPort() 获取, 不再走旁路注入。
   void setCommandPort(map::MapCommandPort::Ptr port) {
-    command_port_ = std::move(port);
+    command_port = std::move(port);
   }
 
   // ---- frames / freshness ----
@@ -121,7 +149,7 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
   /// @brief configure 期缓存的不可变 footprint。
-  const costmap_2d::Footprint& footprint() const { return footprint_; }
+  const costmap_2d::Footprint& footprint() const { return cached_footprint; }
 
   // ---- 写者/execution lifecycle accessor (可变 map 仅写者触碰) ----
   costmap_2d::CostmapWrapper::Ptr globalCostmap() {
@@ -214,7 +242,7 @@ class CostmapMapContext : public map::AbstractMapContext,
     const auto* grid = wrapper->get().getCostmap();
     ayanami::geometry_msgs::PoseStamped robot_pose;
     const bool has_robot_pose = getRobotPose(robot_pose, frame);
-    return CostmapView(std::move(lock), grid, frame, &footprint_,
+    return CostmapView(std::move(lock), grid, frame, &cached_footprint,
                        std::move(robot_pose), has_robot_pose,
                        wrapper->isCurrent());
   }
@@ -222,11 +250,11 @@ class CostmapMapContext : public map::AbstractMapContext,
   costmap_2d::CostmapWrapper::Ptr global_costmap;
   costmap_2d::CostmapWrapper::Ptr local_costmap;
   std::string global_frame{"map"};
-  std::string local_frame{"map"};
+  std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};
   std::uint64_t map_version{0};
-  costmap_2d::Footprint footprint_;
-  map::MapCommandPort::Ptr command_port_;
+  costmap_2d::Footprint cached_footprint;
+  map::MapCommandPort::Ptr command_port;
 };
 
 }  // namespace costmap

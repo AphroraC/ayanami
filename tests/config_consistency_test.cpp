@@ -86,21 +86,23 @@ struct NavIds {
   std::string backup_id;
 };
 
-// 严格单层索引: main config.json global.config_recovery 为单字符串或字符串数组
-// (数组即多插件文件族), 解析为相对 config_path 的完整路径。
+// config_recovery 有序文件族在 config_navigation 的 navigation 段
+// (单字符串或字符串数组), 解析为相对 config_path 的完整路径。
 std::vector<std::string> recoveryFamilyFiles() {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
+  const ayanami::Config navigation(ayanami::GlobalConfig::getConfigPath(
+      "config_navigation"));
   std::vector<std::string> entries;
-  if (g->hasParam("global", "config_recovery")) {
+  if (navigation.hasParam("navigation", "config_recovery")) {
     try {
-      entries = g->param<std::vector<std::string>>("global", "config_recovery",
-                                                   {});
+      entries = navigation.param<std::vector<std::string>>(
+          "navigation", "config_recovery", {});
     } catch (const std::exception&) {
-      // global.config_recovery 是单字符串。
+      // config_recovery 是单字符串。
     }
     if (entries.empty()) {
       const std::string single =
-          g->param<std::string>("global", "config_recovery", "");
+          navigation.param<std::string>("navigation", "config_recovery", "");
       if (!single.empty()) {
         entries.push_back(single);
       }
@@ -467,10 +469,7 @@ std::filesystem::path makeSpinConfigDir() {
 
   writeFile(dir / "config.json",
              "{\n  \"global\": {\n"
-             "    \"config_navigation\": \"costmap_navigation.json\",\n"
-             "    \"config_logging\": \"config_logging.json\",\n"
-             "    \"config_recovery\": [\"spin_recovery.json\"],\n"
-             "    \"config_spin_recovery\": \"spin_recovery.json\"\n"
+             "    \"config_navigation\": \"costmap_navigation.json\"\n"
              "  }\n}\n");
 
   writeFile(dir / "costmap_navigation.json",
@@ -478,7 +477,7 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"behavior_tree_extension\": \"" AYANAMI_TEST_BT_EXT_SO "\",\n"
              "    \"behavior_tree_xml\": \"BT/navigation.xml\",\n"
              "    \"behavior_tree_id\": \"NavigateWithReplanningAndSmoothing\",\n"
-             "    \"recovery_id\": \"costmap_spin_recovery\",\n"
+             "    \"config_recovery\": [\"spin_recovery.json\"],\n"
              "    \"clear_costmap_id\": \"costmap_spin_recovery\",\n"
              "    \"spin_id\": \"costmap_spin_recovery\",\n"
              "    \"wait_id\": \"costmap_spin_recovery\",\n"
@@ -538,9 +537,6 @@ std::filesystem::path makeSpinConfigDir() {
     </RecoveryNode>
   </BehaviorTree>
 </root>)");
-
-  writeFile(dir / "config_logging.json",
-             "{\n  \"logging\": { \"log_dir\": \"logs\", \"log_level\": \"info\" }\n}\n");
 
   return dir;
 }

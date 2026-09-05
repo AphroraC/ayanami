@@ -1,6 +1,6 @@
 // Task 21: modules/costmap_smac_planner — A* 全局路径规划模块。
 //
-// 纯 C++ (零 ROS): 在入参不可变 CostmapSnapshot (global grid) 上做
+// 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
 // 标准 4/8 连通 A*。参考 _legacy SmacPlannerAStar 语义但重写:
 // - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
 // - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
@@ -209,7 +209,7 @@ void CostmapSmacPlanner::configure(
   param.use_final_approach =
       file.param<bool>("costmap_smac_planner", "use_final_approach",
                        param.use_final_approach);
-  map_ = std::move(map);
+  map_context = std::move(map);
 }
 
 bool CostmapSmacPlanner::cancel() {
@@ -232,12 +232,12 @@ PlannerResultT CostmapSmacPlanner::makePlan(
     const geometry_msgs::PoseStamped& goal, double tolerance) {
   canceled.store(false);
 
-  if (!map_) {
+  if (!map_context) {
     return PlannerResultT::failure(
         ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no costmap module");
   }
   // 持 shared 锁读图 (整个规划持有, <10ms), 零拷贝; 地图写者等锁写入。
-  auto costmap = map_->lockGlobal();
+  auto costmap = map_context->lockGlobal();
 
   const costmap_2d::Costmap2D* cm = costmap.grid();
   if (!cm) {

@@ -2,9 +2,6 @@
   "navigation": {
     "behavior_tree_extension": "libayanami_navigation_behavior_tree.so",
     "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
-    "planner_id": "costmap_smac_planner",
-    "smoother_id": "costmap_savitzky_smoother",
-    "controller_id": "costmap_dwb_controller",
     "config_planner": "modules/costmap_smac_planner.json",
     "config_smoother": "modules/costmap_savitzky_smoother.json",
     "config_controller": "modules/costmap_dwb_controller.json",
@@ -16,9 +13,7 @@
       "modules/costmap_wait_recovery.json",
       "modules/costmap_back_up_recovery.json"
     ],
-    "goal_checker_id": "simple_goal_checker",
-    "progress_checker_id": "simple_progress_checker",
-    "planner_frequency": -1.0,
+    "planner_frequency": 1.0,
     "smoother_frequency": -1.0,
     "controller_frequency": 20.0,
     "max_vel_x": 0.5,

@@ -221,9 +221,8 @@ std::filesystem::path makeConfigDir() {
         "behavior_tree_extension": ")" AYANAMI_TEST_BT_EXT_SO R"(",
         "behavior_tree_xml": "BT/navigation.xml",
         "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
-        "planner_id": "test_planner",
-        "smoother_id": "test_smoother",
-        "controller_id": "test_controller",
+
+
         "recovery_id": "test_recovery",
         "clear_costmap_id": "clear_costmap",
         "spin_id": "spin",

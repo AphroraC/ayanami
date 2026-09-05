@@ -11,7 +11,6 @@ namespace {
 
 std::once_flag g_global_config_once;
 std::mutex g_global_config_mutex;
-std::unordered_map<std::string, std::string> g_resolved_config_paths;
 
 } // namespace
 
@@ -80,7 +79,6 @@ GlobalConfig* GlobalConfig::instance(const std::string& config_path,
     std::lock_guard<std::mutex> lock(g_global_config_mutex);
     delete inst;
     inst = nullptr;
-    g_resolved_config_paths.clear();
     create(config_path);
     return inst;
   }
@@ -94,56 +92,24 @@ GlobalConfig* GlobalConfig::instance(const std::string& config_path,
 }
 
 std::string GlobalConfig::getConfigPath(const std::string& config_name) {
-  {
-    std::lock_guard<std::mutex> lock(g_global_config_mutex);
-    const auto it = g_resolved_config_paths.find(config_name);
-    if (it != g_resolved_config_paths.end()) {
-      return it->second;
-    }
-  }
   const GlobalConfig* config = instance();
   const std::filesystem::path directory =
       config->param<std::string>("global", "config_path", ".");
-  std::string filename;
+  std::string filename = config_name + ".json";
+  // global 段单层索引只解析根级键 (config_navigation/config_ros);
+  // 插件文件指针统一在 config_navigation 的 navigation 段, 由
+  // NavigationServerBase::loadPlugins 直接枚举, 不经本入口。
   if (config->hasParam("global", config_name)) {
     try {
       filename = config->param<std::string>(
-          "global", config_name, config_name + ".json");
+          "global", config_name, filename);
     } catch (const std::exception&) {
       const auto files = config->param<std::vector<std::string>>(
           "global", config_name, {});
-      filename = files.empty() ? config_name + ".json" : files.front();
+      if (!files.empty()) filename = files.front();
     }
-  } else {
-    // Internal migration lookup. The public schema keeps plugin file pointers
-    // in navigation.json; legacy modules may still ask for their historical
-    // config_* key while they are being migrated to injected configuration.
-    const std::string navigation_file = config->param<std::string>(
-        "global", "config_navigation", "");
-    if (!navigation_file.empty()) {
-      const auto nav_path = std::filesystem::path(navigation_file);
-      const auto resolved = nav_path.is_absolute()
-                                ? nav_path
-                                : (directory / nav_path);
-      Config navigation(resolved.string());
-      const std::string key =
-          config_name.rfind("config_", 0) == 0 ? config_name : "";
-      if (!key.empty() && navigation.hasParam("navigation", key)) {
-        try {
-          filename = navigation.param<std::string>("navigation", key, "");
-        } catch (const std::exception&) {
-        }
-      }
-    }
-    if (filename.empty()) filename = config_name + ".json";
   }
   return (directory / filename).string();
-}
-
-void GlobalConfig::registerConfigPath(const std::string& config_name,
-                                      const std::string& path) {
-  std::lock_guard<std::mutex> lock(g_global_config_mutex);
-  g_resolved_config_paths[config_name] = path;
 }
 
 DEFINE_CONFIG_IO_SPECIALIZATION(bool)

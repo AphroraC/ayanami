@@ -42,7 +42,7 @@ class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
 
   CostmapSavitzkySmootherParam param;
 
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 
   std::atomic<bool> canceled{false};
 };

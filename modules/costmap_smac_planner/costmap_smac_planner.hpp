@@ -51,7 +51,7 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
 
   CostmapSmacPlannerParam param;
 
-  ayanami::costmap::CostmapMapContext::ConstPtr map_;
+  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 
   std::atomic<bool> canceled{false};
   std::atomic<uint64_t> goal_revision{0};

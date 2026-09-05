@@ -14,6 +14,7 @@
 #include "ayanami/abstract/components/navigation_server_base.hpp"
 #include "ayanami/costmap/components/costmap_action.hpp"
 #include "ayanami/costmap/components/costmap_map_context.hpp"
+#include "ayanami/map/map_family_factory.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
 #include "ayanami/costmap/core/costmap_controller.hpp"
 #include "ayanami/costmap/core/costmap_planner.hpp"
@@ -61,9 +62,19 @@ class CostmapNavigationServer
   explicit CostmapNavigationServer();
   ~CostmapNavigationServer() override;
 
-  /// @brief 读 config_costmap 构 global/local costmap (StaticLayer +
+  /// @brief 读 config_navigation 构 global/local costmap (StaticLayer +
   /// InflationLayer + SimpleObstacleLayer), 并注入 map_context。
-  void configureCoreMaps(const std::string& config_path);
+  /// @param factory 地图族工厂 (context 唯一创建点); 为空时回退
+  ///        CostmapMapFamilyFactory。经工厂创建的 context 被记录在
+  ///        mapFamilyFactory() 供测试/装配审计。
+  void configureCoreMaps(
+      const std::string& config_path,
+      ayanami::map::MapFamilyFactory::Ptr factory = nullptr);
+
+  /// @brief configureCoreMaps 实际使用的地图族工厂 (抽象面, 核心只认此类型)。
+  ayanami::map::MapFamilyFactory::Ptr mapFamilyFactory() const {
+    return map_family_factory;
+  }
 
   // ---- 虚 initialize*Plugin 覆写: costmap 族注入 ----
   bool initializePlannerPlugin(
@@ -78,6 +89,12 @@ class CostmapNavigationServer
   bool initializeRecoveryPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr) override;
+
+  /// @brief 路径有效性 (职责表"路径是否过期"的 BT 可读面): 委托地图族
+  /// AbstractMapContext::isPathValid (global costmap lethal/unknown/出界)。
+  bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
+    return costmap_context && costmap_context->isPathValid(path);
+  }
 
   // ---- createActions 覆写: 生产路径 = Costmap*Action (costmap_action) ----
   void createActions() override;
@@ -118,6 +135,7 @@ class CostmapNavigationServer
 
   CostmapMapContext::Ptr costmap_context;
   CostmapCommandPort::Ptr command_port;
+  ayanami::map::MapFamilyFactory::Ptr map_family_factory;
 
   // TF 链路缺失告警节流 (每次传感器回调都可能失败; 只按固定间隔提示, 避免
   // 5.5Hz 激光每帧刷屏)。同一链路 (local/global) 缺 TF 持续超过间隔才再告警。

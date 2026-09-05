@@ -3,6 +3,7 @@
 #include <ayanami/utility/load_module.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
+#include <algorithm>
 #include <string>
 
 namespace {
@@ -29,6 +30,25 @@ TEST(LoadModuleTest, missingReturnsNull) {
 TEST(ExtensionModuleTest, loadViaCreateExtensionModule) {
   auto ext = ayanami::ExtensionModule::load_module(g_dummy_extension_so);
   ASSERT_NE(ext, nullptr);
+}
+
+// ---- 卸载准备: 模块登记表 (去重 + 引用计数 + 观测) ----
+
+TEST(ModuleRegistryTest, repeatedOpenDedupesAndCountsRefs) {
+  const auto before = ayanami::moduleHandleRefs(g_dummy_planner_so);
+  void* first = ayanami::openSo(g_dummy_planner_so);
+  ASSERT_NE(first, nullptr);
+  void* second = ayanami::openSo(g_dummy_planner_so);
+  EXPECT_EQ(first, second);
+  EXPECT_EQ(ayanami::moduleHandleRefs(g_dummy_planner_so), before + 2);
+  EXPECT_TRUE(ayanami::moduleHandleRefs("libnonexistent_xyz.so") == 0);
+}
+
+TEST(ModuleRegistryTest, loadedModuleNamesContainsOpenedModules) {
+  ASSERT_NE(ayanami::openSo(g_dummy_extension_so), nullptr);
+  const auto names = ayanami::loadedModuleNames();
+  const auto it = std::find(names.begin(), names.end(), g_dummy_extension_so);
+  EXPECT_NE(it, names.end());
 }
 
 int main(int argc, char** argv) {

@@ -149,6 +149,14 @@ protected:
           goal = gh.goal;
         }
       }
+      // 兜底异常终态 (k_aborted) 不被 PlannerExecution 枚举识别, 必须在此
+      // 结算, 否则驱动任务死轮询、槽占用不释放。
+      if (exec.aborted()) {
+        finishResult(goal_id, goal, exec,
+                     ayanami::actions::GoalStatus::ABORTED);
+        clearActiveExecution(goal_id, &exec);
+        return;
+      }
       if (goal_id != 0 && action_server->isCancelRequested(goal_id)) {
         exec.cancel();
       }

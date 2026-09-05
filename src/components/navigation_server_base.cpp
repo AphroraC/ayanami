@@ -42,8 +42,8 @@ std::string loadedNames(const ActionMap& actions) {
   return out;
 }
 
-// 严格单层索引的插件文件族枚举: 主 config.json 的 global 段里
-// global[family_key] 为单字符串或字符串数组 (数组即多插件文件族)。
+// 插件文件族枚举: config_navigation 的 navigation 段里 navigation[family_key]
+// 为单字符串或字符串数组 (数组即多插件文件族, 目前只有 config_recovery 用)。
 // 返回相对 config_path 解析后的完整路径 (绝对路径原样保留)。
 std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
                                            const std::string& family_key) {
@@ -64,16 +64,6 @@ std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
       }
     }
   }
-  // Keep old externally supplied configurations readable during migration.
-  // The installed configuration no longer uses this branch.
-  if (entries.empty() && g->hasParam("global", family_key)) {
-    try {
-      entries = g->param<std::vector<std::string>>("global", family_key, {});
-    } catch (const std::exception&) {
-      const std::string single = g->param<std::string>("global", family_key, "");
-      if (!single.empty()) entries.push_back(single);
-    }
-  }
   const std::string directory =
       g->param<std::string>("global", "config_path", ".");
   std::vector<std::string> paths;
@@ -83,37 +73,6 @@ std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
     paths.push_back(p.is_absolute() ? entry : (directory + "/" + entry));
   }
   return paths;
-}
-
-void registerModuleConfigAliases(const std::string& family_key,
-                                 const std::string& path,
-                                 const ayanami::Config& cfg) {
-  ayanami::GlobalConfig::registerConfigPath(family_key, path);
-  // Existing modules use their historical configuration stem internally. Keep
-  // that implementation detail in the resolved-path registry, not in the
-  // public root configuration schema.
-  const std::string stem =
-      std::filesystem::path(path).stem().string();
-  if (!stem.empty()) {
-    ayanami::GlobalConfig::registerConfigPath(stem, path);
-  }
-  const char* section = nullptr;
-  if (family_key == "config_planner") section = "planner";
-  if (family_key == "config_smoother") section = "smoother";
-  if (family_key == "config_controller") section = "controller";
-  if (family_key == "config_recovery") section = "recovery";
-  if (family_key == "config_goal_checker") section = "goal_checker";
-  if (family_key == "config_progress_checker") section = "progress_checker";
-  if (section == nullptr) return;
-  const std::string name = cfg.param<std::string>(section, "name", "");
-  if (!name.empty()) ayanami::GlobalConfig::registerConfigPath(name, path);
-
-  // Legacy module keys are derived from the individual file name. Do not
-  // register one family-wide alias here: recovery contains several files and
-  // such an alias would make every recovery read the last file in the list.
-  if (stem.rfind("costmap_", 0) == 0) {
-    ayanami::GlobalConfig::registerConfigPath("config_" + stem.substr(8), path);
-  }
 }
 
 }  // namespace
@@ -147,32 +106,16 @@ NavigationServerBase::~NavigationServerBase() {
 void NavigationServerBase::loadPlugins(const std::string& config_path) {
   ayanami::GlobalConfig::instance(config_path, /*override_path=*/true);
 
-  // 默认插件 id 显式来自 navigation.{planner_id,smoother_id,controller_id,...}
-  // (spec §9.3)。缺省回退到装载列表首插件名 (兼容无 *_id 键的历史配置)。
+  // 模块 id 单一来源 = 各模块 json 自身的 name 字段: 前三个族各只装载一个
+  // 插件, 无独立 *_id 配置键; recovery 是有序文件族 (config_recovery vector)。
   ayanami::Config nav_cfg(
       ayanami::GlobalConfig::getConfigPath("config_navigation"));
-  default_planner =
-      nav_cfg.param<std::string>("navigation", "planner_id", "");
-  default_smoother =
-      nav_cfg.param<std::string>("navigation", "smoother_id", "");
-  default_controller =
-      nav_cfg.param<std::string>("navigation", "controller_id", "");
+  default_planner.clear();
+  default_smoother.clear();
+  default_controller.clear();
   recovery_sequence.clear();
-  default_goal_checker =
-      nav_cfg.param<std::string>("navigation", "goal_checker_id", "");
-  default_progress_checker =
-      nav_cfg.param<std::string>("navigation", "progress_checker_id", "");
-
-  // Resolve every module path before constructing any plugin. Several legacy
-  // plugins read their own file from GlobalConfig during construction; the
-  // registry must therefore be populated before the first factory call.
-  for (const auto& family : {"config_planner", "config_smoother",
-                             "config_controller", "config_recovery",
-                             "config_goal_checker", "config_progress_checker"}) {
-    for (const auto& path : moduleConfigFiles(nav_cfg, family)) {
-      registerModuleConfigAliases(family, path, ayanami::Config(path));
-    }
-  }
+  default_goal_checker.clear();
+  default_progress_checker.clear();
 
   // 速度上限单一来源 = navigation.{max_vel_x,max_vel_y,max_vel_theta}:
   // 缓存为成员, createActions controller execution factory 注入
@@ -185,7 +128,6 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   // planner/smoother/controller each have exactly one configured plugin.
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
     ayanami::Config cfg(path);
-    registerModuleConfigAliases("config_planner", path, cfg);
     const std::string name = cfg.param<std::string>("planner", "name", "");
     if (name.empty()) {
       continue;
@@ -202,7 +144,6 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   // smoother
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_smoother")) {
     ayanami::Config cfg(path);
-    registerModuleConfigAliases("config_smoother", path, cfg);
     const std::string name = cfg.param<std::string>("smoother", "name", "");
     if (name.empty()) {
       continue;
@@ -219,7 +160,6 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   // controller
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_controller")) {
     ayanami::Config cfg(path);
-    registerModuleConfigAliases("config_controller", path, cfg);
     const std::string name = cfg.param<std::string>("controller", "name", "");
     if (name.empty()) {
       continue;
@@ -233,12 +173,10 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeControllerPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
-  // recovery (role 决定默认: clear_costmap 优先)
+  // recovery (config_recovery 有序文件族; 顺序即 RecoverySequence 声明序)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_recovery")) {
     ayanami::Config cfg(path);
-    registerModuleConfigAliases("config_recovery", path, cfg);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
-    const std::string role = cfg.param<std::string>("recovery", "role", "");
     if (!name.empty()) recovery_sequence.push_back(name);
     recovery_plugins.loadSingleFromConfig(
         cfg, "recovery", name,
@@ -246,46 +184,42 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeRecoveryPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
-  {
-      for (const auto& path : moduleConfigFiles(nav_cfg, "config_goal_checker")) {
-      ayanami::Config cfg(path);
-      registerModuleConfigAliases("config_goal_checker", path, cfg);
-      const std::string name =
-          cfg.param<std::string>("goal_checker", "name", "");
-      if (name.empty()) {
-        continue;
-      }
-      if (default_goal_checker.empty()) {
-        default_goal_checker = name;
-      }
-      goal_checker_plugins.loadSingleFromConfig(
-          cfg, "goal_checker", name,
-          [this, cfg](const std::string& loaded_name,
-                 AbstractGoalChecker::Ptr plugin) {
-            return initializeGoalCheckerPlugin(loaded_name, cfg, std::move(plugin));
-          });
+  // goal checker (单插件; 参数从 PluginContext 注入)
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_goal_checker")) {
+    ayanami::Config cfg(path);
+    const std::string name =
+        cfg.param<std::string>("goal_checker", "name", "");
+    if (name.empty()) {
+      continue;
     }
+    if (default_goal_checker.empty()) {
+      default_goal_checker = name;
+    }
+    goal_checker_plugins.loadSingleFromConfig(
+        cfg, "goal_checker", name,
+        [this, cfg](const std::string& loaded_name,
+               AbstractGoalChecker::Ptr plugin) {
+          return initializeGoalCheckerPlugin(loaded_name, cfg, std::move(plugin));
+        });
   }
-  {
-      for (const auto& path : moduleConfigFiles(nav_cfg, "config_progress_checker")) {
-      ayanami::Config cfg(path);
-      registerModuleConfigAliases("config_progress_checker", path, cfg);
-      const std::string name =
-          cfg.param<std::string>("progress_checker", "name", "");
-      if (name.empty()) {
-        continue;
-      }
-      if (default_progress_checker.empty()) {
-        default_progress_checker = name;
-      }
-      progress_checker_plugins.loadSingleFromConfig(
-          cfg, "progress_checker", name,
-          [this, cfg](const std::string& loaded_name,
-                 AbstractProgressChecker::Ptr plugin) {
-            return initializeProgressCheckerPlugin(loaded_name, cfg,
-                                                   std::move(plugin));
-          });
+  // progress checker (单插件; 参数从 PluginContext 注入)
+  for (const auto& path : moduleConfigFiles(nav_cfg, "config_progress_checker")) {
+    ayanami::Config cfg(path);
+    const std::string name =
+        cfg.param<std::string>("progress_checker", "name", "");
+    if (name.empty()) {
+      continue;
     }
+    if (default_progress_checker.empty()) {
+      default_progress_checker = name;
+    }
+    progress_checker_plugins.loadSingleFromConfig(
+        cfg, "progress_checker", name,
+        [this, cfg](const std::string& loaded_name,
+               AbstractProgressChecker::Ptr plugin) {
+          return initializeProgressCheckerPlugin(loaded_name, cfg,
+                                                 std::move(plugin));
+        });
   }
 
   createActions();
@@ -659,15 +593,21 @@ bool NavigationServerBase::initializeRecoveryPlugin(
 }
 
 bool NavigationServerBase::initializeGoalCheckerPlugin(
-    const std::string& name, const ayanami::Config&, AbstractGoalChecker::Ptr) {
-  (void)name;
+    const std::string& name, const ayanami::Config& module_config,
+    AbstractGoalChecker::Ptr ptr) {
+  // checker 无地图依赖: 默认钩子直接注入 PluginContext (派生可覆写)。
+  if (ptr) {
+    ptr->configure(ayanami::PluginContext{name, module_config});
+  }
   return true;
 }
 
 bool NavigationServerBase::initializeProgressCheckerPlugin(
-    const std::string& name, const ayanami::Config&,
-    AbstractProgressChecker::Ptr) {
-  (void)name;
+    const std::string& name, const ayanami::Config& module_config,
+    AbstractProgressChecker::Ptr ptr) {
+  if (ptr) {
+    ptr->configure(ayanami::PluginContext{name, module_config});
+  }
   return true;
 }
 

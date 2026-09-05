@@ -18,12 +18,12 @@ RobotStateController& RobotStateController::instance() {
 }
 
 void RobotStateController::initialize(const std::string& global,
-                                     const std::string& odom,
+                                     const std::string& local,
                                      const std::string& robot,
                                      double velocity_timeout) {
   std::lock_guard<std::mutex> lock(mutex);
   global_frame = global;
-  odom_frame = odom;
+  local_frame = local;
   robot_frame = robot;
   velocity_timeout_s = velocity_timeout > 0.0 ? velocity_timeout : 0.25;
   last_velocity.reset();
@@ -154,9 +154,9 @@ std::string RobotStateController::getGlobalFrame() const {
   return global_frame;
 }
 
-std::string RobotStateController::getOdomFrame() const {
+std::string RobotStateController::getLocalFrame() const {
   std::lock_guard<std::mutex> lock(mutex);
-  return odom_frame;
+  return local_frame;
 }
 
 std::string RobotStateController::getRobotFrame() const {

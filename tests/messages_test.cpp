@@ -79,31 +79,31 @@ TEST(MessagesTest, failureCodeUnifiedEnumCoversRequiredCodes) {
   static_assert(static_cast<int>(ayanami::ErrorCode::NONE) <
                 static_cast<int>(ayanami::ErrorCode::INTERNAL_ERROR));
   using FC = ayanami::ErrorCode;
-  static_assert(static_cast<int>(FC::None) < static_cast<int>(FC::Canceled));
-  static_assert(static_cast<int>(FC::Canceled) < static_cast<int>(FC::Timeout));
-  static_assert(static_cast<int>(FC::Timeout) < static_cast<int>(FC::InvalidInput));
-  static_assert(static_cast<int>(FC::InvalidInput) <
-                static_cast<int>(FC::TransformUnavailable));
-  static_assert(static_cast<int>(FC::TransformUnavailable) <
-                static_cast<int>(FC::MapUnavailable));
-  static_assert(static_cast<int>(FC::MapUnavailable) <
-                static_cast<int>(FC::MapStale));
-  static_assert(static_cast<int>(FC::MapStale) < static_cast<int>(FC::StartInvalid));
-  static_assert(static_cast<int>(FC::StartInvalid) < static_cast<int>(FC::GoalInvalid));
-  static_assert(static_cast<int>(FC::GoalInvalid) < static_cast<int>(FC::PathNotFound));
-  static_assert(static_cast<int>(FC::PathNotFound) < static_cast<int>(FC::PathInvalid));
-  static_assert(static_cast<int>(FC::PathInvalid) <
-                static_cast<int>(FC::SmoothingFailed));
-  static_assert(static_cast<int>(FC::SmoothingFailed) <
-                static_cast<int>(FC::NoValidCommand));
-  static_assert(static_cast<int>(FC::NoValidCommand) < static_cast<int>(FC::NoProgress));
-  static_assert(static_cast<int>(FC::NoProgress) < static_cast<int>(FC::GoalNotReached));
-  static_assert(static_cast<int>(FC::GoalNotReached) <
-                static_cast<int>(FC::RecoveryFailed));
-  static_assert(static_cast<int>(FC::RecoveryFailed) <
-                static_cast<int>(FC::InternalError));
+  static_assert(static_cast<int>(FC::NONE) < static_cast<int>(FC::CANCELED));
+  static_assert(static_cast<int>(FC::CANCELED) < static_cast<int>(FC::TIMEOUT));
+  static_assert(static_cast<int>(FC::TIMEOUT) < static_cast<int>(FC::INVALID_INPUT));
+  static_assert(static_cast<int>(FC::INVALID_INPUT) <
+                static_cast<int>(FC::TRANSFORM_UNAVAILABLE));
+  static_assert(static_cast<int>(FC::TRANSFORM_UNAVAILABLE) <
+                static_cast<int>(FC::MAP_UNAVAILABLE));
+  static_assert(static_cast<int>(FC::MAP_UNAVAILABLE) <
+                static_cast<int>(FC::MAP_STALE));
+  static_assert(static_cast<int>(FC::MAP_STALE) < static_cast<int>(FC::START_INVALID));
+  static_assert(static_cast<int>(FC::START_INVALID) < static_cast<int>(FC::GOAL_INVALID));
+  static_assert(static_cast<int>(FC::GOAL_INVALID) < static_cast<int>(FC::PATH_NOT_FOUND));
+  static_assert(static_cast<int>(FC::PATH_NOT_FOUND) < static_cast<int>(FC::PATH_INVALID));
+  static_assert(static_cast<int>(FC::PATH_INVALID) <
+                static_cast<int>(FC::SMOOTHING_FAILED));
+  static_assert(static_cast<int>(FC::SMOOTHING_FAILED) <
+                static_cast<int>(FC::NO_VALID_COMMAND));
+  static_assert(static_cast<int>(FC::NO_VALID_COMMAND) < static_cast<int>(FC::NO_PROGRESS));
+  static_assert(static_cast<int>(FC::NO_PROGRESS) < static_cast<int>(FC::GOAL_NOT_REACHED));
+  static_assert(static_cast<int>(FC::GOAL_NOT_REACHED) <
+                static_cast<int>(FC::RECOVERY_FAILED));
+  static_assert(static_cast<int>(FC::RECOVERY_FAILED) <
+                static_cast<int>(FC::INTERNAL_ERROR));
   // 全部 17 个成员 (None + 16 失败码)。
-  static_assert(static_cast<int>(FC::InternalError) == 16);
+  static_assert(static_cast<int>(FC::INTERNAL_ERROR) == 16);
 }
 
 TEST(MessagesTest, actionResultsUseUniformFailureField) {
