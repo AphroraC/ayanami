@@ -1,4 +1,4 @@
-// Task 24: modules/costmap_wait_recovery — 等待恢复模块。
+// modules/costmap_wait_recovery — 等待恢复模块。
 //
 // 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回 RUNNING
 // (不携带速度), 直到 wait_duration 届满返回 SUCCESS; 无运动占用。

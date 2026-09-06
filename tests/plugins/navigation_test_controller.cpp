@@ -1,4 +1,4 @@
-// Task 25 测试控制器插件: CostmapController 族, 永不主动判到达 (到达判定由
+// 测试控制器插件: CostmapController 族, 永不主动判到达 (到达判定由
 // goal_checker 负责) 让 FollowPath 持续 RUNNING 并每周期 emit cmd_vel
 // (验证宿主 BT 旁路 cmd_vel)。经公共工厂 create_extension_module 导出。
 

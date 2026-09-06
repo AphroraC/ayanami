@@ -13,7 +13,7 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 局部控制的 costmap 版 Action (spec §5.4, 生产路径)。
+ * @brief 局部控制的 costmap 版 Action ( 生产路径)。
  *
  * 复用 ControllerAction 全部协议, 只覆写 createExecution 工厂:
  * 返回 CostmapControllerExecution (带 CostmapMapContext: 激活/停用 local +

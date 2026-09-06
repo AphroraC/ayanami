@@ -1,10 +1,10 @@
-// Task 27: 复刻 legacy action_protocol_test.cpp 契约 (新接口等价改写, 不 copy)。
+// 复刻 legacy action_protocol_test.cpp 契约 (新接口等价改写, 不 copy)。
 //
 // Goal lifecycle: Pending→Active→Succeeded/Aborted/Canceled 法定转换。
 // - ActionServer 协议层: PENDING→ACTIVE (setActive/setExecuting 同态)→terminal;
-//   terminal 是吸收态 (后续 setActive/publishResult/cancelGoal 均被拒)。
+// terminal 是吸收态 (后续 setActive/publishResult/cancelGoal 均被拒)。
 // - PlannerAction acceptGoal 主流: 目标在 server 中先 ACTIVE, 结果 ready 后
-//   SUCCEEDED/ABORTED/CANCELED, 完成后从 server 移除 (不累积)。
+// SUCCEEDED/ABORTED/CANCELED, 完成后从 server 移除 (不累积)。
 // - 非法转换 (重复 finish / 未知 goal_id / terminal 后再转换) 必须被拒。
 
 #include <gtest/gtest.h>
@@ -64,7 +64,7 @@ public:
   std::atomic<int> calls{0};
 };
 
-// 慢速成功 planner: 阻塞到 release() 才填 path (观察 ACTIVE 中间态用)。
+// 慢速成功 planner: 阻塞到 release 才填 path (观察 ACTIVE 中间态用)。
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
@@ -134,7 +134,7 @@ TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
   ASSERT_TRUE(gh.has_value());
   EXPECT_EQ(gh->status, GoalStatus::PENDING);
 
-  // 合法转换: PENDING → ACTIVE (Accepted/Executing 同态, Ruling #2)
+  // 合法转换: PENDING → ACTIVE (Accepted/Executing 同态)
   EXPECT_TRUE(server.setActive(task.goal_id()));
   gh = server.getGoal(task.goal_id());
   ASSERT_TRUE(gh.has_value());
@@ -226,7 +226,7 @@ TEST(ActionProtocol, plannerAcceptGoalReachesActiveThenSucceeded) {
   auto task = action.acceptGoal(makeGoal(7, 11));
   ASSERT_TRUE(task.valid());
 
-  // runImpl 先 setActive 再 exec.start(): 阻塞 planner 期可观察到 ACTIVE
+  // runImpl 先 setActive 再 exec.start: 阻塞 planner 期可观察到 ACTIVE
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->started_cv.wait_for(

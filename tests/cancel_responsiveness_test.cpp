@@ -1,8 +1,8 @@
-// Task 27: 复刻 legacy cancel_responsiveness_test.cpp 契约 (新接口等价改写)。
+// 复刻 legacy cancel_responsiveness_test.cpp 契约 (新接口等价改写)。
 //
-// 契约: 对 RUNNING 的 planner / recovery action 调 cancel(), 任务必须在有界
+// 契约: 对 RUNNING 的 planner / recovery action 调 cancel, 任务必须在有界
 // 时间内完成 (ready), 且最终 GoalStatus 为 CANCELED。慢插件 (makePlan /
-// runRecovery 本需 200ms) 必须在 cancel() 后立即释放, 使任务 100ms 内 ready。
+// runRecovery 本需 200ms) 必须在 cancel 后立即释放, 使任务 100ms 内 ready。
 
 #include <gtest/gtest.h>
 
@@ -35,7 +35,7 @@ using ayanami::actions::RecoveryGoal;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel() 立即释放使其
+// 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel 立即释放使其
 // 快速返回。被取消时返回成功路径, 执行层经 cancel_requested 判 CANCELED。
 class SlowPlanner : public ayanami::abstract::AbstractPlanner {
 public:
@@ -68,7 +68,7 @@ public:
   std::condition_variable release;
 };
 
-// 慢 recovery: tick() 首周期阻塞最多 200ms; cancel() 立即释放返回取消终态。
+// 慢 recovery: tick 首周期阻塞最多 200ms; cancel 立即释放返回取消终态。
 class SlowRecovery : public ayanami::abstract::AbstractRecovery {
 public:
   RecoveryResultT tick() override {

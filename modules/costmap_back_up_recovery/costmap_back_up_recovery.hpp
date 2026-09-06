@@ -15,7 +15,7 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 后退恢复模块 (spec §6.6 costmap_back_up_recovery)。
+ * @brief 后退恢复模块 (costmap_back_up_recovery)。
  *
  * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回负向线速度
  * 建议 (vx = -max_v), 由 RecoveryExecution 作为唯一发布者按周期发布并终态
@@ -27,7 +27,7 @@ namespace modules {
 class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapBackUpRecovery() = default;
-  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapBackUpRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,

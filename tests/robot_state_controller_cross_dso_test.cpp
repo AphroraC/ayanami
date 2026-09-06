@@ -1,6 +1,6 @@
 // RobotStateController 跨 DSO 单例集成测试。
 //
-// 背景 (spec §3.2 关键纪律同类): RobotStateController::instance() 若在 header
+// 背景 (关键纪律同类): RobotStateController::instance 若在 header
 // 内 inline 定义, 每个 .so 各持一份静态局部实例 —— ayanami_ros odomCallback
 // 写者 (libayanami_ros.so) 直写的速度, 核心 controller execution 读者
 // (libayanami_costmap_navigation.so, 经 ServerControllerAction factory) 读不到。

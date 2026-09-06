@@ -1,0 +1,11 @@
+{
+  "recovery": {
+    "name": "costmap_spin_recovery",
+    "so_name": "libayanami_costmap_spin_recovery.so",
+    "role": "spin",
+    "spin_dist": 1.57,
+    "max_w": 0.5,
+    "sim_cycle_dt": 0.01,
+    "collision_radius": 0.3
+  }
+}

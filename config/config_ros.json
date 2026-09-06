@@ -24,21 +24,32 @@
     "robot_state_topic": "/ayanami/robot_state",
     "map_frame": "map",
     "odom_frame": "odom",
-    "robot_frame": "base_footprint",
+    "robot_frame": "base_link",
     "tf_sync_rate": 50.0,
+    "tf_cache_duration": 10.0,
     "tf_sync_edges": [
-      ["map", "odom"],
-      ["odom", "base_footprint"],
-      ["base_footprint", "base_link"],
-      ["base_link", "support"],
-      ["support", "laser"]
+      [
+        "map",
+        "odom"
+      ],
+      [
+        "odom",
+        "base_link"
+      ],
+      [
+        "base_link",
+        "laser"
+      ]
     ],
     "tf_static_edges": [
-      ["base_footprint", "base_link"],
-      ["base_link", "support"],
-      ["support", "laser"]
+      [
+        "base_link",
+        "laser"
+      ]
     ],
     "navigation_so_name": "libayanami_costmap_navigation.so",
-    "extension_modules": ["libayanami_rviz_viewer.so"]
+    "extension_modules": [
+      "libayanami_rviz_viewer.so"
+    ]
   }
 }

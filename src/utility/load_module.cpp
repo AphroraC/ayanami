@@ -36,13 +36,13 @@ void* openSo(const std::string& so_name) {
     return iter->second;
   }
   // RTLD_NODELETE: 镜像恒驻 (即使未来 dlclose 也不卸载代码段), 为静默卸载
-  // 准备安全垫; 当前路径从不 dlclose (spec §4.1)。
+  // 准备安全垫; 当前路径从不 dlclose 。
   void* handle = dlopen(so_name.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
   if (handle == nullptr) {
     spdlog::error("failed to load shared object '{}': {}", so_name, dlerror());
     return nullptr;
   }
-  // 句柄从不 dlclose：插件生命周期等于进程生命周期 (spec §4.1)。
+  // 句柄从不 dlclose：插件生命周期等于进程生命周期 。
   registry.emplace(so_name, handle);
   moduleRefCounts()[so_name] = 1;
   return handle;

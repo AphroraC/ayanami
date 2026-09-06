@@ -1,4 +1,4 @@
-// Task 24: modules/costmap_clear_costmap_recovery — 清代价地图恢复模块。
+// modules/costmap_clear_costmap_recovery — 清代价地图恢复模块。
 //
 // 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。首周期构造类型化
 // ClearCostmapCommand 并经 CostmapCommandPort 提交给唯一写者

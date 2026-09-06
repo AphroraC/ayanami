@@ -3,7 +3,7 @@
 namespace ayanami {
 namespace interfaces {
 
-// 槽对象实体定义 —— 只在 libayanami 内一份 (spec §3.2 关键纪律)。
+// 槽对象实体定义 —— 只在 libayanami 内一份 (关键纪律)。
 // 不用 inline static: 否则每个 .so 各持一份实例, 插件 add 的回调与核心
 // emit 落在不同对象上, 跨 .so 静默失效。
 

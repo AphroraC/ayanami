@@ -10,7 +10,7 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 进展检查插件抽象 (对标 MBF AbstractProgressChecker, spec §5.1)。
+ * @brief 进展检查插件抽象 (对标 MBF AbstractProgressChecker)。
  *
  * 跟踪机器人是否在推进: 设定时间窗内应移动足够的距离/转角, 否则判为卡住
  * (无进展)。有状态: reset() 应在新 goal 或恢复动作前重设基线。

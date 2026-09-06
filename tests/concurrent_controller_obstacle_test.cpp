@@ -1,10 +1,10 @@
-// 并发回归: controller 每 cycle 经 lockLocal() 取 local 读视图 (RAII shared
+// 并发回归: controller 每 cycle 经 lockLocal 取 local 读视图 (RAII shared
 // 锁, 零拷贝直读 master grid), 与并发 obstacle 写者 (落障碍 + updateMapUnlocked
 // 重算) 交错, 互不饿死。
 //
-// 旧架构 (BLOCK #1): CostmapControllerExecution::run() 整 control loop 持
+// 旧架构 (BLOCK #1): CostmapControllerExecution::run 整 control loop 持
 // local wrapper recursive_mutex, 会饿死 obstacle feed。新架构单写者 + 多读者:
-// - controller 每 cycle 经 lockLocal() 取 local shared 锁视图, 周期结束即释放;
+// - controller 每 cycle 经 lockLocal 取 local shared 锁视图, 周期结束即释放;
 // - obstacle 写者 (唯一写者) unique 锁内落障碍 + updateMapUnlocked 重算 master;
 // - 读者短持锁, 写者等读者释放后写入, 双方均能推进 (无饿死 / 无死锁)。
 //

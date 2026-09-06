@@ -113,7 +113,7 @@ public:
   double getControllerFrequency() const { return controller_frequency; }
 
   /// @brief 无有效命令的耐心 (秒, 对标 nav2 failure_tolerance); <=0 关闭
-  ///        (默认): 失败清零发布并继续循环, 终态只由到达/进展/取消/停止决定。
+  /// (默认): 失败清零发布并继续循环, 终态只由到达/进展/取消/停止决定。
   void setPatience(double seconds) {
     patience = std::chrono::duration<double>(seconds);
   }
@@ -333,7 +333,7 @@ protected:
   }
 
 // 成员 protected: 供派生 (如 CostmapControllerExecution) 覆写钩子
-// callController 以注入地图访问 (不用复刻整个 run() 循环)。
+// callController 以注入地图访问 (不用复刻整个 run 循环)。
 protected:
   ayanami::abstract::AbstractController::Ptr controller;
   ayanami::abstract::AbstractGoalChecker::Ptr goal_checker;

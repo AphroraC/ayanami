@@ -23,13 +23,51 @@
 
 ### 症状：laserscan 在 map 系"大幅旋转"
 
-- 本质是 map←odom 修正在旋转期间/之后偏转：轮式里程计原地旋转打滑欠报
-  转角（实测 ~6%，一圈 0.5-0.8 rad），AMCL 修正渐进追赶。
-- 已做的修复：AMCL `recovery_alpha_slow/fast` 0/0 → 0.001/0.1（0/0 会
-  永久禁用随机粒子注入，pf.c: w_diff = 1 - w_fast/w_slow 恒 0）；
-  `odom_alpha1` 0.2 → 1.0（源码 bug 补偿，见下）；`laser_max_beams` 60。
+三层叠加因果链（均已实测定位）：
+
+1. **物理层**：轮式里程计原地旋转打滑欠报转角（实测 ~6%，一圈 0.5-0.8
+   rad）——URDF/物理属性，无法参数消除。
+2. **定位层（AMCL）**：`recovery_alpha_slow/fast=0/0` 永久禁用随机粒子
+   注入（pf.c: w_diff = 1 - w_fast/w_slow 恒 0，滤波器塌缩后永不恢复）；
+   `odom_alpha1` 的源码 bug（amcl_odom.cpp DIFF 分支把方差当 sigma 传
+   pf_ran_gaussian，缺 sqrt）使纯旋转粒子角噪声过小。修复：0.001/0.1 +
+   alpha1=1.0 + laser_max_beams=60。修复后旋转中定位误差 0.63 rad →
+   **0.081 rad 有界**，且 map←odom 修正确实包含旋转分量（实测 dyaw 随
+   漂移增长到 1.39 rad）。
+3. **落图时序层（ayanami）**：markObstacles 曾用 latest-TF 摆放 5.5Hz
+   周期前采集的 scan——旋转时 ω×(now-T_scan) ≈ 0.2 rad 的歪斜被烙进代价
+   地图（RViz 里 ayanami 代价地图"点云大幅旋转"的直接来源；ROS TF/RViz
+   本身按 scan 戳插值，raw scan 显示是稳定的——实测 scan-stamp 语义下
+   旋转中点云漂移仅 0.01~0.04m）。修复：传感器变换按 scan 戳查询，
+   失败回退 latest（见 map-and-costmap.md）。修复后旋转中局部代价图
+   漂移 ≤1 cell。
 - 框架兜底：累计旋转 1.0 rad / 平移 2.0 m 自动清空全局动态层
   （日志 `clearing global dynamic costmap`），错位标记不积累。
+
+### 症状：机器人停下后 scan 不"收敛到贴墙"
+
+**这是 AMCL 的设计行为**：它是运动门控的贝叶斯滤波器（amcl_node.cpp:
+`update = |Δodom| > update_min_d/a`），静止时跳过量测更新，位姿估计
+**冻结在停下那一刻**——不会像配准优化器那样静止时精修对齐。实测
+（1.2 rad/s 旋转 12s 后静止 30s）：amcl 估计逐比特不变，scan-墙偏差
+维持 ~0.05 rad（3m 处 ~15cm）；恢复运动 0.5m 后修正到 0.007 rad
+（scan 贴墙至 9mm）。缓解：`update_min_a=0.05`（降低慢速旋转的更新
+门限）；残余冻结误差 = 旋转跟踪滞后，随 alpha1/scan 速率改善。
+
+### 调参口径：收敛速度 vs 晃动（A/B 方法论）
+
+- **晃动度量** = 定位误差（amcl_pose − 真值）的 p2p/std——不要用原始
+  yaw 拟合残差（跨 ±π 解卷绕 + 二次拟合病态会产出无意义数字）。
+- **快收敛与少晃动的共同杠杆是"每次更新的信息量"**：粒子数（KLD 在
+  min/max 间自适应）、laser_max_beams——而不是 alpha 系数（alpha 大 =
+  覆盖漂移快但估计散，跷跷板；alpha1=1.0 因源码 sqrt-bug 补偿而设，
+  不回调）。
+- 实测 A/B（1.2 rad/s 旋转 / 0.3 m/s 直行）：粒子 1000-10000 + 100 束 +
+  resample_interval=2 → 位置误差 max 0.052→0.015 m（3×），旋转 yaw p2p
+  0.042→0.037 rad，帧间跳变 ≤0.035 rad（1.2 rad/s 硬旋转场景）。
+- 两个 AMCL 钳制坑：min_particles 上限 1000（AMCL.cfg 重配置范围
+  [0,1000]）；launch 同名 param 后值覆盖前值（resample_interval 曾中招）
+  ——改参数后务必 `rosparam get` 核实 live 值。
 
 ### 症状：代价地图有"幽灵墙"/错位障碍
 
@@ -79,6 +117,27 @@
   （落图/滚动/清图）永久阻塞 → 窗口永不滚动。
 - 修复：视图改函数局部（锁生命周期 = 单次规划周期）；
   local_window_rolling_test 锁定。
+
+### 案例 C+：到达目标后 CPU 空转（plan_version 以 60/s 膨胀）
+
+- 现象：导航 SUCCEEDED 后 `/ayanami/planner/path` 以 ~100Hz 持续发布
+  （plan=5382），planner/smoother/controller 空转重跑
+  "规划→平滑→立即到达"循环。
+- 根因：pilot 无"导航完成空闲"状态——树 SUCCESS → 终端复位 → 下一 tick
+  立即全新树生命 → 立即再次 SUCCESS → 循环。
+- 修复：树返回终端状态后 pilot 进入空闲（消费 halt/kill，等待新 goal）；
+  second-goal 场景验证空闲→恢复正常。见 behavior-tree.md §2b。
+
+### 案例 D：机器人楔入障碍 inscribed 膨胀带后 DWB 全轨迹非法
+
+- 现象：目标点选在墙体区域内时，机器人"成功"抵达（checker 容差 0.35m
+  大于目标点到墙的距离）并楔入墙体；下一个目标 DWB 报
+  "No valid trajectories out of 440"——机器人中心处于 inscribed(253) 带,
+  每条轨迹的首个位姿即非法。BT 按设计跑完恢复（backup/spin 移出 1.1m）
+  后优雅 FAILURE。
+- 要点：这不是缺陷而是 checker 容差 + 环境的组合结果; 选目标点应避开
+  障碍体内部。DWB 逐轨迹评分可经 `AYANAMI_DWB_DEBUG=1` 观测（1Hz 输出
+  twists/best/velocity）。
 
 ### 案例 C：controller 恢复间隙漏发旧速度
 

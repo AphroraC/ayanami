@@ -1,4 +1,4 @@
-// Task 27: 复刻 legacy controller_session_test.cpp 契约 (新接口等价改写)。
+// 复刻 legacy controller_session_test.cpp 契约 (新接口等价改写)。
 //
 // 契约: ControllerAction 一次 acceptGoal (携带 10-pose 路径) → 执行层持续
 // 多帧 computeVelocityCommands → goal_checker 触发 ARRIVED_GOAL → result

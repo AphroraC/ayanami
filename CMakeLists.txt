@@ -97,7 +97,7 @@ endif()
 install(TARGETS ayanami EXPORT ayanamiTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
-install(DIRECTORY config DESTINATION share/ayanami
+install(DIRECTORY config config_sentry DESTINATION share/ayanami
   PATTERN "*.yaml" EXCLUDE PATTERN "*.yml" EXCLUDE)
 
 # 模块宏

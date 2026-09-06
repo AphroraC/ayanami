@@ -146,6 +146,14 @@ struct dynamic_transform : public counter {
   Eigen::Isometry3d
   get(const time_t& _time) const;
 
+  /// @brief Returns the time stamp of the newest stored sample.
+///
+  /// Returns the epoch (zero time point) if no data is stored. The epoch is
+  /// also the "latest" sentinel of the query API, so callers must treat it as
+  /// "this link holds no data" rather than as a valid time stamp.
+  time_t
+  latest_time() const noexcept;
+
 private:
   duration_t dur_;  ///< the duration how long to keep the data
 
@@ -236,11 +244,25 @@ struct transform_tree {
 
   impl_t data_;
   impl_t::iterator root_ = data_.end();
+
+  /// @brief Storage window for dynamically created dynamic links (matches
+  /// dynamic_transform's default). transform_buffer assigns this from its own
+  /// configurable cache duration before using the tree.
+  duration_t cache_duration{std::chrono::milliseconds(500)};
 };
 
 /// @brief Thread-safe structure allowing to store and query transforms.
 struct transform_buffer {
   transform_buffer();
+
+  /// @brief c'tor with a configurable storage window for dynamic links.
+  ///
+  /// The window decides how far back in time stamp based lookups can reach
+  /// (pruning keeps only samples within [newest - _cache_duration, newest]).
+  /// The default c'tor keeps the historical 500ms window.
+  ///
+  /// @param _cache_duration positive duration.
+  explicit transform_buffer(const duration_t& _cache_duration);
 
   /// @brief Inserts a transform into the buffer.
   ///
@@ -277,9 +299,30 @@ struct transform_buffer {
   get(const std::string& _target_frame, const std::string& _source_frame,
       const time_t& _query_time, const duration_t& _tolerance) const;
 
+  /// @brief Returns the latest common time along the target/source chain
+  /// (tf2-style getLatestCommonTime).
+  ///
+  /// The common time is the minimum of the newest sample stamps of all
+  /// dynamic links on the path between both frames up to their closest common
+  /// ancestor; static links (and the always-static root) do not constrain it.
+  /// A zero (epoch) return value means no dynamic link on the path holds data.
+  ///
+  /// @throw std::runtime_error if a frame is unknown or both frames are not
+  /// connected within one tree.
+  time_t
+  latest_common_time(const std::string& _target_frame,
+                     const std::string& _source_frame) const;
+
 protected:
   // we may have multiple trees.
   using trees_t = std::list<transform_tree>;
+
+  /// @brief latest_common_time over already-resolved nodes of one tree
+  /// (caller holds the lock). Walks both branches up to the closest common
+  /// ancestor and takes the minimum of the dynamic links' newest stamps.
+  time_t
+  latest_common_time_walk(const transform_tree::node* _t,
+                          const transform_tree::node* _s) const noexcept;
 
   [[nodiscard]] bool
   same_tree(trees_t::const_iterator _l,
@@ -308,6 +351,7 @@ protected:
 
   counter c_;
   trees_t trees_;
+  duration_t cache_duration_{std::chrono::milliseconds(500)};
 
   mutable std::mutex m_;
   mutable std::condition_variable cv_;

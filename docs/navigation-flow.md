@@ -54,11 +54,11 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
   </PipelineSequence>
   <ReactiveFallback name="RecoveryActions">
     <GoalUpdated goal="{goal}"/>
-    <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
+    <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
       <Sequence><Recovery recovery="{spin_id}"/></Sequence>
       <Sequence><Recovery recovery="{wait_id}"/></Sequence>
       <Sequence><Recovery recovery="{backup_id}"/></Sequence>
-    </RecoverySequence>
+    </RoundRobin>
   </ReactiveFallback>
 </RecoveryNode>
 ```
@@ -111,7 +111,10 @@ FollowPath 发现有新版本时对运行中的 controller 执行 in-place `upda
 ## 6. 完成与失败
 
 - FollowPath 结果 `reached=true && error==NONE` 且 session 当前 → 整树
-  SUCCESS → pilot 重置树状态 → 待命（等待下一个 goal）。
+  SUCCESS → pilot 重置树状态并**进入空闲**（不再 tick；到达后若继续以
+  tick 频率空跑, 树会立即重新"规划→平滑→到达"循环, 实测 ~100Hz 空转、
+  plan_version 以 60/s 膨胀）。空闲期消费 halt 请求, 下一个
+  `beginNavigation` 投递恢复 tick（nav2 navigator 完成后停树的等价物）。
 - 任一分支结构性失败（如 stale session、预算耗尽）→ 树 FAILURE → 重置 →
   待命；全局动态层已按累计运动自动清理，下一次导航从干净状态开始。
 

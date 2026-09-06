@@ -14,7 +14,7 @@ namespace ayanami {
  *
  * @return opaque handle, or nullptr on failure (spdlog::error logged).
  * @note Handles are NEVER dlclose'd — the plugin lifetime equals the process
- *       lifetime (spec §4.1; teardown discipline in §4.5). RTLD_NODELETE 使
+ * lifetime (; teardown discipline in §4.5). RTLD_NODELETE 使
  *       镜像恒驻, 未来即使接入 dlclose 也安全。
  *
  * @note 卸载准备 (卸载逻辑本身尚未实现, 闸门 = LoadedModule::unloadable() /

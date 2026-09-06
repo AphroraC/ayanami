@@ -66,7 +66,7 @@ class CostmapWrapper {
   std::shared_mutex& mutex() const { return map_mutex; }
 
   /// @brief 写者路径: 自取 unique 锁更新层。需要与其它层变更组合的写者
-  /// (如 clearCostmapArea) 应自行持锁后调 updateMapUnlocked()。
+  /// (如 clearCostmapArea) 应自行持锁后调 updateMapUnlocked。
   void updateMap(double robot_x, double robot_y, double robot_yaw) {
     std::unique_lock<std::shared_mutex> lock(map_mutex);
     updateMapUnlocked(robot_x, robot_y, robot_yaw);

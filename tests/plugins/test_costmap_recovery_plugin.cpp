@@ -1,6 +1,6 @@
 // 测试插件: costmap 族 recovery (SoCostmapRecovery), 公共工厂导出。
 //
-// 旧 API runRecovery 一次性返回成功; 新协议下 tick() 首个周期即返回 SUCCESS
+// 旧 API runRecovery 一次性返回成功; 新协议下 tick 首个周期即返回 SUCCESS
 // 终态 (保持原一次性语义)。
 
 #include <ayanami/costmap/core/costmap_recovery.hpp>

@@ -1,12 +1,12 @@
-// 并发达执行: 慢读者经 CostmapMapContext::lockGlobal() 持 shared 锁直接读
+// 并发达执行: 慢读者经 CostmapMapContext::lockGlobal 持 shared 锁直接读
 // master grid (CostmapView 零拷贝), 与并发 obstacle 写者 (唯一写者, unique
 // 锁写入) 互斥串行化。
 //
 // 断言:
-//  - 读者持 lockGlobal() 期间, 写者被阻塞在 unique_lock; 读者释放后写者完成
-//    写入 (单调时钟时间戳证明锁排他);
-//  - 锁内读到的栅格内容一致 (无撕裂), 写者多轮写入不被慢读者饿死;
-//  - 写者发布后, 读者重读 (shared 锁) 看到新数据 (获取时刻/释放后的直读)。
+// - 读者持 lockGlobal 期间, 写者被阻塞在 unique_lock; 读者释放后写者完成
+// 写入 (单调时钟时间戳证明锁排他);
+// - 锁内读到的栅格内容一致 (无撕裂), 写者多轮写入不被慢读者饿死;
+// - 写者发布后, 读者重读 (shared 锁) 看到新数据 (获取时刻/释放后的直读)。
 
 #include <gtest/gtest.h>
 
@@ -36,7 +36,7 @@ using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::nav_msgs::Path;
 
-// 同步门 (仅测试): set() 唤醒全部等待者。
+// 同步门 (仅测试): set 唤醒全部等待者。
 class Gate {
  public:
   void set() {
@@ -55,7 +55,7 @@ class Gate {
   bool opened{false};
 };
 
-// 慢读者 smoother: smoothPath 内 lockGlobal() 持 shared 锁 (构造 view) 模拟
+// 慢读者 smoother: smoothPath 内 lockGlobal 持 shared 锁 (构造 view) 模拟
 // 慢读 (sleep)。锁内采样两个 cell 记录撕裂对数; 释放后记录单调时钟时间戳
 // (与写者获取 unique 锁的时间戳比较, 证明写者阻塞到读者释放)。
 class SlowSmoother : public ayanami::costmap::CostmapSmoother {

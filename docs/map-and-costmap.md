@@ -54,6 +54,19 @@ NavigationCore
   （`clear_radius<=0` = 清空整个动态层，静态层经 addUpdateBounds 恢复）。
 - Ruling #7：InflationLayer 只做 `cost > old` 覆盖，障碍消失不会自动去膨胀
   ——动态更新前必须先 clearArea 上一帧观察窗（外扩 inflation+1 cell）。
+- **落图时序（scan-stamp 查询）**：传感器变换（local←laser /
+  global←laser）优先按 **scan 自身时间戳**查询（零容差，失败立即回退
+  latest 并计数，节流日志暴露回退率）。旋转时 latest 查询会把
+  ω×(now-T_scan) 的时序歪斜烙进代价地图（实测 1.2 rad/s 旋转时点云相邻帧
+  漂移 0.13~0.28m；按戳落图后局部图漂移 ≤1 cell）。机器人位姿（滚动居中 /
+  清图中心）仍用 latest。fast_tf 动态边回溯窗口由 `tf_cache_duration`
+  （默认 10s）配置，scan 戳必须落在窗内，否则回退 latest。
+- **滚动窗口与传感器流解耦**：宿主 `spinOnce()` 周期调用
+  `CostmapNavigationServer::updateRollingWindows()`（频率
+  `costmap_local.update_frequency`=10Hz / `costmap_global.update_frequency`=5Hz，
+  仅对启用 rolling_window 的地图生效）——scan 断流时窗口仍跟随机器人。
+  否则窗口冻结后 DWB 前进轨迹逐渐"出界"，机器人卡死在窗口边缘且
+  current 标记不可检测（真实卡死案例）。
 
 ## 分层与组件
 
@@ -81,6 +94,15 @@ NavigationCore
 - footprint：configure 期缓存不可变副本，读者只读缓存，绝不读 live
   LayeredCostmap。
 
+## isPathValid 语义（nav2 planner_server 对齐）
+
+`CostmapMapContext::isPathValid`（BT `IsPathValid` 条件的最终实现）：
+- **从距机器人最近的路径点开始检查**——已走过路段可能被新障碍占据，属
+  误判源，nav2 显式跳过（planner_server.cpp:596 closest_point_index）；
+- 每点须在界内（出界对标 nav2 按 lethal 处理），代价非 NO_INFORMATION 且
+  非 lethal（`isLethal >= 253` 含 inscribed，对标 nav2 use_radius 模式）；
+- 机器人位姿不可用时退化为全路径检查（保守）。
+
 ## 机器人状态来源
 
 - `RobotStateController`（跨 DSO 单例）是**唯一的位姿/速度查询点**：
@@ -88,7 +110,10 @@ NavigationCore
   （`velocity_timeout` 过期返回零速但位姿仍有效）。
 - 写入端：ayanami_ros 50Hz 循环把 `tf_sync_edges` 的 ROS TF 同步进
   TransformStore；odom twist 直写 `setOdometry`。
-- TF 注意事项：fast_tf 无外推，core 侧查询一律用 `Timestamp::latest()`
-  （与 50Hz 同源），容差仅作兜底；fast_tf 动态边 `set` 对同一时间戳不覆盖
-  （emplace 语义）；`set` 到"新父帧+已存在子帧"需经已存在的中间帧挂载
-  （与 50Hz 同步的边序一致），直接挂会抛 "cannot merge unconnected trees"。
+- TF 注意事项：fast_tf 禁止双向外推。查询分两类：位姿类（控制周期位姿/
+  滚动居中/清图中心）用 `Timestamp::latest()`（多跳链路解析为 latest
+  common time——tf2 语义的统一切刻采样）；观测类（障碍落图）用传感器
+  header.stamp 精确回溯（窗口 `tf_cache_duration`，默认 10s，窗内插值）。
+  fast_tf 动态边 `set` 对同一时间戳不覆盖（emplace 语义）；`set` 到
+  "新父帧+已存在子帧"需经已存在的中间帧挂载（与 50Hz 同步的边序一致），
+  直接挂会抛 "cannot merge unconnected trees"。

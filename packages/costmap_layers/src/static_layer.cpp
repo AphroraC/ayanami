@@ -248,7 +248,7 @@ void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
                                          static_cast<unsigned int>(y)));
         continue;
       }
-      // Task 12 stage C: rolling global costmap (M2 Ruling #M2-4) 下 master
+      // rolling global costmap (M2) 下 master
       // grid 原点随机器人滚动, 不能按相同 cell 索引直拷; 改用 cell 中心世界
       // 坐标在静态图上采样, 让窗口内正确渲染地图数据。
       double wx = 0.0;

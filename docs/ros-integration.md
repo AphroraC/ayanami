@@ -43,9 +43,15 @@ loop 的 TF 同步中对 `odom←base_footprint` 边累计机器人旋转/平移
   帧树）与"同步缺边"诊断兜底，下一周期重试。
 - 静态边分类一次并固化（`tf_edge_static` map）：tf2 对静态边返回 stamp=0，
   fast_tf 禁止静态/动态互换，故每条边首查后固定 is_static。
-- 边写入 fast_tf：动态边用 tf 消息真实 stamp；静态边用 latest。
+- 边写入 fast_tf：动态边用 tf 消息真实 stamp；静态边用 latest。传感器回调
+  （submitSensor）先按传感器 header.stamp 同步一次（ROS TF buffer 可插值出
+  传感器时刻样本，使核心按戳查询命中），再 latest 同步。
 - fast_tf 注意：动态边同时间戳 set 不覆盖（emplace 语义）；新父帧挂载需
-  经已存在中间帧（与同步边序一致）。
+  经已存在中间帧（与同步边序一致）；**动态边回溯窗口由 `tf_cache_duration`
+  配置（默认 10s，对齐 tf2）**，跨样本间隔超窗的查询会失败（拒绝双向外推）。
+  原 tf_time_offset 戳前移补丁已随可配置窗口退役。
+- 障碍落图的时间约定：传感器变换按 scan 戳查询（见 map-and-costmap.md），
+  机器人位姿/滚动居中用 latest——两者不要混用。
 
 ## goal 链路与 AMCL
 
@@ -63,9 +69,12 @@ AMCL 集成要点（`nav_demo/launch/amcl_diff.launch`，参数均已源码验�
 | `odom_alpha1` | **1.0** | 源码 bug 补偿：DIFF 模型把方差当 sigma 传给 pf_ran_gaussian（缺 sqrt），0.2 时纯旋转粒子角噪声过小，滤波器跟随打滑里程计 |
 | `laser_max_beams` | **60** | 344° FOV 航向分辨率 5.7°（30 束仅 11.5°） |
 | `recovery_alpha_slow / fast` | **0.001 / 0.1** | 0/0 会永久禁用随机粒子注入（pf.c: w_diff=1-w_fast/w_slow 恒 0），滤波器塌缩后无法恢复 |
+| `min_particles / max_particles` | **1000 / 10000** | 估计方差 ≈ sigma/√N_eff：粒子越多估计越平滑（少晃动）、假设覆盖越密（快收敛）。**注意 AMCL.cfg 的重配置范围 [0,1000] 会把 min_particles 钳到 1000**（roslaunch 设 1500 实际生效 1000） |
+| `resample_interval` | **2** | 隔次重采样：降低每次更新注入的重采样噪声（估计抖动来源之一）。**launch 同名 param 后值覆盖前值（roslaunch 语义），曾因此中招——改参数后必须 `rosparam get` 核实 live 值** |
+| 调参实测 | — | 粒子 1000-10000 + 100 束 + 隔次重采样（1.2 rad/s 旋转 / 0.3 m/s 直行）：位置误差 max 0.052→**0.015 m**（3×），旋转中 yaw 误差 p2p 0.042→0.037 rad，运动后收敛 ~0.85 s（受 scan 速率 5.5 Hz 门控） |
 | `initial_cov_aa` | **0.15** | 打滑旋转后真值可偏离初值 0.5+ rad，紧先验锁死粒子群 |
 | `initial_pose_x/y/a` | ≈(0,0,0) | 必须用 `initial_pose_a`（不是 _yaw，否则内部 NaN，不发布 map→odom） |
-| `update_min_d/a` | 0.05 / 0.1 | 触发滤波更新的最小运动 |
+| `update_min_d/a` | 0.05 / **0.05** | 触发滤波更新的最小运动。**AMCL 是运动门控滤波器**（amcl_node.cpp: `update = |Δx|>d || |Δy|>d || |Δyaw|>a`）——静止时跳过量测更新，估计**冻结在停下那一刻的值**，scan 不会"静止收敛到贴墙"；恢复运动（>阈值）即继续修正（实测冻结 0.05 rad 的航向误差在前进 0.5m 后修正到 0.007 rad）。快速旋转（1.2 rad/s）中更新频率受 scan 速率（5.5Hz）限制，降低阈值主要改善慢速旋转时的更新密度 |
 | `transform_tolerance` | 0.5 | |
 
 map_server 加载 `nav_demo/map/ayanami.yaml` → 指向

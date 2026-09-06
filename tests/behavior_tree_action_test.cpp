@@ -59,14 +59,14 @@ Path makePath(size_t n) {
   return p;
 }
 
-// 注入 NavigationRuntime::Ptr 到黑板 (spec §6.2 构造期注入)。
+// 注入 NavigationRuntime::Ptr 到黑板 (构造期注入)。
 void setNavServer(const BT::Blackboard::Ptr& bb,
                   ayanami::components::NavigationRuntime::Ptr server) {
   bb->set<ayanami::components::NavigationRuntime::Ptr>(k_navigation_runtime,
                                                        server);
 }
 
-// 填满 17 个必需板项 (spec §6.5, 默认值即可; 含 failure_context)。
+// 填满 17 个必需板项 (默认值即可; 含 failure_context)。
 void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<PoseStamped>(k_goal, makePose(0.0));
   bb->set<Path>(k_raw_path, Path{});
@@ -87,7 +87,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
 
 /**
  * @brief MockNavigationServer: 继承 NavigationServerBase, 覆写 request* 返回
- * 固定 TaskHandle (Task 9 ActionServer 协议)。支持两种模式:
+ * 固定 TaskHandle (ActionServer 协议)。支持两种模式:
  *  - sync (默认): request* 内同步 publishResult, 节点下次 onRunning 即收结果;
  *  - async: 任务挂起, 用于验证 onHalted -> task.cancel() 透传。
  * session/plan_version 走基类原子计数 (currentSessionId 等非虚, 不覆写)。
@@ -112,7 +112,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     });
   }
 
-  /// @brief 模拟新 goal 抢占使 session 过期 (spec §6.1)。
+  /// @brief 模拟新 goal 抢占使 session 过期 。
   void bumpSession() { startNewSession(); }
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
@@ -252,7 +252,7 @@ constexpr const char* k_recovery_xml = R"(
   </BehaviorTree>
 </root>)";
 
-// ComputePath RecoveryNode 同构 (spec §6.3): 主任务 = 完整规划序列, 恢复 =
+// ComputePath RecoveryNode 同构 : 主任务 = 完整规划序列, 恢复 =
 // <Recovery recovery="{clear_costmap_id}"/> 直连 (无 AlwaysFailure 包装)。
 // recovery 成功应返回 SUCCESS → RecoveryNode 重试主任务。
 constexpr const char* k_compute_path_recovery_xml = R"(
@@ -416,11 +416,11 @@ TEST(BehaviorTreeActionTest, staleSessionIsRejectedOnRunning) {
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // 新 goal 抢占: 任务完成前 session 已过期 (spec §6.1)
+  // 新 goal 抢占: 任务完成前 session 已过期
   server->bumpSession();
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
-  // 拒收: raw_path 不写入, plan_version 不自增 (spec §6.2 关键纪律)
+  // 拒收: raw_path 不写入, plan_version 不自增 (关键纪律)
   Path raw;
   ASSERT_TRUE(bb->get<Path>(k_raw_path, raw));
   EXPECT_TRUE(raw.poses.empty());
@@ -443,7 +443,7 @@ TEST(BehaviorTreeActionTest, versionStaleResultRejected) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
   // result 带 current session 但 plan_version 陈旧 (current-1): 任务完成前新路径
-  // 已生成并自增 plan_version (spec §6.2 session/version 双校验)
+  // 已生成并自增 plan_version (session/version 双校验)
   server->incrementPlanVersion();
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
@@ -469,7 +469,7 @@ TEST(BehaviorTreeActionTest, haltedNodeCancelsTask) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   ASSERT_GT(server->path_server.activeGoalCount(), 0u);
 
-  tree.haltTree();  // StatefulActionNode::halt -> onHalted -> task.cancel()
+  tree.haltTree();  // StatefulActionNode::halt -> onHalted -> task.cancel
   EXPECT_GE(server->cancel_count.load(), 1);
 }
 
@@ -564,7 +564,7 @@ TEST(BehaviorTreeActionTest, defaultEmbeddedXmlLoadsValidatesAndTicks) {
   bb->set<PoseStamped>(k_goal, makePose(1.0, 2.0));
 
   // 默认树来自 navigation_behavior_tree 扩展模块: 公共工厂装载 → cast →
-  // registerNodes + registerTrees → defaultTreeId 建树 (requirement 3)。
+  // registerNodes + registerTrees → defaultTreeId 建树 。
   BT::BehaviorTreeFactory factory;
   auto ext = std::dynamic_pointer_cast<ayanami::behavior_tree::BehaviorTreeExtension>(
       ayanami::ExtensionModule::load_module(AYANAMI_TEST_BT_EXT_SO));

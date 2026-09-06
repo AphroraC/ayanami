@@ -13,9 +13,9 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 宿主导航插件入口 (spec §5.1)。
+ * @brief 宿主导航插件入口 。
  *
- * ROS 侧 dlopen 宿主插件 (如 CostmapNavigation, spec §5.6), 只通过本接口
+ * ROS 侧 dlopen 宿主插件 (如 CostmapNavigation), 只通过本接口
  * initialize/start/stop/spinOnce/setGoal + setPointcloud/setLaserScan 转发
  * 输入; 内部持有 NavigationServerBase + BehaviorTreePilot 全套。
  */

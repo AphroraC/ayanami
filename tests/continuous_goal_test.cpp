@@ -1,4 +1,4 @@
-// Task 27: 复刻 legacy continuous_goal_test.cpp 契约 (新接口等价改写)。
+// 复刻 legacy continuous_goal_test.cpp 契约 (新接口等价改写)。
 //
 // 契约: 同 goal 连续 acceptGoal (间隔极小) 不应导致系统无限 spin。新接口下
 // 同 goal 同 slot 走 preempt+join+start, 旧 goal 被抢占 (CANCELED), 新 goal
@@ -31,8 +31,8 @@ using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 阻塞型 planner: makePlan 等待 release() 或 cancel() 才返回。
-// cancel() 置 canceled 并唤醒; 每次调用后清零, 使抢占与释放语义可预测。
+// 阻塞型 planner: makePlan 等待 release 或 cancel 才返回。
+// cancel 置 canceled 并唤醒; 每次调用后清零, 使抢占与释放语义可预测。
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,

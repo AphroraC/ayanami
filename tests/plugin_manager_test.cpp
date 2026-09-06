@@ -11,7 +11,7 @@
 
 namespace {
 
-// 由 main() 从 argv 读取 (ctest 传 $<TARGET_FILE:dummy_planner_module> 等)
+// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:dummy_planner_module> 等)
 std::string g_dummy_planner_so;
 std::string g_dummy_extension_so;
 

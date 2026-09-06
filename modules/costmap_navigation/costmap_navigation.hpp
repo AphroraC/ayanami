@@ -17,19 +17,19 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief AbstractNavigation 宿主插件 (spec §5.6): 把 costmap 全套组装为 dlopen 入口。
+ * @brief AbstractNavigation 宿主插件 : 把 costmap 全套组装为 dlopen 入口。
  *
- * 职责 (spec §6.1 抢占纪律 + Ruling #5):
+ * 职责 (抢占纪律 +):
  * - 持 CostmapNavigationServer (costmap 家族 server) + BehaviorTreePilot 常驻树。
  * - initialize: configureCoreMaps → loadPlugins (触发虚 initialize*Plugin 注入
  *   costmap context, 内部含 createActions) → bt_pilot wiring: configure →
- *   loadFromFile → setNavigationRuntime (Ruling #5 显式三连, 不靠 bt_pilot 自动)。
+ * loadFromFile → setNavigationRuntime (显式三连, 不靠 bt_pilot 自动)。
  * - setGoal: 单导航线程复用 (bt_pilot.run 常驻循环, beginNavigation 只重写黑板 +
  *   唤醒); 抢占先发零速度 (Global Constraint P9) + halt + controller cancelAll。
  * - publishMapsForVisualization: global/local CostmapWrapper → OccupancyGrid →
  *   旁路 NavigationCallbacks::on_costmap_visualization。
  *
- * 生命周期 (Ruling #3): 析构先 stop() join 导航线程, 再 bt_pilot stop, 再 server
+ * 生命周期 : 析构先 stop join 导航线程, 再 bt_pilot stop, 再 server
  * stop (BT 节点不再持有过期插件指针时 server 才 clearPlugins)。
  */
 class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {

@@ -64,7 +64,7 @@ public:
 };
 
 /**
- * @brief 导航服务基类 (spec §5.3, 无地图依赖)。
+ * @brief 导航服务基类 ( 无地图依赖)。
  *
  * 持插件管理器、四类 Action 和共享导航会话。
  * 地图对象 (costmap/gridmap) 由派生 server (如 CostmapNavigationServer, §5.4)
@@ -73,7 +73,7 @@ public:
  * 工厂装配 abstract Action (供无地图 server 与测试覆写)。
  *
  * 主流控制流: requestPath/requestSmoothing/requestExecution/requestRecovery
- * 返回 TaskHandle 直连调用者 (BT 节点, spec §3.4); 旁路由各 Action 在
+ * 返回 TaskHandle 直连调用者 (BT 节点); 旁路由各 Action 在
  * NavigationCallbacks::on*_result 上 emit (rviz 扩展/监控)。规划失败不经旁路
  * 自动触发 recovery —— recovery 只由 BT 内 RecoveryNode/Recovery 节点调度。
  */
@@ -83,7 +83,7 @@ public:
   virtual ~NavigationServerBase();
 
   /// @brief 读 config.json global 段 → 6 个子配置逐 dlopen + 调虚
-  /// initialize*Plugin → createActions()。
+  /// initialize*Plugin → createActions。
   void loadPlugins(const std::string& config_path);
 
   /// @brief 用 default*_ 插件名取插件, 装配各 Action (每插件一个; 派生覆写以
@@ -106,7 +106,7 @@ public:
 
   /// @brief Mainline TaskHandle requests. Planner, smoother and controller each
   /// dispatch to their one configured action; recovery uses recovery_id.
-  /// virtual 供测试 Mock 覆写 (Task 13)。
+  /// virtual 供测试 Mock 覆写 。
   virtual TaskHandle<ayanami::actions::GetPathResult> requestPath(
       const ayanami::actions::GetPathGoal& goal);
   virtual TaskHandle<ayanami::actions::SmoothPathResult> requestSmoothing(
@@ -142,7 +142,7 @@ public:
   std::shared_ptr<NavigationSessionState> sessionState() const;
 
 protected:
-  // ★ 虚钩子: 派生覆写注入地图对象 (spec §5.3 关键)。module_config 是该插件
+  // ★ 虚钩子: 派生覆写注入地图对象 (关键)。module_config 是该插件
   // 自身的模块 json (已解析), 派生用它构造 PluginContext 传入族级 configure。
   virtual bool initializePlannerPlugin(
       const std::string& name, const ayanami::Config& module_config,
@@ -156,7 +156,7 @@ protected:
   virtual bool initializeRecoveryPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr);
-  // ★ checker 虚钩子: 无地图依赖, 默认 return true (spec §5.3 扩展族)。
+  // ★ checker 虚钩子: 无地图依赖, 默认 return true (扩展族)。
   virtual bool initializeGoalCheckerPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractGoalChecker::Ptr);
@@ -164,7 +164,7 @@ protected:
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractProgressChecker::Ptr);
 
-  // ★ 工厂: 派生覆写返回带地图的 Execution。基类 createActions() 经此装配
+  // ★ 工厂: 派生覆写返回带地图的 Execution。基类 createActions 经此装配
   // abstract Action (无地图 server 与测试覆写面)。默认返回 abstract 版。
   // CostmapNavigationServer 不再使用 (其 createActions 直接构造 Costmap*Action)。
   virtual std::unique_ptr<SmootherExecution> newSmootherExecution(
@@ -225,8 +225,8 @@ protected:
   mutable std::mutex controller_request_mutex;
   mutable std::atomic<uint64_t> next_rejected_id{1};
 
-  /// @brief 构造立即失败的 TaskHandle (无效插件 id 等): valid()==true,
-  /// ready()==true, status=ABORTED, result.failure 结构化失败码。
+  /// @brief 构造立即失败的 TaskHandle (无效插件 id 等): valid==true,
+  /// ready==true, status=ABORTED, result.failure 结构化失败码。
   template <typename Result>
   TaskHandle<Result> rejectedHandle(ErrorCode code,
                                     const std::string& message,

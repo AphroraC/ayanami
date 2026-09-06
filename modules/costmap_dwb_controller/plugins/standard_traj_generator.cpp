@@ -85,7 +85,7 @@ dwb_msgs::Trajectory2D StandardTrajectoryGenerator::generateTrajectory(
     const nav_2d_msgs::Twist2D& cmd_vel) {
   dwb_msgs::Trajectory2D traj;
   traj.velocity = cmd_vel;
-  //  simulate the trajectory
+  // simulate the trajectory
   geometry_msgs::Pose2D pose = start_pose;
   nav_2d_msgs::Twist2D vel = start_vel;
   double running_time = 0.0;
@@ -93,20 +93,20 @@ dwb_msgs::Trajectory2D StandardTrajectoryGenerator::generateTrajectory(
   traj.poses.push_back(start_pose);
   bool first_vel = false;
   for (double dt : steps) {
-    //  calculate velocities
+    // calculate velocities
     vel = computeNewVelocity(cmd_vel, vel, dt);
     if (!first_vel && limit_vel_cmd_in_traj) {
       traj.velocity = vel;
       first_vel = true;
     }
 
-    //  update the position of the robot using the velocities passed in
+    // update the position of the robot using the velocities passed in
     pose = computeNewPosition(pose, vel, dt);
 
     traj.poses.push_back(pose);
     traj.time_offsets.push_back(running_time);
     running_time += dt;
-  }  //  end for simulation steps
+  }  // end for simulation steps
 
   if (include_last_point) {
     traj.poses.push_back(pose);

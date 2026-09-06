@@ -27,7 +27,7 @@ class AbstractController : public virtual ExtensionModule {
 
   /// @brief 计算单周期速度命令 (纯虚)。
   /// @return ControllerResultT: ok=true 携带 ControllerCommand; 失败携带
-  ///         ErrorCode + 诊断 (仅诊断, 决策只看 ErrorCode)。
+  /// ErrorCode + 诊断 (仅诊断, 决策只看 ErrorCode)。
   virtual ControllerResultT computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped& pose,
       const ayanami::geometry_msgs::TwistStamped& velocity) = 0;

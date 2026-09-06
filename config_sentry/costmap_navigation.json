@@ -1,0 +1,60 @@
+{
+  "navigation": {
+    "behavior_tree_extension": "libayanami_navigation_behavior_tree.so",
+    "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
+    "config_planner": "modules/costmap_smac_planner.json",
+    "config_smoother": "modules/costmap_savitzky_smoother.json",
+    "config_controller": "modules/costmap_dwb_controller.json",
+    "config_goal_checker": "modules/simple_goal_checker.json",
+    "config_progress_checker": "modules/simple_progress_checker.json",
+    "config_recovery": [
+      "modules/costmap_clear_costmap_recovery.json",
+      "modules/costmap_spin_recovery.json",
+      "modules/costmap_wait_recovery.json",
+      "modules/costmap_back_up_recovery.json"
+    ],
+    "planner_frequency": 1.0,
+    "smoother_frequency": -1.0,
+    "controller_frequency": 20.0,
+    "max_vel_x": 0.5,
+    "max_vel_y": 0.5,
+    "max_vel_theta": 1.5,
+    "robot_frame": "base_link",
+    "velocity_timeout": 0.25,
+    "costmap_visualization_rate": 1.0
+  },
+  "costmap": {
+    "global_frame": "map",
+    "local_frame": "odom",
+    "resolution": 0.05,
+    "robot_radius": 0.12
+  },
+  "costmap_global": {
+    "rolling_window": false,
+    "track_unknown": false,
+    "static_map": "config/assets/nav.pgm",
+    "inflation_radius": 0.5,
+    "inscribed_radius": 0.12,
+    "cost_scaling_factor": 10.0
+  },
+  "costmap_local": {
+    "size_x": 60,
+    "size_y": 60,
+    "resolution": 0.05,
+    "origin": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rolling_window": true,
+    "track_unknown": false,
+    "inflation_radius": 0.2,
+    "inscribed_radius": 0.12,
+    "cost_scaling_factor": 3.0,
+    "obstacle_range": 3.0,
+    "raytrace_range": 3.5,
+    "observation_sources": [
+      "scan"
+    ]
+  }
+}

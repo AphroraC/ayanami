@@ -12,8 +12,8 @@ namespace modules {
 /**
  * @brief A* 全局路径规划模块 (CostmapPlanner 族)。
  *
- * 在 costmap 全局图 (shared 锁零拷贝读视图) 上做标准 4/8 连通 A*:
- * - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
+ * 在 costmap 全局图 (shared 锁零拷贝读视图) 上做标准 4/8 连通 A*
+ * - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE ( 253 起 lethal)
  * - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
  * - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
  *
@@ -24,7 +24,7 @@ namespace modules {
 class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
  public:
   CostmapSmacPlanner() = default;
-  // Ruling #3: 派生虚构补 override (基类 AbstractPlanner 已虚)
+  // 派生虚构补 override (基类 AbstractPlanner 已虚)
   ~CostmapSmacPlanner() override = default;
 
   void configure(const PluginContext& context,

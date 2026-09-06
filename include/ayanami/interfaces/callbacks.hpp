@@ -10,13 +10,13 @@ namespace ayanami {
 namespace interfaces {
 
 /**
- * @brief 全局旁路回调槽聚合 (spec §3.3)。
+ * @brief 全局旁路回调槽聚合 。
  *
  * 槽对象静态成员只在 libayanami 的 src/interfaces/callbacks.cpp 内定义一份
- * (不 inline, spec §3.2 关键纪律): 否则每个 .so 各持一份实例, 插件 add 的
+ * (不 inline, 关键纪律): 否则每个 .so 各持一份实例, 插件 add 的
  * 回调与核心 emit 的回调落在不同对象上, 静默失效。
  *
- * 分工 (spec §3.4): 主流控制流走 BT 节点直接调 NavigationServerBase 的
+ * 分工 : 主流控制流走 BT 节点直接调 NavigationServerBase 的
  * TaskHandle 直连, 不走这里; 本组槽供旁路 (ROS 扩展 / 可视化 / 回退 /
  * 外部监控) 订阅。
  *
@@ -39,7 +39,7 @@ struct NavigationCallbacks {
   static CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> on_recovery_goal;
   static CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> on_recovery_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> on_recovery_result;
-  // ---- 状态 / 输出 / 观测 (spec §3.3 其余 4 个; on_robot_state_updated 无
+  // ---- 状态 / 输出 / 观测 (其余 4 个; on_robot_state_updated 无
   // 生产发射点, 已删除) ----
   static CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> on_velocity_command;
   static CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> on_costmap_visualization;

@@ -1,10 +1,10 @@
-// Task 21: modules/costmap_smac_planner (CostmapPlanner 族 A* 全局路径规划)。
+// modules/costmap_smac_planner (CostmapPlanner 族 A* 全局路径规划)。
 //
 // 覆盖:
 // - makePlan 全 free 地图 start/goal → ok, path 非空, 起点≈start, 终点≈goal
 // - goal 在 obstacle → nearestValidGoal → ok (tolerance 覆盖) / GOAL_INVALID (无 tolerance)
 // - start 在 obstacle / 越界 → ErrorCode::START_INVALID
-// - cancel() 中途打断 → ErrorCode::CANCELED
+// - cancel 中途打断 → ErrorCode::CANCELED
 // - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 
 #include <gtest/gtest.h>
@@ -211,7 +211,7 @@ TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
   EXPECT_TRUE(result.data.poses.empty());
 }
 
-// ---------- cancel() 中途打断 ----------
+// ---------- cancel 中途打断 ----------
 
 TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
   // 800x800 @ 0.05 = 40m x 40m。goal 位于 lethal 环内 (ring 1 cell 厚):

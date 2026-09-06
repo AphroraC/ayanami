@@ -10,6 +10,8 @@
 
 #include <behaviortree_cpp/action_node.h>
 
+#include <spdlog/spdlog.h>
+
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -19,13 +21,20 @@
 namespace ayanami {
 namespace behavior_tree {
 
-/// @brief 把结构化失败上下文写入黑板 (spec §6.2 关键纪律扩展)。节点在返回
+/// @brief 把结构化失败上下文写入黑板 (关键纪律扩展)。节点在返回
 /// FAILURE 前调用, 使 Recovery 节点能读取到精确 cause。
 inline void writeFailureContext(const BT::TreeNode& node,
                                 const FailureContext& context) {
   if (node.config().blackboard) {
     node.config().blackboard->set<FailureContext>(k_failure_context, context);
   }
+ // 失败可观测性: FailureContext 之前只进黑板 (排障需 gdb), 这里落一条日志
+ // (失败是低频事件, warn 级不刷屏; message 仅诊断, 决策仍只看 code)。
+  spdlog::warn("[bt] stage={} failure: code={} msg='{}' plugin='{}' "
+               "session={} pv={}",
+               static_cast<int>(context.stage), static_cast<int>(context.code),
+               context.message, context.plugin_id, context.session_id,
+               context.plan_version);
 }
 
 /// @brief NaN = "端口未提供" 哨兵 (BT InputPort double 缺省值)。
@@ -42,12 +51,12 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
 }
 
 /**
- * @brief ComputePathToPose 异步 action (spec §6.2): TaskHandle 直连主流。
+ * @brief ComputePathToPose 异步 action : TaskHandle 直连主流。
  *
  * onStart: 读 goal 端口, 组 GetPathGoal (填 server 当前 session/plan_version +
   * requestPath 持 TaskHandle, 注册 onComplete ->
  * emitWakeUpSignal。onRunning: 等 task ready; sessionIsCurrent +
- * planVersionIsCurrent 双校验防 stale 竞态 (spec §6.2 关键纪律), 通过后写 path
+ * planVersionIsCurrent 双校验防 stale 竞态 (关键纪律), 通过后写 path
  * 端口 (XML 绑定 {raw_path}) 并 incrementPlanVersion。onHalted: 取消在飞 task。
  * 任何 FAILURE 前把精确 FailureContext 写入黑板 (使 Recovery 可获得 cause)。
  *
@@ -169,7 +178,7 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief SmoothPath 一次性异步 action (spec §6.2 同构)。
+ * @brief SmoothPath 一次性异步 action (同构)。
  *
  * 端口: input_path={raw_path} (输入), path={smoothed_path} (输出),
   * 使用配置期唯一 smoother。
@@ -271,7 +280,7 @@ class SmoothPathNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief FollowPath 异步 action (spec §6.2 同构), 维持至 controller 到达目标。
+ * @brief FollowPath 异步 action (同构), 维持至 controller 到达目标。
  *
  * plan_version 变化时走 in-place 控制器更新 (requestPlanUpdate): 不 cancel /
  * 不 join / 不新建 Execution, 运行中的 ControllerAction 线程安全更新路径+版本,
@@ -359,7 +368,7 @@ class FollowPathNode : public BT::StatefulActionNode {
  private:
   /// @brief 已完成任务的结果评估 (onRunning 顶部 + update miss 重查共用)。
   ///
-  /// 竞态纪律 (review 修复): "已到达目标" 的 SUCCESS 结果不因 pending 版本差异被
+  /// 竞态纪律 : "已到达目标" 的 SUCCESS 结果不因 pending 版本差异被
   /// 拒 —— controller 可能以旧 applied 版本完成 (更新在途未消费即到达), 这是合法
   /// 完成竞态; 版本陈旧拒绝只适用于失败/未达标结果 (真 stale 产物)。
   BT::NodeStatus evaluateCompletedResult() {
@@ -445,7 +454,7 @@ class FollowPathNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief Recovery 一次性异步 action (spec §6.2 同构)。
+ * @brief Recovery 一次性异步 action (同构)。
  *
  * 端口: recovery={recovery_id}/{clear_costmap_id}/{spin_id}/{wait_id}/{backup_id}
  * (输入, XML `<Recovery recovery="{...}"/>`; 黑板键由 pilot 配置决定)。

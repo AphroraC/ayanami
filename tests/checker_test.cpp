@@ -3,8 +3,8 @@
 // dlopen 装载 + NavigationServerBase 注入 (createActions → ControllerExecution)。
 //
 // argv: 1=simple_goal_checker.so, 2=simple_progress_checker.so,
-//       3=test_planner_plugin.so, 4=test_smoother_plugin.so,
-//       5=test_looping_controller_plugin.so, 6=test_recovery_plugin.so
+// 3=test_planner_plugin.so, 4=test_smoother_plugin.so,
+// 5=test_looping_controller_plugin.so, 6=test_recovery_plugin.so
 
 #include <gtest/gtest.h>
 

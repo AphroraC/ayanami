@@ -7,9 +7,9 @@
 // 自转永不恢复导航。
 //
 // 本测试用与生产一致的树 XML + pilot 式 tick 循环锁死两个不变量:
-//   I1 (重入): controller 失败 + 恢复成功后, FollowPath 必须被重新请求
-//              (exe_request_count >= 2), 树重启后 planner 必须重新规划;
-//   I2 (有界): 单次树生命周期内恢复请求数 <= 内外层重试预算之和。
+// I1 (重入): controller 失败 + 恢复成功后, FollowPath 必须被重新请求
+// (exe_request_count >= 2), 树重启后 planner 必须重新规划;
+// I2 (有界): 单次树生命周期内恢复请求数 <= 内外层重试预算之和。
 // 瞬时故障变体: 第二次执行成功 -> 整树 SUCCESS, 恢复只走 clear_costmap。
 //
 // 调试: AYANAMI_BT_TRACE=1 输出逐节点状态迁移。
@@ -77,7 +77,7 @@ constexpr const char* k_production_xml = R"XML(
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-         <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
+         <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
           <Sequence>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
@@ -87,7 +87,7 @@ constexpr const char* k_production_xml = R"XML(
           <Sequence>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
-         </RecoverySequence>
+         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>
@@ -112,7 +112,7 @@ Path makePath() {
   return p;
 }
 
-/// @brief 可编程延迟完成: 请求入 pending 队列, pump() 推进年龄并按策略结算。
+/// @brief 可编程延迟完成: 请求入 pending 队列, pump 推进年龄并按策略结算。
 class MockRuntime final : public NavigationRuntime {
  public:
   // ---- 观测 ----

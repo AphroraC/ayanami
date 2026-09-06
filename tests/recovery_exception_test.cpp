@@ -1,11 +1,11 @@
 // recovery_exception_test: 异常路径闭合回归 (高优缺陷 #1)。
 //
 // 锁死三类异常场景的行为契约:
-//   1. recovery 插件 start() 抛异常 → 任务有界时间内以 ABORTED/INTERNAL_ERROR
-//      结算 (不再悬挂驱动任务), recovery_exclusive 释放 (后续 planner 请求
-//      不再 RESOURCE_BUSY);
-//   2. ExecutionBase::run() 逃逸异常 → runTask 兜底置 k_aborted 终态;
-//   3. finish() 抛异常不破坏已完成的终态结算。
+// 1. recovery 插件 start 抛异常 → 任务有界时间内以 ABORTED/INTERNAL_ERROR
+// 结算 (不再悬挂驱动任务), recovery_exclusive 释放 (后续 planner 请求
+// 不再 RESOURCE_BUSY);
+// 2. ExecutionBase::run 逃逸异常 → runTask 兜底置 k_aborted 终态;
+// 3. finish 抛异常不破坏已完成的终态结算。
 
 #include <gtest/gtest.h>
 
@@ -54,7 +54,7 @@ bool readyWithin(Task& task, int timeout_ms) {
   return task.ready();
 }
 
-// start() 抛异常的 recovery (测试二进制内直连 RecoveryAction, 不经 dlopen)。
+// start 抛异常的 recovery (测试二进制内直连 RecoveryAction, 不经 dlopen)。
 class ThrowingStartRecovery : public AbstractRecovery {
  public:
   void start() override { throw std::runtime_error("recovery start exploded"); }
@@ -63,7 +63,7 @@ class ThrowingStartRecovery : public AbstractRecovery {
   }
 };
 
-// finish() 抛异常的 recovery: start/tick 正常, 收尾炸 —— 已完成的终态结算
+// finish 抛异常的 recovery: start/tick 正常, 收尾炸 —— 已完成的终态结算
 // 不应被破坏。
 class ThrowingFinishRecovery : public AbstractRecovery {
  public:
@@ -85,7 +85,7 @@ TEST(RecoveryExceptionTest, throwingStartSettlesTaskAndReleasesSlot) {
   auto task = action.acceptGoal(goal);
   ASSERT_TRUE(task.valid());
 
-  // 修复前: start() 逃逸 run() → 状态停在 STARTED → 任务永不完成 (悬挂)。
+  // 修复前: start 逃逸 run → 状态停在 STARTED → 任务永不完成 (悬挂)。
   ASSERT_TRUE(readyWithin(task, 2000)) << "task never settled after start() threw";
   const auto completion_status = task.status();
   EXPECT_EQ(completion_status, GoalStatus::ABORTED);
@@ -103,12 +103,12 @@ TEST(RecoveryExceptionTest, throwingFinishKeepsCompletedOutcome) {
   ASSERT_TRUE(task.valid());
 
   ASSERT_TRUE(readyWithin(task, 2000));
-  // tick 已 SUCCESS 结算; finish() 的逃逸异常不允许改写结果或悬挂。
+  // tick 已 SUCCESS 结算; finish 的逃逸异常不允许改写结果或悬挂。
   EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   EXPECT_EQ(task.result().error, ayanami::ErrorCode::NONE);
 }
 
-// runTask 兜底: run() 逃逸异常 → k_aborted 终态 (基类契约)。
+// runTask 兜底: run 逃逸异常 → k_aborted 终态 (基类契约)。
 TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   class ThrowingExecution : public ayanami::components::ExecutionBase {
    public:
@@ -127,7 +127,7 @@ TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   exec.join();
 }
 
-// 资源协议回归: 经完整 server 走 requestRecovery, start() 抛异常后互斥必须
+// 资源协议回归: 经完整 server 走 requestRecovery, start 抛异常后互斥必须
 // 释放 —— 后续 planner 请求不得 RESOURCE_BUSY (修复前为永久死锁)。
 namespace {
 

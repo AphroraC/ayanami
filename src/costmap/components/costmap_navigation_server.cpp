@@ -1,12 +1,12 @@
-// CostmapNavigationServer 主实现 (spec §5.4)。
+// CostmapNavigationServer 主实现 。
 //
-// 生命周期纪律 (spec §4.5 / Ruling #3): 基类 NavigationServerBase 析构先
-// stop() → reset actions → clearPlugins。
+// 生命周期纪律 (/): 基类 NavigationServerBase 析构先
+// stop → reset actions → clearPlugins。
 //
 // 障碍观测纪律: 不再注册全局 NavigationCallbacks 输入槽 (输出/观测分层);
 // 宿主 (CostmapNavigation::setPointcloud/setLaserScan) 直递 handleObstacle*。
 //
-// Ruling #7 (load-bearing): InflationLayer::updateCosts 只做 `cost > old_cost`
+// InflationLayer::updateCosts 只做 `cost > old_cost`
 // 覆盖, 障碍消失后不会自动 de-inflate。handleObstacle* 每次动态更新前先
 // clearArea 上一帧 + 本帧观察窗口 (外扩 inflation radius), 把旧障碍标记与旧
 // 膨胀带在 master grid 中清为 FREE, 再 markObstacles + updateMap 让
@@ -48,9 +48,13 @@ constexpr int k_default_size_x = 0;
 constexpr int k_default_size_y = 0;
 
 // Dynamic transforms are sampled into TransformStore at tf_sync_rate
-// (50 Hz). Obstacle lookups use Timestamp::latest() (与写入同源): fast_tf 无
-// 外推, 在快于实时的仿真下传感器精确戳恒晚于最新已同步样本, 精确戳查询
-// 会 100% 失败。容差仅用于等待写入侧短暂缺失时的兜底。
+// (50 Hz)。障碍落图的传感器变换优先用 scan 自身时间戳查询 (零容差, 不等待):
+// 把点云摆放到"采集时刻"的位姿 —— 机器人旋转时 latest 查询会把
+// ω×(now-T_scan) 的时序歪斜烙进代价地图 (实测 1.2rad/s 旋转时 map 系点云
+// 相邻帧漂移 0.13~0.28m, scan-stamp 查询仅 0.01~0.04m)。fast_tf 无外推:
+// scan 戳超前于已同步样本 (快于实时的仿真) 或滞后出剪枝窗时查询失败, 此时
+// 回退 latest (历史行为) 并计数, 由节流日志暴露回退率。机器人位姿 (滚动
+// 居中/清图中心) 仍用 latest —— 窗口居中应跟随当前位姿。
 constexpr double k_local_tf_tolerance_s = 0.2;
 constexpr double k_global_tf_tolerance_s = 0.5;
 
@@ -109,7 +113,7 @@ void CostmapNavigationServer::configureCoreMaps(
   // MapFamilyFactory 抽象面, CostmapMapContext 族面仅存在于本 server 内)。
   map_family_factory = factory ? std::move(factory)
                                : std::make_shared<CostmapMapFamilyFactory>();
-  // 3.3 minor carry: 二次 configureCoreMaps 守护。已有已构 context 时忽略重入:
+  // 二次 configureCoreMaps 守护。已有已构 context 时忽略重入:
   // 重建会替换 costmap_context, 使已注入插件的 wrapper 引用悬挂 (旧 context 被
   // 新对象替换后, 插件仍指向旧 wrapper)。
   if (costmap_context &&
@@ -129,14 +133,14 @@ void CostmapNavigationServer::configureCoreMaps(
       cfg.param<std::string>("costmap", "global_frame", "map");
   const std::string local_frame =
       cfg.param<std::string>("costmap", "local_frame", "odom");
-  // 3.2 minor carry (M2-P6): robot_frame 单一来源 = costmap_navigation.json
+  // robot_frame 单一来源 = costmap_navigation.json
   // 的 navigation::robot_frame。
   const std::string robot_frame =
       nav_cfg.param<std::string>("navigation", "robot_frame", "base_link");
   const double resolution =
       cfg.param<double>("costmap", "resolution", k_default_resolution);
 
-  // 3.2 (T10 前瞻, 本 task 核心 scope): 与 config_ros.json::robot_frame 一致性
+  // 3.2 : 与 config_ros.json::robot_frame 一致性
   // 校验。config_ros 未载 (GlobalConfig 无 config_ros 映射) 时跳过。
   const std::string ros_config =
       GlobalConfig::getConfigPath("config_ros");
@@ -173,7 +177,7 @@ void CostmapNavigationServer::configureCoreMaps(
       cfg.param<std::string>("costmap_global", "static_map", "");
   if (!static_map.empty()) {
     try {
-      // Task 12 stage C: 相对 static_map (assets/nav.pgm) 相对 package root
+      // 相对 static_map (assets/nav.pgm) 相对 package root
       // (config/ 的上一级) 解析, 不再依赖节点 cwd (roslaunch 下是 ~/.ros)。
       std::string map_path = static_map;
       if (map_path.front() != '/' && map_path.find("://") == std::string::npos) {
@@ -276,9 +280,9 @@ void CostmapNavigationServer::configureCoreMaps(
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
 
   // 车体 footprint 来源 (nav_demo 参数语义):
-  //   - costmap::footprint 多边形 (nav2 语义, 优先级最高)
-  //   - costmap::robot_radius > 0 → 生成 16 边形近似圆 (ROS1 robot_radius 语义)
-  //   - 两者都缺 → 不设置 (inscribed_radius 参数作为膨胀层 fallback)
+  // - costmap::footprint 多边形 (nav2 语义, 优先级最高)
+  // - costmap::robot_radius > 0 → 生成 16 边形近似圆 (ROS1 robot_radius 语义)
+  // - 两者都缺 → 不设置 (inscribed_radius 参数作为膨胀层 fallback)
   costmap_2d::Footprint footprint;
   const auto footprint_values = cfg.param<std::vector<Eigen::Vector2d>>(
       "costmap", "footprint", {});
@@ -323,6 +327,17 @@ void CostmapNavigationServer::configureCoreMaps(
   local_resolution = resolution;
   local_raytrace_range = cfg.param<double>(
       "costmap_local", "raytrace_range", local_raytrace_range);
+ // 滚动窗口解耦更新频率 (spinOnce 周期滚动, 与传感器流无关)
+  const double local_update_hz =
+      cfg.param<double>("costmap_local", "update_frequency", 10.0);
+  const double global_update_hz =
+      cfg.param<double>("costmap_global", "update_frequency", 5.0);
+  local_roll_period = local_update_hz > 0.0
+                          ? std::chrono::duration<double>(1.0 / local_update_hz)
+                          : std::chrono::duration<double>(0.0);
+  global_roll_period = global_update_hz > 0.0
+                           ? std::chrono::duration<double>(1.0 / global_update_hz)
+                           : std::chrono::duration<double>(0.0);
 
   costmap_context =
       std::dynamic_pointer_cast<CostmapMapContext>(map_family_factory->createContext());
@@ -343,7 +358,7 @@ void CostmapNavigationServer::configureCoreMaps(
   costmap_context->setCommandPort(command_port);
 
   // 全局 RobotStateController 一次性配置: 帧名 + 速度超时只在此缓存,
-  // hot getRobotState() 永不读 Config (spec §5.3 扩展)。
+  // hot getRobotState 永不读 Config (扩展)。
   const double velocity_timeout =
       nav_cfg.param<double>("navigation", "velocity_timeout", 0.25);
   ayanami::components::RobotStateController::instance().initialize(
@@ -448,7 +463,7 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
   }
   cast->configure(ayanami::PluginContext{name, module_config},
                   costmap_context->getSharedConstPtr());
-  // 地图写命令端口: recovery 在 configure 内经 map->commandPort() 获取
+  // 地图写命令端口: recovery 在 configure 内经 map->commandPort 获取
   // (CostmapCommandPort), 由本 server (唯一写者) 执行。
   return true;
 }
@@ -612,12 +627,23 @@ void CostmapNavigationServer::markObstaclesInFrame(
       costmap_context->localCostmap()->getGlobalFrame();
 
   Eigen::Isometry3d T_local = Eigen::Isometry3d::Identity();
-  // 查询用 latest (与 50Hz 同步 loop 同源), 不用传感器戳: fast_tf 无外推,
-  // 在快于实时的仿真下传感器戳恒晚于最新已同步样本, 精确戳查询会 100% 失败。
-  if ((!points.empty() || !clearing_points.empty()) &&
+ // 传感器变换优先按 scan 采集时刻查询 (零容差: 查询失败立即回退, 不阻塞
+ // 回调线程); 失败 (scan 戳超前同步样本/滞后出剪枝窗) 时回退 latest。
+  const bool have_stamp = !stamp.isLatest();
+  bool local_stamp_ok = false;
+  if (have_stamp &&
+      robot_state_controller.lookupTransform(local_frame, frame_id, stamp,
+                                             T_local, 0.0)) {
+    local_stamp_ok = true;
+    ++stamp_query_ok;
+  }
+  if ((!points.empty() || !clearing_points.empty()) && !local_stamp_ok &&
       !robot_state_controller.lookupTransform(
           local_frame, frame_id, ayanami::Timestamp::latest(), T_local,
           k_local_tf_tolerance_s)) {
+    if (have_stamp) {
+      ++stamp_query_fallback;
+    }
     if (tfWarnDue(local_tf_warn_at)) {
       spdlog::warn("CostmapNavigationServer::markObstaclesInFrame: no "
                    "transform {} <- {} (stamp={:f}s); 障碍落图暂停。检查 TF "
@@ -698,7 +724,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
       }
     }
 
-    // Ruling #7: 清上一帧 + 本帧观察窗口, 移除旧障碍标记并把旧膨胀带写回
+    // 清上一帧 + 本帧观察窗口, 移除旧障碍标记并把旧膨胀带写回
     // FREE。外扩 margin 取 inflation radius + 一个 cell: 膨胀带最远可达
     // ceil(radius/res) 个 cell, 世界→cell 取整会把正好压在 radius 边界的
     // cell 排除, 故多扩一个 cell 保证边界带 cell 一并清掉。之后
@@ -745,19 +771,31 @@ void CostmapNavigationServer::markObstaclesInFrame(
     }
   }
 
-  // Task 12 stage C (M2 Ruling #M2-4): global rolling costmap 也要周期性
+  // (M2): global rolling costmap 也要周期性
   // updateMap 驱动滚动窗口跟随机器人 (此前只有 local 更新, global 窗口永不
   // 平移, 导致 start pose 落在窗口外 worldToMap 失败)。窗口中心用 global
   // frame (map) 下的机器人位姿。
   if (costmap_context->globalCostmap() && global_obstacle_layer) {
     Eigen::Isometry3d T_global_sensor = Eigen::Isometry3d::Identity();
     Eigen::Isometry3d T_global_robot = Eigen::Isometry3d::Identity();
+    bool global_stamp_ok = false;
+    if (have_stamp &&
+        robot_state_controller.lookupTransform(
+            costmap_context->getGlobalFrame(), frame_id, stamp, T_global_sensor,
+            0.0)) {
+      global_stamp_ok = true;
+      ++stamp_query_ok;
+    }
     const bool have_sensor_transform =
-        (points.empty() && clearing_points.empty()) ||
+        (points.empty() && clearing_points.empty()) || global_stamp_ok ||
         robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), frame_id,
             ayanami::Timestamp::latest(), T_global_sensor,
             k_global_tf_tolerance_s);
+    if (!global_stamp_ok && have_stamp && have_sensor_transform &&
+        !(points.empty() && clearing_points.empty())) {
+      ++stamp_query_fallback;
+    }
     if (!have_sensor_transform ||
         !robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), costmap_context->getRobotFrame(),
@@ -830,9 +868,79 @@ void CostmapNavigationServer::markObstaclesInFrame(
     has_prev_obstacles_global = true;
     costmap_context->globalCostmap()->updateMapUnlocked(gx, gy, gyaw);
   }
+
+ // scan-stamp 查询回退率观测 (回退 = 该帧传感器变换退回 latest 时序语义,
+ // 旋转时存在 ω×Δt 落图歪斜): 持续高回退率说明 scan 戳与同步链偏差超出
+ // fast_tf 剪枝窗 (检查 RTF / TF 同步健康)。
+  if (stamp_query_fallback.load() > 0) {
+    const auto diag_now = std::chrono::steady_clock::now();
+    if (diag_now - last_stamp_diag_at >= std::chrono::seconds(10)) {
+      last_stamp_diag_at = diag_now;
+      spdlog::info(
+          "markObstacles: stamp-queries ok={} fallback={}",
+          stamp_query_ok.load(), stamp_query_fallback.load());
+      stamp_query_ok.store(0);
+      stamp_query_fallback.store(0);
+    }
+  }
 }
 
 // ---- 地图变更命令执行 (唯一写者) ----
+
+void CostmapNavigationServer::updateRollingWindows() {
+  if (!costmap_context) {
+    return;
+  }
+  auto& robot_state_controller =
+      ayanami::components::RobotStateController::instance();
+  const auto now = std::chrono::steady_clock::now();
+
+ // 局部图: rolling 时以最新位姿居中窗口。位姿解析在拿锁之前; 查询失败时
+ // 复用 markObstacles 的最后成功位姿 (绝不回退原点)。
+  if (local_roll_period.count() > 0.0 && costmap_context->localCostmap() &&
+      costmap_context->localCostmap()->isRollingWindow() &&
+      now - last_local_roll >= local_roll_period) {
+    last_local_roll = now;
+    const std::string& local_frame =
+        costmap_context->localCostmap()->getGlobalFrame();
+    Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
+    if (robot_state_controller.lookupTransform(
+            local_frame, costmap_context->getRobotFrame(),
+            ayanami::Timestamp::latest(), t_robot, k_local_tf_tolerance_s)) {
+      has_last_local_robot = true;
+      last_local_robot_x = t_robot.translation().x();
+      last_local_robot_y = t_robot.translation().y();
+      last_local_robot_yaw =
+          std::atan2(t_robot.linear()(1, 0), t_robot.linear()(0, 0));
+    }
+    if (has_last_local_robot) {
+      std::unique_lock<std::shared_mutex> lock(
+          costmap_context->localCostmap()->mutex());
+      costmap_context->localCostmap()->updateMapUnlocked(
+          last_local_robot_x, last_local_robot_y, last_local_robot_yaw);
+    }
+  }
+
+ // 全局图: 仅 rolling 配置需要 (生产为静态图, 跳过)。
+  if (global_roll_period.count() > 0.0 && costmap_context->globalCostmap() &&
+      costmap_context->globalCostmap()->isRollingWindow() &&
+      now - last_global_roll >= global_roll_period) {
+    last_global_roll = now;
+    Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
+    if (robot_state_controller.lookupTransform(
+            costmap_context->getGlobalFrame(),
+            costmap_context->getRobotFrame(), ayanami::Timestamp::latest(),
+            t_robot, k_global_tf_tolerance_s)) {
+      const double gx = t_robot.translation().x();
+      const double gy = t_robot.translation().y();
+      const double gyaw =
+          std::atan2(t_robot.linear()(1, 0), t_robot.linear()(0, 0));
+      std::unique_lock<std::shared_mutex> lock(
+          costmap_context->globalCostmap()->mutex());
+      costmap_context->globalCostmap()->updateMapUnlocked(gx, gy, gyaw);
+    }
+  }
+}
 
 bool CostmapNavigationServer::executeClearCommand(
     const ClearCostmapCommand& command) {

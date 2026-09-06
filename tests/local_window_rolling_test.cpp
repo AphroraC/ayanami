@@ -12,7 +12,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
+#include <thread>
 
 #include <Eigen/Geometry>
 
@@ -119,10 +121,13 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
   auto next_stamp = [&stamp_ns] {
     return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
   };
-  rsc.setTransform("odom", "base_link", next_stamp(), t_map_base, false);
-  rsc.setTransform("odom", "laser", next_stamp(),
+ // 每周期三边等戳写入 (镜像 live 50Hz 同步): latest common time 语义下
+ // 多跳链路统一切刻采样, 交错戳的单样本边会在公共时刻外无覆盖而失败。
+  const auto cycle_stamp = next_stamp();
+  rsc.setTransform("odom", "base_link", cycle_stamp, t_map_base, false);
+  rsc.setTransform("odom", "laser", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
-  rsc.setTransform("map", "odom", next_stamp(),
+  rsc.setTransform("map", "odom", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
 
   auto countGlobalLethal = [&server] {
@@ -171,6 +176,163 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
                     << " inscribed=" << n253 << " other=" << n_other
                     << " baseline=" << baseline;
   }
+}
+
+// ---- 滚动解耦: 无 scan 流时 spinOnce 周期滚动仍跟随机器人 ----
+
+TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
+  auto dir = makeRollingConfigDir();
+  ayanami::costmap::CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+
+  const double initial_origin_x =
+      server.localCostmap()->get().getCostmap()->getOriginX();
+  const double initial_origin_y =
+      server.localCostmap()->get().getCostmap()->getOriginY();
+
+ // 机器人置于 (2, 2), 不注入任何 scan
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map", "odom", "base_link", 5.0);
+  int64_t stamp_ns = 3000000000;
+  auto next_stamp = [&stamp_ns] {
+    return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
+  };
+  Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
+  t.translation() = Eigen::Vector3d(2.0, 2.0, 0.0);
+  rsc.setTransform("odom", "base_link", next_stamp(), t, false);
+  rsc.setTransform("odom", "laser", next_stamp(),
+                   Eigen::Isometry3d::Identity(), false);
+  rsc.setTransform("map", "odom", next_stamp(),
+                   Eigen::Isometry3d::Identity(), false);
+
+ // 多次调用周期滚动 (内部按 update_frequency 节流): 窗口必须跟随
+  for (int i = 0; i < 3; ++i) {
+    server.updateRollingWindows();
+    std::this_thread::sleep_for(std::chrono::milliseconds(110));
+  }
+
+  const double origin_x = server.localCostmap()->get().getCostmap()->getOriginX();
+  const double origin_y = server.localCostmap()->get().getCostmap()->getOriginY();
+  GTEST_SUCCEED() << "origin: initial=(" << initial_origin_x << ","
+                  << initial_origin_y << ") after=(" << origin_x << ","
+                  << origin_y << ")";
+  EXPECT_NEAR(origin_x, 0.5, 0.11)
+      << "rolling window did not follow robot without sensor stream";
+  EXPECT_NEAR(origin_y, 0.5, 0.11)
+      << "rolling window did not follow robot without sensor stream";
+}
+
+// ---- isPathValid 最近点起点 (nav2 对齐): 已走过路段的占用不判无效 ----
+
+TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
+  auto dir = makeRollingConfigDir();
+  ayanami::costmap::CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map", "odom", "base_link", 5.0);
+ // 时基必须晚于本进程内更早执行的测试 (fast_tf latest 取最新样本)
+  int64_t stamp_ns = 4000000000;
+  auto next_stamp = [&stamp_ns] {
+    return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
+  };
+ // 每周期三边等戳写入 (镜像 live 50Hz 同步, 见 localizationJump 注释)。
+  auto set_base = [&](double x, double y) {
+    const auto stamp = next_stamp();
+    Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
+    t.translation() = Eigen::Vector3d(x, y, 0.0);
+    rsc.setTransform("odom", "base_link", stamp, t, false);
+    rsc.setTransform("odom", "laser", stamp,
+                     Eigen::Isometry3d::Identity(), false);
+    rsc.setTransform("map", "odom", stamp,
+                     Eigen::Isometry3d::Identity(), false);
+  };
+
+ // 路径: x 从 0.1 到 0.9, 每 0.1m 一点 (全局图 1m x 1m @0.05m)
+  ayanami::nav_msgs::Path path;
+  path.header.frame_id = "map";
+  for (int i = 1; i <= 9; ++i) {
+    ayanami::geometry_msgs::PoseStamped pt;
+    pt.header.frame_id = "map";
+    pt.pose.position = Eigen::Vector3d(0.1 * i, 0.0, 0.0);
+    path.poses.push_back(pt);
+  }
+
+ // 在路径起点 (已走过段) 落一圈障碍: 机器人置 (0.2, 0)
+  set_base(0.2, 0.0);
+  server.handleObstacleLaserScan(makeScan(0.25f));
+
+ // 机器人已前进到 x≈0.8 (路径末端): 起点障碍在"最近点"之前 → 有效
+  set_base(0.8, 0.0);
+  EXPECT_TRUE(server.isPathValid(path))
+      << "occupied already-passed segment must not invalidate the path";
+
+ // 机器人仍在起点: 最近点即被占据的起点 → 无效
+  set_base(0.2, 0.0);
+  EXPECT_FALSE(server.isPathValid(path))
+      << "occupied segment at the robot's position must invalidate the path";
+}
+
+// ---- 落图时序: scan 戳查询 (采集时刻位姿) 而非 latest ----
+// 场景: 机器人原地旋转, map<-odom 修正在 5s->6s 间平移 (0.3,0) (AMCL 修正
+// 演化)。同一圆环 scan (半径 0.6) 分别标注 5s / 6s: 标记必须落在各自采集
+// 时刻的 map 位姿 —— 用 latest 会把两帧都烙在最新修正位姿上 (旋转歪斜)。
+
+TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
+  auto dir = makeRollingConfigDir();
+  ayanami::costmap::CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map", "odom", "base_link", 5.0);
+ // fast_tf 动态边缓冲只保留最近 500ms (dynamic_transform 默认 dur_) ——
+ // 所有 TF 样本与 scan 戳必须收进单个 500ms 窗口。
+ // 时间轴: 5.000 base/laser/map=id | 5.100 base/laser/map=id |
+ // 5.200 base/laser/map=(0.3,0) | 5.300 同 | 5.400 同 (newest)
+ // scan A @5.050: map<-odom 插值 = id -> mark (0.6, 0) 附近
+ // scan B @5.250: map<-odom 插值 = (0.3, 0) -> mark (0.9, 0) 附近
+  auto identity = Eigen::Isometry3d::Identity();
+  Eigen::Isometry3d t_m_o = Eigen::Isometry3d::Identity();
+  t_m_o.translation() = Eigen::Vector3d(0.3, 0.0, 0.0);
+  int64_t stamp_ns = 5000000000;
+  auto at = [&](double offset_s) {
+    return ayanami::Timestamp(
+        std::chrono::nanoseconds(stamp_ns +
+                                 static_cast<int64_t>(offset_s * 1e9)));
+  };
+  for (double offset : {0.0, 0.1}) {
+    rsc.setTransform("odom", "base_link", at(offset), identity, false);
+    rsc.setTransform("odom", "laser", at(offset), identity, false);
+    rsc.setTransform("map", "odom", at(offset), identity, false);
+  }
+  for (double offset : {0.2, 0.3, 0.4}) {
+    rsc.setTransform("odom", "base_link", at(offset), identity, false);
+    rsc.setTransform("odom", "laser", at(offset), identity, false);
+    rsc.setTransform("map", "odom", at(offset), t_m_o, false);
+  }
+
+  auto countCell = [&server](unsigned int mx, unsigned int my) {
+    return server.globalCostmap()->get().getCostmap()->getCost(mx, my);
+  };
+
+ // Scan A @5.050s: 圆环 0.6, map<-odom 插值 = id -> bearing 0 标记 cell (11,0)
+  ayanami::sensor_msgs::LaserScan scan_a = makeScan(0.6f);
+  scan_a.header.stamp = at(0.05);
+  server.handleObstacleLaserScan(scan_a);
+  EXPECT_EQ(countCell(11, 0), costmap_2d::LETHAL_OBSTACLE)
+      << "scan A (stamp 5.05s) mark missing at acquisition-time position";
+  EXPECT_LT(countCell(18, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+      << "cell 18 must not be marked before scan B (latest 语义会提前烙上)";
+
+ // Scan B @5.250s: 同一圆环, map<-odom 插值 = (0.3,0) -> cell (18,0)
+  ayanami::sensor_msgs::LaserScan scan_b = makeScan(0.6f);
+  scan_b.header.stamp = at(0.25);
+  server.handleObstacleLaserScan(scan_b);
+  EXPECT_EQ(countCell(17, 0), costmap_2d::LETHAL_OBSTACLE)
+      << "scan B (stamp 5.25s) mark missing at acquisition-time position"
+      " (bearing-0 端点 x=0.89998 -> cell 17)";
+  EXPECT_LT(countCell(11, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+      << "cell 11 was ray-cleared by scan B (按戳落图语义)";
 }
 
 }  // namespace

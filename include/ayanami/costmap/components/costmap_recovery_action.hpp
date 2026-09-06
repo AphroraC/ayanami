@@ -13,7 +13,7 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 恢复行为的 costmap 版 Action (spec §5.4, 生产路径)。
+ * @brief 恢复行为的 costmap 版 Action ( 生产路径)。
  *
  * 复用 RecoveryAction 全部协议, 只覆写 createExecution 工厂:
  * 返回 CostmapRecoveryExecution (激活/停用 global+local + 加锁读图; 改图

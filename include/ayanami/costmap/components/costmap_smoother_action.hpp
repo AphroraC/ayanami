@@ -13,7 +13,7 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 路径平滑的 costmap 版 Action (spec §5.4, 生产路径)。
+ * @brief 路径平滑的 costmap 版 Action ( 生产路径)。
  *
  * 复用 SmootherAction 全部协议 (TaskHandle 直连 + 旁路 emit), 只覆写
  * createExecution: 返回 CostmapSmootherExecution (带 CostmapMapContext 的

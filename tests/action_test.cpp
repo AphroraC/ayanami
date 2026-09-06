@@ -184,7 +184,7 @@ using Server = ayanami::components::ActionServer<
 
 }  // namespace
 
-// ---- ActionServer 协议 (复刻 legacy action_protocol_test, 按 Ruling #2 ACTIVE 通态) ----
+// ---- ActionServer 协议 (复刻 legacy action_protocol_test, 按 ACTIVE 通态) ----
 
 TEST(ActionProtocol, completionCarriesResultAndCleansGoal) {
   Server server;

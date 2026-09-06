@@ -120,7 +120,7 @@ struct RecoveryFeedback {
   using ConstPtr = std::shared_ptr<const RecoveryFeedback>;
 };
 
-// 目标状态 (spec §6.2 用 GoalStatus::SUCCEEDED 做 BT 结果校验)。
+// 目标状态 (用 GoalStatus::SUCCEEDED 做 BT 结果校验)。
 enum class GoalStatus : uint8_t {
   PENDING = 0,
   ACTIVE = 1,
@@ -130,7 +130,7 @@ enum class GoalStatus : uint8_t {
 };
 
 /**
- * @brief 带状态的 action 结果聚合 (spec §3.3 槽签名用)。
+ * @brief 带状态的 action 结果聚合 (槽签名用)。
  *
  * TaskHandle 完成时用 GoalResult<Result> 交付: status 描述整体目标状态,
  * result 携带各 action 族的 Result (含 failure/session_id/plan_version)。

@@ -16,7 +16,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief Action 基类: 并发槽 + 抢占语义 (对标 MBF AbstractActionBase, spec §5)。
+ * @brief Action 基类: 并发槽 + 抢占语义 (对标 MBF AbstractActionBase)。
  *
  * 每个并发槽 (slot) 持一个 execution + 一条"驱动线程" (runImpl 一次完整执行,
  * 由 start() 现场创建、退出后由本槽回收)。线程模型与 ExecutionBase 同构:
@@ -38,7 +38,7 @@ namespace components {
  * 等待: 任务 run() 返回前置 task_done 并 notify, start/cancelAll 等待该标志。
  *
  * 主流控制流: 派生 Action::acceptGoal 返回 TaskHandle 直连调用者 (BT 节点),
- * 不走 NavigationCallbacks (spec §3.4)。
+ * 不走 NavigationCallbacks 。
  */
 template <typename Goal, typename Execution>
 class ActionBase {
@@ -86,7 +86,7 @@ protected:
   }
 
   /**
-   * @brief runImpl 公共轮询骨架 (Ruling #4 DRY 收敛)。
+   * @brief runImpl 公共轮询骨架 (DRY 收敛)。
    *
    * 派生 Action 不再各自复制 while{wait;switch} 骨架, 而是注入 StateMapper
    * (lambda/functor, 捕获派生 server/finishResult): 每轮由骨架先调 mapper,
@@ -102,7 +102,7 @@ protected:
   void runImplCommon(const GoalHandleType& gh, Execution& exec,
                      StateMapper mapper) {
     while (true) {
-      // 兜底异常终态优先于 mapper: run()/preRun() 逃逸异常的 execution 停在
+      // 兜底异常终态优先于 mapper: run/preRun 逃逸异常的 execution 停在
       // k_aborted, 不被任何派生状态机枚举识别 —— 不在此结算则驱动任务死轮询,
       // 槽占用与 recovery 互斥等资源协议死锁。
       if (exec.aborted()) {
@@ -128,7 +128,7 @@ private:
     Goal goal;
     bool in_use{false};
     uint64_t goal_id{0};
-    /// @brief 本槽最近一次驱动任务是否已完全退出 (run() 末尾置位, join 前置)。
+    /// @brief 本槽最近一次驱动任务是否已完全退出 (run 末尾置位, join 前置)。
     bool task_done{true};
   };
 
@@ -187,7 +187,7 @@ void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
   }
   {
     // 事件驱动等待旧驱动任务完全退出 (等价 join 旧槽线程): 旧任务即
-    // ActionBase::run(), 其末尾 (含 exec->join() 等旧 execution 状态机完全退出
+    // ActionBase::run, 其末尾 (含 exec->join 等旧 execution 状态机完全退出
     // 之后再置 task_done) 才算结束, 之后才允许新的进入插件 (同槽绝不重入)。
     // 退出中的线程不再触碰 slots_mutex, 持锁 join 无死锁。
     std::unique_lock<std::mutex> lock(slots_mutex);

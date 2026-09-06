@@ -14,7 +14,7 @@ using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 
 /**
- * @brief 清代价地图恢复模块 (spec §6.6 costmap_clear_costmap_recovery)。
+ * @brief 清代价地图恢复模块 (costmap_clear_costmap_recovery)。
  *
  * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。首周期构造类型化
  * ClearCostmapCommand 并经 CostmapCommandPort 提交给唯一地图写者
@@ -27,7 +27,7 @@ using ayanami::costmap::CostmapCommandPort;
 class CostmapClearCostmapRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapClearCostmapRecovery() = default;
-  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapClearCostmapRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,

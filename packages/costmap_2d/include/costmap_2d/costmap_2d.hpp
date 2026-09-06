@@ -36,7 +36,7 @@ class Costmap2D {
 
   virtual ~Costmap2D() = default;
 
-  // Ruling #6: 显式 this-> 成员赋值, 避免参数遮蔽成员（历史 size_x = size_x 自赋值 bug）
+  // 显式 this-> 成员赋值, 避免参数遮蔽成员（历史 size_x = size_x 自赋值 bug）
   void resizeMap(unsigned int size_x, unsigned int size_y, double resolution,
                  double origin_x, double origin_y,
                  CostValue default_value = FREE_SPACE) {
@@ -103,7 +103,7 @@ class Costmap2D {
       return;
     }
     // Compare in world space before converting to int. Layer bounds may use
-    // numeric_limits<double>::max()/lowest() for full reinflation.
+    // numeric_limits<double>::max/lowest for full reinflation.
     if (wx < origin_x) {
       mx = 0;
     } else if (wx > origin_x + resolution * size_x) {
@@ -218,7 +218,7 @@ class Costmap2D {
   }
 
   // 裁剪窗口复制：把 source 的 [sx0,sxn) x [sy0,syn) 区域拷到自身 [dx0,dx1)。
-  // 返回是否整窗口在界内。Ruling #6 同款命名纪律：this->size_x 显式引用成员。
+  // 返回是否整窗口在界内。同款命名纪律：this->size_x 显式引用成员。
   bool copyWindow(const Costmap2D& source, unsigned int sx0, unsigned int sy0,
                   unsigned int sxn, unsigned int syn, unsigned int dx0,
                   unsigned int dy0) {
@@ -240,7 +240,7 @@ class Costmap2D {
     return true;
   }
 
-  // 滚动窗口: 平移地图数据, 使新原点对齐 (Ruling #6 纪律: 成员显式 this->)
+  // 滚动窗口: 平移地图数据, 使新原点对齐 (纪律: 成员显式 this->)
   void updateOrigin(double new_origin_x, double new_origin_y) {
     if (size_x == 0 || size_y == 0 || resolution <= 0.0) {
       origin_x = new_origin_x;

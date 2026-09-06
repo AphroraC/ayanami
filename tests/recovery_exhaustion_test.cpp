@@ -1,16 +1,16 @@
-// Task 27: 复刻 legacy recovery_exhaustion_test.cpp 契约 (新接口等价改写)。
+// 复刻 legacy recovery_exhaustion_test.cpp 契约 (新接口等价改写)。
 //
 // 契约 (参考 MBF actionRecoveryResult §2.7; ayanami 对应 BT 外层 RecoveryNode
 // retries 耗尽): 恢复行为列表全部耗尽 (planner 恒失败 + 所有 recovery 恒失败)
 // 时, 整次导航必须以 FAILURE 终结, 绝不无限重试。
 //
 // 两层验证:
-//  1. 组件层: RecoveryAction 对恒失败 recovery → 结果 failure=InternalError
-//     (统一失败码), 多次尝试逐次失败 (复刻 legacy 单/多次尝试断言)。
-//  2. BT 层: 以实际导航树同构结构 (PipelineSequence + ReactiveFallback 恢复链,
-//     外层 RecoveryNode retries=2) + MockNavigationServer (requestPath /
-//     requestRecovery 恒 ABORTED) 驱动树, 断言 root 在有界 tick 内 FAILURE,
-//     且恢复链每个 id 都被请求 (列表全耗尽), 不无限重试。
+// 1. 组件层: RecoveryAction 对恒失败 recovery → 结果 failure=InternalError
+// (统一失败码), 多次尝试逐次失败 (复刻 legacy 单/多次尝试断言)。
+// 2. BT 层: 以实际导航树同构结构 (PipelineSequence + ReactiveFallback 恢复链,
+// 外层 RecoveryNode retries=2) + MockNavigationServer (requestPath /
+// requestRecovery 恒 ABORTED) 驱动树, 断言 root 在有界 tick 内 FAILURE,
+// 且恢复链每个 id 都被请求 (列表全耗尽), 不无限重试。
 
 #include <gtest/gtest.h>
 
@@ -72,7 +72,7 @@ Path makePath(std::size_t n) {
   return p;
 }
 
-// 恒失败 recovery: tick() 返回 INTERNAL_ERROR 失败终态。
+// 恒失败 recovery: tick 返回 INTERNAL_ERROR 失败终态。
 class FailingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
   RecoveryResultT tick() override {

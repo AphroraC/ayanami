@@ -26,7 +26,7 @@ inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
          lhs.pose.orientation.isApprox(rhs.pose.orientation);
 }
 
-// 黑板协议集中常量 (spec §6.5): 所有端口/黑名单键名唯一来源, 把运行时端口名错误
+// 黑板协议集中常量 : 所有端口/黑名单键名唯一来源, 把运行时端口名错误
 // 变成编译期/启动期失败。
 inline constexpr const char* k_goal = "goal";
 inline constexpr const char* k_raw_path = "raw_path";
@@ -57,7 +57,7 @@ inline const std::vector<const char*>& requiredBlackboardEntries() {
   return k_required;
 }
 
-/// 校验协议要求的黑板项全部存在, 缺失立即 throw (spec §6.5)。
+/// 校验协议要求的黑板项全部存在, 缺失立即 throw 。
 inline void validateRequiredBlackboardEntries(const BT::Blackboard::Ptr& blackboard) {
   if (!blackboard) {
     throw std::runtime_error("blackboard_protocol: blackboard is null");

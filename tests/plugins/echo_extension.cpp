@@ -5,13 +5,13 @@
 
 namespace {
 
-// 跨 .so 验证计数: 本 .so 内的静态变量, 由 echoExtensionHits() 读取。
+// 跨 .so 验证计数: 本 .so 内的静态变量, 由 echoExtensionHits 读取。
 std::atomic<int> g_hits{0};
 
 class EchoExtension : public ayanami::ExtensionModule {
 public:
   EchoExtension() {
-    // 构造期 add 到 NavigationCallbacks 槽 (spec §4.6)。
+    // 构造期 add 到 NavigationCallbacks 槽 。
     // 因本 .so 链接 libayanami, 该引用解析到 libayanami 内定义的同一槽实例。
     ayanami::interfaces::NavigationCallbacks::on_get_path_result.add(
         [](const auto&){ g_hits.fetch_add(1, std::memory_order_relaxed); });

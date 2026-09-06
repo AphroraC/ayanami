@@ -1,23 +1,23 @@
 // costmap_dwb_controller.hpp — nav2 dwb_core::DWBLocalPlanner 的 ayanami 迁移。
 //
 // 算法逻辑与 nav2_dwb_controller (dwb_core) 逐函数对应:
-//   configure        → configure(PluginContext, map)
-//   setPlan          → setPlan (Path → Path2D, reset critics + generator)
-//   computeVelocityCommands → computeVelocityCommand (abstract 签名;
-//                             插件经持有的地图模块加锁读 local grid)
-//   prepareGlobalPlan / coreScoringAlgorithm / scoreTrajectory /
-//   transformGlobalPlan / loadCritics 保留原名与语义
+// configure → configure(PluginContext, map)
+// setPlan → setPlan (Path → Path2D, reset critics + generator)
+// computeVelocityCommands → computeVelocityCommand (abstract 签名;
+// 插件经持有的地图模块加锁读 local grid)
+// prepareGlobalPlan / coreScoringAlgorithm / scoreTrajectory /
+// transformGlobalPlan / loadCritics 保留原名与语义
 //
-// 锁纪律: 每个控制周期经地图模块 lockLocal() 持 shared 锁直读 local grid。控制器在周期内持有视图,
+// 锁纪律: 每个控制周期经地图模块 lockLocal 持 shared 锁直读 local grid。控制器在周期内持有视图,
 // 快照 (shared_ptr) 使 grid 存活整个打分周期, 并在 prepare 前把当前 grid /
 // footprint 绑定到各 critic (critic::setCostmap)。不持任何 map 写锁 ——
-// 移除旧实现的 ctx->local_costmap->mutex() 内部锁。
+// 移除旧实现的 ctx->local_costmap->mutex 内部锁。
 //
 // 替换点 (零 ROS):
-//   - pluginlib::ClassLoader → 静态注册表 (registration.hpp)
-//   - tf2_ros::Buffer + nav_2d_utils::tf_help → TransformStore 单例
-//   - rclcpp 参数 → ayanami::Config (json 段 dwb_plugin_name, 键为点分全名)
-//   - DWBPublisher (ROS 发布) → 删除 (调试可视化改 callback 槽可选, 先省略)
+// - pluginlib::ClassLoader → 静态注册表 (registration.hpp)
+// - tf2_ros::Buffer + nav_2d_utils::tf_help → TransformStore 单例
+// - rclcpp 参数 → ayanami::Config (json 段 dwb_plugin_name, 键为点分全名)
+// - DWBPublisher (ROS 发布) → 删除 (调试可视化改 callback 槽可选, 先省略)
 #pragma once
 
 #include <memory>

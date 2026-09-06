@@ -4,7 +4,7 @@
     "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
     "config_planner": "modules/costmap_smac_planner.json",
     "config_smoother": "modules/costmap_savitzky_smoother.json",
-    "config_controller": "modules/costmap_dwb_controller.json",
+    "config_controller": "modules/costmap_pid_controller.json",
     "config_goal_checker": "modules/simple_goal_checker.json",
     "config_progress_checker": "modules/simple_progress_checker.json",
     "config_recovery": [
@@ -19,7 +19,7 @@
     "max_vel_x": 0.5,
     "max_vel_y": 0.0,
     "max_vel_theta": 1.5,
-    "robot_frame": "base_footprint",
+    "robot_frame": "base_link",
     "velocity_timeout": 0.25,
     "costmap_visualization_rate": 1.0
   },

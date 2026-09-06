@@ -4,7 +4,7 @@
 // 三个角色, 各生成一个 .so (每 .so 单一公共工厂 create_extension_module)。
 //
 // 跨 DSO 观测: 三个 .so 各自内嵌一个 Probe 单例, 经 extern "C"
-// ayanami_goal_update_probe() 导出; 测试可执行文件 dlopen 同一路径后 dlsym
+// ayanami_goal_update_probe 导出; 测试可执行文件 dlopen 同一路径后 dlsym
 // 取指针, 直接断言插件内部行为 (makePlan goal / smoothed 末点 / setPlan 末点)。
 
 #include <ayanami/abstract/core/abstract_controller.hpp>

@@ -17,7 +17,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 局部控制 Action (对标 MBF ControllerAction, spec §5.1)。
+ * @brief 局部控制 Action (对标 MBF ControllerAction)。
  *
  * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_exe_path_result。
  * cmd_vel 发布由 ControllerExecution 经 on_velocity_command 旁路完成。
@@ -181,7 +181,7 @@ private:
     result.session_id = gh.goal.session_id;
     // 最终结果只携带真正被 controller->setPlan 消费的已应用版本 (applied),
     // 不携带仅在途/未消费的 pending 版本: in-place updatePlan 提交的版本只有
-    // 在执行循环消费并 setPlan 成功后才会反映到 exec.getPlanVersion()。
+    // 在执行循环消费并 setPlan 成功后才会反映到 exec.getPlanVersion。
     result.plan_version = exec.getPlanVersion();
     action_server->publishResult(gh.id, status, result);
   }

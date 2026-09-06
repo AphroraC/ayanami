@@ -15,7 +15,7 @@ using ayanami::actions::GoalResult;
 
 namespace {
 
-// 由 main() 从 argv 读取 (ctest 传 $<TARGET_FILE:echo_extension> 路径)
+// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:echo_extension> 路径)
 std::string g_echo_so;
 
 } // namespace
@@ -34,7 +34,7 @@ TEST(NavigationCallbacksTest, addAndCallAcrossCompilationUnits) {
 }
 
 TEST(NavigationCallbacksTest, threadSafeAcrossAddRemoveCall) {
-  // 同 Task 2 的并发测试, 但挂在 NavigationCallbacks 槽上。
+  // 同 的并发测试, 但挂在 NavigationCallbacks 槽上。
   std::atomic<int> hits{0};
   const int id = NavigationCallbacks::on_get_path_result.add([&](const auto&){ hits++; });
   std::vector<std::thread> ts;
@@ -88,7 +88,7 @@ TEST(NavigationCallbacksTest, callbackVisibleAcrossSoBoundary) {
   // dlopen echo_extension.so (链接 libayanami): 其构造期 add 到
   // NavigationCallbacks::on_get_path_result。本测试 emit 槽后, echo .so
   // 内部的计数必须增加 —— 证明槽对象是 libayanami 内的同一实例
-  // (spec §3.2 关键纪律, 不能用 inline static)。
+  // (关键纪律, 不能用 inline static)。
   auto ext = ayanami::ExtensionModule::load_module(g_echo_so);
   ASSERT_NE(ext, nullptr);
   auto hits_fn =

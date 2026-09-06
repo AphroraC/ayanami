@@ -13,7 +13,7 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 全局路径规划的 costmap 版 Action (spec §5.4, 生产路径)。
+ * @brief 全局路径规划的 costmap 版 Action ( 生产路径)。
  *
  * 复用 PlannerAction 全部协议 (TaskHandle 直连 + 旁路 emit + 抢占),
  * 只覆写 createExecution 工厂: 返回 CostmapPlannerExecution

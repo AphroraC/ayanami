@@ -1,8 +1,8 @@
-// RobotStateController 单测 (spec §5.3 扩展):
+// RobotStateController 单测 (扩展):
 // - getRobotState = 最新 TF 位姿 (TransformStore latest) + 最新速度
 // - 速度超过 velocity_timeout (或无速度) → 零速度但位姿仍有效
 // - latest-wins: setVelocity 覆写
-// - 帧名/超时只在 initialize() 缓存, hot getRobotState 不读 Config
+// - 帧名/超时只在 initialize 缓存, hot getRobotState 不读 Config
 // - 并发读写线程安全
 
 #include <gtest/gtest.h>

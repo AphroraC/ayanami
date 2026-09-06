@@ -1,4 +1,4 @@
-// Task 20: CostmapNavigationServer (spec §5.4) — virtual initialize*Plugin 注入
+// CostmapNavigationServer — virtual initialize*Plugin 注入
 // costmap_context + new*Execution 工厂 + configureCoreMaps + handleObstacle* 落图。
 //
 // 覆盖:
@@ -7,7 +7,7 @@
 // - fail case: 非 costmap 族插件 → initialize*Plugin false + loadPlugins 不建 action
 // - new*Execution 返回 Costmap*Execution (绑 global/local wrapper)
 // - handleObstaclePointCloud 经 TransformStore 落 SimpleObstacleLayer + InflationLayer 重算
-//   (Ruling #7: 旧障碍与旧膨胀带随 clearArea 清掉, 无 stale leak)
+// (旧障碍与旧膨胀带随 clearArea 清掉, 无 stale leak)
 
 #include <gtest/gtest.h>
 
@@ -65,7 +65,7 @@ using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 
-// 由 main() 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)。
+// 由 main 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)。
 std::string g_test_planner_so;
 std::string g_test_smoother_so;
 std::string g_test_controller_so;
@@ -200,7 +200,7 @@ costmap_2d_layers::SimpleObstacleLayer* findObstacleLayer(
   return nullptr;
 }
 
-// 记录 initialize 注入状态的 TestCostmapPlanner (Task 20 接口断言)。
+// 记录 initialize 注入状态的 TestCostmapPlanner (接口断言)。
 class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   std::string init_name;
@@ -539,7 +539,7 @@ TEST(CostmapNavigationServerTest, initializeControllerPluginRejectsNonCostmapCon
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
-  // 普通 AbstractController 不再放行 (移除 Task 12 stage C fallback)。
+  // 普通 AbstractController 不再放行 (移除 fallback)。
   auto plain = std::make_shared<PlainAbstractController>();
   EXPECT_FALSE(server.initializeControllerPlugin("plain", ayanami::Config(""), plain));
 }
@@ -565,7 +565,7 @@ TEST(CostmapNavigationServerTest, initializeRecoveryPluginRejectsNonCostmapRecov
 }
 
 TEST(CostmapNavigationServerTest, initializePlannerPluginFailsWithoutConfiguredMaps) {
-  CostmapNavigationServer server;  // 未 configureCoreMaps (Task 18 minor 1)
+  CostmapNavigationServer server;  // 未 configureCoreMaps (minor 1)
   auto planner = std::make_shared<TestCostmapPlanner>();
   EXPECT_FALSE(server.initializePlannerPlugin("p", ayanami::Config(""), planner));
   EXPECT_FALSE(server.initializeSmootherPlugin("s", ayanami::Config(""), nullptr));
@@ -704,7 +704,7 @@ TEST(CostmapNavigationServerTest, costmapActionCreatesCostmapExecutions) {
             nullptr);
 }
 
-// ---------------- handleObstaclePointCloud (含 Ruling #7) ----------------
+// ---------------- handleObstaclePointCloud (含) ----------------
 
 TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
@@ -730,7 +730,7 @@ TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
   EXPECT_EQ(global_master->getCost(global_mx, global_my),
             costmap_2d::LETHAL_OBSTACLE);
 
-  // Ruling #7: 障碍移动 (lidar(2,0) → odom(2.1,0) → cell(14,10)) 后旧膨胀带消失
+  // 障碍移动 (lidar(2,0) → odom(2.1,0) → cell(14,10)) 后旧膨胀带消失
   server.handleObstaclePointCloud(makePointCloud(2.0f, 0.0f, 0.0f));
 
   // 旧障碍 cell + 旧膨胀带 cell 恢复 FREE (距新源 > 3 cells)
@@ -945,7 +945,7 @@ TEST(CostmapNavigationServerTest, destructorStopsActionsAndDoesNotCrash) {
     server.stop();
   }
   // 作用域结束 → 析构: 基类 stop/reset/clearPlugins,
-  // 不挂 (Ruling #3)。
+  // 不挂 。
 }
 
 int main(int argc, char** argv) {

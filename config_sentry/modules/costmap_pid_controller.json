@@ -1,0 +1,26 @@
+{
+  "controller": {
+    "name": "costmap_pid",
+    "so_name": "libayanami_costmap_pid_controller.so"
+  },
+  "costmap_pid_controller": {
+    "max_vel_x": 2.0,
+    "max_vel_theta": 1.0,
+    "max_acc_x": 1.0,
+    "max_decel_x": 1.0,
+    "max_acc_theta": 1.0,
+    "kp_v": 1.0,
+    "ki_v": 0.0,
+    "kd_v": 0.0,
+    "kp_w": 1.0,
+    "ki_w": 0.0,
+    "kd_w": 0.0,
+    "dist_decay": 2.0,
+    "goal_tolerance": 0.1,
+    "slide_window": 1.0,
+    "default_dt": 0.05,
+    "heading_deadband": 0.08,
+    "rotate_in_place_angle": 0.45,
+    "mode": "omni"
+  }
+}

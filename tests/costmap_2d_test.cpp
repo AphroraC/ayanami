@@ -58,7 +58,7 @@ TEST(Costmap2DTest, resizeMapPopulatesMembers) {
 }
 
 TEST(Costmap2DTest, resizeMapOverwritesPreviousMembers) {
-  // Ruling #6: resizeMap 参数不得遮蔽成员（size_x = size_x 自赋值 bug）
+  // resizeMap 参数不得遮蔽成员（size_x = size_x 自赋值 bug）
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 0, 0);
   map.resizeMap(30, 40, 0.1, 1.0, 2.0);
@@ -151,7 +151,7 @@ TEST(Costmap2DTest, costValuesMatchSpec) {
 }
 
 TEST(Costmap2DTest, isLethalIncludes253) {
-  // Ruling #6: isLethal 必须把 253 (inscribed inflated) 判为 lethal,
+  // isLethal 必须把 253 (inscribed inflated) 判为 lethal,
   // 否则膨胀带被误判为非致命。
   EXPECT_TRUE(costmap_2d::isLethal(253));
   EXPECT_TRUE(costmap_2d::isLethal(254));

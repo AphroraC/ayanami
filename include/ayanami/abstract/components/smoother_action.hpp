@@ -17,7 +17,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 路径平滑 Action (对标 MBF PlanRefinerAction, spec §5.1)。
+ * @brief 路径平滑 Action (对标 MBF PlanRefinerAction)。
  *
  * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_smooth_path_result。
  * 映射: SMOOTHED_PATH→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。

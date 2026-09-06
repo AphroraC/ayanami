@@ -1,4 +1,4 @@
-// Task 24: modules/costmap_spin_recovery — 原地旋转恢复模块。
+// modules/costmap_spin_recovery — 原地旋转恢复模块。
 //
 // 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回纯角速度
 // 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
@@ -17,7 +17,7 @@ namespace ayanami {
 namespace modules {
 
 namespace {
-constexpr int k_lethal_threshold = 253;  // Ruling #6: inscribed inflated 起 lethal
+constexpr int k_lethal_threshold = 253;  // inscribed inflated 起 lethal
 
 bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
                     ::Eigen::Isometry3d& out) {

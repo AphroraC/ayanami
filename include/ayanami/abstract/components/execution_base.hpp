@@ -13,7 +13,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 抽象执行基类 (对标 MBF AbstractExecutionBase, spec §5 components/)。
+ * @brief 抽象执行基类 (对标 MBF AbstractExecutionBase, components/)。
  *
  * 每个 execution 独占一条执行线程: start() 现场 spawn, runTask() 依次执行
  * preRun()→run()→postRun()。内部状态机 (atomic<int>) + condition_variable 向
@@ -23,7 +23,7 @@ namespace components {
  * 线程模型: 每个长任务一线程 (与 Action 驱动线程同构), 单导航并发上限
  * = 四族 action 各 ≤1 驱动线程 + ≤1 execution 线程, 无进程级线程池。
  *
- * Ruling #2: 本类内部状态机独立于 actions::GoalStatus (5 态); Task 9 action
+ * 本类内部状态机独立于 actions::GoalStatus (5 态); action
  * 层才做 ExecutionState→GoalStatus 映射 (active 合并)。
  */
 class ExecutionBase {
@@ -32,8 +32,8 @@ public:
 
   virtual ~ExecutionBase();
 
-  /// @brief runTask 兜底终态值 (不与任何派生状态机枚举冲突): run()/preRun()/
-  /// postRun() 逃逸异常时由 runTask catch 统一置入。Action 驱动轮询必须把它
+  /// @brief runTask 兜底终态值 (不与任何派生状态机枚举冲突): run/preRun/
+  /// postRun 逃逸异常时由 runTask catch 统一置入。Action 驱动轮询必须把它
   /// 视为终态 (runImplCommon 前置检查 / PlannerAction 自定义循环同), 否则
   /// 槽占用与 recovery 互斥等资源协议将死锁。
   static constexpr int k_aborted{250};
@@ -44,13 +44,13 @@ public:
   /// @brief 在 execution 自有线程中异步执行 (旧线程未结束时先 join)。
   virtual void start();
 
-  /// @brief 请求退出 run() (rigorous), run() 以 STOPPED 状态退出。
+  /// @brief 请求退出 run (rigorous), run 以 STOPPED 状态退出。
   virtual void stop();
 
-  /// @brief 取消执行: 置 cancel_requested 并调虚 publishStopCommand() (安全停止)。
+  /// @brief 取消执行: 置 cancel_requested 并调虚 publishStopCommand (安全停止)。
   virtual void cancel();
 
-  /// @brief 等待 run() 任务完全结束 (等价旧实现的 join 执行线程)。
+  /// @brief 等待 run 任务完全结束 (等价旧实现的 join 执行线程)。
   void join();
 
   /// @brief 在 condition 上等待状态更新, 返回是否在超时前被唤醒。

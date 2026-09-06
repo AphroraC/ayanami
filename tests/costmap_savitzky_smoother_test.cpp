@@ -1,13 +1,13 @@
-// Task 22: modules/costmap_savitzky_smoother (CostmapSmoother 族 7 点
+// modules/costmap_savitzky_smoother (CostmapSmoother 族 7 点
 // Savitzky-Golay 平滑)。
 //
 // 覆盖:
 // - L 形 zigzag input (10 poses) → smoothPath 后更平滑 (一阶差分长度和减小),
-//   path size 不减小, 两端点固定不动
+// path size 不减小, 两端点固定不动
 // - max_duration=0.001s 立即 SUCCESS (允许放过部分或全部)
 // - 空 path / 点数 < 7 → SUCCESS, out=in
 // - check_for_collision=true: 平滑后路径经过障碍 cell → 回滚到 original path,
-//   msg 含 "collision"
+// msg 含 "collision"
 // - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 
 #include <gtest/gtest.h>

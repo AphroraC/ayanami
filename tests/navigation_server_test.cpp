@@ -34,7 +34,7 @@ namespace {
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 由 main() 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)
+// 由 main 从 argv 读取 (ctest 传各测试插件 $<TARGET_FILE:...>)
 std::string g_planner_so;
 std::string g_fail_planner_so;
 std::string g_smoother_so;
@@ -142,7 +142,7 @@ private:
   std::vector<std::string> factory_names;
 };
 
-// 子插件 json (name/so_name, spec §9.5; 工厂统一 create_extension_module)。
+// 子插件 json (name/so_name, ; 工厂统一 create_extension_module)。
 std::string pluginJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
@@ -196,14 +196,14 @@ PoseStamped pose(const std::string& frame, double x, double y) {
 
 // ---- Recovery 排他性测试桩 ----
 // 阻塞 planner/smoother/controller: makePlan/smoothPath/computeVelocityCommands
-// 进入后一直阻塞到 cancel() 触发 release_all; exit_* 记录阻塞调用返回时刻。
+// 进入后一直阻塞到 cancel 触发 release_all; exit_* 记录阻塞调用返回时刻。
 // 周期 recovery: 首个 onCycleUpdate 记录"三族是否已全部退出"。
 namespace recovery_exclusive {
 
 struct Coordinator {
   std::mutex mutex;
   std::condition_variable cv;
-  // 每族独立 release 信号: 各自的 cancel() 只释放自己, 保证另两族继续阻塞到
+  // 每族独立 release 信号: 各自的 cancel 只释放自己, 保证另两族继续阻塞到
   // 自己的 cancel 到来 (否则早退会让被抢占任务以 SUCCESS 而非 CANCELED 收场)。
   bool planner_release{false};
   bool smoother_release{false};

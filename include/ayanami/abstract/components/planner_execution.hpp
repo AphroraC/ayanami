@@ -21,7 +21,7 @@ namespace components {
  * 槽; run() 在每次插件调用前采纳最新 pending 目标, 插件调用返回后若
  * revision 已推进则以最新目标重新开始 (不 cancel / 不 join / 不新建线程)。
  *
- * 内部状态机独立于 actions::GoalStatus (Ruling #2):
+ * 内部状态机独立于 actions::GoalStatus :
  * INITIALIZED→STARTED→PLANNING→(FOUND_PLAN | NO_PLAN_FOUND | CANCELED |
  * STOPPED | INTERNAL_ERROR)。
  */

@@ -38,7 +38,7 @@ struct GoalCheckerTolerances {
 };
 
 /**
- * @brief 目标检查插件抽象 (对标 MBF AbstractGoalChecker, spec §5.1)。
+ * @brief 目标检查插件抽象 (对标 MBF AbstractGoalChecker)。
  *
  * 判断 current_pose 是否已到达 goal_pose: 位置/转角差在容差内且速度低于静止
  * 阈值。有状态: reset() 应在收到新 goal / 重规划时调用。

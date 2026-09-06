@@ -1,4 +1,4 @@
-// Map Family 抽象测试 (Phase 3): 证明 NavigationServerBase 装配路径零 costmap
+// Map Family 抽象测试 : 证明 NavigationServerBase 装配路径零 costmap
 // 依赖 —— 一个非 costmap 的 fake 地图族 (Grid 族) 经同一组虚钩子
 // (initialize*Plugin + PluginContext 注入) 完成插件配置, 地图上下文经
 // AbstractMapContext 接口提供 identity/frame/版本/能力/写命令/机器人状态。

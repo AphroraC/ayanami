@@ -64,6 +64,8 @@ config/
 | `costmap_local.size_x/size_y` | 60 / 60 | 3m×3m 窗口 |
 | `costmap_local.inflation_radius` 等 | 0.2 / 0.12 / 3 | |
 | `costmap_local.obstacle_range / raytrace_range` | 3.0 / 3.5 | 落图标记/射线清除半径 |
+| `costmap_local.update_frequency` | 10.0 | 滚动窗口解耦更新频率（spinOnce 驱动，与传感器流无关） |
+| `costmap_global.update_frequency` | 5.0 | 同上（仅 global 启用 rolling_window 时生效） |
 
 组合语义：全局障碍层 `MAXIMUM` + `setClearToFree(false)`（静态层先恢复，
 动态标记只做 cost>old 叠加）；局部障碍层 `OVERWRITE`。

@@ -1,14 +1,14 @@
 // Requirement 2/3 focused tests:
-//  A. 所有生产模块 .so 都经公共工厂 create_extension_module 装载, 且类型化
-//     dynamic_pointer_cast 到正确插件族类型 (不再有任意 create* 符号)。
-//  B. 默认树扩展模块 (navigation_behavior_tree) 可独立装载: load_module →
-//     BehaviorTreeExtension cast → registerNodes + registerTrees → createTree →
-//     tick (执行树)。
+// A. 所有生产模块 .so 都经公共工厂 create_extension_module 装载, 且类型化
+// dynamic_pointer_cast 到正确插件族类型 (不再有任意 create* 符号)。
+// B. 默认树扩展模块 (navigation_behavior_tree) 可独立装载: load_module →
+// BehaviorTreeExtension cast → registerNodes + registerTrees → createTree →
+// tick (执行树)。
 //
 // argv (一律为生产模块 .so 的绝对路径):
-//   1=host(costmap_navigation) 2=dwb 3=smac 4=savitzky 5=pid
-//   6=spin 7=backup 8=wait 9=clear 10=goal_checker 11=progress_checker
-//   12=navigation_behavior_tree
+// 1=host(costmap_navigation) 2=dwb 3=smac 4=savitzky 5=pid
+// 6=spin 7=backup 8=wait 9=clear 10=goal_checker 11=progress_checker
+// 12=navigation_behavior_tree
 
 #include <gtest/gtest.h>
 

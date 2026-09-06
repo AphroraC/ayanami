@@ -1,15 +1,15 @@
-// Task 24+redesign: modules/costmap*_recovery (CostmapRecovery 族 4 个恢复插件)。
+// +redesign: modules/costmap*_recovery (CostmapRecovery 族 4 个恢复插件)。
 //
 // 覆盖 (周期驱动 + 唯一发布者架构):
 // - 插件只返回每周期期望速度, 由 CostmapRecoveryExecution 作为唯一发布者
-//   按周期发布; spin/back_up 结束/取消/collision 终态必须补零 (行为测试)。
+// 按周期发布; spin/back_up 结束/取消/collision 终态必须补零 (行为测试)。
 // - 插件不直接调 on_velocity_command / 不 sleep (行为 + grep 源码测试)。
 // - spin 完成所设 spin_dist → 执行 RECOVERY_DONE, 期间发纯角速度, 终态零速度
 // - back_up 倒车检测碰撞 (不可变 global 快照 lethal) → RECOVERY_FAILED,
-//   message 含 "collision detected" (插件层 tick 契约)
+// message 含 "collision detected" (插件层 tick 契约)
 // - wait 经执行周期驱动等满 wait_duration → RECOVERY_DONE; 中途 cancel → CANCELED
 // - clear 经 CostmapCommandPort 提交 typed clear 命令, 唯一写者清机器人附近
-//   radius → None, master grid 对应区域 = FREE_SPACE(0), 远处保持 lethal
+// radius → None, master grid 对应区域 = FREE_SPACE(0), 远处保持 lethal
 // - 4 个 module.cpp 统一导出 create_extension_module (dlopen 验证正确类)
 
 #include <gtest/gtest.h>
@@ -73,7 +73,7 @@ std::string g_clear_so;
 // 模块源码目录 (CMake 注入), 供 grep 源码测试用。
 std::string g_modules_src;
 
-// 临时 config 目录 (main() 内创建), 供构造各模块 PluginContext.config。
+// 临时 config 目录 (main 内创建), 供构造各模块 PluginContext.config。
 std::string g_config_dir;
 
 // 各模块自身 json (PluginContext.config 参数单一来源)。
@@ -471,7 +471,7 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",

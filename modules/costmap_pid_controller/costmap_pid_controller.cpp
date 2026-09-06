@@ -1,4 +1,4 @@
-// Task 23: modules/costmap_pid_controller — 3 轴 PID 局部控制器模块。
+// modules/costmap_pid_controller — 3 轴 PID 局部控制器模块。
 //
 // 纯 C++ (零 ROS): 继承 costmap::CostmapController (costmap 族 controller,
 // 只读 pose+path, 算法不读图但按族契约实现 configure)。
@@ -8,8 +8,8 @@
 // - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
 // - linear 按 max_acc_x/max_decel_x 分开限幅; angular 受 max_acc_theta 限幅
 // - distanceDecay 临近 goal 减速; 位置进入 param.goal_tolerance XY 容差后
-//   linear=0, 仅 angular PID 对齐 goal 朝向; 到达判定由 execution 层 goal_checker
-//   宣布 (computeVelocityCommands 不再接收 goal_checker, 控制器自身不判到达)。
+// linear=0, 仅 angular PID 对齐 goal 朝向; 到达判定由 execution 层 goal_checker
+// 宣布 (computeVelocityCommands 不再接收 goal_checker, 控制器自身不判到达)。
 
 #include "costmap_pid_controller.hpp"
 
@@ -58,7 +58,7 @@ double distance2d(const geometry_msgs::PoseStamped& a,
   return std::hypot(pa.x() - pb.x(), pa.y() - pb.y());
 }
 
-// 粗路径签名 (3.5 minor carry): 仅末位 goal (x, y) × 1000 + path size, 不逐
+// 粗路径签名 : 仅末位 goal (x, y) × 1000 + path size, 不逐
 // pose hash。re-smooth 后同 goal 同 size 的 plan 得到相同签名 → setPlan 不重置
 // PID 状态 (防止 re-smooth 触发 PID reset stutter); 不同 goal 签名不同 (重置)。
 uint64_t computePlanSignature(const nav_msgs::Path& plan) {

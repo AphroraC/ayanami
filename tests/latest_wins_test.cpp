@@ -1,4 +1,4 @@
-// Task 27: 复刻 legacy latest_wins_test.cpp 契约 (新接口等价改写)。
+// 复刻 legacy latest_wins_test.cpp 契约 (新接口等价改写)。
 //
 // 契约 (latest_wins / 强抢占): 同槽 (PlannerAction 恒用 slot 0) 先 acceptGoal A
 // (阻塞, 等不到完成); 第二次 acceptGoal B 同槽抢占 A → A 立即被抢占, TaskHandle
@@ -34,7 +34,7 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 // 阻塞 planner: 记录并发运行数与进出场顺序; makePlan 等 entered, 然后阻塞到
-// cancel() 或 release() 才返回。被取消时返回 NO_PATH_FOUND → 执行层 CANCELED。
+// cancel 或 release 才返回。被取消时返回 NO_PATH_FOUND → 执行层 CANCELED。
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,

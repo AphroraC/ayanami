@@ -59,9 +59,9 @@ Path makePath(size_t n) {
 }
 
 /**
- * @brief MockNavigationServer (同 Task 13): request* 返回固定 TaskHandle。
+ * @brief MockNavigationServer (同): request* 返回固定 TaskHandle。
  * 新增 cmd_vel 旁路: requestExecution 内 emit on_velocity_command (模拟
- * ControllerExecution 的 cmd_vel 输出旁路, spec §3.3)。exe_sync=false 时
+ * ControllerExecution 的 cmd_vel 输出旁路)。exe_sync=false 时
  * FollowPath 挂起保持 RUNNING (供抢占/halt 验证)。
  */
 class MockNavServer : public ayanami::components::NavigationServerBase {
@@ -122,7 +122,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
     auto task = exe_server.acceptGoal(goal);
     last_exe_goal = goal;
-    // cmd_vel 旁路: 模拟 controller 输出速度 (spec §3.3 on_velocity_command)
+    // cmd_vel 旁路: 模拟 controller 输出速度 (on_velocity_command)
     const ayanami::geometry_msgs::TwistStamped stop{};
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(stop);
     if (exe_sync) {
@@ -180,7 +180,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   RecoveryServer recovery_server;
 };
 
-// 运行 pilot.run() 的 RAII 线程: 析构先 stop() (kill_switch + 唤醒) 再 join,
+// 运行 pilot.run 的 RAII 线程: 析构先 stop (kill_switch + 唤醒) 再 join,
 // 保证断言失败提前退出时也不悬挂线程。
 class PilotRunner {
  public:
@@ -203,8 +203,8 @@ class PilotRunner {
 };
 
 // 临时配置目录: config.json (global 映射) + costmap_navigation.json
-// (navigation 段, spec §9.3)。planner_frequency 用 100Hz 让 RateController
-// 近乎每 tick 重规划 (异步 ComputePath 限频轮询, Task 13 minor 5)。
+// (navigation 段)。planner_frequency 用 100Hz 让 RateController
+// 近乎每 tick 重规划 (异步 ComputePath 限频轮询, minor 5)。
 std::filesystem::path makeConfigDir() {
   const auto dir =
       std::filesystem::temp_directory_path() / "ayanami_pilot_test";
@@ -290,7 +290,7 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
 
   BehaviorTreePilot pilot;
   pilot.configure(dir.string());
-  pilot.loadFromFile("", "");  // 空路径 -> 内嵌默认 XML (spec §6.3)
+  pilot.loadFromFile("", "");  // 空路径 -> 内嵌默认 XML
   pilot.setNavigationRuntime(server);
 
   std::atomic<int> vel_count{0};
@@ -397,7 +397,7 @@ TEST(BehaviorTreePilotTest, haltCancelsRunningActions) {
   // 等到旧 FollowPath task 挂起
   ASSERT_TRUE(waitForActiveGoal(server->exe_server, 1000));
 
-  // halt() 触发后所有 RUNNING action 被取消
+  // halt 触发后所有 RUNNING action 被取消
   pilot.halt();
   EXPECT_TRUE(waitForInt(server->cancel_count, [](int v) { return v >= 1; }));
 }

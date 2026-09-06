@@ -17,7 +17,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 恢复行为 Action (对标 MBF RecoveryAction, spec §5.1)。
+ * @brief 恢复行为 Action (对标 MBF RecoveryAction)。
  *
  * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_recovery_result。
  * 映射: RECOVERY_DONE→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。

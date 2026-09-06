@@ -1,22 +1,22 @@
-// Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6 / §9)。
-// R1 (Controller Ruling #8 选项 a): *_id 值统一为插件 full name (含 _recovery 后缀),
+// config/*.json 全套 + id↔name 一致性检查 (/ §9)。
+// R1 (Controller 选项 a): *_id 值统一为插件 full name (含 _recovery 后缀),
 // 使 BT `{spin_id}` 等黑板书值直接等于 PluginManager/recovery_actions 的 name key,
 // requestRecovery 不再 miss (修历史 recovery_id 与插件 name 不匹配的坑)。
 //
 // 测试分层:
-//   A. 纯配置层: 加载 config/ → 读 costmap_navigation.json ids → 断言每个 id 值
-//      就是对应插件 json 的 name 字段 (full plugin name)。
-//   B. 真实 dlopen: PluginManager<Abstract* 族> 装载真实模块 .so, 装载名与
-//      costmap_navigation.json id 值一致。
-//   C. 宿主初始化: dlopen host → initialize(config/) → 枚举 loaded recovery action。
-//   D. requestRecovery 实调: full name → valid TaskHandle; unsuffixed id → invalid
-//      (NOT FOUND, 反向证明旧无后缀 id 现真是 miss)。
-//   E. BT 恢复分支: 跑真实 BT 树 `<Recovery recovery="{spin_id}"/>` → 触发
-//      requestRecovery(full name) → 插件 costmap_spin_recovery 实际被调用
-//      (on_velocity_command 角速度事件 = runRecovery 计数)。
+// A. 纯配置层: 加载 config/ → 读 costmap_navigation.json ids → 断言每个 id 值
+// 就是对应插件 json 的 name 字段 (full plugin name)。
+// B. 真实 dlopen: PluginManager<Abstract* 族> 装载真实模块 .so, 装载名与
+// costmap_navigation.json id 值一致。
+// C. 宿主初始化: dlopen host → initialize(config/) → 枚举 loaded recovery action。
+// D. requestRecovery 实调: full name → valid TaskHandle; unsuffixed id → invalid
+// (NOT FOUND, 反向证明旧无后缀 id 现真是 miss)。
+// E. BT 恢复分支: 跑真实 BT 树 `<Recovery recovery="{spin_id}"/>` → 触发
+// requestRecovery(full name) → 插件 costmap_spin_recovery 实际被调用
+// (on_velocity_command 角速度事件 = runRecovery 计数)。
 //
 // argv: 1=config_dir, 2=host.so, 3=smac.so, 4=savitzky.so, 5=pid.so,
-//       6=spin.so, 7=back_up.so, 8=wait.so, 9=clear.so
+// 6=spin.so, 7=back_up.so, 8=wait.so, 9=clear.so
 
 #include <gtest/gtest.h>
 
@@ -74,7 +74,7 @@ std::string g_backup_so;
 std::string g_wait_so;
 std::string g_clear_so;
 
-// costmap_navigation.json 的 *_id 字段集合 (spec §9.3)。R1 后 id 值 == 插件 full name。
+// costmap_navigation.json 的 *_id 字段集合 。R1 后 id 值 == 插件 full name。
 struct NavIds {
   std::string planner_id;
   std::string smoother_id;
@@ -198,7 +198,7 @@ std::string recoveryPluginName(const std::string& role) {
 }
 
 // dlopen host 模块 (公共工厂) → AbstractNavigation → CostmapNavigation*, 已 initialize。
-// 亲引用: 组件寿命 = 进程 (spec §4.1, 不 dlclose), 宿主 shared_ptr 特意泄漏保值,
+// 亲引用: 组件寿命 = 进程 (不 dlclose), 宿主 shared_ptr 特意泄漏保值,
 // 测试仍负责 delete host。
 CostmapNavigation* createHost(const std::string& config_dir) {
   auto nav = std::dynamic_pointer_cast<AbstractNavigation>(

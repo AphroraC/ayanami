@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -21,7 +22,7 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief costmap 族"地图模块" (spec §5.2)。
+ * @brief costmap 族"地图模块" 。
  *
  * 聚合 global/local 两个 CostmapWrapper (global: StaticLayer+InflationLayer;
  * local: rolling SimpleObstacleLayer+InflationLayer)。
@@ -67,10 +68,12 @@ class CostmapMapContext : public map::AbstractMapContext,
         pose, velocity);
   }
 
-  /// @brief 路径有效性: global costmap 语义 = 每个路径点在界内且代价既非
-  /// NO_INFORMATION 也非 lethal (inflation 高代价不判无效 —— planner 已避开
-  /// lethal, 贴障碍的合法代价路径留给 controller 层裁决)。
-  /// 持 shared 锁零拷贝校验; 无 global wrapper 时退化为非空检查。
+  /// @brief 路径有效性 (nav2 planner_server::isPathValid 语义对齐):
+  /// 从距机器人最近的路径点开始检查 —— 已走过路段可能被新障碍占据, 属误判
+  /// 源, 显式跳过; 每点须在界内 (出界对标 nav2 按 lethal 处理) 且代价既非
+  /// NO_INFORMATION 也非 lethal (isLethal >= 253 含 inscribed, 对标 nav2
+  /// use_radius 模式)。持 shared 锁零拷贝校验; 无 global wrapper 时退化为
+  /// 非空检查; 机器人位姿不可用时退化为全路径检查 (保守)。
   bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
     if (path.poses.empty()) {
       return false;
@@ -78,13 +81,28 @@ class CostmapMapContext : public map::AbstractMapContext,
     if (!global_costmap) {
       return true;
     }
-    return readGlobal([&path](const costmap_2d::Costmap2D& grid) {
-      for (const auto& pose : path.poses) {
+ // 最近点起点 (位姿解析在地图锁外)
+    std::size_t start_index = 0;
+    ayanami::geometry_msgs::PoseStamped robot_pose;
+    if (getRobotPose(robot_pose)) {
+      double best = std::numeric_limits<double>::max();
+      for (std::size_t i = 0; i < path.poses.size(); ++i) {
+        const double d = (path.poses[i].pose.position -
+                          robot_pose.pose.position)
+                             .norm();
+        if (d < best) {
+          best = d;
+          start_index = i;
+        }
+      }
+    }
+    return readGlobal([&path, start_index](const costmap_2d::Costmap2D& grid) {
+      for (std::size_t i = start_index; i < path.poses.size(); ++i) {
         unsigned int mx = 0;
         unsigned int my = 0;
-        if (!grid.worldToMap(pose.pose.position.x(), pose.pose.position.y(),
-                             mx, my)) {
-          return false;  // 出界: 路径点落在地图外
+        if (!grid.worldToMap(path.poses[i].pose.position.x(),
+                             path.poses[i].pose.position.y(), mx, my)) {
+          return false;  // 出界: 对标 nav2 按 lethal 处理
         }
         const auto cost = grid.getCost(mx, my);
         if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
@@ -116,7 +134,7 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
   /// @brief 注入地图写命令端口 (configureCoreMaps 期, 唯一写者创建后立即)。
-  /// recovery 等地图族插件经 commandPort() 获取, 不再走旁路注入。
+  /// recovery 等地图族插件经 commandPort 获取, 不再走旁路注入。
   void setCommandPort(map::MapCommandPort::Ptr port) {
     command_port = std::move(port);
   }
@@ -132,7 +150,7 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
   /// @brief 获取机器人在指定 frame 的位姿 (默认 global_frame; local 视图
-  /// 传 local_frame, 保证 view.frame() 与 robot_pose 帧一致)。
+  /// 传 local_frame, 保证 view.frame 与 robot_pose 帧一致)。
   /// TransformStore, 无锁查询。
   bool getRobotPose(
       ayanami::geometry_msgs::PoseStamped& pose,

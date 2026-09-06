@@ -1,14 +1,14 @@
-// CostmapNavigation 宿主插件实现 (spec §5.6)。
+// CostmapNavigation 宿主插件实现 。
 //
-// 抢占纪律 (spec §6.1): bt_pilot.run() 是常驻阻塞 tick 循环 (kill_switch 退出),
+// 抢占纪律 : bt_pilot.run 是常驻阻塞 tick 循环 (kill_switch 退出),
 // 故 navigation_thread 只建一次并复用。新 goal 由 BehaviorTreePilot 的 tick
 // 线程更新 goal revision；controller 继续旧路径，planner 原位切换目标，新路径
 // 完成后 controller 再原位更新。宿主 setGoal 只做非阻塞 latest-wins 投递。
 //
-// Ruling #5 (load-bearing): bt_pilot wiring 显式三连 configure → loadFromFile →
+// bt_pilot wiring 显式三连 configure → loadFromFile →
 // setNavigationRuntime; 树只建一次 (17 板项校验通过), 后续 goal 只 applyPendingGoal。
 //
-// Ruling #3 析构链: ~CostmapNavigation → stop() join 导航线程 → navigation_server
+// 析构链: ~CostmapNavigation → stop join 导航线程 → navigation_server
 // 成员析构 (CostmapNavigationServer 基类 NavigationServerBase 先 clearActions 后
 // clearPlugins); BT 树 (bt_pilot 成员, 声明在 server 之后) 先析构, 故 BT 节点不再
 // 持有过期插件指针。
@@ -48,14 +48,14 @@ void CostmapNavigation::initialize(const std::string& config_path) {
   // 地图族工厂由宿主构造 (context 唯一创建点); 核心装配链只认抽象工厂面。
   navigation_server->configureCoreMaps(
       config_path, std::make_shared<costmap::CostmapMapFamilyFactory>());
-  // loadPlugins 内部已触发 4 虚 initialize*Plugin + createActions() (review 修复:
+  // loadPlugins 内部已触发 4 虚 initialize*Plugin + createActions (
   // 不再显式二次调用 createActions, 避免 action map 重建)。
   navigation_server->loadPlugins(config_path);
 
   bt_pilot.configure(config_path);
 
   Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
-  // 生产单一来源 (review 修复): 默认导航树由 BehaviorTreeExtension 内嵌注册,
+  // 生产单一来源 : 默认导航树由 BehaviorTreeExtension 内嵌注册,
   // 不再从文件读取 (config/BT/navigation.xml 已删)。xml 空 → 空路径走扩展
   // 默认树; 测试仍可显式给 behavior_tree_xml 提供自定义 XML。
   const std::string xml_rel = nav_cfg.param<std::string>(
@@ -67,7 +67,7 @@ void CostmapNavigation::initialize(const std::string& config_path) {
                                    : (std::filesystem::path(config_path) /
                                       xml_rel).string();
 
-  // Ruling #5: 显式 wiring (bt_pilot configure 只读配置, 不自动 load/set)。
+  // 显式 wiring (bt_pilot configure 只读配置, 不自动 load/set)。
   bt_pilot.loadFromFile(xml_path, tree_id);
   bt_pilot.setNavigationRuntime(navigation_server);
 
@@ -84,7 +84,7 @@ void CostmapNavigation::start() {
 void CostmapNavigation::stop() {
   if (navigation_thread && navigation_thread->joinable()) {
     bt_pilot.halt();
-    bt_pilot.stop();  // kill_switch + 唤醒 run → run() 退出
+    bt_pilot.stop();  // kill_switch + 唤醒 run → run 退出
     auto t = std::move(navigation_thread);
     navigation_thread.reset();
     t->join();
@@ -93,6 +93,10 @@ void CostmapNavigation::stop() {
 }
 
 void CostmapNavigation::spinOnce() {
+ // 滚动窗口解耦更新: 与传感器流无关的周期滚动 (scan 断流时窗口仍跟随
+ // 机器人), 频率由 costmap_local/global.update_frequency 配置。
+  navigation_server->updateRollingWindows();
+
   const auto now = std::chrono::steady_clock::now();
   const double hz = visualization_rate > 0.0 ? visualization_rate : 1.0;
   if (now - last_publish >= std::chrono::duration<double>(1.0 / hz)) {

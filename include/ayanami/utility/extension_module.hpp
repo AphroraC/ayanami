@@ -7,7 +7,7 @@
 namespace ayanami {
 
 /**
- * @brief Abstract base for extension modules (glim-style, spec §4.6).
+ * @brief Abstract base for extension modules (glim-style).
  *
  * Pure C++, no ROS includes. Derived modules register callback slots (e.g.
  * NavigationCallbacks::on_xxx.add(...)) during construction and are loaded via
@@ -23,7 +23,7 @@ public:
    * @brief Load an extension module from a shared object via dlsym of
    *        "create_extension_module".
    *
-   * @return shared_ptr without a custom deleter (process lifetime, spec §4.1),
+   * @return shared_ptr without a custom deleter (process lifetime),
    *         or nullptr on failure.
    */
   static Ptr load_module(const std::string& so_name);

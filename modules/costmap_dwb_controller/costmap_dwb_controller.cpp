@@ -3,6 +3,8 @@
 #include "costmap_dwb_controller.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -254,6 +256,16 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
 
   std::shared_ptr<dwb_msgs::LocalPlanEvaluation> results = nullptr;
 
+ // 调参可观测性 (对标 nav2 cost_cloud/trajectories): AYANAMI_DWB_DEBUG=1
+ // 时构建逐轨迹逐 critic 评分, 并在成功路径上节流输出 best/worst 统计。
+  static const bool debug_scoring = [] {
+    const char* env = std::getenv("AYANAMI_DWB_DEBUG");
+    return env != nullptr && env[0] != '\0' && env[0] != '0';
+  }();
+  if (debug_scoring) {
+    results = std::make_shared<dwb_msgs::LocalPlanEvaluation>();
+  }
+
   try {
     // The execution feeds the robot pose from the TF tree, which is in the
     // map frame. Trajectory simulation and critics must run in the local
@@ -276,6 +288,24 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
         pose2d, dwb_core::conversions::twist3Dto2D(velocity.twist), results);
     cmd_vel.header.frame_id = cmd_vel2d.frame_id;
     cmd_vel.twist = dwb_core::conversions::twist2Dto3D(cmd_vel2d.velocity);
+    if (results) {
+ // 节流 1s: best/worst 评分 + 非法轨迹占比 (调参时定位"谁否掉了轨迹")
+      static thread_local auto last_log = std::chrono::steady_clock::now() -
+                                          std::chrono::seconds(1);
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_log >= std::chrono::seconds(1)) {
+        last_log = now;
+        spdlog::info(
+            "DWB scoring: twists={} best_index={} best=({:.3f}) "
+            "v=({:.2f},{:.2f},{:.2f})",
+            results->twists.size(), results->best_index,
+            results->twists.empty()
+                ? -1.0
+                : results->twists[results->best_index].total,
+            cmd_vel.twist.linear.x(), cmd_vel.twist.linear.y(),
+            cmd_vel.twist.angular.z());
+      }
+    }
     return ControllerResultT::success(ControllerCommand{cmd_vel});
   } catch (const dwb_core::PlannerTFException& e) {
     return ControllerResultT::failure(ErrorCode::TRANSFORM_UNAVAILABLE,

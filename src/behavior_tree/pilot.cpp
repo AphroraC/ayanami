@@ -1,13 +1,13 @@
-// BehaviorTreePilot 实现 (spec §6.1 常驻树 + pending_goal 黑板覆盖 + 抢占归 tick
+// BehaviorTreePilot 实现 (常驻树 + pending_goal 黑板覆盖 + 抢占归 tick
 // 线程)。
 //
 // 抢占纪律: beginNavigation 只做 latest-wins 邮箱投递 (覆写 pending_goal +
 // 唤醒), **绝不跨线程 halt BT 树**。实际抢占全部落在 run 线程:
-//   applyPendingGoal: 本地 haltTree (tick 线程) → controllerAction()->cancelAll()
-//   → 发一条零速度 (Global Constraint P9) → startNewSession (session+1 /
-//   plan_version 归零, 与 NavigationServerBase 共享同一对象) → 重写黑板。
-// halt() 只是请求位 (halt_requested), run 线程 consumeHaltRequest 本地消费
-// (供停止/析构前停树; join 之后不再有并发 tick)。树常驻不重建 (spec §6.1)。
+// applyPendingGoal: 本地 haltTree (tick 线程) → controllerAction->cancelAll
+// → 发一条零速度 (Global Constraint P9) → startNewSession (session+1 /
+// plan_version 归零, 与 NavigationServerBase 共享同一对象) → 重写黑板。
+// halt 只是请求位 (halt_requested), run 线程 consumeHaltRequest 本地消费
+// (供停止/析构前停树; join 之后不再有并发 tick)。树常驻不重建 。
 
 #include "ayanami/behavior_tree/pilot.hpp"
 
@@ -28,7 +28,7 @@
 namespace ayanami {
 namespace behavior_tree {
 
-// 泛型树缺省扩展 .so (requirement 3): navigation.behavior_tree_extension 缺省
+// 泛型树缺省扩展 .so : navigation.behavior_tree_extension 缺省
 // 时回退到本名字 (生产配置始终显式给出)。
 namespace {
 constexpr const char* k_default_tree_extension_so =
@@ -52,7 +52,7 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
       cfg.param<double>(k_sec, "controller_frequency", 20.0);
   tick_frequency = cfg.param<double>(k_sec, "tick_frequency", 100.0);
 
-// 泛型树扩展 (requirement 3): 配置指定扩展 .so 名(列表), configure 期缓存,
+// 泛型树扩展 : 配置指定扩展 .so 名(列表), configure 期缓存,
   // buildTree 期经 ExtensionModule::load_module 装载。navigation 段的值可为
   // 单字符串或字符串数组。
   tree_extension_so_names.clear();
@@ -170,27 +170,39 @@ void BehaviorTreePilot::run() {
   const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::duration<double>(1.0 / hz));
   const auto safe_period = std::max(period, std::chrono::milliseconds(1));
+ // 导航完成空闲状态 (nav2 navigator 语义): 树返回 SUCCESS/FAILURE 表示本次
+ // 导航尝试结束 —— 不再空转重跑已完成的树 (实测到达后以 ~100Hz 重规划+平滑
+ // 空转, plan_version 以 60/s 膨胀), 等待新 goal (beginNavigation 邮箱) 唤醒
+ // 下一轮树生命。
+  bool navigation_finished = false;
   while (true) {
     // 抢占归 tick 线程: halt 请求 / pending goal 都在本地消费 (绝不跨线程
     // haltTree)。
     consumeHaltRequest();
     if (kill_switch.load()) break;
-    applyPendingGoal();
+    if (applyPendingGoal()) {
+      navigation_finished = false;  // 新 goal / 目标修订: 恢复 tick
+    }
+    if (navigation_finished && !hasPendingGoal()) {
+      bt_tree.sleep(safe_period);
+      continue;
+    }
     const BT::NodeStatus tick_status = bt_tree.tickOnce();
     // 树生命终端复位 (v4 halt 语义适配): BT.CPP v4 的 halt 只传播到 RUNNING
     // 子节点, 终态缓存的子树 (RateController 单次缓存 / RecoveryNode 重试计数
     // / RecoverySequence 游标) 不会被重置 —— 不复位则 planner 永不重规划、恢
     // 复风暴跨树生命持续 (rviz 恢复风暴 bug 根因, 见
     // production_tree_recovery_test)。SUCCESS/FAILURE 后等价 nav2 v3
-    // haltAllActions: 下一 tick 全新树生命 (planner 重规划)。
+    // haltAllActions: 进入空闲等待新 goal。
     if (tick_status != BT::NodeStatus::RUNNING) {
       resetNavigationTreeState(bt_tree);
+      navigation_finished = true;
     }
     // 唤醒竞态修复: tickOnce 内层可能把 beginNavigation 的唤醒信号用旧黑板
     // 消费掉, 使随后 sleep 睡满一个周期。若 tick 期间又有新 goal 投递, 立即
     // 消费并补一次 tick, 保证新 goal 至迟一个 tick 周期内生效。
-    if (hasPendingGoal()) {
-      applyPendingGoal();
+    if (applyPendingGoal()) {
+      navigation_finished = false;
       bt_tree.tickOnce();
     }
     bt_tree.sleep(safe_period);
@@ -214,7 +226,7 @@ void BehaviorTreePilot::consumeHaltRequest() {
   // 本线程 (tick 线程) 持有 bt_tree 访问权, halt 安全。
   bt_tree.haltTree();
   if (navigation_runtime) {
-    // 抢占纪律 (review 修复): 取消全部 controller action map (多 controller
+    // 抢占纪律 : 取消全部 controller action map (多 controller
     // 配置下不止默认 id), 防止非默认控制器的残留速度输出。
     navigation_runtime->cancelAllControllers();
   }
@@ -236,12 +248,12 @@ bool BehaviorTreePilot::hasPendingGoal() {
   return pending_goal.has_value();
 }
 
-void BehaviorTreePilot::applyPendingGoal() {
+bool BehaviorTreePilot::applyPendingGoal() {
   std::optional<geometry_msgs::PoseStamped> goal;
   {
     std::lock_guard<std::mutex> lk(goal_mutex);
     if (!pending_goal) {
-      return;
+      return false;
     }
     goal = std::move(pending_goal);
     pending_goal.reset();
@@ -262,11 +274,11 @@ void BehaviorTreePilot::applyPendingGoal() {
   bt_blackboard->set<uint64_t>(k_plan_version, session_state->currentPlanVersion());
   // 黑板 session 反映共享会话
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
-  // reset_stuck_token 令牌随会话变化 -> IsRobotStuck 静态状态每轮复位 (spec §6.5)
+  // reset_stuck_token 令牌随会话变化 -> IsRobotStuck 静态状态每轮复位
   bt_blackboard->set<uint64_t>(k_reset_stuck_token, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_goal_revision, goal_revision);
   // failure_context 每轮导航清零 (失败上下文只对本会话有效)。
-  bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});
+  bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});  return true;
 }
 
 void BehaviorTreePilot::buildTree(const std::string& xml_path,
@@ -280,7 +292,7 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
 
   BT::BehaviorTreeFactory factory;
   std::string fallback_tree_id;
-  // 泛型树 (requirement 3): 装载并持有配置的 BehaviorTreeExtension(s), 由扩展
+  // 泛型树 : 装载并持有配置的 BehaviorTreeExtension(s), 由扩展
   // 负责注册全部自定义节点与默认树 XML; 核心不再内嵌任何导航 XML/策略。
   for (const auto& so_name : tree_extension_so_names) {
     auto ext_module = ExtensionModule::load_module(so_name);
@@ -302,7 +314,7 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
     tree_extensions.push_back(std::move(ext));
   }
   if (xml_path.empty()) {
-    // 默认树由扩展注册 (spec §6.3)。
+    // 默认树由扩展注册 。
   } else {
     factory.registerBehaviorTreeFromFile(xml_path);
   }

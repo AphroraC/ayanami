@@ -8,7 +8,7 @@
 
 namespace {
 
-// 由 main() 从 argv 读取 (ctest 传 $<TARGET_FILE:...> 路径)
+// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:...> 路径)
 std::string g_dummy_planner_so;
 std::string g_dummy_extension_so;
 

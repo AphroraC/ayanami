@@ -1,14 +1,14 @@
-// Task 3 (M2 阶段 A 收尾): minor carry wiring 综合 5 项。
+// (M2 阶段 A 收尾): wiring 综合 5 项。
 //
 // 覆盖 (brief Step 1 verbatim):
 // - SmacPlannerFallsBackToRobotPose: makePlan(start 留空) → costmap_context
-//   getRobotPose fallback → path 首位 pose ≈ (1, 2, pi/4) (mock transform)。
+// getRobotPose fallback → path 首位 pose ≈ (1, 2, pi/4) (mock transform)。
 // - RobotFrameSingleSourceFromCostmapNavigationJson: robot_frame 单一来源改为
-//   costmap_navigation.json::navigation::robot_frame (costmap.json 不再读)。
+// costmap_navigation.json::navigation::robot_frame (costmap.json 不再读)。
 // - ConfigureCoreMapsTwiceWarns: 二次 configureCoreMaps spdlog warn + 不替换
-//   costmap_context (同一 ptr)。
+// costmap_context (同一 ptr)。
 // - PidSignatureCoarseSameGoalNoReset: 同 goal 同 size 仅中间点稍异的 plan,
-//   粗签名 (goal+size) 相同 → setPlan 不重置 PID 状态 (ramp 连续)。
+// 粗签名 (goal+size) 相同 → setPlan 不重置 PID 状态 (ramp 连续)。
 
 #include <gtest/gtest.h>
 

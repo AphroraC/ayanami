@@ -38,7 +38,7 @@ TEST(PluginTeardownNoUB, derivedDestructorCalledOnClearPlugins) {
   ASSERT_NE(ptr, nullptr);
   {
     // PluginManager 无内存注入 registerPlugin 接口 (plan bug, 见 report Concerns),
-    // 此处释放 shared_ptr 语义与 clearPlugins() 释放 std::shared_ptr 完全一致。
+    // 此处释放 shared_ptr 语义与 clearPlugins 释放 std::shared_ptr 完全一致。
     auto shr = std::shared_ptr<ayanami::abstract::AbstractRecovery>(ptr);
     (void)shr;
   }

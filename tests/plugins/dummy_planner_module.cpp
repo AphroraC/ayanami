@@ -5,8 +5,8 @@
 
 namespace {
 
-// Task 10 补充: 真实插件, 返回 AbstractPlanner* (PluginManager 加载用)。
-// createDummyModule 保留为 Task 3 的纯 dlopen 冒烟符号 (返回 int, 仅供
+// 补充: 真实插件, 返回 AbstractPlanner* (PluginManager 加载用)。
+// createDummyModule 保留为 的纯 dlopen 冒烟符号 (返回 int, 仅供
 // 低层 load_module 测试, 不做算法/导航装载)。
 class DummyPlanner : public ayanami::abstract::AbstractPlanner {
 public:

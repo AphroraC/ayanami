@@ -1,16 +1,16 @@
 // 并发回归: 读者持 shared 锁 (lockGlobal 读视图) 期间写者被阻塞, 释放后写者
 // 完成写入且无数据竞争 (加锁直读模型)。
 //
-// 旧架构 (BLOCK #1): CostmapPlannerExecution::run() 整次规划持 global wrapper
+// 旧架构 (BLOCK #1): CostmapPlannerExecution::run 整次规划持 global wrapper
 // recursive_mutex, 规划长达数百毫秒 (大宗 A*) 期间 obstacle feed 被饿死。
-// 新架构: 单写者 + 多读者, 读者经 CostmapMapContext::lockGlobal() 取 RAII shared
+// 新架构: 单写者 + 多读者, 读者经 CostmapMapContext::lockGlobal 取 RAII shared
 // 锁视图 (零拷贝直读 master grid, 单次规划 <10ms 短持), 写者 (唯一) 等读者
 // 释放后 unique 锁写入。
 //
 // 断言:
-//  - 读窗口内写者的 unique 锁尝试被阻塞 (try_lock 失败);
-//  - 读窗口内另一读者可并发读且多次读值一致 (shared 锁共享, 无 torn 读);
-//  - 读窗口释放后写者完成写入, 后续读者看到新值 (无丢失 / 无数据竞争)。
+// - 读窗口内写者的 unique 锁尝试被阻塞 (try_lock 失败);
+// - 读窗口内另一读者可并发读且多次读值一致 (shared 锁共享, 无 torn 读);
+// - 读窗口释放后写者完成写入, 后续读者看到新值 (无丢失 / 无数据竞争)。
 
 #include <gtest/gtest.h>
 
@@ -41,7 +41,7 @@ using ayanami::PlannerResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 慢速规划插件: 持有 map ConstPtr, makePlan 内经 lockGlobal() 取读视图 (shared
+// 慢速规划插件: 持有 map ConstPtr, makePlan 内经 lockGlobal 取读视图 (shared
 // 锁) 并阻塞到 release 才返回 (模拟长时搜索)。视图 RAII 存活 = 读窗口持锁,
 // 读窗口内写者被阻塞; 记录读到的 (2,2) 值证明读窗口内地图稳定。
 class SlowPlanner : public ayanami::costmap::CostmapPlanner {

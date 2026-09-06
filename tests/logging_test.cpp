@@ -2,11 +2,11 @@
 // (console_output / file_output / 轮转参数 / 级别, 学习 asuka 参数集)。
 //
 // 覆盖:
-//   1. 级别字符串解析 (trace/debug/info/warn/warning/error/critical/off/未知)
-//   2. file_output=true → 日志文件创建且内容写入; console_output=false →
-//      console sink 移除
-//   3. logging_level 全局同步到已注册 logger
-//   4. 轮转参数传递 (rotating_file_sink)
+// 1. 级别字符串解析 (trace/debug/info/warn/warning/error/critical/off/未知)
+// 2. file_output=true → 日志文件创建且内容写入; console_output=false →
+// console sink 移除
+// 3. logging_level 全局同步到已注册 logger
+// 4. 轮转参数传递 (rotating_file_sink)
 
 #include <gtest/gtest.h>
 

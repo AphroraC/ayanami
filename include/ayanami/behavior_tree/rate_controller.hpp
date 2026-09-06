@@ -9,7 +9,7 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief nav2 风格 RateController (spec §6.4): 以 hz 门控 child 执行频率。
+ * @brief nav2 风格 RateController : 以 hz 门控 child 执行频率。
  *
  * - hz = -1: 单次执行后缓存 child 结果, 后续 tick 直接返回缓存值;
  * - hz > 0: 首 tick 立即执行, 之后只有距上次执行 >= 1/hz 才重新执行 child,
@@ -57,7 +57,7 @@ class RateController : public BT::DecoratorNode {
 
     if (hz <= 0.0) {
       // 单次模式: 终端结果 (SUCCESS/FAILURE) 缓存, RUNNING 的异步 child 持续
-      // re-tick 让 onRunning 轮询 (Task 12 stage C: hz=-1 下 ComputePathToPose
+      // re-tick 让 onRunning 轮询 (hz=-1 下 ComputePathToPose
       // 首次 tick 后返回 RUNNING, 若缓存 RUNNING 不再 re-tick, 结果永不就绪)。
       if (started) {
         if (last_status == BT::NodeStatus::RUNNING) {
@@ -81,12 +81,17 @@ class RateController : public BT::DecoratorNode {
       return status;
     }
 
-    // 限频模式: 距上次执行 >= 1/hz 才重新执行
+ // nav2 语义 (rate_controller.cpp): 在飞的 RUNNING child 每个 tick 都被
+ // 轮询, 速率只限制"启动新一轮" —— 否则 planner 结果就绪后最长要等满
+ // 1/hz 才被消费, 每次重规划引入 0~1s 固定延迟。
+ // 计时器在 child SUCCESS 时复位 (failure 不重置, 对标 nav2)。
     const auto period = std::chrono::duration<double>(1.0 / hz);
-    if (now - last_time >= period) {
-      last_time = now;
+    if (last_status == BT::NodeStatus::RUNNING || now - last_time >= period) {
       const BT::NodeStatus status = child_node_->executeTick();
       last_status = status;
+      if (status == BT::NodeStatus::SUCCESS) {
+        last_time = now;
+      }
       return status;
     }
     return last_status;

@@ -12,7 +12,7 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 等待恢复模块 (spec §6.6 costmap_wait_recovery)。
+ * @brief 等待恢复模块 (costmap_wait_recovery)。
  *
  * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回 RUNNING
  * (不携带速度), 直到 wait_duration 届满返回 SUCCESS; 无运动占用。插件不
@@ -22,7 +22,7 @@ namespace modules {
 class CostmapWaitRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapWaitRecovery() = default;
-  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapWaitRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,

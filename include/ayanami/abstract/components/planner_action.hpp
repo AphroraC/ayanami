@@ -22,7 +22,7 @@ namespace components {
  *
  * acceptGoal 返回 TaskHandle 直连调用者 (主流, BT 节点); 结果同时 emit 到
  * NavigationCallbacks::on_get_path_result 作旁路 (rviz 扩展/回退/监控)。
- * ExecutionState→GoalStatus 映射 (Ruling #2): FOUND_PLAN→SUCCEEDED,
+ * ExecutionState→GoalStatus 映射 : FOUND_PLAN→SUCCEEDED,
  * CANCELED→CANCELED, 其余 terminal (NO_PLAN_FOUND/STOPPED/INTERNAL_ERROR)
  * →ABORTED + ErrorCode。
  */
@@ -56,7 +56,7 @@ public:
 
   ~PlannerAction() override { cancelAll(); }
 
-  /// @brief 主流: 接受 goal 并拿 TaskHandle 直连 (spec §3.4)。
+  /// @brief 主流: 接受 goal 并拿 TaskHandle 直连 。
   /// 同一 execution 在跑且插件支持 in-place 目标更新时走 latest-wins seam
   /// (不 cancel / 不新建 execution), 旧 goal 立即以 CANCELED 结算。
   Task acceptGoal(const Goal& goal) {

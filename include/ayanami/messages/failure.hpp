@@ -35,7 +35,7 @@ enum class FailureStage : uint8_t {
 };
 
 /**
- * @brief 结构化失败上下文 (spec §6.2 关键纪律扩展)。
+ * @brief 结构化失败上下文 (关键纪律扩展)。
  *
  * 每个 BT action 节点 (ComputePathToPose / SmoothPath / FollowPath / Recovery)
  * 在返回 FAILURE 前把精确的失败上下文写入黑板 `failure_context`

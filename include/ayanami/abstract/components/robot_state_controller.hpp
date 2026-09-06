@@ -14,7 +14,7 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局单例机器人状态控制器 (spec §5.3 扩展)。
+ * @brief 全局单例机器人状态控制器 (扩展)。
  *
  * 维护最新速度 (由 ayanami_ros odomCallback 直写) + 从 fast_tf TransformStore
  * 查询最新位姿 (global_frame ← robot_frame)。帧名与 velocity_timeout 只在
@@ -23,7 +23,7 @@ namespace components {
  * 语义: 位姿恒取最新 TF; 速度取最新 odom, 距上次写入超过 velocity_timeout
  * 视为过期 → 返回零速度但位姿仍有效。
  *
- * 单例纪律 (spec §3.2 同类): instance() 与全部方法定义只在 libayanami 的
+ * 单例纪律 (同类): instance 与全部方法定义只在 libayanami 的
  * src/components/robot_state_controller.cpp 内 (不 header-inline), 使 ayanami_ros
  * 写者与核心 controller execution 读者跨 DSO 解析到同一实例。
  *
@@ -36,8 +36,8 @@ class RobotStateController {
 
   /// @brief 一次性初始化: 缓存帧名 + 速度超时 (hot path 不再读 Config)。
   /// @param local_frame 局部地图/局部视图解析机器人位姿的帧 (语义上通常是
-  ///        odom 帧; 与 costmap.local_frame 单一来源对齐, 非独立的 ROS TF
-  ///        odom 帧配置)。
+  /// odom 帧; 与 costmap.local_frame 单一来源对齐, 非独立的 ROS TF
+  /// odom 帧配置)。
   void initialize(const std::string& global_frame,
                   const std::string& local_frame,
                   const std::string& robot_frame, double velocity_timeout);

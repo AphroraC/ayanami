@@ -1,4 +1,4 @@
-// Task 24: modules/costmap_back_up_recovery — 后退恢复模块。
+// modules/costmap_back_up_recovery — 后退恢复模块。
 //
 // 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回负向线速度
 // 建议 (vx = -max_v), 由 RecoveryExecution 作为唯一发布者按周期发布并终态
@@ -15,7 +15,7 @@ namespace ayanami {
 namespace modules {
 
 namespace {
-constexpr int k_lethal_threshold = 253;  // Ruling #6
+constexpr int k_lethal_threshold = 253;  //
 }
 
 void CostmapBackUpRecovery::configure(

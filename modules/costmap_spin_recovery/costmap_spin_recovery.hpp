@@ -15,7 +15,7 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 原地旋转恢复模块 (spec §6.6 costmap_spin_recovery)。
+ * @brief 原地旋转恢复模块 (costmap_spin_recovery)。
  *
  * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回纯角速度
  * 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
@@ -27,7 +27,7 @@ namespace modules {
 class CostmapSpinRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapSpinRecovery() = default;
-  // Ruling #3: 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
   virtual ~CostmapSpinRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,

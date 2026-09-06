@@ -1,14 +1,14 @@
-// Task 28 (M1 终止): headless E2E 全链路测试。
+// (M1 终止): headless E2E 全链路测试。
 //
 // 不连真底盘/ROS, 用 dlopen libayanami_costmap_navigation.so 宿主插件组装整条
 // 链: initialize → start → setGoal → BT (smac planner → savitzky smoother →
 // controller) → on_velocity_command 旁路发出 cmd_vel; 周期性虚拟 pointcloud
 // (空间外障碍不影响规划); 并验证 on_costmap_visualization 可视化旁路被触发。
-// 最后 stop()/析构必须不崩 (Ruling #3)。
+// 最后 stop/析构必须不崩 。
 //
 // argv: 1=host.so, 2=smac.so, 3=savitzky.so, 4=test_controller.so,
-//       5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
-//       8=assets_dir (tests/assets, 含 headless_map.pgm)
+// 5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
+// 8=assets_dir (tests/assets, 含 headless_map.pgm)
 
 #include <gtest/gtest.h>
 
@@ -118,7 +118,7 @@ std::string pluginJson(const std::string& module, const std::string& name,
          "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
-// 完整配置套件 (对标 spec §9 全套)。static_map 指向 tests/assets 的
+// 完整配置套件 (对标 全套)。static_map 指向 tests/assets 的
 // headless_map.pgm (20x20 @0.5 = 10m x 10m, 全 FREE, A* 从 (0,0) 到 (2,0) 可寻路)。
 std::filesystem::path makeConfigDir() {
   const auto dir = std::filesystem::temp_directory_path() /
@@ -328,7 +328,7 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
   // 2. NavigationCallbacks 清理 (防 prior 测试泄漏污染)
   detachCollectors();
 
-  // 3. 公共工厂装载 host → AbstractNavigation::Ptr (类型化 cast, requirement 2/4)
+  // 3. 公共工厂装载 host → AbstractNavigation::Ptr (类型化 cast, 4)
   auto host_ext = ayanami::ExtensionModule::load_module(g_host_so);
   ASSERT_NE(host_ext, nullptr) << "load_module failed: " << g_host_so;
   AbstractNavigation::Ptr nav =
@@ -351,10 +351,10 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
   nav->start();
 
   // 7. 障碍观测: setGoal 之前喂 3 帧虚拟 pointcloud (空间外, 不影响规划),
-  //    验证宿主直递落图管线 (AbstractNavigation::setPointcloud, 不走全局输入槽;
-  //    输入/输出分层纪律) 不崩。注意: 不在控制器线程启动后并发喂 (plan 规定
-  //    Costmap*Execution::run 整循环持 local wrapper 锁, 并发点云回调会死锁 ——
-  //    Task 28 发现, 见 report, 待 reviewer 裁决)。
+  // 验证宿主直递落图管线 (AbstractNavigation::setPointcloud, 不走全局输入槽;
+  // 输入/输出分层纪律) 不崩。注意: 不在控制器线程启动后并发喂 (plan 规定
+  // Costmap*Execution::run 整循环持 local wrapper 锁, 并发点云回调会死锁 ——
+  // 发现, 见 report, 待 reviewer 裁决)。
   setupTransforms();
   for (int i = 0; i < 3; ++i) {
     nav->setPointcloud(makeFarPointCloud());
@@ -373,13 +373,13 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
   TwistStamped last = g_last_cmd;
   EXPECT_TRUE(std::isfinite(last.twist.linear.x()));
   EXPECT_FALSE(std::isnan(last.twist.angular.z()));
-  // 可视化旁路被触发 (start() 首帧 + 限频重复)
+  // 可视化旁路被触发 (start 首帧 + 限频重复)
   EXPECT_GT(map_count.load(), 0);
 
-  // 11. nav->stop() + cleanup; 析构不崩 (Ruling #3)
+  // 11. nav->stop + cleanup; 析构不崩
   nav->stop();
   detachCollectors();
-  nav.reset();  // ~CostmapNavigation → stop() (幂等) + join, 不得崩
+  nav.reset();  // ~CostmapNavigation → stop (幂等) + join, 不得崩
 }
 
 int main(int argc, char** argv) {

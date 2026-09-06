@@ -32,8 +32,14 @@ ayanami 使用 vendored 的 **BehaviorTree.CPP v4**，并做了"常驻树 + v4 �
   （回主任务重试）；预算耗尽 → 复位 + FAILURE。
 - `RateController`：`hz`（<=0 单发缓存）/`reset_token`。reset_token 变化时
   halt 在飞 child 并重置缓存（新 goal / 新 path 触发重新执行）。
+  **nav2 语义对齐**（hz>0）：在飞的 RUNNING child 每个 BT tick 都被轮询，
+  速率只限制"启动新一轮"——否则 planner 结果就绪后最长要等满 1/hz 才被
+  消费（每次重规划 0~1s 固定延迟）；计时器仅在 child SUCCESS 时复位。
 - `RoundRobin` / `RecoverySequence`：轮询/顺序恢复，均带 `reset_token`
-  （新导航轮游标复位、在飞 child 被 halt）。
+  （新导航轮游标复位、在飞 child 被 halt）。语义差异：RoundRobin 的游标
+  **跨成功保持前进**（spin→wait→backup 轮换，nav2 默认树语义）；RecoverySequence
+  每轮从第一个恢复重试（首个恢复"假成功"时会永远轮不到后续手段）。
+  **生产树恢复分支使用 RoundRobin**。
 
 ## 常驻树协议（关键！）
 
@@ -45,8 +51,15 @@ ayanami 使用 vendored 的 **BehaviorTree.CPP v4**，并做了"常驻树 + v4 �
 
 ### 2. reset_token 复位协议
 跨 goal 的"新一轮"语义由黑板令牌驱动：planner/smoother 分支与
-RecoverySequence/RoundRobin 都监听 `{goal_revision}`（或 `{path_id}`），
+RoundRobin/RecoverySequence 都监听 `{goal_revision}`（或 `{path_id}`），
 令牌变化 → 内部复位 + halt 在飞 child。跨 goal 不继承恢复游标。
+
+### 2b. 导航完成后的空闲状态（nav2 navigator 语义）
+树返回 SUCCESS/FAILURE 表示**本次导航尝试结束**：pilot 复位树后进入空闲
+（不再 tick），等待下一个 `beginNavigation` 邮箱投递才恢复。没有这个状态，
+到达后常驻树会以 tick 频率空转重跑"重规划→平滑→跟随（立即到达）"循环
+（实测 ~100Hz，plan_version 以 60/s 膨胀、CPU 空烧）。空闲期仍消费
+halt 请求与 kill_switch。
 
 ### 3. 树生命终端全量重置（BT.CPP v4 halt 适配，load-bearing）
 

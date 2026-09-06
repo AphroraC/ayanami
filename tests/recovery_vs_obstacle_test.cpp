@@ -6,10 +6,10 @@
 // unique 锁清层 + updateMapUnlocked 发布。读者经 shared 锁直读 master grid。
 //
 // 断言:
-//  - clear-command-port 路径真实生效: 提交后 master grid 机器人附近 → FREE,
-//    远处保持 LETHAL;
-//  - 与 obstacle 写者交替多轮, 读写方各持锁 (unique/shared), 每步锁内读回
-//    确定性值 (无撕裂 / 无死锁); 命令提交计数随轮次严格递增 (计数代数)。
+// - clear-command-port 路径真实生效: 提交后 master grid 机器人附近 → FREE,
+// 远处保持 LETHAL;
+// - 与 obstacle 写者交替多轮, 读写方各持锁 (unique/shared), 每步锁内读回
+// 确定性值 (无撕裂 / 无死锁); 命令提交计数随轮次严格递增 (计数代数)。
 
 #include <gtest/gtest.h>
 
@@ -102,7 +102,7 @@ class TestWriterPort : public CostmapCommandPort {
   std::string robot_frame;
 };
 
-// 同步门 (仅测试): set() 唤醒全部等待者。
+// 同步门 (仅测试): set 唤醒全部等待者。
 class Gate {
  public:
   void set() {
@@ -176,7 +176,7 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
@@ -222,7 +222,7 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort() 获取)。
+  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",

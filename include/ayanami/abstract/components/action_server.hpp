@@ -21,7 +21,7 @@ namespace components {
 /**
  * @brief 单个目标的生命周期 (goal_id + goal 内容 + 当前 GoalStatus)。
  *
- * 状态沿用 actions::GoalStatus (Ruling #2: ACTIVE 通态合并 Accepted/Executing)。
+ * 状态沿用 actions::GoalStatus (ACTIVE 通态合并 Accepted/Executing)。
  */
 template <typename Goal>
 struct GoalHandle {
@@ -41,7 +41,7 @@ struct GoalFeedback {
 /**
  * @brief TaskHandle 的共享完成状态 (promise/future + onComplete 槽)。
  *
- * 完成负载是 actions::GoalResult<Result> (status + result 聚合, spec §3.3)。
+ * 完成负载是 actions::GoalResult<Result> (status + result 聚合)。
  * goal 从 ActionServer map 移出后, 本对象仍被 TaskHandle 持有, 可安全读结果。
  */
 template <typename Result>
@@ -93,7 +93,7 @@ struct TaskState {
 };
 
 /**
- * @brief BT 节点直连的核心↔调用者句柄 (spec §3.4 主流控制流)。
+ * @brief BT 节点直连的核心↔调用者句柄 (主流控制流)。
  *
  * 主流: BT 节点调 requestPath 等拿 TaskHandle, completion 回调里
  * emitWakeUpSignal() 唤醒 BT 循环; 本类不走 NavigationCallbacks。
@@ -125,7 +125,7 @@ public:
                           std::future_status::ready;
   }
 
-  /// @brief 整体目标状态 (阻塞到完成; ready()==false 时调用会阻塞)。
+  /// @brief 整体目标状态 (阻塞到完成; ready==false 时调用会阻塞)。
   ayanami::actions::GoalStatus status() const {
     return state->future.get().status;
   }
@@ -151,9 +151,9 @@ private:
 };
 
 /**
- * @brief 线程安全 action 协议服务器 (对标 MBF AbstractActionServer, spec §5)。
+ * @brief 线程安全 action 协议服务器 (对标 MBF AbstractActionServer)。
  *
- * 内部状态机沿用 actions::GoalStatus (Ruling #2): Pending → Active (ACTIVE
+ * 内部状态机沿用 actions::GoalStatus : Pending → Active (ACTIVE
  * 通态合并 Accepted/Executing) → Succeeded/Aborted/Canceled。goal 完成后从
  * map 移除 (不累积, 对标 legacy CompletedGoalsDoNotAccumulate); TaskHandle
  * 持共享 future, goal 移出后仍可读取结果。
@@ -229,7 +229,7 @@ public:
     }
   }
 
-  // ---- 状态迁移 (Ruling #2 ACTIVE 通态: Accepted/Executing 合并) ----
+  // ---- 状态迁移 (ACTIVE 通态: Accepted/Executing 合并) ----
   bool setActive(uint64_t goal_id) {
     return updateStatus(goal_id, ayanami::actions::GoalStatus::ACTIVE);
   }

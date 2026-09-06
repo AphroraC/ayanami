@@ -2,20 +2,20 @@
 // controller 更新 + 按 id 分派 + 配置仅在 configure 期读取)。
 //
 // 覆盖:
-//  A. 共享 NavigationSessionState 单一来源 (pilot 与 server 看到同一 session;
-//     tick 线程 applyPendingGoal 开新会话并归零 plan_version)。
-//  B. BT action 节点失败前写精确 FailureContext; RecoveryGoal.cause 携带触发
-//     上下文。
-//  C. pilot 每会话重置 failure_context 黑板。
-//  D. GetPathGoal/SmoothPathGoal/ExePathGoal plugin_id: 空时填默认, 显式保留。
-//  E. 控制器 in-place plan update 端到端 (FollowPathNode -> requestPlanUpdate ->
-//     ControllerAction::updatePlan): 无 cancel / 无新建 Execution / 无中间停止,
-//     最终结果携带最新 plan_version。
-//  F. NavigationServerBase 按 id 分派多插件配置; 无效 id 返回结构化失败
-//     TaskHandle; request 期不重新读配置 (config 仅 configure/load 期读)。
+// A. 共享 NavigationSessionState 单一来源 (pilot 与 server 看到同一 session;
+// tick 线程 applyPendingGoal 开新会话并归零 plan_version)。
+// B. BT action 节点失败前写精确 FailureContext; RecoveryGoal.cause 携带触发
+// 上下文。
+// C. pilot 每会话重置 failure_context 黑板。
+// D. GetPathGoal/SmoothPathGoal/ExePathGoal plugin_id: 空时填默认, 显式保留。
+// E. 控制器 in-place plan update 端到端 (FollowPathNode -> requestPlanUpdate ->
+// ControllerAction::updatePlan): 无 cancel / 无新建 Execution / 无中间停止,
+// 最终结果携带最新 plan_version。
+// F. NavigationServerBase 按 id 分派多插件配置; 无效 id 返回结构化失败
+// TaskHandle; request 期不重新读配置 (config 仅 configure/load 期读)。
 //
 // argv: 1=test_planner_plugin.so, 2=test_smoother_plugin.so,
-//       3=test_controller_plugin.so, 4=test_recovery_plugin.so
+// 3=test_controller_plugin.so, 4=test_recovery_plugin.so
 
 #include <gtest/gtest.h>
 
@@ -853,7 +853,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
 }
 #endif
 
-// ========== G. 完成/更新竞态 + 多 controller 取消 (review 修复) ==========
+// ========== G. 完成/更新竞态 + 多 controller 取消 ==========
 
 // 终态/已完成的 execution 上 in-place updatePlan 必须被拒绝 (返回 false):
 // 不暂存一个永不消费的 pending 版本, 最终结果只反映真正被 setPlan 应用的版本。

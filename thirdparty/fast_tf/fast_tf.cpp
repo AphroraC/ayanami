@@ -146,7 +146,7 @@ dynamic_transform::get(const time_t& _time) const {
       throw std::runtime_error("no matching data: extrapolation in the past");
     // get the prev iterator
     const auto lower = std::prev(lb);
-    // our count() returns a signed integer. the default duration is
+    // our count returns a signed integer. the default duration is
     // nanoseconds. the nanoseconds must cover +/- 292 years. see
     // https://en.cppreference.com/w/cpp/chrono/duration
     const auto ratio = static_cast<double>((_time - lower->first).count()) /
@@ -154,6 +154,12 @@ dynamic_transform::get(const time_t& _time) const {
 
     return join(lerp(lower->second, lb->second, ratio));
   }
+}
+
+time_t
+dynamic_transform::latest_time() const noexcept {
+  if (map_.empty()) return time_t{};
+  return std::prev(map_.end())->first;
 }
 
 transform_tree::node::node(variable_transform&& _data) noexcept :
@@ -166,11 +172,11 @@ transform_tree::node::node(variable_transform&& _data,
 /// @brief factory returning either base_sequence or dynamic_transform
 /// instances.
 static variable_transform
-sequence_factory(bool _static) noexcept {
+sequence_factory(bool _static, const duration_t& _dur) noexcept {
   if (_static)
     return static_transform{};
   else
-    return dynamic_transform{};
+    return dynamic_transform{_dur};
 }
 
 transform_tree::pair_type
@@ -211,7 +217,7 @@ transform_tree::emplace_parent(const std::string& _parent_frame,
     // the root is always static - but if the root changes, the link might
     // become dynamic.
     if (!_is_static)
-      root_->second.data = dynamic_transform{};
+      root_->second.data = dynamic_transform{cache_duration};
   }
   root_ = res.first;
   return res;
@@ -235,8 +241,9 @@ transform_tree::emplace(const std::string& _parent_frame,
     if (_child_frame.empty())
       throw std::runtime_error("a child-frame cannot be empty");
 
-    auto res = data_.emplace(
-        _child_frame, node{sequence_factory(_is_static), parent.first->second});
+    auto res = data_.emplace(_child_frame,
+                             node{sequence_factory(_is_static, cache_duration),
+                                  parent.first->second});
     assert(res.second && "failed to insert new child");
     return res;
   }
@@ -293,6 +300,15 @@ transform_tree::merge(transform_tree& _other) {
 
 transform_buffer::transform_buffer() : trees_(1) {}
 
+transform_buffer::transform_buffer(const duration_t& _cache_duration) :
+    trees_(1), cache_duration_(_cache_duration) {
+  assert(cache_duration_ >= duration_t(0) && "duration must be positive");
+ // the pre-created initial tree must not keep its 500ms default: links are
+ // created inside existing trees, so the configured window has to reach
+ // them through the tree's cache_duration.
+  for (auto& tree : trees_) tree.cache_duration = cache_duration_;
+}
+
 transform_tree::pair_type
 transform_buffer::emplace(const std::string& _parent_frame,
                           const std::string& _child_frame, bool _is_static) {
@@ -310,6 +326,7 @@ transform_buffer::emplace(const std::string& _parent_frame,
 
   // if we couldn't add the passed _tf, we will try to create a new tree
   transform_tree new_tree;
+  new_tree.cache_duration = cache_duration_;
   // this might still throw - but this would be a logic error!
   const auto node = new_tree.emplace(_parent_frame, _child_frame, _is_static);
   trees_.emplace_back(std::move(new_tree));
@@ -413,6 +430,60 @@ advance(const transform_tree::node*& _node) {
   assert(_node && "tree holds a nullptr");
 }
 
+/// @brief Returns the newest sample stamp of a node's link.
+///
+/// Static links (and empty dynamic links) return the epoch, i.e. they do not
+/// constrain the latest common time (mirrors tf2's StaticCache returning a
+/// zero stamp from getLatestTimeAndParent).
+static time_t
+latest_time_of(const transform_tree::node& _node) noexcept {
+  if (_node.data.index() == 1)
+    return std::get<1>(_node.data).latest_time();
+  return time_t{};
+}
+
+time_t
+transform_buffer::latest_common_time_walk(
+    const transform_tree::node* _t,
+    const transform_tree::node* _s) const noexcept {
+ // sentinel: time_point::max works as "no constraint yet" because real
+ // stamps are epoch offsets within +/-292 years of epoch 0.
+  time_t common = time_t::max();
+  const transform_tree::node* t = _t;
+  const transform_tree::node* s = _s;
+  while (t != s) {
+    if (t->depth < s->depth) {
+      common = std::min(common, latest_time_of(*s));
+      advance(s);
+    } else if (t->depth > s->depth) {
+      common = std::min(common, latest_time_of(*t));
+      advance(t);
+    } else {
+      common = std::min(common, latest_time_of(*s));
+      common = std::min(common, latest_time_of(*t));
+      advance(s);
+      advance(t);
+    }
+  }
+ // the closest common ancestor itself is the (always static) root candidate
+ // on this path - static links do not constrain the common time, so we are
+ // done without visiting it.
+  if (common == time_t::max()) return time_t{};
+  return common;
+}
+
+time_t
+transform_buffer::latest_common_time(const std::string& _target_frame,
+                                     const std::string& _source_frame) const {
+  std::unique_lock<std::mutex> l{m_};
+  auto target = find(_target_frame);
+  auto source = find(_source_frame);
+  if (!same_tree(target.first, source.first))
+    throw std::runtime_error("frames are not connected");
+  return latest_common_time_walk(&target.second->second,
+                                 &source.second->second);
+}
+
 Eigen::Isometry3d
 transform_buffer::get(const std::string& _target_frame,
                       const std::string& _source_frame,
@@ -442,6 +513,18 @@ transform_buffer::get(const std::string& _target_frame,
   const transform_tree::node* s = &source.second->second;
   const transform_tree::node* t = &target.second->second;
 
+ // tf2-style consistent snapshot: a zero query time on a multi-hop chain is
+ // resolved once to the latest common time (minimum of the newest sample
+ // stamps along the common path), so every dynamic link of the chain is
+ // sampled at the same instant instead of each link returning its own
+ // newest sample. Single-link and identity queries keep the plain latest
+ // semantics; an epoch result ("no dynamic data on the path") falls back to
+ // the zero query time, which keeps the wait-for-data behavior below.
+  const time_t effective_time =
+      (_query_time.time_since_epoch().count() == 0 && s != t)
+          ? latest_common_time_walk(t, s)
+          : _query_time;
+
   // walk up the tree until we have reached the same depth for both
   Eigen::Isometry3d source_root(Eigen::Isometry3d::Identity());
   Eigen::Isometry3d target_root(Eigen::Isometry3d::Identity());
@@ -454,8 +537,8 @@ transform_buffer::get(const std::string& _target_frame,
     if (_var_tr.index() == 0)
       return std::get<0>(_var_tr).get() * _right;
     else
-      return get_dynamic_transform(_query_time, end_time, std::get<1>(_var_tr),
-                                   l) *
+      return get_dynamic_transform(effective_time, end_time,
+                                   std::get<1>(_var_tr), l) *
              _right;
   };
 

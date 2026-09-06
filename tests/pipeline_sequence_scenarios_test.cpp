@@ -2,15 +2,15 @@
 // 专项测试 (对照 nav2 语义), 以及 RateController reset_token 语义测试。
 //
 // 覆盖场景:
-//   S1 planner RUNNING + controller RUNNING   -> 两者都被 tick, 整体 RUNNING
-//   S2 planner SUCCESS + controller RUNNING   -> 两者都被 tick, 整体 RUNNING
-//   S3 planner FAILURE                        -> 整体 FAILURE, controller 不被 tick
-//   S4 controller FAILURE                     -> 整体 FAILURE
-//   S5 planner 在 controller 运行中重规划      -> controller 每 tick 仍被 tick
-//                                                (跟踪不中断, in-place 跟随)
-//   S6 goal 更新触发 planner 重入              -> controller 持续被 tick
-//   R1 RateController reset_token 变化         -> 在飞 child 被 halt 后重新 onStart
-//   R2 RecoveryNode: child0 FAILURE -> recovery SUCCESS -> 主任务重试 RUNNING
+// S1 planner RUNNING + controller RUNNING -> 两者都被 tick, 整体 RUNNING
+// S2 planner SUCCESS + controller RUNNING -> 两者都被 tick, 整体 RUNNING
+// S3 planner FAILURE -> 整体 FAILURE, controller 不被 tick
+// S4 controller FAILURE -> 整体 FAILURE
+// S5 planner 在 controller 运行中重规划 -> controller 每 tick 仍被 tick
+// (跟踪不中断, in-place 跟随)
+// S6 goal 更新触发 planner 重入 -> controller 持续被 tick
+// R1 RateController reset_token 变化 -> 在飞 child 被 halt 后重新 onStart
+// R2 RecoveryNode: child0 FAILURE -> recovery SUCCESS -> 主任务重试 RUNNING
 
 #include <gtest/gtest.h>
 
@@ -150,7 +150,7 @@ TEST(PipelineSequenceScenarios, controllerFailureFailsPipeline) {
 }
 
 // S5: planner 在 controller 运行中产生新路径 (planner 重入 RUNNING) ->
-//     controller 每 tick 仍被 tick (跟踪不中断, 新路径经 in-place 更新跟随)。
+// controller 每 tick 仍被 tick (跟踪不中断, 新路径经 in-place 更新跟随)。
 TEST(PipelineSequenceScenarios,
      plannerReentryKeepsControllerTickingDuringReplan) {
   auto factory = makeFactory();
@@ -175,7 +175,7 @@ TEST(PipelineSequenceScenarios,
 }
 
 // S6: goal 更新时 planner 重入 RUNNING 而 controller 保持 RUNNING ->
-//     PipelineSequence 对两个分支都保持 tick (BT 不中断任何一侧)。
+// PipelineSequence 对两个分支都保持 tick (BT 不中断任何一侧)。
 TEST(PipelineSequenceScenarios, goalUpdateReticksPlannerAndController) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -193,7 +193,7 @@ TEST(PipelineSequenceScenarios, goalUpdateReticksPlannerAndController) {
 }
 
 // R1: RateController reset_token 变化 -> 在飞 RUNNING child 被 halt (onHalted),
-//     同一 tick 重新 onStart (全新输入重新开始, 而非继续消费旧输入)。
+// 同一 tick 重新 onStart (全新输入重新开始, 而非继续消费旧输入)。
 class HaltObserverAction : public BT::StatefulActionNode {
  public:
   HaltObserverAction(const std::string& name, const BT::NodeConfig& config)
@@ -252,7 +252,7 @@ TEST(RateControllerResetTest, tokenChangeHaltsInFlightChildAndRestarts) {
 }
 
 // R2: RecoveryNode child0 FAILURE -> recovery child SUCCESS -> 返回 RUNNING
-//     让主任务重试 (nav2 RecoveryNode 语义)。
+// 让主任务重试 (nav2 RecoveryNode 语义)。
 TEST(RecoveryNodeSemantics, recoverySuccessRetriesMainTaskAsRunning) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(R"(
@@ -283,6 +283,56 @@ TEST(RecoveryNodeSemantics, recoverySuccessRetriesMainTaskAsRunning) {
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
+
+// R3: RateController hz>0 —— RUNNING child 立即轮询 (nav2 语义), 速率只限制
+// 新一轮; 计时器仅在 child SUCCESS 时复位。
+TEST(RateControllerPollingTest, runningChildIsPolledEveryTickAndTimerResetsOnSuccess) {
+  BT::BehaviorTreeFactory factory;
+  factory.registerNodeType<RateController>("RateController");
+  factory.registerNodeType<MockChild>("MockChild");
+
+  using Clock = std::chrono::system_clock;  // BT::TimePoint 基于 system_clock
+  Clock::time_point now = Clock::now();
+  auto clock_fn = [&now] { return now; };
+
+  BT::NodeConfig config;
+  config.input_ports["hz"] = "10.0";  // period=100ms
+  RateController::ClockFn clock = clock_fn;
+  RateController rc("rc", config, clock);
+
+ // 手工挂 child (DecoratorNode::setChild 接管裸指针, 生命周期由树外
+ // shared_ptr 持有即可 —— 与树析构同序)。
+  auto child_owned = std::make_shared<MockChild>("child", BT::NodeConfig());
+  rc.setChild(child_owned.get());
+  MockChild* mock = child_owned.get();
+
+  const auto tick = [&](int advance_ms) {
+    now += std::chrono::milliseconds(advance_ms);
+    return rc.executeTick();
+  };
+
+  mock->status_fn = [] { return BT::NodeStatus::RUNNING; };
+  EXPECT_EQ(tick(0), BT::NodeStatus::RUNNING);      // 首 tick (started)
+  EXPECT_EQ(mock->tick_count, 1);
+  EXPECT_EQ(tick(10), BT::NodeStatus::RUNNING);     // 周期未到但 RUNNING -> 立即轮询
+  EXPECT_EQ(mock->tick_count, 2);
+  EXPECT_EQ(tick(10), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(mock->tick_count, 3);
+
+ // 完成 (SUCCESS): 计时器复位
+  mock->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  EXPECT_EQ(tick(10), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mock->tick_count, 4);
+
+ // SUCCESS 后周期未到 (累计 20ms < 100ms): 不再 tick
+  mock->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  EXPECT_EQ(tick(20), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mock->tick_count, 4);
+
+ // 周期到达: 新一轮
+  EXPECT_EQ(tick(90), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mock->tick_count, 5);
+}
 
 // ---- H3 常驻树复位协议: RoundRobin / RecoverySequence reset_token ----
 

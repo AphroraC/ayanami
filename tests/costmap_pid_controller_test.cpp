@@ -1,4 +1,4 @@
-// Task 23: modules/costmap_pid_controller (CostmapPidController: 3 轴 PID +
+// modules/costmap_pid_controller (CostmapPidController: 3 轴 PID +
 // 加速度限制 + Twist 清零 + 同 goal 不重置 + goal_tolerance 对齐)。
 //
 // 覆盖:
@@ -8,11 +8,11 @@
 // - 位置进入 goal_checker XY 容差 → linear=0 (distanceDecay 停止线上)
 // - 位置到但朝向未到 → linear=0 且 angular 非零 (仅 angular PID 对齐 goal yaw)
 // - 多帧模拟 → 到达 goal → 零速度停止; goal_checker 最终宣布到达
-// - cancel() 中途 → 返回 ErrorCode::CANCELED + 零速度
+// - cancel 中途 → 返回 ErrorCode::CANCELED + 零速度
 // - Twist 清零: linear.z / angular.x / angular.y 恒 0, 无 NaN/脏内存
 // - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
 // - 停线速度的 XY 边界固定来自 config 的 goal_tolerance (自身 param, 不再
-//   接收 goal_checker; 到达判定由 execution 层 goal_checker 负责)
+// 接收 goal_checker; 到达判定由 execution 层 goal_checker 负责)
 
 #include <gtest/gtest.h>
 

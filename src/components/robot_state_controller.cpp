@@ -1,7 +1,7 @@
-// RobotStateController 实现 (spec §5.3 扩展)。
+// RobotStateController 实现 (扩展)。
 //
 // 单例/方法定义只在本翻译单元 (libayanami 内一份): 不用 header-inline,
-// 否则每个 .so / 编译单元各持一份 instance() 的静态局部实例 —— 跨 DSO
+// 否则每个 .so / 编译单元各持一份 instance 的静态局部实例 —— 跨 DSO
 // (ayanami_ros odomCallback 写者 vs 核心 costmap controller execution 读者)
 // 静默发散。定义在此保证 ROS 写者与核心读者解析到 libayanami 内的同一实例。
 

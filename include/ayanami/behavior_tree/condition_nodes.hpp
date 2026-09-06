@@ -107,7 +107,7 @@ class IsFarFromGoal : public BT::ConditionNode {
 };
 
 /**
- * @brief 卡住检测条件 (spec §6.5): 低速 + 未到目标, 连续 `consecutive_stuck_ticks`
+ * @brief 卡住检测条件 : 低速 + 未到目标, 连续 `consecutive_stuck_ticks`
  * 次判定卡住 -> SUCCESS。
  *
  * 带记忆节点。状态为本节点实例成员 (非进程级 static): 树常驻单实例即

@@ -1,4 +1,4 @@
-// navigation_behavior_tree 扩展模块头 (requirement 3)。
+// navigation_behavior_tree 扩展模块头 。
 //
 // 默认导航树 (XML) + 全部自定义导航 BT 节点注册下沉到这里: 核心
 // BehaviorTreePilot 不含任何默认导航 XML/策略, 只装载并持有本扩展。
@@ -41,13 +41,17 @@ class NavigationBehaviorTreeExtension
   std::string defaultTreeId() const override { return k_default_tree_id; }
 
  private:
-  // 内嵌默认导航树 (spec §6.3 verbatim, 生产单一来源; 文件版不在生产安装)。
+  // 内嵌默认导航树 (verbatim, 生产单一来源; 文件版不在生产安装)。
   //
   // goal 更新纪律: planner 分支以 {goal_revision} 为 reset_token (新 goal 即重
   // 规划); smoother 分支以 {path_id} 为 reset_token (ComputePathToPose 每次成功
   // 规划 bump path_id, 新路径落地即重新平滑 + bump plan_version), FollowPath 在
   // plan_version 变化时对运行中 controller 做 in-place updatePlan —— 机器人持续
   // 跟随旧路径直到新路径可用, 不会出现"已重规划但不跟随"的陈旧平滑缓存。
+ //
+ // 恢复轮换纪律 (nav2 对齐): 外层恢复分支用 RoundRobin 而非顺序重试 —— 游标
+ // 跨成功保持前进, 重试轮换 spin→wait→backup→spin..., 避免单一恢复反复执行
+ // (顺序重试在首个恢复"假成功"时永远轮不到后续手段)。
   static constexpr const char* k_default_tree_id =
       "NavigateWithReplanningAndSmoothing";
   static constexpr const char* k_default_navigation_xml = R"(
@@ -78,7 +82,7 @@ class NavigationBehaviorTreeExtension
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-         <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
+         <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
           <Sequence>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
@@ -88,7 +92,7 @@ class NavigationBehaviorTreeExtension
           <Sequence>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
-         </RecoverySequence>
+         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

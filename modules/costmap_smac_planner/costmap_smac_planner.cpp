@@ -1,11 +1,11 @@
-// Task 21: modules/costmap_smac_planner — A* 全局路径规划模块。
+// modules/costmap_smac_planner — A* 全局路径规划模块。
 //
 // 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
 // 标准 4/8 连通 A*。参考 _legacy SmacPlannerAStar 语义但重写:
-// - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal)
+// - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (253 起 lethal)
 // - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
 // - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
-// - cancel(): 搜索循环逐节点检查, 打断后返回 ErrorCode::CANCELED
+// - cancel: 搜索循环逐节点检查, 打断后返回 ErrorCode::CANCELED
 
 #include "costmap_smac_planner.hpp"
 
@@ -245,7 +245,7 @@ PlannerResultT CostmapSmacPlanner::makePlan(
         ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no global costmap");
   }
 
-  // 3.1 minor carry: start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
+  // start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
   // 读视图解析的机器人位姿 (视图构建时经 TransformStore 解析)。
   geometry_msgs::PoseStamped start_pose = start;
   if (start_pose.pose.position.norm() == 0.0 &&

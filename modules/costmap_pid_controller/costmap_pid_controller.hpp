@@ -14,7 +14,7 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 3 轴 PID 局部控制器模块 (spec §5.5 controller costmap 族)。
+ * @brief 3 轴 PID 局部控制器模块 (controller costmap 族)。
  *
  * 纯 path tracker: 只读 robot pose + path, 算法本身不读图; 但按 costmap 族
  * 严格约束继承 costmap::CostmapController 并实现 configure(context, map) +

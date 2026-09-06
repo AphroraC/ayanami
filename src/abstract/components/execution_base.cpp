@@ -4,7 +4,7 @@ namespace ayanami {
 namespace components {
 
 ExecutionBase::~ExecutionBase() {
-  // 若用户忘了 stop(), 强制停止并等待 run() 任务结束 (等价旧 join 线程)。
+  // 若用户忘了 stop, 强制停止并等待 run 任务结束 (等价旧 join 线程)。
   stop();
   join();
 }
@@ -27,7 +27,7 @@ void ExecutionBase::runTask() {
   try {
     run();
   } catch (...) {
-    // run()/preRun()/postRun() 逃逸异常的最后防线: 置统一兜底终态 + 安全
+    // run/preRun/postRun 逃逸异常的最后防线: 置统一兜底终态 + 安全
     // 停止。若停在中间态, action 驱动任务将永远轮询不到终态 —— 槽占用、
     // recovery 互斥 (recovery_exclusive) 等资源协议随之死锁, 整条导航挂死。
     error = ErrorCode::INTERNAL_ERROR;
@@ -40,7 +40,7 @@ void ExecutionBase::runTask() {
     std::lock_guard<std::mutex> lock(mutex);
     running = false;
   }
-  // 唤醒 join()/waitForStateUpdate 等控制线程 (事件驱动收尾)。
+  // 唤醒 join/waitForStateUpdate 等控制线程 (事件驱动收尾)。
   condition.notify_all();
 }
 

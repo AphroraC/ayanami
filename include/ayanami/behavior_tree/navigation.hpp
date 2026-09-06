@@ -17,7 +17,7 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief RoundRobin (spec §6.3 保留节点): 按记忆游标轮询 children。
+ * @brief RoundRobin (保留节点): 按记忆游标轮询 children。
  *
  * - 当前 child RUNNING -> 整体 RUNNING, 游标停住 (下次 tick 仍 tick 它);
  * - 当前 child SUCCESS -> 游标移到下一个 (mod 数量) 并整体 SUCCESS;
@@ -161,25 +161,25 @@ inline void resetNavigationTreeState(BT::Tree& tree) {
   });
 }
 
-/// @brief 注册导航 BT 节点类 (spec §6.3 保留节点 + Task 12 控制/条件节点)。
+/// @brief 注册导航 BT 节点类 (保留节点 + 控制/条件节点)。
 /// action 节点经 blackboard 注入 NavigationRuntime::Ptr (action_nodes.hpp)。
 ///
 /// 注意: 默认导航树的 XML 与整棵树的注册已下沉到 navigation_behavior_tree
 /// 扩展模块 (BehaviorTreeExtension); 本函数只注册节点类型, 供扩展模块
 /// registerNodes 与测试复用。核心 (BehaviorTreePilot) 不含默认导航 XML 或策略。
 inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory) {
-  // 4 个 action 节点 (TaskHandle 直连, spec §6.2)
+  // 4 个 action 节点 (TaskHandle 直连)
   factory.registerNodeType<ComputePathToPoseNode>("ComputePathToPose");
   factory.registerNodeType<SmoothPathNode>("SmoothPath");
   factory.registerNodeType<FollowPathNode>("FollowPath");
   factory.registerNodeType<RecoveryActionNode>("Recovery");
-  // 5 个条件节点 (Task 12)
+  // 5 个条件节点
   factory.registerNodeType<IsPathValid>("IsPathValid");
   factory.registerNodeType<IsGoalReached>("IsGoalReached");
   factory.registerNodeType<IsFarFromGoal>("IsFarFromGoal");
   factory.registerNodeType<IsRobotStuck>("IsRobotStuck");
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
-  // 控制节点 (Task 12 + RoundRobin)
+  // 控制节点 (+ RoundRobin)
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<RecoveryNode>("RecoveryNode");

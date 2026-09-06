@@ -14,15 +14,15 @@ namespace costmap_2d_layers {
 class StaticLayer : public costmap_2d::Layer {
  public:
   // 拷贝一份静态地图 (size/resolution/origin/costs)。仅用于初始化线程；
-  // 运行期生产者必须用 queueMap(), 由 update cycle 安全应用。
+  // 运行期生产者必须用 queueMap, 由 update cycle 安全应用。
   void setMap(const costmap_2d::Costmap2D& map);
   // Nav2-style deferred update: callbacks/producers queue a map, the costmap
-  // update cycle applies it at the beginning of updateBounds().
+  // update cycle applies it at the beginning of updateBounds.
   void queueMap(const costmap_2d::Costmap2D& map);
 
   // 从 PGM (P5/P2, 8 位) 文件加载静态地图。
   // 像素映射: 0(black) -> LETHAL_OBSTACLE, 255(white) -> FREE_SPACE,
-  //           其余 -> NO_INFORMATION。PGM 不含分辨率, 由调用方给出。
+  // 其余 -> NO_INFORMATION。PGM 不含分辨率, 由调用方给出。
   void setMapPath(const std::string& path, double resolution = 1.0,
                   double origin_x = 0.0, double origin_y = 0.0);
 

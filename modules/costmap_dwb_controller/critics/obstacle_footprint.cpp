@@ -1,5 +1,5 @@
 // obstacle_footprint.cpp — 迁移自 dwb_critics/src/obstacle_footprint.cpp
-// (footprint 来源: costmap_ros->getRobotFootprint() → 基类注入的 footprint)。
+// (footprint 来源: costmap_ros->getRobotFootprint → 基类注入的 footprint)。
 #include "obstacle_footprint.hpp"
 
 #include <algorithm>

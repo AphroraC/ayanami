@@ -1,16 +1,16 @@
 // costmap_dwb_controller_test.cpp — DWB 模块测试。
 //
 // 验证策略 (迁移自 nav2_dwb_controller, 算法逻辑完全相同):
-//   A. 上游单元测试断言移植:
-//      - MapBasedQueue 优先级/动态排序 (costmap_queue/test/mbq_test.cpp)
-//      - getClosestPose / projectPose (dwb_core/test/utils_test.cpp)
-//   B. 数值快照 (手工推导关键公式期望值):
-//      - projectVelocity / OneDVelocityIterator
-//      - StandardTrajectoryGenerator::computeNewPosition / getTimeSteps
-//      - adjustPlanResolution
-//      - critics: BaseObstacle / PreferForward / Twirling / Oscillation
-//        (构造输入 → 精确分数断言)
-//   C. headless 集成: CostmapMapContext + 主控制器全链路打分
+// A. 上游单元测试断言移植:
+// - MapBasedQueue 优先级/动态排序 (costmap_queue/test/mbq_test.cpp)
+// - getClosestPose / projectPose (dwb_core/test/utils_test.cpp)
+// B. 数值快照 (手工推导关键公式期望值):
+// - projectVelocity / OneDVelocityIterator
+// - StandardTrajectoryGenerator::computeNewPosition / getTimeSteps
+// - adjustPlanResolution
+// - critics: BaseObstacle / PreferForward / Twirling / Oscillation
+// (构造输入 → 精确分数断言)
+// C. headless 集成: CostmapMapContext + 主控制器全链路打分
 //
 // argv: 1=模块 config json (build tree 下 config/modules/costmap_dwb_controller.json)
 
@@ -381,7 +381,7 @@ std::string setupHeadlessConfigDir() {
   return dir;
 }
 
-// 回归 (review finding #2): setPlan 可能先于首次快照绑定 (执行路径:
+// 回归 : setPlan 可能先于首次快照绑定 (执行路径:
 // ControllerExecution::run 先 controller->setPlan 再 computeVelocityCommands,
 // 首次 compute 前 critic 的 costmap/queue 均未绑定)。MapGridCritic::reset 在
 // null map/queue 下必须安全, 之后 binding + 打分不崩。
@@ -412,7 +412,7 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   }
   ASSERT_NO_THROW(planner.setPlan(path));
 
-  // 之后 computeVelocityCommands: 周期内 lockLocal() 读图 → 打分路径 (受控失败而非崩)。
+  // 之后 computeVelocityCommands: 周期内 lockLocal 读图 → 打分路径 (受控失败而非崩)。
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "odom", Eigen::Isometry3d::Identity());
@@ -442,7 +442,7 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
       ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
       ctx->getSharedConstPtr()));
 
-  // compute 经 lockLocal() 绑定当前 grid → 打分路径 (受控失败而非崩)。
+  // compute 经 lockLocal 绑定当前 grid → 打分路径 (受控失败而非崩)。
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "map", Eigen::Isometry3d::Identity());

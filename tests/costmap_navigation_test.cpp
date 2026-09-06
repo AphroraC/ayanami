@@ -1,16 +1,16 @@
-// Task 25: modules/costmap_navigation (AbstractNavigation 宿主插件)。
+// modules/costmap_navigation (AbstractNavigation 宿主插件)。
 //
 // M1 关键里程碑: 把核心库全部组件 (CostmapNavigationServer + 4 族插件 +
 // BehaviorTreePilot) 组装为 dlopen 入口插件。本测试:
 // - ExtensionModule 加载 libayanami_costmap_navigation.so
 // - initialize: configureCoreMaps + loadPlugins (dlopen smac/savitzky/spin
-//   真实算法模块 + test controller) + createActions + pilot wiring (Ruling #5:
-//   configure → loadFromFile → setNavigationRuntime)
-// - start() 首发可视化 (on_costmap_visualization 旁路被捕获)
+// 真实算法模块 + test controller) + createActions + pilot wiring (
+// configure → loadFromFile → setNavigationRuntime)
+// - start 首发可视化 (on_costmap_visualization 旁路被捕获)
 // - setGoal → navigation_thread 跑 BT → raw_path/smoothed_path 入黑板 +
-//   on_velocity_command 收到非零速度 (首帧 cmd_vel.linear 已初始化非 NaN)
+// on_velocity_command 收到非零速度 (首帧 cmd_vel.linear 已初始化非 NaN)
 // - 抢占: 第二次 setGoal → 先发零速度 + session_id 自增 + BT 树不重建
-// - 析构顺序不崩 (Ruling #3)
+// - 析构顺序不崩
 
 #include <gtest/gtest.h>
 
@@ -341,7 +341,7 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
 }
 
 // 公共工厂装载 host 模块 → AbstractNavigation::Ptr → dynamic_cast<CostmapNavigation*>。
-// 亲引用: 组件寿命 = 进程 (spec §4.1, 不 dlclose), 宿主 shared_ptr 特意泄漏保值,
+// 亲引用: 组件寿命 = 进程 (不 dlclose), 宿主 shared_ptr 特意泄漏保值,
 // 测试仍负责 delete host。
 CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
   auto nav = std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(
@@ -363,7 +363,7 @@ CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
 
 }  // namespace
 
-// ---------------- 宿主组装 (configureCoreMaps + loadPlugins + Ruling #5) ----------------
+// ---------------- 宿主组装 (configureCoreMaps + loadPlugins +) ----------------
 
 TEST(CostmapNavigationTest, dlopenAllAlgorithmModulesLoad) {
   // 4 个真实算法模块 .so 都走公共工厂 create_extension_module, 且经类型化
@@ -398,7 +398,7 @@ TEST(CostmapNavigationTest, initializeBuildsFullStack) {
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
   ASSERT_NE(host->navigationServer().recoveryAction("test_spin"), nullptr);
 
-  // Ruling #5: pilot 已 configure + loadFromFile + setNavigationRuntime
+  // pilot 已 configure + loadFromFile + setNavigationRuntime
   // (loadFromFile 校验 17 板项通过 → 树已建)
   ASSERT_NE(host->pilot().blackboard(), nullptr);
 
@@ -523,7 +523,7 @@ TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   detachObservers();
 }
 
-// ---------------- 析构顺序 (Ruling #3) ----------------
+// ---------------- 析构顺序 ----------------
 
 TEST(CostmapNavigationTest, destructorDoesNotCrash) {
   const auto dir = makeConfigDir();
@@ -532,7 +532,7 @@ TEST(CostmapNavigationTest, destructorDoesNotCrash) {
     ASSERT_NE(host, nullptr);
     host->start();
     host->setGoal(makePose(2.0, 0.0));
-    // 作用域结束 → delete: stop() join nav thread → pilot stop → server stop
+    // 作用域结束 → delete: stop join nav thread → pilot stop → server stop
     // (clearActions 先于 clearPlugins, BT 节点不再持有过期插件指针)
     delete host;
   }

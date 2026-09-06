@@ -1,4 +1,4 @@
-// Task 22: modules/costmap_savitzky_smoother — 7 点 Savitzky-Golay 路径平滑。
+// modules/costmap_savitzky_smoother — 7 点 Savitzky-Golay 路径平滑。
 //
 // 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
 // 碰撞检查。核心为 7 点 SG 卷积 (nav2 SavitzkyGolaySmoother 语义):
@@ -6,7 +6,7 @@
 // - 边界不足窗口处用重复填充 (clamp 到端点)
 // - do_refinement: 对结果再应用 refinement_num 轮过滤 (受 max_duration 限时)
 // - check_for_collision: 平滑后逐点查 costmap, 任一 cost >=
-//   INSCRIBED_INFLATED_OBSTACLE (Ruling #6, 253 起 lethal) 即回滚 original
+// INSCRIBED_INFLATED_OBSTACLE (253 起 lethal) 即回滚 original
 
 #include "costmap_savitzky_smoother.hpp"
 

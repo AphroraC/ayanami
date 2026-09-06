@@ -1,6 +1,6 @@
-// NavigationServerBase 主实现 (spec §5.3)。
+// NavigationServerBase 主实现 。
 //
-// 生命周期纪律 (spec §4.5): 析构先 stop() 停全部 action (取消 + join 槽线程),
+// 生命周期纪律 : 析构先 stop 停全部 action (取消 + join 槽线程),
 // 再 reset 各 action map, 再 clearPlugins 释放插件对象 (dlopen 句柄仍存活时析构)。
 // 零 ROS include (红线 §5.7)。
 //
@@ -566,7 +566,7 @@ TaskHandle<Result> NavigationServerBase::rejectedHandle(
                             []() { return false; });
 }
 
-// ---- 虚钩子默认实现 (spec §5.3) ----
+// ---- 虚钩子默认实现 ----
 
 bool NavigationServerBase::initializePlannerPlugin(
     const std::string& name, const ayanami::Config&, AbstractPlanner::Ptr) {

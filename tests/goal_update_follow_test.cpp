@@ -3,11 +3,11 @@
 // 复现并锁死 rviz 场景 bug ("新 goal 已重新规划, 但机器人不跟随新路径"):
 // 常驻默认树 + 真实 NavigationServerBase + 真实插件执行线程, 在 controller
 // 跟踪 goal1 路径途中投递 goal2, 断言:
-//   1. planner 立即按 goal2 重规划 (planned_goal 更新);
-//   2. smoother 对新路径重新平滑 (smoothed_goal 更新) —— 修复点: smoother 分支
-//      以 {path_id} 为 reset_token, 新路径落地即重平滑;
-//   3. controller 经 in-place updatePlan 跟上 (followed_goal 更新, 且首个
-//      controller 任务未被 cancel/重建 —— set_plan 连续计数)。
+// 1. planner 立即按 goal2 重规划 (planned_goal 更新);
+// 2. smoother 对新路径重新平滑 (smoothed_goal 更新) —— 修复点: smoother 分支
+// 以 {path_id} 为 reset_token, 新路径落地即重平滑;
+// 3. controller 经 in-place updatePlan 跟上 (followed_goal 更新, 且首个
+// controller 任务未被 cancel/重建 —— set_plan 连续计数)。
 
 #include <gtest/gtest.h>
 
@@ -240,7 +240,7 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
         << "controller never followed the first plan";
 
     // 2) 导航进行中投递新 goal (rviz 场景): 不取消 controller, 机器人持续
-    //    跟旧路径直到新路径可用。
+    // 跟旧路径直到新路径可用。
     pilot.beginNavigation(makeGoal(0.0, 5.0));
 
     // 3) planner 立即按 goal2 重规划。
@@ -268,7 +268,7 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
     EXPECT_GE(smoother_probe->smooth_calls - smooth_base, 2);
 
     // 5) 核心回归断言: controller 经 in-place 更新跟上 goal2 路径 (而非永远
-    //    跟踪 goal1 旧路径)。
+    // 跟踪 goal1 旧路径)。
     EXPECT_TRUE(waitForControllerFollow(controller_probe, 0.0, 5.0, 1, 5000,
                                         set_plan_base + 1))
         << "controller did not follow the replanned path after goal update";

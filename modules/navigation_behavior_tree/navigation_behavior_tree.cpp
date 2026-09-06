@@ -1,4 +1,4 @@
-// navigation_behavior_tree 扩展模块实现 (requirement 3)。
+// navigation_behavior_tree 扩展模块实现 。
 // 头文件即完整实现, 本翻译单元只提供编译需要的最小定义。
 
 #include "navigation_behavior_tree.hpp"
