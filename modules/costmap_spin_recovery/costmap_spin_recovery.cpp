@@ -32,12 +32,16 @@ void CostmapSpinRecovery::configure(
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.spin_dist =
-      context.config.param<double>("recovery", "spin_dist", param.spin_dist);
-  param.max_w = context.config.param<double>("recovery", "max_w", param.max_w);
-  param.sim_cycle_dt =
-      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
+      context.config.param<double>(context.name, "spin_dist", param.spin_dist);
+  param.max_w =
+      context.config.param<double>(context.name, "max_w", param.max_w);
+  // sim_cycle_dt is a framework-level execution param: it lives in the
+  // "recovery" family section next to name/so_name/role (the server injects
+  // the same value into the RecoveryExecution cycle period).
+  param.sim_cycle_dt = context.config.param<double>(
+      "recovery", "sim_cycle_dt", param.sim_cycle_dt);
   param.collision_radius = context.config.param<double>(
-      "recovery", "collision_radius", param.collision_radius);
+      context.name, "collision_radius", param.collision_radius);
   map_context = std::move(map);
 }
 

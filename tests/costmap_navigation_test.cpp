@@ -131,14 +131,14 @@ std::filesystem::path makeConfigDir() {
 
   write_file(dir / "planner.json",
              pluginJsonOpen("planner", "test_planner", g_smac_so) +
-             "  \"costmap_smac_planner\": {\n"
+             "  \"test_planner\": {\n"
              "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
              "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
              "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
              "  }\n}\n");
   write_file(dir / "smoother.json",
              pluginJsonOpen("smoother", "test_smoother", g_savitzky_so) +
-             "  \"costmap_savitzky_smoother\": {\n"
+             "  \"test_smoother\": {\n"
              "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"
              "  }\n}\n");
   write_file(dir / "controller.json",
@@ -147,14 +147,17 @@ std::filesystem::path makeConfigDir() {
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
              "\",\n"
+             "    \"sim_cycle_dt\": 0.01\n"
+             "  },\n"
+             "  \"test_spin\": {\n"
              "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
-             "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
+             "    \"collision_radius\": 0.3\n"
              "  }\n}\n");
   // goal/progress checker plugins (the execution needs injected checkers; missing ones are judged InternalError).
   write_file(dir / "goal_checker.json",
              pluginJsonOpen("goal_checker", "simple_goal_checker",
                          g_goal_checker_so) +
-             "  \"goal_checker\": {\n"
+             "  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.10,\n"
              "    \"angle_tolerance\": 0.20,\n"
              "    \"linear_tolerance\": 0.10,\n"
@@ -163,7 +166,7 @@ std::filesystem::path makeConfigDir() {
   write_file(dir / "progress_checker.json",
              pluginJsonOpen("progress_checker", "simple_progress_checker",
                          g_progress_checker_so) +
-             "  \"progress_checker\": {\n"
+             "  \"simple_progress_checker\": {\n"
              "    \"required_movement\": 0.1,\n"
              "    \"movement_angle_required\": 0.2,\n"
              "    \"time_period\": 5.0\n"
@@ -209,8 +212,7 @@ std::filesystem::path makeConfigDir() {
         << "    \"costmap_visualization_rate\": 100.0\n"
         << "  },\n"
         << "  \"costmap\": {\n"
-        << "    \"global_frame\": \"map\",\n"
-        << "    \"local_frame\": \"odom\",\n"
+        << "    \"map_frame\": \"map\",\n"
         << "    \"robot_frame\": \"base_link\",\n"
         << "    \"resolution\": 0.5\n"
         << "  },\n"
@@ -274,6 +276,16 @@ std::filesystem::path makeConfigDir() {
 </root>)");
 
   return dir;
+}
+
+/// Gives the robot a static map-frame pose at the origin: the controller
+/// loop requires a valid robot state (pose via the robot-state transform
+/// lookup) to compute and emit velocity commands.
+void giveRobotStaticPose() {
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map", "map", "base_link", 0.25);
+  rsc.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
 }
 
 // RAII subscription handle: replaced on attach, unsubscribed on destruction at detach (no dangling id).
@@ -453,6 +465,7 @@ TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
   host->start();
+  giveRobotStaticPose();
 
   host->setGoal(makePose(2.0, 0.0));
 
@@ -488,6 +501,7 @@ TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
   host->start();
+  giveRobotStaticPose();
 
   host->setGoal(makePose(2.0, 0.0));
   const auto bb = host->pilot().blackboard();

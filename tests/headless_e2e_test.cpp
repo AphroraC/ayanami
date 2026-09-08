@@ -76,23 +76,15 @@ bool isZeroTwist(const TwistStamped& t) {
 ayanami::sensor_msgs::PointCloud2 makeFarPointCloud() {
   ayanami::sensor_msgs::PointCloud2 cloud;
   cloud.header.frame_id = "lidar";
-  cloud.height = 1;
-  cloud.width = 1;
-  cloud.point_step = 12;
-  cloud.row_step = 12;
-  cloud.is_dense = true;
-  cloud.fields = {
-      {"x", 0, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-      {"y", 4, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-      {"z", 8, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-  };
   const float x = 50.0f;  // Outside the 20x20 @0.5 = 10m map -> worldToMap fails, nothing lands on the map
   const float y = 50.0f;
   const float z = 0.0f;
-  cloud.data.resize(12);
-  std::memcpy(cloud.data.data(), &x, sizeof(float));
-  std::memcpy(cloud.data.data() + 4, &y, sizeof(float));
-  std::memcpy(cloud.data.data() + 8, &z, sizeof(float));
+  pcl::PointXYZI p;
+  p.x = x;
+  p.y = y;
+  p.z = z;
+  p.intensity = 0.0f;
+  cloud.cloud.push_back(p);
   return cloud;
 }
 

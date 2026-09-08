@@ -60,3 +60,26 @@ struct FailureContext {
 };
 
 }  // namespace ayanami
+
+namespace ayanami {
+
+/// @brief Recovery classification (mbf navigator semantics): failures that
+/// no recovery action can fix (invalid input/goal, persistent transform
+/// loss, cancellation) must abort the navigation instead of burning the
+/// recovery budget. Everything map/path/control related stays recoverable:
+/// clear-costmap and retries can genuinely fix those.
+inline bool isRecoverable(ErrorCode code) {
+  switch (code) {
+    case ErrorCode::INVALID_INPUT:
+    case ErrorCode::START_INVALID:
+    case ErrorCode::GOAL_INVALID:
+    case ErrorCode::TRANSFORM_UNAVAILABLE:
+    case ErrorCode::CANCELED:
+    case ErrorCode::RESOURCE_BUSY:
+      return false;
+    default:
+      return true;
+  }
+}
+
+}  // namespace ayanami

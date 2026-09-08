@@ -202,25 +202,27 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, CostAt&& cost_at,
 
 }  // namespace
 
-
 void CostmapSmacPlanner::configure(
     const PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout);
   // missing config keys keep the default values.
   const Config& file = context.config;
-  param.use_diagonal = file.param<bool>("costmap_smac_planner", "use_diagonal",
+  // Param section convention: the section key = the module json "name"
+  // field, delivered as PluginContext::name.
+  const std::string& section = context.name;
+  param.use_diagonal = file.param<bool>(section, "use_diagonal",
                                         param.use_diagonal);
-  param.tolerance = file.param<double>("costmap_smac_planner", "tolerance",
+  param.tolerance = file.param<double>(section, "tolerance",
                                        param.tolerance);
-  param.cost_factor = file.param<double>("costmap_smac_planner", "cost_factor",
+  param.cost_factor = file.param<double>(section, "cost_factor",
                                          param.cost_factor);
-  param.lethal_cost = file.param<int>("costmap_smac_planner", "lethal_cost",
+  param.lethal_cost = file.param<int>(section, "lethal_cost",
                                       param.lethal_cost);
-  param.neutral_cost = file.param<double>("costmap_smac_planner",
+  param.neutral_cost = file.param<double>(section,
                                           "neutral_cost", param.neutral_cost);
   param.use_final_approach =
-      file.param<bool>("costmap_smac_planner", "use_final_approach",
+      file.param<bool>(section, "use_final_approach",
                        param.use_final_approach);
   map_context = std::move(map);
 }
@@ -252,12 +254,17 @@ ResultT<void> CostmapSmacPlanner::makePlan(
   }
   // Family read contract: the planner reads the global+local overlay.
   // Hold both shared locks for the whole plan (<10 ms), zero copy; the map
-  // writer waits for the locks to write.
+  // writer waits for the locks to write. The overlay is composed once per
+  // call into a reused member buffer, so A* node expansions query it in O(1)
+  // instead of redoing the global+local max per cell.
   auto costmap = map_context->lockPlanning();
 
   const costmap_2d::Costmap2D* cm = costmap.globalGrid();
-  const auto cost_at = [&costmap](unsigned int mx, unsigned int my) {
-    return costmap.costAtGlobalCell(mx, my);
+  costmap.composeOverlay(overlay_buffer);
+  const unsigned int overlay_size_x = cm ? cm->getSizeInCellsX() : 0u;
+  const auto cost_at = [this, overlay_size_x](unsigned int mx,
+                                              unsigned int my) {
+    return overlay_buffer[static_cast<std::size_t>(my) * overlay_size_x + mx];
   };
   if (!cm) {
     return ResultT<void>::failure(

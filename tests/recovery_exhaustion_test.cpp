@@ -182,7 +182,6 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<std::string>(k_backup_id, "back_up");
   bb->set<uint64_t>(k_session_id, 0u);
   bb->set<uint64_t>(k_plan_version, 0u);
-  bb->set<uint64_t>(k_reset_stuck_token, 1u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
@@ -287,7 +286,7 @@ TEST(RecoveryExhaustion, recoveryListExhaustedFailsNavigationWithinBounds) {
   for (; ticks < k_max_ticks && status != BT::NodeStatus::FAILURE; ++ticks) {
     status = tree.tickExactlyOnce();
   }
-  ASSERT_EQ(status, BT::NodeStatus::FAILURE) << "恢复链耗尽后树必须 FAILURE";
+  ASSERT_EQ(status, BT::NodeStatus::FAILURE) << "tree must return FAILURE after the recovery chain is exhausted";
   EXPECT_LE(ticks, k_max_ticks);
 
   // The planner was called and failed

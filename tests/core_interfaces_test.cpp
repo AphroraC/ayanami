@@ -133,11 +133,11 @@ TEST(CoreCostmapMapContext, defaultCurrentTrue) {
 
 TEST(CoreCostmapMapContext, framesAndRobotPose) {
   CostmapMapContext ctx;
-  ctx.setFrames("map", "map", "base_link");
+  ctx.setFrames("map", "base_link");
   ayanami::components::RobotStateController::instance().setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
+  EXPECT_EQ(ctx.getMapFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
   // Robot state query single facade: RobotStateController (map context no
   // longer exposes pose queries).

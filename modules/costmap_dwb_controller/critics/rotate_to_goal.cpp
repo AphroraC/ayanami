@@ -48,8 +48,9 @@ void RotateToGoalCritic::onInit() {
         if (xy_goal_tolerance > position_tolerance + 1e-9) {
           spdlog::warn(
               "RotateToGoal xy_goal_tolerance ({:.3f}) > goal_checker '{}'"
-              " position_tolerance ({:.3f}): 接近终点时原地转向与到达判定"
-              "区间重叠, 建议 xy_goal_tolerance <= position_tolerance",
+              " position_tolerance ({:.3f}): the in-place rotation band "
+              "overlaps the arrival band near the goal; prefer "
+              "xy_goal_tolerance <= position_tolerance",
               xy_goal_tolerance, checker_name, position_tolerance);
         }
       }

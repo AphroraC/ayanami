@@ -47,18 +47,22 @@ namespace costmap {
  *   velocity limits/robot state source), replacing the base class's
  *   new*Execution virtual factory indirection layer.
  * - configureCoreMaps(config_path) reads config_costmap and builds the
- *   global/local LayeredCostmap pair: global = StaticLayer+InflationLayer;
- *   local = rolling SimpleObstacleLayer+InflationLayer; every change
- *   (obstacle stamping / command-port clear) is applied by this server as
- *   the sole writer via updateMap -> publishing an immutable epoch.
+ *   global/local LayeredCostmap pair, both in the shared map frame:
+ *   global = StaticLayer+InflationLayer; local = rolling
+ *   SimpleObstacleLayer+InflationLayer; every change (obstacle stamping /
+ *   command-port clear) is applied by this server as the sole writer via
+ *   updateMap -> publishing an immutable epoch.
  * - Obstacle observations do not go through global callback slots: the host
  *   (CostmapNavigation) hands setPointcloud/setLaserScan straight to the
  *   common handleObstacle* methods to stamp the map (input/output
- *   separation discipline).
- * - RobotStateController::instance() frame names + velocity_timeout are
- *   configured once in configureCoreMaps; the controller execution reads
- *   the latest TF pose + latest velocity through it (zero velocity when
- *   stale).
+ *   separation discipline). Sensor points are transformed into the shared
+ *   map frame once (stamp-time query preferred) and stamped into both maps.
+ * - The map context's transform lookups are wired here (TransformLookup
+ *   function over the robot state): the context itself stays free of any
+ *   global singleton dependency.
+ * - RobotStateController frame names + velocity_timeout are configured once
+ *   in configureCoreMaps; the controller execution reads the latest TF pose
+ *   + latest velocity through it (zero velocity when stale).
  *
  * Before a dynamic obstacle update, clearArea the previous observation
  * window (including the old inflation band) so the InflationLayer
@@ -104,9 +108,8 @@ class CostmapNavigationServer
       ayanami::abstract::AbstractRecovery::Ptr) override;
 
   /// @brief Path validity (the BT-readable surface of the responsibility
-  /// table's "is the path stale"): delegates to the map family's
-  /// AbstractMapContext::isPathValid (global costmap lethal/unknown/out of
-  /// bounds).
+  /// table's "is the path stale"): delegates to the costmap context's
+  /// overlay check (global+local, lethal/unknown/out of bounds).
   bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
     return costmap_context && costmap_context->isPathValid(path);
   }
@@ -115,9 +118,10 @@ class CostmapNavigationServer
   void createActions() override;
 
   // ---- Obstacle observation signal entry points ----
-  /// @brief Transform the point cloud (sensor frame) into the local costmap
-  /// frame via TransformStore, stamp it into the SimpleObstacleLayer and
-  /// trigger updateMap (including old-band clearing).
+  /// @brief Transform the point cloud (sensor frame) into the shared map
+  /// frame via the robot-state transform lookup, stamp it into the
+  /// SimpleObstacleLayer of both maps and trigger updateMap (including
+  /// old-band clearing).
   void handleObstaclePointCloud(const ayanami::sensor_msgs::PointCloud2& cloud);
   /// @brief Convert laser ranges to points and run the same map-stamping pipeline.
   void handleObstacleLaserScan(const ayanami::sensor_msgs::LaserScan& scan);
@@ -144,8 +148,8 @@ class CostmapNavigationServer
 
   /// @brief Periodic rolling update (called by the host's spinOnce,
   /// decoupled from the sensor stream): for maps with rolling_window
-  /// enabled, center the window on the latest robot pose and recompute
-  /// (when no window is dirty, updateMap exits early right after
+  /// enabled, center the window on the latest map-frame robot pose and
+  /// recompute (when no window is dirty, updateMap exits early right after
   /// updateOrigin, so the cost is negligible). When the scan stream stops,
   /// the window still follows the robot -- otherwise DWB forward trajectories
   /// gradually "leave the map" and the robot gets stuck at the edge of a
@@ -154,9 +158,10 @@ class CostmapNavigationServer
   void updateRollingWindows();
 
  private:
-  /// @brief Stamp points in frame_id (at stamp time) into the map via
-  /// TransformStore (shared by handleObstacle*). The stamp queries TF using
-  /// the sensor message's header.stamp.
+  /// @brief Transform points in frame_id (at stamp time) into the shared map
+  /// frame and stamp them into both maps via TransformStore (shared by
+  /// handleObstacle*). The stamp queries TF using the sensor message's
+  /// header.stamp.
   void markObstaclesInFrame(const std::string& frame_id,
                             const ayanami::Timestamp& stamp,
                             const std::vector<Eigen::Vector3d>& points,
@@ -165,26 +170,27 @@ class CostmapNavigationServer
   CostmapMapContext::Ptr costmap_context;
   CostmapCommandPort::Ptr command_port;
   ayanami::map::MapFamilyFactory::Ptr map_family_factory;
+  /// @brief Per-recovery module configs (stashed by initializeRecoveryPlugin,
+  /// consumed by createActions to inject per-plugin execution settings such
+  /// as the tick cycle period).
+  std::map<std::string, ayanami::Config> recovery_configs;
 
   // Throttling for missing TF chain warnings (every sensor callback can
   // fail; warn at fixed intervals only, avoiding flooding at 5.5Hz laser
-  // per frame). The same chain (local/global) must lack TF for longer than
+  // per frame). The map-frame sensor chain must lack TF for longer than
   // the interval before warning again.
-  std::atomic<std::chrono::steady_clock::time_point> local_tf_warn_at{};
-  std::atomic<std::chrono::steady_clock::time_point> global_tf_warn_at{};
-  std::atomic<std::chrono::steady_clock::time_point> local_robot_diag_at{};
-  int tf_robot_diag_count{0};
-
+  std::atomic<std::chrono::steady_clock::time_point> map_tf_warn_at{};
+  std::atomic<std::chrono::steady_clock::time_point> robot_diag_at{};
   // Robot pose cache (for rolling the local rolling window): on a transient
   // pose query failure, roll the window with the last successful value and
   // never fall back to (0,0,0) -- otherwise the rolling costmap window gets
   // anchored back to the world origin and, once the robot walks out of the
   // window, dwb has no path (stuttering in place).
-  bool has_last_local_robot{false};
-  double last_local_robot_x{0.0}, last_local_robot_y{0.0};
-  double last_local_robot_yaw{0.0};
-  // Each map owns an obstacle layer because observations must be transformed
-  // into that map's frame independently.
+  bool has_last_map_robot{false};
+  double last_map_robot_x{0.0}, last_map_robot_y{0.0};
+  double last_map_robot_yaw{0.0};
+  // Each map owns an obstacle layer so dynamic markers and static content
+  // combine per the map's own combination method.
   costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer{nullptr};
   costmap_2d_layers::SimpleObstacleLayer* local_obstacle_layer{nullptr};
   costmap_2d_layers::StaticLayer* global_static_layer{nullptr};
@@ -193,7 +199,7 @@ class CostmapNavigationServer
   double global_resolution{0.05};
   double local_resolution{0.05};
   double local_raytrace_range{3.0};
-  // Previous observations are stored in each map frame for bounded clearing.
+  // Previous observations are stored in map frame for bounded clearing.
   std::vector<Eigen::Vector2d> prev_obstacles_global;
   std::vector<Eigen::Vector2d> prev_obstacles_local;
   bool has_prev_obstacles_global{false};

@@ -110,7 +110,7 @@ TEST(ConfigTest, eigenTrait) {
   // TUM 7-element [x,y,z,qx,qy,qz,qw]; JSON with comments verifies ignore_comments=true
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json",
-             R"({ "p": { "t": [1,2,3,0,0,0,1] } }  // TUM 7 元
+             R"({ "p": { "t": [1,2,3,0,0,0,1] } }  // TUM 7-tuple
 )");
   ayanami::Config cfg((dir / "test.json").string());
   auto t = cfg.param<Eigen::Isometry3d>("p", "t",

@@ -20,9 +20,10 @@ void CostmapWaitRecovery::configure(
   (void)map;  // wait does not read the map.
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.wait_duration = context.config.param<double>(
-      "recovery", "wait_duration", param.wait_duration);
+      context.name, "wait_duration", param.wait_duration);
   param.sim_cycle_dt =
-      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
+      context.config.param<double>(
+          "recovery", "sim_cycle_dt", param.sim_cycle_dt);
 }
 
 void CostmapWaitRecovery::setBehaviorParams(

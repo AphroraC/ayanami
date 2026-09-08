@@ -395,11 +395,12 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "map", "base_link");
+  ctx->setFrames("map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   ASSERT_NO_THROW(planner.configure(
-      ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
+      ayanami::PluginContext{"costmap_dwb_controller",
+                            ayanami::Config(g_config_json)},
       ctx->getSharedConstPtr()));
 
   // High-fidelity execution path: setPlan before the first compute (critics not yet bound to the costmap).
@@ -436,11 +437,12 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
 
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "map", "base_link");
+  ctx->setFrames("map", "base_link");
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   EXPECT_NO_THROW(planner.configure(
-      ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
+      ayanami::PluginContext{"costmap_dwb_controller",
+                            ayanami::Config(g_config_json)},
       ctx->getSharedConstPtr()));
 
   // compute binds the current grid via lockLocal -> scoring path (controlled failure, not a crash).

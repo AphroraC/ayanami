@@ -307,24 +307,16 @@ class PlainAbstractRecovery : public ayanami::abstract::AbstractRecovery {
   }
 };
 
-/// Builds a single-point PointCloud2 in the sensor frame (lidar) (x/y/z FLOAT32, 12B/point).
+/// Builds a single-point PointCloud2 in the sensor frame (lidar).
 ayanami::sensor_msgs::PointCloud2 makePointCloud(float x, float y, float z) {
   ayanami::sensor_msgs::PointCloud2 cloud;
   cloud.header.frame_id = "lidar";
-  cloud.height = 1;
-  cloud.width = 1;
-  cloud.point_step = 12;
-  cloud.row_step = 12;
-  cloud.is_dense = true;
-  cloud.fields = {
-      {"x", 0, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-      {"y", 4, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-      {"z", 8, ayanami::sensor_msgs::PointField::FLOAT32, 1},
-  };
-  cloud.data.resize(12);
-  std::memcpy(cloud.data.data(), &x, sizeof(float));
-  std::memcpy(cloud.data.data() + 4, &y, sizeof(float));
-  std::memcpy(cloud.data.data() + 8, &z, sizeof(float));
+  pcl::PointXYZI p;
+  p.x = x;
+  p.y = y;
+  p.z = z;
+  p.intensity = 0.0f;
+  cloud.cloud.push_back(p);
   return cloud;
 }
 
@@ -352,19 +344,15 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   ASSERT_NE(server.costmapContext(), nullptr);
   ASSERT_NE(server.globalCostmap(), nullptr);
   ASSERT_NE(server.localCostmap(), nullptr);
-  EXPECT_EQ(server.costmapContext()->getGlobalFrame(), "map");
+  EXPECT_EQ(server.costmapContext()->getMapFrame(), "map");
   EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
-  // Frame single-source consistency: context frame == wrapper frame == RobotStateController cached frame
-  // (local_frame is read through the AbstractMapContext::localFrame abstraction).
+  // Frame single-source consistency: both wrappers share the map frame.
   {
-    const ayanami::map::AbstractMapContext::Ptr& ctx = server.costmapContext();
-    EXPECT_EQ(ctx->localFrame(), "odom");
-    EXPECT_EQ(ctx->localFrame(), server.localCostmap()->getGlobalFrame());
-    EXPECT_EQ(ctx->globalFrame(), server.globalCostmap()->getGlobalFrame());
+    EXPECT_EQ(server.localCostmap()->getGlobalFrame(), "map");
+    EXPECT_EQ(server.globalCostmap()->getGlobalFrame(), "map");
     auto& rsc = ayanami::components::RobotStateController::instance();
-    EXPECT_EQ(rsc.getGlobalFrame(), ctx->globalFrame());
-    EXPECT_EQ(rsc.getLocalFrame(), ctx->localFrame());
-    EXPECT_EQ(rsc.getRobotFrame(), ctx->robotFrame());
+    EXPECT_EQ(rsc.getGlobalFrame(), server.costmapContext()->getMapFrame());
+    EXPECT_EQ(rsc.getRobotFrame(), server.costmapContext()->getRobotFrame());
   }
   EXPECT_DOUBLE_EQ(server.globalCostmap()->get().getCostmap()->getOriginX(),
                    -5.0);
@@ -445,10 +433,6 @@ TEST(CostmapMapFamilyFactoryTest, factoryCreatesDefaultCostmapContext) {
   auto ctx = factory.createContext();
   ASSERT_NE(ctx, nullptr);
   EXPECT_EQ(ctx->mapFamily(), "costmap");
-  // Default frames match the costmap_navigation.json defaults (local=odom, nav2 semantics).
-  EXPECT_EQ(ctx->globalFrame(), "map");
-  EXPECT_EQ(ctx->localFrame(), "odom");
-  EXPECT_EQ(ctx->robotFrame(), "base_link");
 }
 
 TEST(CostmapNavigationServerTest, defaultConfigMatchesNavPgmGeometry) {

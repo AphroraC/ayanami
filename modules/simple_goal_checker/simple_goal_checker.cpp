@@ -11,16 +11,18 @@ namespace ayanami {
 namespace modules {
 
 void SimpleGoalChecker::configure(const ayanami::PluginContext& context) {
-  // Single source of parameters: the
-  // simple_goal_checker section of this module's json (the file config_goal_checker points to).
+  // Single source of parameters: this module's json (the file
+  // config_goal_checker points to). Param section convention: the section
+  // key = the module json "name" field, delivered as PluginContext::name.
+  const std::string& section = context.name;
   param.position_tolerance = context.config.param<double>(
-      "simple_goal_checker", "position_tolerance", param.position_tolerance);
+      section, "position_tolerance", param.position_tolerance);
   param.angle_tolerance = context.config.param<double>(
-      "simple_goal_checker", "angle_tolerance", param.angle_tolerance);
+      section, "angle_tolerance", param.angle_tolerance);
   param.linear_tolerance = context.config.param<double>(
-      "simple_goal_checker", "linear_tolerance", param.linear_tolerance);
+      section, "linear_tolerance", param.linear_tolerance);
   param.angular_tolerance = context.config.param<double>(
-      "simple_goal_checker", "angular_tolerance", param.angular_tolerance);
+      section, "angular_tolerance", param.angular_tolerance);
 }
 
 void SimpleGoalChecker::reset() { initialized.store(true); }

@@ -195,7 +195,7 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   const ResultT<void> outcome = rec->tick(cycle);
   ASSERT_TRUE(outcome.ok) << outcome.message;
   EXPECT_EQ(port->submissions.load(), 1)
-      << "clear 必须经命令端口提交给唯一写者执行";
+      << "clear must be submitted through the command port to the sole writer";
 
   // Local + global: near the robot -> FREE, distant cells stay LETHAL.
   EXPECT_EQ(cellCost(local, 4, 4), costmap_2d::FREE_SPACE);
@@ -277,9 +277,9 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
   feeder.join();
   EXPECT_EQ(rounds_done.load(), k_rounds);
   EXPECT_EQ(port->submissions.load(), k_rounds)
-      << "clear 提交计数必须随轮次严格递增 (命令全经唯一写者)";
+      << "clear submission count must strictly grow per round (all commands via the sole writer)";
   EXPECT_EQ(bad_reads.load(), 0)
-      << "feed 写者锁内读回被并发 clear 撕裂 (writer 串行化被破坏)";
-  EXPECT_EQ(bad_after_clear.load(), 0) << "clear 后 cell 未被写回 LETHAL";
+      << "writer read-back observed a concurrent clear tearing (writer serialization broken)";
+  EXPECT_EQ(bad_after_clear.load(), 0) << "cell was not written back to LETHAL after clear";
   // No deadlock: both threads finished (the writer thread join returned + the main thread completed all k_rounds rounds).
 }

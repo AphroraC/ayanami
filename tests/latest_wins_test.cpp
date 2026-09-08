@@ -222,7 +222,7 @@ TEST(LatestWins, sameSlotSecondGoalEjectsFirstPromptly) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    EXPECT_TRUE(saw_active) << "B 未进入 ACTIVE RUNNING";
+    EXPECT_TRUE(saw_active) << "B did not enter ACTIVE RUNNING";
   }
 
   // Release B -> SUCCEEDED

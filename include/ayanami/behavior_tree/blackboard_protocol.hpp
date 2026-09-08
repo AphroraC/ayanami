@@ -30,7 +30,10 @@ inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
 
 // Centralized blackboard protocol constants: the single source of all
 // port/blackboard key names, turning runtime port-name errors into
-// compile-time/startup failures.
+// compile-time/startup failures. The recovery role-id keys
+// (k_clear_costmap_id / k_spin_id / k_wait_id / k_backup_id) are part of the
+// default BT extension's tree contract, not of the core protocol: they are
+// declared+provided by the extension that references them.
 inline constexpr const char* k_goal = "goal";
 inline constexpr const char* k_raw_path = "raw_path";
 inline constexpr const char* k_path_id = "path_id";
@@ -45,7 +48,6 @@ inline constexpr const char* k_backup_id = "backup_id";
 inline constexpr const char* k_session_id = "session_id";
 inline constexpr const char* k_plan_version = "plan_version";
 inline constexpr const char* k_goal_revision = "goal_revision";
-inline constexpr const char* k_reset_stuck_token = "reset_stuck_token";
 inline constexpr const char* k_failure_context = "failure_context";
 
 /// Core-required blackboard entries (validateRequiredBlackboardEntries
@@ -58,7 +60,7 @@ inline const std::vector<const char*>& requiredBlackboardEntries() {
   static const std::vector<const char*> k_required = {
     k_goal, k_raw_path, k_path_id, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
-    k_session_id, k_plan_version, k_reset_stuck_token,
+    k_session_id, k_plan_version,
     k_failure_context, k_goal_revision,
   };
   return k_required;

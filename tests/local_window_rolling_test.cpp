@@ -78,12 +78,16 @@ TEST(LocalWindowRolling, localWindowFollowsRobotPose) {
 
   // The robot (base_link) is at odom (3,3) with the laser co-located with the body.
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 5.0);
+  rsc.initialize("map", "map", "base_link", 5.0);
   Eigen::Isometry3d t_odom_base = Eigen::Isometry3d::Identity();
   t_odom_base.translation() = Eigen::Vector3d(3.0, 3.0, 0.0);
   rsc.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
                    t_odom_base, false);
   rsc.setTransform("odom", "laser", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity(), false);
+  // Both costmaps share the map frame: provide the map<-odom edge so the
+  // map-frame robot pose resolves.
+  rsc.setTransform("map", "odom", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity(), false);
 
   server.handleObstacleLaserScan(makeScan());
@@ -110,7 +114,7 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
   server.configureCoreMaps(dir.string());
 
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 5.0);
+  rsc.initialize("map", "map", "base_link", 5.0);
   // Robot at the origin (global map 1m x 1m; the 0.3m scan endpoints are all inside bounds).
   // fast_tf caveats: (1) a dynamic-edge set does not overwrite the same timestamp (emplace semantics);
   // timestamps must increase, otherwise old samples left by test 1 cannot be overwritten; (2) trees persist across tests,
@@ -192,17 +196,18 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
 
  // Robot placed at (2, 2) with no scan injected
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 5.0);
+  rsc.initialize("map", "map", "base_link", 5.0);
   int64_t stamp_ns = 3000000000;
-  auto next_stamp = [&stamp_ns] {
-    return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
-  };
+  // All edges share one stamp per cycle (latest-common-time semantics:
+  // staggered single-sample edges have no coverage at the common instant).
+  ayanami::Timestamp cycle_stamp(
+      std::chrono::nanoseconds(stamp_ns += 1000000));
   Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
   t.translation() = Eigen::Vector3d(2.0, 2.0, 0.0);
-  rsc.setTransform("odom", "base_link", next_stamp(), t, false);
-  rsc.setTransform("odom", "laser", next_stamp(),
+  rsc.setTransform("odom", "base_link", cycle_stamp, t, false);
+  rsc.setTransform("odom", "laser", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
-  rsc.setTransform("map", "odom", next_stamp(),
+  rsc.setTransform("map", "odom", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
 
  // Repeated periodic rolling calls (throttled internally by update_frequency): the window must follow
@@ -230,7 +235,7 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
   server.configureCoreMaps(dir.string());
 
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 5.0);
+  rsc.initialize("map", "map", "base_link", 5.0);
  // The time base must be later than tests executed earlier in this process (fast_tf latest takes the newest samples)
   int64_t stamp_ns = 4000000000;
   auto next_stamp = [&stamp_ns] {
@@ -284,7 +289,7 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
   server.configureCoreMaps(dir.string());
 
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 5.0);
+  rsc.initialize("map", "map", "base_link", 5.0);
  // The fast_tf dynamic-edge buffer keeps only the most recent 500ms (dynamic_transform default dur_) --
  // all TF samples and scan stamps must fit inside a single 500ms window.
  // Timeline: 5.000 base/laser/map=id | 5.100 base/laser/map=id |
@@ -322,7 +327,7 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
   EXPECT_EQ(countCell(11, 0), costmap_2d::LETHAL_OBSTACLE)
       << "scan A (stamp 5.05s) mark missing at acquisition-time position";
   EXPECT_LT(countCell(18, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-      << "cell 18 must not be marked before scan B (latest 语义会提前烙上)";
+      << "cell 18 must not be marked before scan B (latest-time semantics would mark it early)";
 
  // Scan B @5.250s: same ring, map<-odom interpolation = (0.3,0) -> cell (18,0)
   ayanami::sensor_msgs::LaserScan scan_b = makeScan(0.6f);
@@ -330,9 +335,9 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
   server.handleObstacleLaserScan(scan_b);
   EXPECT_EQ(countCell(17, 0), costmap_2d::LETHAL_OBSTACLE)
       << "scan B (stamp 5.25s) mark missing at acquisition-time position"
-      " (bearing-0 端点 x=0.89998 -> cell 17)";
+      " (bearing-0 endpoint x=0.89998 -> cell 17)";
   EXPECT_LT(countCell(11, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-      << "cell 11 was ray-cleared by scan B (按戳落图语义)";
+      << "cell 11 was ray-cleared by scan B (stamp-time stamping semantics)";
 }
 
 }  // namespace

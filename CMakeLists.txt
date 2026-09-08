@@ -14,7 +14,7 @@ check_cxx_compiler_flag("-mcx16" AYANAMI_HAS_MCX16)
 if(AYANAMI_HAS_MCX16)
   add_compile_options(-mcx16)
 else()
-  message(WARNING "ayanami: -mcx16 不受支持; shared_ptr 原子操作退回 libstdc++ 锁池实现")
+  message(WARNING "ayanami: -mcx16 not supported; shared_ptr atomics fall back to the libstdc++ lock-pool implementation")
 endif()
 
 option(BUILD_SHARED "Build libayanami as shared library" ON)
@@ -30,6 +30,8 @@ endif()
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(spdlog REQUIRED)  # or vendored
+# PointCloud2 message type (header + pcl::PointCloud<PointXYZI>)
+find_package(PCL REQUIRED COMPONENTS common)
 
 # M2 Controller Ruling #M2-1: catkin as the build system (no dependency on the ROS communication layer);
 # only catkin_package() is declared so the catkin workspace recognizes ayanami as a catkin package
@@ -84,6 +86,9 @@ if(AYANAMI_HAS_MCX16)
   target_compile_options(ayanami PUBLIC -mcx16)
 endif()
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
+# messages/sensor_msgs.hpp (PointCloud2) uses PCL point types
+target_link_libraries(ayanami PUBLIC ${PCL_LIBRARIES})
+target_include_directories(ayanami SYSTEM PUBLIC ${PCL_INCLUDE_DIRS})
 # Task 20: CostmapNavigationServer public headers include costmap_server/costmap_wrapper.hpp
 target_link_libraries(ayanami PUBLIC costmap_server::costmap_server)
 # src/utility/load_module.cpp uses dlfcn (dlopen/dlsym)
@@ -704,6 +709,6 @@ if(BUILD_TESTING)
       ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME LocalWindowRolling COMMAND local_window_rolling_test)
   else()
-    message(FATAL_ERROR "BUILD_TESTING=ON 需要系统 GTest (find_package(GTest) 失败)")
+    message(FATAL_ERROR "BUILD_TESTING=ON requires the system GTest (find_package(GTest) failed)")
   endif()
 endif()

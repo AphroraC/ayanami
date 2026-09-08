@@ -2,49 +2,26 @@
 
 #include "ayanami/messages/geometry_msgs.hpp"
 
-#include <cstdint>
 #include <memory>
-#include <string>
 #include <vector>
+
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 
 namespace ayanami {
 namespace sensor_msgs {
 
 /**
- * @brief Point cloud field description (equivalent to sensor_msgs/PointField).
- */
-struct PointField {
-  enum DataType : uint8_t {
-    INT8 = 1,
-    UINT8 = 2,
-    INT16 = 3,
-    UINT16 = 4,
-    INT32 = 5,
-    UINT32 = 6,
-    FLOAT32 = 7,
-    FLOAT64 = 8,
-  };
-  std::string name;
-  uint32_t offset = 0;
-  uint8_t datatype = FLOAT32;
-  uint32_t count = 1;
-  using Ptr = std::shared_ptr<PointField>;
-  using ConstPtr = std::shared_ptr<const PointField>;
-};
-
-/**
- * @brief Point cloud (equivalent to sensor_msgs/PointCloud2); data is per-point bytes, a simplified Eigen-independent version.
+ * @brief Point cloud: frame header + PCL XYZI cloud.
+ *
+ * The framework's single point-cloud representation. There is no
+ * PointField/blob plumbing anywhere in ayanami: producers fill the PCL
+ * cloud directly (the ROS adapter converts sensor_msgs/PointCloud2 once at
+ * the boundary via pcl::fromROSMsg).
  */
 struct PointCloud2 {
   ayanami::geometry_msgs::Header header;
-  uint32_t height = 0;
-  uint32_t width = 0;
-  std::vector<PointField> fields;
-  bool is_bigendian = false;
-  uint32_t point_step = 0;
-  uint32_t row_step = 0;
-  std::vector<uint8_t> data;
-  bool is_dense = false;
+  pcl::PointCloud<pcl::PointXYZI> cloud;
   using Ptr = std::shared_ptr<PointCloud2>;
   using ConstPtr = std::shared_ptr<const PointCloud2>;
 };

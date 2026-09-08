@@ -141,16 +141,18 @@ void CostmapNavigation::onLocalizationJump() {
     return;
   }
   costmap::ClearCostmapCommand command;
-  command.affected_maps = "global";
+  // Both maps are stamped in the shared map frame, so a correction jump
+  // misaligns the dynamic markers of both -- clear both dynamic layers.
+  command.affected_maps = "both";
   command.clear_radius = 0.0;  // <=0: clear the entire dynamic layer
   command.enabled = true;
   if (navigation_server->executeClearCommand(command)) {
     spdlog::info(
-        "onLocalizationJump: cleared global dynamic costmap after "
+        "onLocalizationJump: cleared dynamic costmap after "
         "localization correction jump");
   } else {
     spdlog::warn(
-        "onLocalizationJump: global dynamic costmap clear failed (TF or "
+        "onLocalizationJump: dynamic costmap clear failed (TF or "
         "map unavailable)");
   }
 }

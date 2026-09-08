@@ -2,8 +2,9 @@
   "recovery": {
     "name": "costmap_wait_recovery",
     "so_name": "libayanami_costmap_wait_recovery.so",
-    "role": "wait",
-    "wait_duration": 0.1,
-    "sim_cycle_dt": 0.01
+    "role": "wait"
+  },
+  "costmap_wait_recovery": {
+    "wait_duration": 0.1
   }
 }

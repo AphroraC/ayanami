@@ -123,7 +123,7 @@ TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
 
 std::string configContent(const std::string& mode) {
   std::string content = "{\n";
-  content += "  \"costmap_pid_controller\": {\n";
+  content += "  \"test_pid\": {\n";
   content += "    \"max_vel_x\": 2.0,\n";
   content += "    \"max_vel_theta\": 1.0,\n";
   content += "    \"max_acc_x\": 1.0,\n";

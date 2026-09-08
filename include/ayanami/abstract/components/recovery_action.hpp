@@ -78,6 +78,20 @@ public:
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
+  /// @brief Settle a goal preempted from the pending slot (canceled before
+  /// its driver started) so its TaskHandle never hangs. The recovery
+  /// resource mutex is released via the completion callback.
+  void finishPendingGoal(const GoalHandleType& gh) override {
+    Result result;
+    result.error = ErrorCode::CANCELED;
+    result.message = "canceled before the recovery task started";
+    result.session_id = gh.goal.session_id;
+    result.plan_version = gh.goal.plan_version;
+    action_server->publishResult(gh.id,
+                                 ayanami::actions::GoalStatus::CANCELED,
+                                 result);
+  }
+
   /// @brief Driver task exception fallback: publish ABORTED to guarantee
   /// TaskHandle completion (idempotent).
   /// The result completion callback triggers requestRecovery's mutex

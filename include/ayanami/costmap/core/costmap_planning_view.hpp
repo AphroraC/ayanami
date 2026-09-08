@@ -1,8 +1,7 @@
 #pragma once
 
 #include <string>
-
-#include <Eigen/Geometry>
+#include <vector>
 
 #include <costmap_2d/costmap_2d.hpp>
 
@@ -19,13 +18,21 @@ namespace costmap {
  * Holds the shared locks of both maps simultaneously (RAII; acquisition
  * order local -> global, matching the writer; the writer never nests the
  * two locks, so no lock-ordering cycle can form). Zero copy: both grids are
- * read in place under their locks -- COW/deep-copy snapshots are forbidden.
+ * read in place under their locks -- consistency snapshots are forbidden.
+ *
+ * Both grids share one map frame, so a global cell maps onto the local grid
+ * through plain world<->cell conversions only (no frame transform).
  *
  * Overlay rule (conservative, per global-grid cell):
  * cost = max(global_cost, local_cost) where the local value participates
  * only when the point falls inside the local window; NO_INFORMATION never
  * downgrades (unknown stays unknown -- local free space cannot clear global
  * unknown space).
+ *
+ * Hot-path note: per-node queries (costAtGlobalCell) are meant for sparse
+ * probes (start/goal checks); grid-search algorithms should compose the
+ * overlay once per call via composeOverlay() into a caller-owned buffer and
+ * query the buffer in O(1).
  */
 class CostmapPlanningView {
  public:
@@ -35,12 +42,10 @@ class CostmapPlanningView {
   CostmapPlanningView(const CostmapPlanningView&) = delete;
   CostmapPlanningView& operator=(const CostmapPlanningView&) = delete;
 
-  CostmapPlanningView(CostmapView global, CostmapView local,
-                      Eigen::Isometry3d local_from_global, bool local_ready)
+  CostmapPlanningView(CostmapView global, CostmapView local)
       : global_view(std::move(global)),
         local_view(std::move(local)),
-        local_from_global(std::move(local_from_global)),
-        has_local(local_ready && local_view.valid() && global_view.valid()) {}
+        has_local(local_view.valid() && global_view.valid()) {}
 
   /// @brief Valid when the global grid is readable (local is optional).
   bool valid() const { return global_view.valid(); }
@@ -50,7 +55,7 @@ class CostmapPlanningView {
 
   const std::string& globalFrame() const { return global_view.frame(); }
 
-  /// @brief Robot pose resolved in the global frame at view construction.
+  /// @brief Robot pose resolved in the map frame at view construction.
   const geometry_msgs::PoseStamped& robotPose() const {
     return global_view.robot_pose();
   }
@@ -66,13 +71,11 @@ class CostmapPlanningView {
     double wx = 0.0;
     double wy = 0.0;
     global_grid->mapToWorld(mx, my, wx, wy);
-    const Eigen::Vector3d local_point =
-        local_from_global * Eigen::Vector3d(wx, wy, 0.0);
     const auto* local_grid = local_view.grid();
     unsigned int lx = 0;
     unsigned int ly = 0;
     if (local_grid == nullptr ||
-        !local_grid->worldToMap(local_point.x(), local_point.y(), lx, ly)) {
+        !local_grid->worldToMap(wx, wy, lx, ly)) {
       return global_cost;  // outside the local window: global only
     }
     const unsigned char local_cost = local_grid->getCost(lx, ly);
@@ -88,10 +91,31 @@ class CostmapPlanningView {
            costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
   }
 
+  /// @brief Compose the full overlay into a caller-owned row-major buffer
+  /// (global grid dimensions, one entry per global cell, row-major x-fastest).
+  /// One O(N) pass under the already-held locks; call it once per planning
+  /// call and query the buffer instead of doing per-node overlay lookups.
+  /// The buffer is cleared when the view is invalid.
+  void composeOverlay(std::vector<unsigned char>& buffer) const {
+    const auto* global_grid = global_view.grid();
+    if (!global_grid) {
+      buffer.clear();
+      return;
+    }
+    const unsigned int size_x = global_grid->getSizeInCellsX();
+    const unsigned int size_y = global_grid->getSizeInCellsY();
+    buffer.resize(static_cast<std::size_t>(size_x) * size_y);
+    for (unsigned int my = 0; my < size_y; ++my) {
+      for (unsigned int mx = 0; mx < size_x; ++mx) {
+        buffer[static_cast<std::size_t>(my) * size_x + mx] =
+            costAtGlobalCell(mx, my);
+      }
+    }
+  }
+
  private:
   CostmapView global_view;
   CostmapView local_view;
-  Eigen::Isometry3d local_from_global{Eigen::Isometry3d::Identity()};
   bool has_local{false};
 };
 

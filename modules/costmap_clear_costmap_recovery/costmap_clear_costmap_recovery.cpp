@@ -16,11 +16,14 @@ using ayanami::costmap::CostmapCommandPort;
 void CostmapClearCostmapRecovery::configure(
     const ayanami::PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
+  // Single source of parameters: this module's json (the file
+  // config_recovery points to). Param section convention: the section key =
+  // the module json "name" field, delivered as PluginContext::name.
+  const std::string& section = context.name;
   param.clear_radius =
-      context.config.param<double>("recovery", "clear_radius", param.clear_radius);
+      context.config.param<double>(section, "clear_radius", param.clear_radius);
   param.affected_maps = context.config.param<std::string>(
-      "recovery", "affected_maps", param.affected_maps);
+      section, "affected_maps", param.affected_maps);
   name = context.name;
   // The map write-command port is obtained via the map context (AbstractMapContext::commandPort).
   command_port =

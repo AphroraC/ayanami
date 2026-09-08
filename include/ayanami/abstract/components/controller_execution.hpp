@@ -1,5 +1,6 @@
 #pragma once
 
+#include <spdlog/spdlog.h>
 #include "ayanami/abstract/components/execution_base.hpp"
 #include "ayanami/abstract/core/abstract_controller.hpp"
 #include "ayanami/abstract/core/abstract_goal_checker.hpp"
@@ -13,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 namespace ayanami {
 namespace components {
@@ -130,6 +132,17 @@ public:
   double getPatience() const {
     return patience.count();
   }
+
+  /// @brief Grace window for transient robot-pose loss (seconds, from
+  /// navigation.velocity_timeout). <=0 keeps the old semantics: the first
+  /// failed pose query is terminal. Within the window the loop publishes
+  /// zeroed commands and keeps trying, so a single dropped TF frame does
+  /// not abort the whole FollowPath task.
+  void setPoseGrace(double seconds) {
+    pose_grace = std::chrono::duration<double>(seconds);
+  }
+
+  double getPoseGrace() const { return pose_grace.count(); }
 
   bool isPatienceExceeded() const {
     if (patience <= std::chrono::duration<double>(0)) return false;
@@ -261,10 +274,18 @@ protected:
             std::lock_guard<std::mutex> guard(plan_mutex);
             applied_plan_version = plan_version;
           }
-          // After a new plan is applied: snapshot the goal pose + reset the goal/progress baselines.
-          goal = plan.poses.back();
-          goal_checker->reset();
-          progress_checker->reset();
+          // After a new plan is applied: snapshot the goal pose; reset the
+          // goal/progress baselines only when the goal actually changed.
+          // Replanning/re-smoothing toward the same goal must NOT restart
+          // the progress window -- otherwise continuous replanning defeats
+          // stuck detection (the checker never accumulates its time_period)
+          // and recovery can never trigger.
+          const geometry_msgs::PoseStamped new_goal = plan.poses.back();
+          if (!sameGoalPose(new_goal, goal)) {
+            goal = new_goal;
+            goal_checker->reset();
+            progress_checker->reset();
+          }
         }
 
         // Single source of truth for robot state: global RobotStateController (pose + latest velocity).
@@ -272,12 +293,26 @@ protected:
         geometry_msgs::TwistStamped robot_velocity;
         if (!RobotStateController::instance().getRobotState(
                 robot_pose, robot_velocity)) {
-          error = ErrorCode::TRANSFORM_UNAVAILABLE;
-          message = "Could not get the robot pose";
+          const auto now = std::chrono::steady_clock::now();
+          if (!pose_failure_since) {
+            pose_failure_since = now;
+          }
+          if (pose_grace.count() <= 0.0 ||
+              now - *pose_failure_since > pose_grace) {
+            error = ErrorCode::TRANSFORM_UNAVAILABLE;
+            message = "Could not get the robot pose";
+            publishStopCommand();
+            setState(INTERNAL_ERROR, true);
+            return;
+          }
+          // Transient pose loss within the grace window: publish a zeroed
+          // command and keep looping instead of aborting the task.
           publishStopCommand();
-          setState(INTERNAL_ERROR, true);
-          return;
+          setState(NO_LOCAL_CMD, false);
+          sleepInterruptibly(period);
+          continue;
         }
+        pose_failure_since.reset();
 
         // Goal check: goal_checker is the sole arrival decision
         if (goal_checker->isGoalReached(robot_pose, goal, robot_velocity)) {
@@ -390,12 +425,23 @@ protected:
     });
   }
 
+  std::chrono::duration<double> pose_grace{0};
+  std::optional<std::chrono::steady_clock::time_point> pose_failure_since;
+
   double controller_frequency{20.0};
   double max_linear_x{std::numeric_limits<double>::infinity()};
   double max_linear_y{std::numeric_limits<double>::infinity()};
   double max_angular_z{std::numeric_limits<double>::infinity()};
   std::chrono::duration<double> patience{0};
   std::chrono::steady_clock::time_point start_time;
+
+  /// @brief Goal-change detection for checker resets: position/orientation
+  /// only (header stamps change on every replan and must not count).
+  static bool sameGoalPose(const geometry_msgs::PoseStamped& lhs,
+                           const geometry_msgs::PoseStamped& rhs) {
+    return lhs.pose.position.isApprox(rhs.pose.position) &&
+           lhs.pose.orientation.isApprox(rhs.pose.orientation);
+  }
 
   bool validVelocityCommand(
       const geometry_msgs::TwistStamped& command) const {

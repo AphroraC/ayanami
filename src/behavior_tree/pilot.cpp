@@ -219,10 +219,13 @@ void BehaviorTreePilot::consumeHaltRequest() {
     emitNavigationResult(actions::GoalStatus::CANCELED);
   }
   if (navigation_runtime) {
-    // Preemption discipline: cancel the entire controller action map (with
+    // Preemption discipline: preempt the entire controller action map (with
     // multiple controllers configured, not just the default id), preventing
-    // residual velocity output from non-default controllers.
-    navigation_runtime->cancelAllControllers();
+    // residual velocity output from non-default controllers. Non-blocking:
+    // cancel() already published the zeroed command synchronously; the task
+    // winds down on its own thread so the tick thread never blocks on a
+    // slow plugin call.
+    navigation_runtime->preemptAllControllers();
   }
 }
 
@@ -301,8 +304,6 @@ bool BehaviorTreePilot::applyPendingGoal() {
   bt_blackboard->set<uint64_t>(k_plan_version, session_state->currentPlanVersion());
   // Blackboard session reflects the shared session
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
-  // reset_stuck_token changes with the session -> IsRobotStuck state resets each round
-  bt_blackboard->set<uint64_t>(k_reset_stuck_token, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_goal_revision, goal_revision);
   // failure_context cleared each navigation round (failure context is only valid for this session).
   bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});  return true;
@@ -380,8 +381,6 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<double>(k_controller_frequency, controller_frequency);
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_plan_version, 0u);
-  bt_blackboard->set<uint64_t>(k_reset_stuck_token,
-                              session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_goal_revision, 0u);
   bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});
 }

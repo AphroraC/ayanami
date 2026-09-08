@@ -15,15 +15,17 @@ constexpr double k_pi = 3.14159265358979323846;
 }
 
 void SimpleProgressChecker::configure(const ayanami::PluginContext& context) {
-  // Single source of parameters: the
-  // simple_progress_checker section of this module's json (the file config_progress_checker points to).
+  // Single source of parameters: this module's json (the file
+  // config_progress_checker points to). Param section convention: the
+  // section key = the module json "name" field, delivered as
+  // PluginContext::name.
+  const std::string& section = context.name;
   param.required_movement = context.config.param<double>(
-      "simple_progress_checker", "required_movement", param.required_movement);
+      section, "required_movement", param.required_movement);
   param.movement_angle_required = context.config.param<double>(
-      "simple_progress_checker", "movement_angle_required",
-      param.movement_angle_required);
+      section, "movement_angle_required", param.movement_angle_required);
   param.time_period = context.config.param<double>(
-      "simple_progress_checker", "time_period", param.time_period);
+      section, "time_period", param.time_period);
 }
 
 void SimpleProgressChecker::reset() {

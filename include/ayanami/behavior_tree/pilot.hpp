@@ -121,8 +121,12 @@ class BehaviorTreePilot {
   void consumeHaltRequest();
 
   /// @brief run-thread only: the first goal opens a session; later goals
-  /// advance the revision and rewrite the goal / revision / failure context
-  /// blackboard entries. Returns whether a goal was consumed.
+  /// advance the revision and rewrite the goal / session / revision /
+  /// plan_version / failure context blackboard entries (no tree halt, no
+  /// controller cancel: the running controller keeps following its path
+  /// until the new one is available, and preemption of in-flight tasks
+  /// happens through the planner RateController token + in-place plan
+  /// update). Returns whether a goal was consumed.
   bool applyPendingGoal();
 
   /// @brief Emit the session-level navigation terminal outcome (once per
@@ -136,10 +140,12 @@ class BehaviorTreePilot {
 
   /// @brief Build the tree: load/hold BehaviorTreeExtension(s) -> register
   /// nodes -> register trees (file or extension default) -> createTree ->
-  /// validate the 17 blackboard entries.
+  /// validate the required blackboard entries (core protocol + per
+  /// extension).
   void buildTree(const std::string& xml_path, const std::string& tree_id);
 
-  /// @brief Write the 17 required blackboard entries (values from the configure cache).
+  /// @brief Write the core-protocol blackboard entries (values from the
+  /// configure cache).
   void writeRequiredBlackboardEntries();
 
   BT::Tree bt_tree;

@@ -109,6 +109,13 @@ std::shared_ptr<CostmapMapContext> makeContext(
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
+  // Pose resolution goes through the injected lookup (host wiring shape).
+  ctx->setTransformLookup(
+      [](const std::string& target, const std::string& source,
+         ayanami::Timestamp stamp, Eigen::Isometry3d& transform) {
+        return ayanami::components::RobotStateController::instance()
+            .lookupTransform(target, source, stamp, transform);
+      });
   return ctx;
 }
 
@@ -285,7 +292,7 @@ TEST(CostmapRecoveryModulesTest, pluginsSourceHasNoDirectPublish) {
     for (const auto& token : forbidden) {
       EXPECT_EQ(src.find(token), std::string::npos)
           << rel << " must not contain '" << token
-          << "' (发布与 sleep 职责在 RecoveryExecution)";
+          << "' (publish and sleep duties belong to RecoveryExecution)";
     }
   }
 }
@@ -541,21 +548,25 @@ int main(int argc, char** argv) {
       "config_clear_costmap_recovery": "clear.json"
     }})";
   }
-  writeJsonFile(dir / "spin.json", R"({"recovery": {
-      "spin_dist": 0.03, "max_w": 0.3,
-      "sim_cycle_dt": 0.01, "collision_radius": 0.3
-    }})");
-  writeJsonFile(dir / "backup.json", R"({"recovery": {
-      "backup_dist": 0.02, "max_v": 0.2,
-      "sim_cycle_dt": 0.01, "collision_radius": 0.3
-    }})");
-  writeJsonFile(dir / "wait.json", R"({"recovery": {
-      "wait_duration": 0.1,
-      "sim_cycle_dt": 0.01
-    }})");
-  writeJsonFile(dir / "clear.json", R"({"recovery": {
-      "clear_radius": 1.0, "affected_maps": "both"
-    }})");
+  // Section convention: plugin params live under the json "name" field
+  // (= PluginContext::name); sim_cycle_dt stays in the "recovery" family
+  // section next to name/so_name/role.
+  writeJsonFile(dir / "spin.json", R"({"recovery": {"sim_cycle_dt": 0.01},
+      "costmap_spin_recovery": {
+        "spin_dist": 0.03, "max_w": 0.3, "collision_radius": 0.3
+      }})");
+  writeJsonFile(dir / "backup.json", R"({"recovery": {"sim_cycle_dt": 0.01},
+      "costmap_back_up_recovery": {
+        "backup_dist": 0.02, "max_v": 0.2, "collision_radius": 0.3
+      }})");
+  writeJsonFile(dir / "wait.json", R"({"recovery": {"sim_cycle_dt": 0.01},
+      "costmap_wait_recovery": {
+        "wait_duration": 0.1
+      }})");
+  writeJsonFile(dir / "clear.json", R"({
+      "costmap_clear_costmap_recovery": {
+        "clear_radius": 1.0, "affected_maps": "both"
+      }})");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
 
   return RUN_ALL_TESTS();

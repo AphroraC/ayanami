@@ -43,5 +43,5 @@ TEST(PluginTeardownNoUB, derivedDestructorCalledOnClearPlugins) {
     (void)shr;
   }
   EXPECT_EQ(FakeRecovery::dtor_count.load(), 1)
-      << "派生析构未被调用 (abstract base virtual ~ 缺)";
+      << "derived destructor not called (abstract base misses a virtual ~)";
 }

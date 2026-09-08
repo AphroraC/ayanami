@@ -103,47 +103,50 @@ void CostmapPidController::configure(
   // missing keys keep the default values.
   {
     const Config& file = context.config;
-    param.max_vel_x = file.param<double>("costmap_pid_controller", "max_vel_x",
+    // Param section convention: the section key = the module json "name"
+    // field, delivered as PluginContext::name.
+    const std::string& section = context.name;
+    param.max_vel_x = file.param<double>(section, "max_vel_x",
                                          param.max_vel_x);
     param.max_vel_theta =
-        file.param<double>("costmap_pid_controller", "max_vel_theta",
+        file.param<double>(section, "max_vel_theta",
                            param.max_vel_theta);
-    param.max_acc_x = file.param<double>("costmap_pid_controller", "max_acc_x",
+    param.max_acc_x = file.param<double>(section, "max_acc_x",
                                          param.max_acc_x);
     param.max_decel_x =
-        file.param<double>("costmap_pid_controller", "max_decel_x",
+        file.param<double>(section, "max_decel_x",
                            param.max_decel_x);
     param.max_acc_theta =
-        file.param<double>("costmap_pid_controller", "max_acc_theta",
+        file.param<double>(section, "max_acc_theta",
                            param.max_acc_theta);
-    param.kp_v = file.param<double>("costmap_pid_controller", "kp_v",
+    param.kp_v = file.param<double>(section, "kp_v",
                                     param.kp_v);
-    param.ki_v = file.param<double>("costmap_pid_controller", "ki_v",
+    param.ki_v = file.param<double>(section, "ki_v",
                                     param.ki_v);
-    param.kd_v = file.param<double>("costmap_pid_controller", "kd_v",
+    param.kd_v = file.param<double>(section, "kd_v",
                                     param.kd_v);
-    param.kp_w = file.param<double>("costmap_pid_controller", "kp_w",
+    param.kp_w = file.param<double>(section, "kp_w",
                                     param.kp_w);
-    param.ki_w = file.param<double>("costmap_pid_controller", "ki_w",
+    param.ki_w = file.param<double>(section, "ki_w",
                                     param.ki_w);
-    param.kd_w = file.param<double>("costmap_pid_controller", "kd_w",
+    param.kd_w = file.param<double>(section, "kd_w",
                                     param.kd_w);
-    param.dist_decay = file.param<double>("costmap_pid_controller",
+    param.dist_decay = file.param<double>(section,
                                           "dist_decay", param.dist_decay);
     param.goal_tolerance =
-        file.param<double>("costmap_pid_controller", "goal_tolerance",
+        file.param<double>(section, "goal_tolerance",
                            param.goal_tolerance);
-    param.slide_window = file.param<double>("costmap_pid_controller",
+    param.slide_window = file.param<double>(section,
                                             "slide_window", param.slide_window);
-    param.default_dt = file.param<double>("costmap_pid_controller",
+    param.default_dt = file.param<double>(section,
                                           "default_dt", param.default_dt);
     param.heading_deadband =
-        file.param<double>("costmap_pid_controller", "heading_deadband",
+        file.param<double>(section, "heading_deadband",
                            param.heading_deadband);
     param.rotate_in_place_angle =
-        file.param<double>("costmap_pid_controller", "rotate_in_place_angle",
+        file.param<double>(section, "rotate_in_place_angle",
                            param.rotate_in_place_angle);
-    param.mode = file.param<std::string>("costmap_pid_controller", "mode",
+    param.mode = file.param<std::string>(section, "mode",
                                          param.mode);
   }
 

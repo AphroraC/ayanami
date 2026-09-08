@@ -34,7 +34,8 @@ namespace behavior_tree {
  * must reset explicitly).
  */
 class RoundRobin : public BT::ControlNode,
-                    public NavigationTreeNodeState {
+                    public NavigationTreeNodeState,
+                    public ResettableNode {
  public:
   RoundRobin(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -47,10 +48,7 @@ class RoundRobin : public BT::ControlNode,
   }
 
   BT::NodeStatus tick() override {
-    uint64_t token = 0;
-    (void)getInput("reset_token", token);
-    if (token != reset_token) {
-      reset_token = token;
+    if (consumeResetToken(*this, "reset_token")) {
       haltChildren();  // cancel in-flight recoveries (no-op for IDLE children)
       current_child_idx = 0;
     }
@@ -97,7 +95,8 @@ class RoundRobin : public BT::ControlNode,
 /// restarts from the first recovery (the previous cursor is not carried
 /// over).
 class RecoverySequence : public BT::ControlNode,
-                       public NavigationTreeNodeState {
+                       public NavigationTreeNodeState,
+                       public ResettableNode {
  public:
   RecoverySequence(const std::string& name, const BT::NodeConfig& config)
       : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -110,10 +109,7 @@ class RecoverySequence : public BT::ControlNode,
   }
 
   BT::NodeStatus tick() override {
-    uint64_t token = 0;
-    (void)getInput("reset_token", token);
-    if (token != reset_token) {
-      reset_token = token;
+    if (consumeResetToken(*this, "reset_token")) {
       haltChildren();
       current_child_idx = 0;
     }
@@ -192,11 +188,8 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   factory.registerNodeType<SmoothPathNode>("SmoothPath");
   factory.registerNodeType<FollowPathNode>("FollowPath");
   factory.registerNodeType<RecoveryActionNode>("Recovery");
-  // 5 condition nodes
+  // condition nodes
   factory.registerNodeType<IsPathValid>("IsPathValid");
-  factory.registerNodeType<IsGoalReached>("IsGoalReached");
-  factory.registerNodeType<IsFarFromGoal>("IsFarFromGoal");
-  factory.registerNodeType<IsRobotStuck>("IsRobotStuck");
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
   // Control nodes (+ RoundRobin)
   factory.registerNodeType<PipelineSequence>("PipelineSequence");

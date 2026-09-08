@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
 #include <string>
 
 #include <ayanami/costmap/core/costmap_planner.hpp>
@@ -53,6 +54,9 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
   CostmapSmacPlannerParam param;
 
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
+  /// @brief Reusable overlay scratch buffer (global+local max per global
+  /// cell), composed once per makePlan under the map locks.
+  std::vector<unsigned char> overlay_buffer;
 
   std::atomic<bool> canceled{false};
   std::atomic<uint64_t> goal_revision{0};

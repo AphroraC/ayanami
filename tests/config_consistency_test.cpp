@@ -495,6 +495,7 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"so_name\": \"" +
                  g_spin_so +
                  "\",\n"
+                 "    \"role\": \"clear_costmap\",\n"
                  "    \"spin_dist\": 0.1,\n    \"max_w\": 1.0,\n"
                  "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
                  "  }\n}\n");
@@ -503,8 +504,7 @@ std::filesystem::path makeSpinConfigDir() {
   {
     std::ofstream nav(dir / "costmap_navigation.json", std::ios::app);
     nav << ",\n  \"costmap\": {\n"
-        << "    \"global_frame\": \"map\",\n"
-        << "    \"local_frame\": \"odom\",\n"
+        << "    \"map_frame\": \"map\",\n"
         << "    \"robot_frame\": \"base_link\",\n"
         << "    \"resolution\": 0.5\n"
         << "  },\n"

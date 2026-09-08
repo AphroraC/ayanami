@@ -1,6 +1,7 @@
 #pragma once
 
 #include <behaviortree_cpp/decorator_node.h>
+#include <spdlog/spdlog.h>
 
 #include "ayanami/behavior_tree/navigation_node_state.hpp"
 
@@ -23,7 +24,8 @@ namespace behavior_tree {
  * time deterministically.
  */
 class RateController : public BT::DecoratorNode,
-                    public NavigationTreeNodeState {
+                    public NavigationTreeNodeState,
+                    public ResettableNode {
  public:
   using ClockFn = std::function<BT::TimePoint()>;
 
@@ -49,15 +51,12 @@ class RateController : public BT::DecoratorNode,
     if (!getInput("hz", hz)) {
       return BT::NodeStatus::FAILURE;
     }
-    uint64_t token = 0;
-    (void)getInput("reset_token", token);
-    if (token != reset_token) {
+    if (consumeResetToken(*this, "reset_token")) {
       // Token change = semantically "a new upstream artifact must pass
       // through this branch again". Must halt the in-flight child
       // (StatefulActionNode goes through onHalted -> task.cancel), otherwise
       // a still-RUNNING child keeps consuming the old input until completion
       // and the new input is skipped.
-      reset_token = token;
       started = false;
       last_status = BT::NodeStatus::FAILURE;
       haltChild();

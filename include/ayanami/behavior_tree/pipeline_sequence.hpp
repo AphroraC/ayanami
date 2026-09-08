@@ -1,6 +1,7 @@
 #pragma once
 
 #include <behaviortree_cpp/control_node.h>
+#include <spdlog/spdlog.h>
 
 #include "ayanami/behavior_tree/navigation_node_state.hpp"
 
@@ -60,7 +61,7 @@ class PipelineSequence : public BT::ControlNode,
   /// @brief Logical reset after a tree-life terminal state (v4 halt only
   /// propagates to RUNNING children, see the
   /// RateController::resetState comment).
-  void resetState() { current_child_idx = 0; }
+  void resetState() override { current_child_idx = 0; }
 
  private:
   size_t current_child_idx;

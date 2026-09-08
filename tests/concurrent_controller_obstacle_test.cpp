@@ -156,7 +156,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   // Anti-starvation: the controller completes >= 15 cycles and got a valid view every time (no MapUnavailable).
   EXPECT_GE(controller->cycles.load(), 15);
   EXPECT_EQ(controller->snapshot_missing.load(), 0)
-      << "controller 每 cycle 都应拿到有效视图";
+      << "controller must get a valid view on every cycle";
   // The obstacle writer also completes >= 15 times (the reader shared lock does not block readers other than the writer;
   // the writer waits for readers to release, both sides progress).
   EXPECT_GE(obstacle_feeds.load(), 15);

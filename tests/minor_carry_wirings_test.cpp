@@ -211,7 +211,14 @@ TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(wrapper);
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "map", "base_link");
+  ctx->setFrames("map", "base_link");
+  // The context resolves poses through the injected lookup (host wiring).
+  ctx->setTransformLookup(
+      [](const std::string& target, const std::string& source,
+         ayanami::Timestamp stamp, Eigen::Isometry3d& transform) {
+        return ayanami::components::RobotStateController::instance()
+            .lookupTransform(target, source, stamp, transform);
+      });
 
   // Mock robot pose (1, 2, pi/4) in the map frame.
   auto& rsc = ayanami::components::RobotStateController::instance();

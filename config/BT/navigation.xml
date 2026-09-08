@@ -1,0 +1,42 @@
+<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
+  <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="6" budget_reset_token="{goal_revision}">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
+          <RecoveryNode name="ComputePath" number_of_retries="1">
+            <Sequence>
+               <ComputePathToPose goal="{goal}" path="{raw_path}" path_id="{path_id}"/>
+              <IsPathValid path="{raw_path}"/>
+            </Sequence>
+            <Sequence>
+              <Recovery recovery="{clear_costmap_id}"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RateController hz="{smoother_frequency}" reset_token="{path_id}">
+               <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+        </RateController>
+        <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">
+           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
+          <Sequence>
+            <Recovery recovery="{clear_costmap_id}"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryActions">
+        <GoalUpdated goal="{goal}"/>
+         <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
+          <Sequence>
+            <Recovery recovery="{spin_id}"/>
+          </Sequence>
+          <Sequence>
+            <Recovery recovery="{wait_id}"/>
+          </Sequence>
+          <Sequence>
+            <Recovery recovery="{backup_id}"/>
+          </Sequence>
+         </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

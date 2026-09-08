@@ -81,7 +81,7 @@ std::shared_ptr<CostmapMapContext> makeOverlayContext(
   rsc.setTransform("odom_o", "map_o", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity());
   auto ctx = std::make_shared<CostmapMapContext>();
-  ctx->setFrames("map_o", "odom_o", "base_o");
+  ctx->setFrames("map_o", "base_o");
   ctx->setGlobalCostmap(global_wrapper);
   ctx->setLocalCostmap(local_wrapper);
   return ctx;
@@ -208,7 +208,7 @@ TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
   rsc.setTransform("odom_o2", "map_o2", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity());
   auto ctx = std::make_shared<CostmapMapContext>();
-  ctx->setFrames("map_o2", "odom_o2", "base_o2");
+  ctx->setFrames("map_o2", "base_o2");
   ctx->setGlobalCostmap(global_wrapper);
   auto planner = std::make_shared<CostmapSmacPlanner>();
   planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},

@@ -24,8 +24,9 @@
     "navigation_status_topic": "/ayanami/navigation_status"
   },
   "cmd_chassis_publisher": {
-    // 底盘命令唯一 ROS 输出: 核心速度命令经全局回调槽转发为
-    // rm_msgs/ChassisCmd (rviz_viewer 不再承担任何速度发布)。
+    // The single ROS chassis output: core velocity commands are forwarded
+    // via the global callback slot to rm_msgs/ChassisCmd (rviz_viewer no
+    // longer publishes any velocity).
     "cmd_chassis_topic": "/cmd_chassis",
     "mode": 0,
     "accel_linear_x": 3.0,

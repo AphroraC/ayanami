@@ -72,11 +72,11 @@ void CostmapDwBLocalPlanner::configure(
   map_context = std::move(map);
 
   // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
-  // json section = controller.name (plugin instance name).
+  // Param section convention: the section key = the module json "name"
+  // field, delivered as PluginContext::name.
   module_config = std::make_unique<Config>(std::move(context.config));
   const ayanami::Config& cfg = *module_config;
-  const std::string section =
-      cfg.param<std::string>("controller", "name", "costmap_dwb_controller");
+  const std::string& section = dwb_plugin_name;
   param.transform_tolerance =
       cfg.param<double>(section, "transform_tolerance", 0.1);
   param.prune_plan = cfg.param<bool>(section, "prune_plan", true);

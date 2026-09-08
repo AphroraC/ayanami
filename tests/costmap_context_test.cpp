@@ -13,6 +13,7 @@
 #include <costmap_2d/layered_costmap.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
@@ -31,6 +32,17 @@ using ayanami::RecoveryCycleData;
 using ayanami::RecoveryStatus;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapView;
+
+/// @brief Wire the context's transform lookup to the RobotStateController
+/// singleton (production wiring is the same shape, injected by the host).
+void wireRobotState(CostmapMapContext& ctx) {
+  ctx.setTransformLookup(
+      [](const std::string& target, const std::string& source,
+         ayanami::Timestamp stamp, Eigen::Isometry3d& transform) {
+        return ayanami::components::RobotStateController::instance()
+            .lookupTransform(target, source, stamp, transform);
+      });
+}
 
 std::shared_ptr<costmap_2d::LayeredCostmap> makeGrid() {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -152,11 +164,11 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
 
 TEST(CostmapMapContextTest, frameGettersReturnConfiguredFrames) {
   CostmapMapContext ctx;
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
+  EXPECT_EQ(ctx.getMapFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
 
-  ctx.setFrames("odom", "odom", "base_footprint");
-  EXPECT_EQ(ctx.getGlobalFrame(), "odom");
+  ctx.setFrames("odom", "base_footprint");
+  EXPECT_EQ(ctx.getMapFrame(), "odom");
   EXPECT_EQ(ctx.getRobotFrame(), "base_footprint");
 }
 
@@ -278,7 +290,7 @@ TEST(CostmapMapContextTest, localViewWithoutWrapperIsInvalid) {
 
 TEST(CostmapMapContextTest, robotStateQueryGoesThroughRobotStateController) {
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map", "odom", "base_link", 0.25);
+  rsc.initialize("map", "map", "base_link", 0.25);
   rsc.setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
@@ -298,6 +310,7 @@ TEST(CostmapMapContextTest, viewResolvesRobotPose) {
 
   auto global = makeWrapper(makeGrid());
   CostmapMapContext ctx;
+  wireRobotState(ctx);
   ctx.setGlobalCostmap(global);
 
   const CostmapView view = ctx.lockGlobal();
@@ -306,41 +319,29 @@ TEST(CostmapMapContextTest, viewResolvesRobotPose) {
   EXPECT_DOUBLE_EQ(view.robot_pose().pose.position.y(), 4.0);
 }
 
-TEST(CostmapMapContextTest, localViewRobotPoseStampedInLocalFrame) {
+TEST(CostmapMapContextTest, viewRobotPoseStampedInMapFrame) {
   auto& rsc = ayanami::components::RobotStateController::instance();
-  // Distinct frame names avoid interference with latest transforms from other cases:
-  // mapF<-odomF = (10,-5), odomF<-baseF = (1,2) (fast_tf single-parent tree, queries walk up the parent chain).
+  // Distinct frame names avoid interference with other cases.
   rsc.setTransform(
-      "odomF", "baseF", ayanami::Timestamp::latest(),
-      Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
-  rsc.setTransform(
-      "mapF", "odomF", ayanami::Timestamp::latest(),
-      Eigen::Translation3d(10.0, -5.0, 0.0) * Eigen::Quaterniond::Identity());
+      "mapF", "baseF", ayanami::Timestamp::latest(),
+      Eigen::Translation3d(3.0, 4.0, 0.0) * Eigen::Quaterniond::Identity());
 
   CostmapMapContext ctx;
-  ctx.setFrames("mapF", "odomF", "baseF");
+  wireRobotState(ctx);
+  ctx.setFrames("mapF", "baseF");
   ctx.setLocalCostmap(makeWrapper(makeGrid()));
   ctx.setGlobalCostmap(makeWrapper(makeGrid()));
 
-  // Local view: the pose must resolve in the view own frame (odomF), never stamped with the global frame.
+  // Both views share the map frame: the pose must be stamped with it.
   const CostmapView lview = ctx.lockLocal();
   ASSERT_TRUE(lview.valid());
-  EXPECT_EQ(lview.frame(), "odomF");
+  EXPECT_EQ(lview.frame(), "mapF");
   ASSERT_TRUE(lview.has_robot_pose());
-  EXPECT_EQ(lview.robot_pose().header.frame_id, "odomF");
-  EXPECT_DOUBLE_EQ(1.0, lview.robot_pose().pose.position.x());
-  EXPECT_DOUBLE_EQ(2.0, lview.robot_pose().pose.position.y());
-
-  // Global view: the pose stays in the global frame (mapF), composed along the parent chain (10+1, -5+2).
+  EXPECT_EQ(lview.robot_pose().header.frame_id, "mapF");
   const CostmapView gview = ctx.lockGlobal();
-  ASSERT_TRUE(gview.valid());
   ASSERT_TRUE(gview.has_robot_pose());
   EXPECT_EQ(gview.robot_pose().header.frame_id, "mapF");
-  EXPECT_DOUBLE_EQ(11.0, gview.robot_pose().pose.position.x());
-  EXPECT_DOUBLE_EQ(-3.0, gview.robot_pose().pose.position.y());
 }
-
-// ---------- 4 costmap/core Costmap* bases (lock-read view contract) ----------
 
 TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
   auto planner = std::make_shared<TestCostmapPlanner>();
@@ -433,15 +434,16 @@ TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
 
 // ---------- CostmapMapContext has no capability / lock ----------
 
-TEST(CostmapMapContextTest, mapFamilyIgnorantInterfaceOnly) {
+TEST(CostmapMapContextTest, costmapInterfaceOnly) {
   CostmapMapContext ctx;
-  // The core interface only has frame names / isCurrent -- no capability enum, no locks, no robot-state queries.
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
+  // Family-level surface: frame names / freshness -- no capability enum,
+  // no locks, no robot-state queries on the abstract interface.
+  EXPECT_EQ(ctx.getMapFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
   EXPECT_TRUE(ctx.isCurrent());
 
   // Isolated frame names avoid interference with the map/base_link TF injected by other cases.
-  ctx.setFrames("isolated_map", "isolated_map", "isolated_base");
+  ctx.setFrames("isolated_map", "isolated_base");
 }
 // ---------- isPathValid: map-family collision query capability (responsibility table "is the path stale") ----------
 
@@ -489,14 +491,8 @@ TEST(CostmapMapContextTest, isPathValidRejectsEmptyUnknownLethalAndOutOfBounds) 
 // ---------- lockPlanning: planner family read contract (global+local overlay) ----------
 
 TEST(CostmapPlanningViewTest, overlayMergesLocalWindowWithMax) {
-  auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.initialize("map_a", "odom_a", "base_a", 0.25);
-  // identity map<-odom: local grid coordinates coincide with global.
-  rsc.setTransform("odom_a", "map_a", ayanami::Timestamp::latest(),
-                   Eigen::Isometry3d::Identity());
-
   CostmapMapContext ctx;
-  ctx.setFrames("map_a", "odom_a", "base_a");
+  ctx.setFrames("map_a", "base_a");
 
   // global: 10x10 @0.5m origin (0,0); lethal at cell (1,1).
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -506,13 +502,13 @@ TEST(CostmapPlanningViewTest, overlayMergesLocalWindowWithMax) {
   auto global =
       std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_a");
 
-  // local: 10x10 @0.5m origin (0,0) in odom; inflated-cost at cell (5,5).
+  // local: 10x10 @0.5m origin (0,0), same map frame; inflated-cost at cell (5,5).
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "odom_a", true, false);
+      "map_a", true, false);
   local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
   local_lm->getCostmap()->setCost(5, 5, 200);
   auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom_a");
+      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_a");
 
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
@@ -523,6 +519,12 @@ TEST(CostmapPlanningViewTest, overlayMergesLocalWindowWithMax) {
 
   // Window overlap: max(global=0, local=200) = 200.
   EXPECT_EQ(view.costAtGlobalCell(5, 5), 200);
+  // Compose buffer agrees with the per-cell overlay.
+  std::vector<unsigned char> buffer;
+  view.composeOverlay(buffer);
+  ASSERT_EQ(buffer.size(),
+            static_cast<std::size_t>(10) * 10);
+  EXPECT_EQ(buffer[static_cast<std::size_t>(5) * 10 + 5], 200);
   EXPECT_FALSE(view.blockedAtGlobalCell(5, 5));
   // Global lethal outside local distinct content stays.
   EXPECT_EQ(view.costAtGlobalCell(1, 1), costmap_2d::LETHAL_OBSTACLE);
@@ -533,20 +535,8 @@ TEST(CostmapPlanningViewTest, overlayMergesLocalWindowWithMax) {
 }
 
 TEST(CostmapPlanningViewTest, outsideLocalWindowFallsBackToGlobal) {
-  auto& rsc = ayanami::components::RobotStateController::instance();
-  // Isolated frame names: the edge is fresh in this test (other cases use
-  // map/odom), so the offset transform below cannot be polluted by them.
-  rsc.initialize("map_b", "odom_b", "base_b", 0.25);
-  // local frame offset: map point (x,y) == odom point (x+100, y) -> local
-  // window (origin 0, 10 cells @0.5m = 5m span) only covers map x in
-  // [-100, -95]: none of the queried cells.
-  rsc.setTransform("odom_b", "map_b",
-                   ayanami::Timestamp::latest(),
-                   Eigen::Translation3d(100.0, 0.0, 0.0) *
-                       Eigen::Isometry3d::Identity());
-
   CostmapMapContext ctx;
-  ctx.setFrames("map_b", "odom_b", "base_b");
+  ctx.setFrames("map_b", "base_b");
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       "map_b", false, false);
   global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
@@ -554,42 +544,38 @@ TEST(CostmapPlanningViewTest, outsideLocalWindowFallsBackToGlobal) {
   auto global =
       std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_b");
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "odom_b", true, false);
+      "map_b", true, false);
   local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
   local_lm->getCostmap()->setCost(3, 3, 250);
   auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom_b");
+      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_b");
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
 
+  // Roll the local window far away (map frame): robot at (100, 0) moves the
+  // window origin to ~(97.5, -2.5), so global cell (3,3) (world (1.75,1.75))
+  // is far outside the local window.
+  local->updateMap(100.0, 0.0, 0.0);
+
   auto view = ctx.lockPlanning();
   ASSERT_TRUE(view.valid());
-  // Cell (3,3) is far outside the local window in map coordinates.
+  // Cell (3,3) is far outside the local window: global-only cost.
   EXPECT_EQ(view.costAtGlobalCell(3, 3), 120);
 }
 
-TEST(CostmapPlanningViewTest, tfMissDegeneratesToGlobalOnly) {
-  // No map<-odom transform configured for a fresh isolated frame pair.
+TEST(CostmapPlanningViewTest, missingLocalWrapperDegeneratesToGlobalOnly) {
   CostmapMapContext ctx;
-  ctx.setFrames("iso_map", "iso_odom", "base_link");
+  ctx.setFrames("iso_map", "base_link");
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       "iso_map", false, false);
   global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
   global_lm->getCostmap()->setCost(4, 4, 250);
   auto global =
       std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "iso_map");
-  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "iso_odom", true, false);
-  local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(4, 4, 0);
-  auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "iso_odom");
   ctx.setGlobalCostmap(global);
-  ctx.setLocalCostmap(local);
-
+  // No local wrapper: the overlay view stays valid (global-only).
   auto view = ctx.lockPlanning();
   ASSERT_TRUE(view.valid());
-  // TF miss -> global-only overlay (no local participation, no crash).
   EXPECT_EQ(view.costAtGlobalCell(4, 4), 250);
 }
 
@@ -599,11 +585,3 @@ TEST(CostmapMapContextTest, isPathValidDegeneratesWithoutMap) {
   EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.0, 1.0}})));
 }
 
-TEST(CostmapMapContextTest, abstractMapContextDefaultIsNonEmptySemantics) {
-  ayanami::map::AbstractMapContext::Ptr ctx =
-      std::make_shared<CostmapMapContext>();  // Map-family default before overriding
-  ayanami::nav_msgs::Path path;
-  EXPECT_FALSE(ctx->isPathValid(path));
-  path.poses.push_back(ayanami::geometry_msgs::PoseStamped{});
-  EXPECT_TRUE(ctx->isPathValid(path));
-}

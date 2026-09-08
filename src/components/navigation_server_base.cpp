@@ -139,6 +139,10 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
       nav_cfg.param<double>("navigation", "controller_patience", 0.0);
   recovery_patience =
       nav_cfg.param<double>("navigation", "recovery_patience", 0.0);
+  // Pose-loss grace window for the controller loop (same source as the
+  // RobotStateController velocity_timeout).
+  velocity_timeout =
+      nav_cfg.param<double>("navigation", "velocity_timeout", 0.25);
 
   // planner/smoother/controller each have exactly one configured plugin.
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
@@ -373,6 +377,8 @@ void NavigationServerBase::configureControllerExecution(
   // this long does the execution report a terminal state; retry decisions
   // still belong to the BT.
   exec->setPatience(controller_patience);
+  // Transient pose-loss grace window (navigation.velocity_timeout).
+  exec->setPoseGrace(velocity_timeout);
 }
 
 void NavigationServerBase::configureRecoveryExecution(
@@ -488,9 +494,12 @@ NavigationServerBase::requestRecovery(
         "unknown recovery plugin id: " + goal.recovery_id, currentSessionId(),
         currentPlanVersion());
   }
-  // Stop the controller only after validating the recovery id. This is
-  // synchronous and guarantees no controller can publish during recovery.
-  cancelAllControllers();
+  // Stop the controller after validating the recovery id. Non-blocking:
+  // the preemption marks the controller canceled (cancel() already
+  // published a zeroed command synchronously) and the task winds down on
+  // its own thread, so the BT tick thread never blocks on a slow plugin
+  // call.
+  preemptAllControllers();
   ayanami::actions::RecoveryGoal g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
@@ -527,6 +536,11 @@ void NavigationServerBase::cancelAllControllers() {
   // controller configs, controller tasks beyond the default id must stop
   // too, otherwise stale velocity output remains after preemption.
   if (controller_action) controller_action->cancelAll();
+}
+
+void NavigationServerBase::preemptAllControllers() {
+  std::lock_guard<std::mutex> request_lock(controller_request_mutex);
+  if (controller_action) controller_action->preemptAll();
 }
 
 void NavigationServerBase::cancelAllPlanners() {

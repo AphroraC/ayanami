@@ -21,7 +21,6 @@ namespace {
 
 using ayanami::ErrorCode;
 using ayanami::map::AbstractMapContext;
-using ayanami::map::MapCapability;
 using ayanami::map::MapCommandPort;
 
 // ---- Fake "grid" map-family context (a minimal implementation parallel to the costmap family) ----
@@ -47,26 +46,13 @@ class GridCommandPort : public MapCommandPort {
 
 class GridMapContext final : public AbstractMapContext {
  public:
-  GridMapContext(std::string global_frame, std::string robot_frame)
-      : global_frame(std::move(global_frame)),
-        robot_frame(std::move(robot_frame)) {}
+  GridMapContext() = default;
 
   std::string mapFamily() const override { return "grid"; }
-  std::string globalFrame() const override { return global_frame; }
-  std::string localFrame() const override { return global_frame; }
-  std::string robotFrame() const override { return robot_frame; }
-  bool isCurrent() const override { return is_current.load(); }
-  std::uint32_t capabilities() const override {
-    return static_cast<std::uint32_t>(MapCapability::ClearRegion);
-  }
   MapCommandPort::Ptr commandPort() const override { return command_port; }
   void setCommandPort(GridCommandPort::Ptr port) { command_port = std::move(port); }
-  void setCurrent(bool value) { is_current = value; }
 
  private:
-  std::string global_frame;
-  std::string robot_frame;
-  std::atomic<bool> is_current{true};
   GridCommandPort::Ptr command_port;
 };
 
@@ -185,27 +171,12 @@ class GridNavigationServer final : public ayanami::components::NavigationServerB
 // ---- The map family is fully expressed through the abstract interface: identity/frame/version/capability/write commands/robot state ----
 
 TEST(MapFamilyAbstractionTest, gridContextSatisfiesAbstractInterface) {
-  auto map = std::make_shared<GridMapContext>("world", "base");
+  auto map = std::make_shared<GridMapContext>();
   auto port = std::make_shared<GridCommandPort>();
   map->setCommandPort(port);
 
   AbstractMapContext::ConstPtr abstract = map;
   EXPECT_EQ(abstract->mapFamily(), "grid");
-  EXPECT_EQ(abstract->globalFrame(), "world");
-  EXPECT_EQ(abstract->localFrame(), "world");
-  EXPECT_EQ(abstract->robotFrame(), "base");
-  EXPECT_TRUE(abstract->isCurrent());
-
-  map->setCurrent(false);
-  EXPECT_FALSE(abstract->isCurrent());
-  map->setCurrent(true);
-
-  const std::uint32_t caps = abstract->capabilities();
-  EXPECT_NE(caps & static_cast<std::uint32_t>(MapCapability::ClearRegion), 0u);
-  EXPECT_EQ(caps & static_cast<std::uint32_t>(MapCapability::CollisionQuery), 0u);
-  EXPECT_EQ(caps & static_cast<std::uint32_t>(MapCapability::DynamicObstacleUpdate), 0u);
-
-
   EXPECT_EQ(abstract->commandPort(), port);
 }
 
@@ -214,7 +185,7 @@ TEST(MapFamilyAbstractionTest, gridContextSatisfiesAbstractInterface) {
 TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   GridNavigationServer server;
   auto port = std::make_shared<GridCommandPort>();
-  auto map = std::make_shared<GridMapContext>("world", "base");
+  auto map = std::make_shared<GridMapContext>();
   map->setCommandPort(port);
   server.grid_map = map;
 

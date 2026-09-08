@@ -286,7 +286,6 @@ class ProductionTreeRecovery : public ::testing::Test {
     bb->set<std::string>(k_backup_id, "backup");
     bb->set<uint64_t>(k_session_id, runtime->currentSessionId());
     bb->set<uint64_t>(k_plan_version, runtime->currentPlanVersion());
-    bb->set<uint64_t>(k_reset_stuck_token, runtime->currentSessionId());
     bb->set<uint64_t>(k_goal_revision, 0u);
     bb->set<ayanami::FailureContext>(k_failure_context,
                                      ayanami::FailureContext{});

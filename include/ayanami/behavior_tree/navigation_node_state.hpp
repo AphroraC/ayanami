@@ -28,3 +28,47 @@ class NavigationTreeNodeState {
 
 }  // namespace behavior_tree
 }  // namespace ayanami
+
+#include <behaviortree_cpp/tree_node.h>
+
+#include <cstdint>
+
+namespace ayanami {
+namespace behavior_tree {
+
+/**
+ * @brief Change-detection token mixin shared by the navigation control /
+ * decorator nodes (RateController, RecoveryNode, RoundRobin,
+ * RecoverySequence).
+ *
+ * A token input (e.g. {goal_revision}, {path_id}) carries "the upstream
+ * artifact changed; reset this node's cached state". The mixin owns the
+ * cached token value and the read-and-compare step, so each node only
+ * reacts to consumeResetToken() returning true. The cache is deliberately
+ * NOT part of resetState(): token change detection must keep its baseline
+ * across tree lives.
+ */
+class ResettableNode {
+ public:
+  virtual ~ResettableNode() = default;
+
+ protected:
+  /// @brief Read the token port; return true (exactly once) when the value
+  /// changed since the previous call. @p node is the BT node owning the
+  /// port (usually *this).
+  bool consumeResetToken(const BT::TreeNode& node, const char* port) {
+    uint64_t token = 0;
+    (void)node.getInput(port, token);
+    if (token == reset_token) {
+      return false;
+    }
+    reset_token = token;
+    return true;
+  }
+
+ private:
+  uint64_t reset_token{0};
+};
+
+}  // namespace behavior_tree
+}  // namespace ayanami

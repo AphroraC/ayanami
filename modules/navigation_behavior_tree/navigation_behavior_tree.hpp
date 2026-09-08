@@ -19,8 +19,11 @@ namespace modules {
  *
  * - registerNodes: registers all custom navigation nodes (ComputePathToPose / SmoothPath /
  *   FollowPath / Recovery / conditions / control nodes, via the core registerNavigationBehaviorTreeNodes).
- * - registerTrees: registers the embedded default navigation tree XML (the single production source; the original
- *   config/BT/navigation.xml file was deleted).
+ * - registerTrees: registers the navigation tree XML. The XML is a config
+ *   asset (navigation.behavior_tree_xml in the navigation config, resolved
+ *   relative to the config directory); the module keeps the same tree
+ *   embedded as the fallback when the asset is absent, so the extension
+ *   alone is enough to run.
  * - defaultTreeId: "NavigateWithReplanningAndSmoothing".
  */
 class NavigationBehaviorTreeExtension
@@ -28,15 +31,10 @@ class NavigationBehaviorTreeExtension
  public:
   std::string name() const override { return "navigation"; }
 
-  void registerNodes(BT::BehaviorTreeFactory& factory) const override {
-    ayanami::behavior_tree::registerNavigationBehaviorTreeNodes(factory);
-  }
+  void registerNodes(BT::BehaviorTreeFactory& factory) const override;
 
   std::vector<std::string> registerTrees(
-      BT::BehaviorTreeFactory& factory) const override {
-    factory.registerBehaviorTreeFromText(k_default_navigation_xml);
-    return {k_default_tree_id};
-  }
+      BT::BehaviorTreeFactory& factory) const override;
 
   std::string defaultTreeId() const override { return k_default_tree_id; }
 
@@ -48,20 +46,9 @@ class NavigationBehaviorTreeExtension
   void provideBlackboardEntries(BT::Blackboard::Ptr blackboard) const override;
 
  private:
-  // Embedded default navigation tree (verbatim, single production source; the file version is not installed in production).
-  //
-  // Goal update discipline: the planner branch uses {goal_revision} as reset_token (a new goal triggers
-  // replanning); the smoother branch uses {path_id} as reset_token (ComputePathToPose bumps path_id on each
-  // successful plan, so a newly landed path is re-smoothed + bumps plan_version); FollowPath performs an in-place updatePlan on the running controller
-  // when plan_version changes -- the robot keeps following the old path until the new one is available, avoiding a stale
-  // smoothing cache where "replanning happened but is not being followed".
- //
- // Recovery rotation discipline (nav2 aligned): the outer recovery branch uses RoundRobin instead of sequential retry -- the cursor
- // keeps advancing across successes, rotating retries spin->wait->backup->spin..., avoiding a single recovery running repeatedly
- // (with sequential retries, a first recovery's "false success" would starve all later options forever).
   static constexpr const char* k_default_tree_id =
       "NavigateWithReplanningAndSmoothing";
-  static constexpr const char* k_default_navigation_xml = R"(
+  static constexpr const char* k_default_tree_xml = R"(
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
     <RecoveryNode name="NavigateRecovery" number_of_retries="6" budget_reset_token="{goal_revision}">

@@ -215,7 +215,6 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   bb->set<std::string>(k_backup_id, "x");
   bb->set<uint64_t>(k_session_id, 0u);
   bb->set<uint64_t>(k_plan_version, 0u);
-  bb->set<uint64_t>(k_reset_stuck_token, 1u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));

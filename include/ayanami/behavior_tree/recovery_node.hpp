@@ -2,7 +2,9 @@
 
 #include <behaviortree_cpp/control_node.h>
 
+#include "ayanami/behavior_tree/blackboard_protocol.hpp"
 #include "ayanami/behavior_tree/navigation_node_state.hpp"
+#include "ayanami/messages/failure.hpp"
 
 #include <cstdint>
 
@@ -20,6 +22,15 @@ namespace behavior_tree {
  * - child1 FAILURE -> overall FAILURE;
  * - child0 FAILURE with retries exhausted -> overall FAILURE.
  *
+ * Non-recoverable short-circuit (mbf navigator outcome classification): when
+ * child0 fails with a code no recovery can fix (invalid input/goal,
+ * persistent transform loss, cancellation -- see isRecoverable()), the
+ * recovery branch is skipped and the failure propagates immediately; there
+ * is no point burning map clears and retries on such a failure. The failing
+ * action node writes the structured FailureContext to the blackboard before
+ * returning FAILURE; a missing context (e.g. a bare condition failure) is
+ * treated as recoverable (conservative).
+ *
  * Budget reset (resident-tree discipline): when the budget_reset_token
  * input changes (e.g. {goal_revision} -- a new goal arrived), the retry
  * budget resets WITHOUT halting an in-flight recovery. Goal updates
@@ -27,7 +38,8 @@ namespace behavior_tree {
  * circuit in the recovery branch is free).
  */
 class RecoveryNode : public BT::ControlNode,
-                     public NavigationTreeNodeState {
+                     public NavigationTreeNodeState,
+                     public ResettableNode {
  public:
   RecoveryNode(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config),
@@ -47,10 +59,7 @@ class RecoveryNode : public BT::ControlNode,
     if (!getInput("number_of_retries", max_retries)) {
       return BT::NodeStatus::FAILURE;
     }
-    uint64_t token = 0;
-    (void)getInput("budget_reset_token", token);
-    if (token != budget_token) {
-      budget_token = token;
+    if (consumeResetToken(*this, "budget_reset_token")) {
       retry_count = 0;  // budget refresh; an in-flight recovery keeps running
     }
 
@@ -64,7 +73,13 @@ class RecoveryNode : public BT::ControlNode,
       if (status == BT::NodeStatus::RUNNING) {
         return BT::NodeStatus::RUNNING;
       }
-      // child0 FAILURE
+      // child0 FAILURE: skip the recovery branch when the failure code is
+      // one no recovery can fix.
+      if (!childFailureRecoverable()) {
+        haltChildren();
+        retry_count = 0;
+        return BT::NodeStatus::FAILURE;
+      }
       if (retry_count >= max_retries) {
         haltChildren();
         retry_count = 0;
@@ -98,19 +113,30 @@ class RecoveryNode : public BT::ControlNode,
   }
 
   /// @brief Logical reset after a tree-life terminal state (v4 halt only
-  /// propagates to RUNNING children, see the
-  /// RateController::resetState comment). The budget token cache is kept
-  /// (change-detection semantics).
+  /// propagates to RUNNING children). The budget token cache is kept
+  /// (change-detection semantics, owned by ResettableNode).
   void resetState() override {
     retry_count = 0;
     recovering = false;
   }
 
  private:
+  /// @brief Read the failure context written by the failing child and
+  /// classify it. No context (code NONE) counts as recoverable.
+  bool childFailureRecoverable() const {
+    if (!config().blackboard) {
+      return true;
+    }
+    FailureContext ctx;
+    if (!config().blackboard->get<FailureContext>(k_failure_context, ctx)) {
+      return true;
+    }
+    return isRecoverable(ctx.code);
+  }
+
   uint32_t max_retries;
   uint32_t retry_count;
   bool recovering;
-  uint64_t budget_token{0};
 };
 
 } // namespace behavior_tree

@@ -53,6 +53,12 @@ public:
   virtual void cancelAllControllers() = 0;
   virtual void cancelAllPlanners() {}
   virtual void cancelAllSmoothers() {}
+  /// @brief Non-blocking preemption: mark the running controller canceled
+  /// (a zeroed command is published synchronously by cancel()) and let the
+  /// task wind down on its own thread. Used by runtime preemption paths
+  /// (halt / recovery start) that run on the BT tick thread and must not
+  /// block on a slow plugin call.
+  virtual void preemptAllControllers() {}
   /// @brief Path validity query (consumed by the BT IsPathValid condition
   /// node; the BT-readable surface of the responsibility table's "is the
   /// path stale"). Default = valid iff non-empty; map-family hosts override
@@ -135,6 +141,10 @@ public:
   /// just the default id): cleans up every possibly running controller task
   /// on preemption / new session / halt. Derived classes may override.
   virtual void cancelAllControllers();
+
+  /// @brief Non-blocking variant of cancelAllControllers (see
+  /// NavigationRuntime::preemptAllControllers).
+  void preemptAllControllers() override;
   virtual void cancelAllPlanners();
   virtual void cancelAllSmoothers();
 
@@ -237,6 +247,9 @@ protected:
   // command for this long -> terminal), recovery = per-run timeout.
   double controller_patience{0.0};
   double recovery_patience{0.0};
+  // Robot-pose loss grace window (navigation.velocity_timeout, seconds):
+  // injected into the controller execution (setPoseGrace).
+  double velocity_timeout{0.25};
 
  public:
   /// @brief Cached patience values (config readback for tests/observability).

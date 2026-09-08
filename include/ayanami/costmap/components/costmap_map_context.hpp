@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <limits>
 #include <memory>
 #include <shared_mutex>
@@ -12,12 +13,13 @@
 #include <costmap_2d/costmap_2d.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
-#include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/map/abstract_map_context.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
+#include "ayanami/messages/nav_msgs.hpp"
 #include "ayanami/costmap/core/costmap_planning_view.hpp"
 #include "ayanami/costmap/core/costmap_view.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
+#include "ayanami/messages/timestamp.hpp"
 
 namespace ayanami {
 namespace costmap {
@@ -25,9 +27,11 @@ namespace costmap {
 /**
  * @brief The costmap family's "map module".
  *
- * Aggregates the global/local CostmapWrapper pair (global:
- * StaticLayer+InflationLayer; local: rolling
- * SimpleObstacleLayer+InflationLayer).
+ * Both the global and the local costmap live in one shared world frame
+ * (map_frame, typically "map"): obstacle observations are stamped in that
+ * frame, so no cross-frame transform is needed when overlaying the two
+ * grids. The local map may still be a rolling window (its origin follows
+ * the robot), but its cell coordinates are map-frame coordinates.
  *
  * Ownership and holding discipline:
  * - Ownership: the host (CostmapNavigation / CostmapNavigationServer) holds
@@ -42,7 +46,15 @@ namespace costmap {
  *   provided only to the map writer (CostmapNavigationServer) and the
  *   execution lifecycle (checkActivate/checkDeactivate/isCurrent); rule
  *   plugins never use it.
- * - Fields are private; only narrow accessors are exposed.
+ * - Robot pose lookups go through the injected transformLookup function
+ *   (wired by the host at configureCoreMaps time); the context holds no
+ *   reference to any global robot-state singleton.
+ *
+ * Family read contract (both grids share one frame):
+ * - planner: reads the overlay (superposition) of the global and local map
+ *   content (lockPlanning / CostmapPlanningView);
+ * - smoother: reads only the local map content;
+ * - controller/recovery: read the local map (family-defined).
  */
 class CostmapMapContext : public map::AbstractMapContext,
                        public std::enable_shared_from_this<CostmapMapContext> {
@@ -50,44 +62,40 @@ class CostmapMapContext : public map::AbstractMapContext,
   using Ptr = std::shared_ptr<CostmapMapContext>;
   using ConstPtr = std::shared_ptr<const CostmapMapContext>;
 
+  /// @brief Minimal transform-query seam injected by the host (typically a
+  /// thin wrapper over the TransformStore-backed robot state). Returns
+  /// false when the transform is unavailable.
+  using TransformLookup = std::function<bool(
+      const std::string& target_frame, const std::string& source_frame,
+      ayanami::Timestamp stamp, Eigen::Isometry3d& transform)>;
+
   CostmapMapContext() = default;
 
   std::string mapFamily() const override { return "costmap"; }
-  std::string globalFrame() const override { return global_frame; }
-  std::string localFrame() const override { return local_frame; }
-  std::string robotFrame() const override { return robot_frame; }
-  bool isCurrent() const override { return mapsAreCurrent(); }
-  std::uint32_t capabilities() const override {
-    using Capability = map::MapCapability;
-    return static_cast<std::uint32_t>(Capability::CollisionQuery) |
-           static_cast<std::uint32_t>(Capability::DynamicObstacleUpdate) |
-           static_cast<std::uint32_t>(Capability::ClearRegion);
-  }
   map::MapCommandPort::Ptr commandPort() const override { return command_port; }
 
-  /// @brief Path validity (semantics aligned with nav2
-  /// planner_server::isPathValid):
-  /// checking starts from the path point nearest the robot -- segments
-  /// already traversed may be occupied by new obstacles and are a source of
-  /// false negatives, so they are skipped explicitly; every point must be
-  /// in bounds (out of bounds treated as lethal, mirroring nav2) and its
-  /// cost must be neither NO_INFORMATION nor lethal (isLethal >= 253
-  /// includes inscribed, mirroring nav2's use_radius mode). Zero-copy
-  /// validation under a shared lock; degrades to a non-empty check when no
-  /// global wrapper exists; degrades to a full-path check (conservative)
-  /// when the robot pose is unavailable.
-  bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
+  /// @brief Path validity check on the same overlay the planner reads
+  /// (global+local superposition, semantics aligned with nav2
+  /// planner_server::isPathValid): checking starts from the path point
+  /// nearest the robot -- segments already traversed may be occupied by new
+  /// obstacles and are a source of false negatives, so they are skipped
+  /// explicitly; every point must be in bounds (out of bounds treated as
+  /// lethal, mirroring nav2) and its cost must be neither NO_INFORMATION nor
+  /// lethal (isLethal >= 253 includes inscribed, mirroring nav2's
+  /// use_radius mode). Zero-copy validation under shared locks; degrades to
+  /// a non-empty check when no global wrapper exists; degrades to a
+  /// full-path check (conservative) when the robot pose is unavailable.
+  bool isPathValid(const ayanami::nav_msgs::Path& path) const {
     if (path.poses.empty()) {
       return false;
     }
     if (!global_costmap) {
       return true;
     }
- // Start from the nearest point (pose resolution outside the map lock;
-    // robot state single facade = RobotStateController)
+    // Start from the nearest point (pose resolution outside the map lock).
     std::size_t start_index = 0;
     ayanami::geometry_msgs::PoseStamped robot_pose;
-    if (robotPoseInFrame(robot_pose, global_frame)) {
+    if (robotPoseInFrame(robot_pose, map_frame)) {
       double best = std::numeric_limits<double>::max();
       for (std::size_t i = 0; i < path.poses.size(); ++i) {
         const double d = (path.poses[i].pose.position -
@@ -99,21 +107,24 @@ class CostmapMapContext : public map::AbstractMapContext,
         }
       }
     }
-    return readGlobal([&path, start_index](const costmap_2d::Costmap2D& grid) {
-      for (std::size_t i = start_index; i < path.poses.size(); ++i) {
-        unsigned int mx = 0;
-        unsigned int my = 0;
-        if (!grid.worldToMap(path.poses[i].pose.position.x(),
-                             path.poses[i].pose.position.y(), mx, my)) {
-          return false;  // out of bounds: treated as lethal, mirroring nav2
-        }
-        const auto cost = grid.getCost(mx, my);
-        if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
-          return false;
-        }
-      }
+    auto overlay = lockPlanning();
+    if (!overlay.valid()) {
       return true;
-    });
+    }
+    const auto* grid = overlay.globalGrid();
+    for (std::size_t i = start_index; i < path.poses.size(); ++i) {
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      if (!grid->worldToMap(path.poses[i].pose.position.x(),
+                            path.poses[i].pose.position.y(), mx, my)) {
+        return false;  // out of bounds: treated as lethal, mirroring nav2
+      }
+      const auto cost = overlay.costAtGlobalCell(mx, my);
+      if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // ---- Configuration (writer / test injection) ----
@@ -123,11 +134,12 @@ class CostmapMapContext : public map::AbstractMapContext,
   void setLocalCostmap(costmap_2d::CostmapWrapper::Ptr wrapper) {
     local_costmap = std::move(wrapper);
   }
-  void setFrames(std::string global_frame, std::string local_frame,
-                 std::string robot_frame) {
-    this->global_frame = std::move(global_frame);
-    this->local_frame = std::move(local_frame);
+  void setFrames(std::string map_frame, std::string robot_frame) {
+    this->map_frame = std::move(map_frame);
     this->robot_frame = std::move(robot_frame);
+  }
+  void setTransformLookup(TransformLookup lookup) {
+    transform_lookup = std::move(lookup);
   }
 
   /// @brief Cache the immutable footprint during setup (injected by
@@ -147,11 +159,11 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
   // ---- frames / freshness ----
-  const std::string& getGlobalFrame() const { return global_frame; }
+  const std::string& getMapFrame() const { return map_frame; }
   const std::string& getRobotFrame() const { return robot_frame; }
 
   /// @brief False if any wrapper is not current; no wrapper counts as current.
-  bool mapsAreCurrent() const {
+  bool isCurrent() const {
     return (!global_costmap || global_costmap->isCurrent()) &&
            (!local_costmap || local_costmap->isCurrent());
   }
@@ -182,27 +194,20 @@ class CostmapMapContext : public map::AbstractMapContext,
 
   /// @brief Global read view under a shared lock (held for the whole
   /// algorithm call; no wrapper -> invalid view).
-  CostmapView lockGlobal() const { return buildView(global_costmap, global_frame); }
+  CostmapView lockGlobal() const { return buildView(global_costmap); }
 
-  /// @brief Local read view under a shared lock (uses the local frame).
-  CostmapView lockLocal() const { return buildView(local_costmap, local_frame); }
+  /// @brief Local read view under a shared lock (same map frame as global).
+  CostmapView lockLocal() const { return buildView(local_costmap); }
 
   /// @brief Planning overlay view (family read contract: planner = global +
   /// local superposition). Holds both shared locks at once (acquisition
   /// order local -> global; the writer takes them sequentially without
-  /// nesting, so no lock-ordering cycle). Zero copy. The local<-global
-  /// transform resolves once via RobotStateController; on a transient TF
-  /// miss the view degrades to global-only.
+  /// nesting, so no lock-ordering cycle). Zero copy; both grids share the
+  /// map frame, so no cross-frame transform is involved.
   CostmapPlanningView lockPlanning() const {
-    CostmapView local = buildView(local_costmap, local_frame);
-    CostmapView global = buildView(global_costmap, global_frame);
-    Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
-    bool ready = false;
-    if (local.valid() && global.valid()) {
-      ready = components::RobotStateController::instance().lookupTransform(
-          local_frame, global_frame, ayanami::Timestamp::latest(), t);
-    }
-    return CostmapPlanningView(std::move(global), std::move(local), t, ready);
+    CostmapView local = buildView(local_costmap);
+    CostmapView global = buildView(global_costmap);
+    return CostmapPlanningView(std::move(global), std::move(local));
   }
 
   /// @brief Run a callback while the global master grid is protected
@@ -248,13 +253,16 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
  private:
-  /// @brief Resolve the robot pose in the requested frame via
-  /// RobotStateController (single robot-state query facade; lock-free).
+  /// @brief Resolve the robot pose in the requested frame via the injected
+  /// transform lookup (host-wired; no global singleton dependency here).
   bool robotPoseInFrame(ayanami::geometry_msgs::PoseStamped& pose,
                         const std::string& frame) const {
-    Eigen::Isometry3d T;
-    if (!components::RobotStateController::instance().lookupTransform(
-            frame, robot_frame, ayanami::Timestamp::latest(), T)) {
+    if (!transform_lookup) {
+      return false;
+    }
+    Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+    if (!transform_lookup(frame, robot_frame, ayanami::Timestamp::latest(),
+                          T)) {
       return false;
     }
     pose = geometry_msgs::PoseStamped::fromIsometry(frame, T);
@@ -263,29 +271,26 @@ class CostmapMapContext : public map::AbstractMapContext,
 
   /// @brief Build a read view under a shared lock: grid/frame come from the
   /// wrapper; the footprint comes from the immutable configure-time cache;
-  /// robot_pose is resolved in the view's own frame (local view =
-  /// local_frame, global view = global_frame) via the lock-free
-  /// RobotStateController.
+  /// robot_pose is resolved in the map frame via the injected lookup.
   CostmapView buildView(
-      const costmap_2d::CostmapWrapper::Ptr& wrapper,
-      const std::string& frame) const {
+      const costmap_2d::CostmapWrapper::Ptr& wrapper) const {
     if (!wrapper) {
       return CostmapView{};
     }
     std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
     const auto* grid = wrapper->get().getCostmap();
     ayanami::geometry_msgs::PoseStamped robot_pose;
-    const bool has_robot_pose = robotPoseInFrame(robot_pose, frame);
-    return CostmapView(std::move(lock), grid, frame, &cached_footprint,
+    const bool has_robot_pose = robotPoseInFrame(robot_pose, map_frame);
+    return CostmapView(std::move(lock), grid, map_frame, &cached_footprint,
                        std::move(robot_pose), has_robot_pose,
                        wrapper->isCurrent());
   }
 
   costmap_2d::CostmapWrapper::Ptr global_costmap;
   costmap_2d::CostmapWrapper::Ptr local_costmap;
-  std::string global_frame{"map"};
-  std::string local_frame{"odom"};
+  std::string map_frame{"map"};
   std::string robot_frame{"base_link"};
+  TransformLookup transform_lookup;
   costmap_2d::Footprint cached_footprint;
   map::MapCommandPort::Ptr command_port;
 };

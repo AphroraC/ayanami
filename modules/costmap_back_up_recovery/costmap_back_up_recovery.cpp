@@ -23,12 +23,14 @@ void CostmapBackUpRecovery::configure(
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.backup_dist =
-      context.config.param<double>("recovery", "backup_dist", param.backup_dist);
-  param.max_v = context.config.param<double>("recovery", "max_v", param.max_v);
+      context.config.param<double>(context.name, "backup_dist", param.backup_dist);
+  param.max_v =
+      context.config.param<double>(context.name, "max_v", param.max_v);
   param.sim_cycle_dt =
-      context.config.param<double>("recovery", "sim_cycle_dt", param.sim_cycle_dt);
+      context.config.param<double>(
+          "recovery", "sim_cycle_dt", param.sim_cycle_dt);
   param.collision_radius = context.config.param<double>(
-      "recovery", "collision_radius", param.collision_radius);
+      context.name, "collision_radius", param.collision_radius);
   map_context = std::move(map);
 }
 

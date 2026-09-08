@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace ayanami {
 namespace components {
@@ -20,25 +22,21 @@ namespace components {
  * a time (one configured plugin per family; recoveries are per-plugin action
  * instances), so the old MBF-style concurrency-slot map has collapsed into a
  * single in-flight record. Each task owns one driver thread (a full runImpl
- * execution, spawned by start() and reaped by the task teardown) plus the
- * execution's own state-machine thread -- the threading model mirrors
- * ExecutionBase: one thread per long task, naturally bounded without a
- * process-wide pool.
+ * execution); a family's plugin never re-enters (latest-wins strict
+ * serialization / max_running==1).
  *
- * When a new goal arrives while a task is in flight, the old execution is
- * first preempted (cancel) and the old driver task (including the old
- * execution state machine) must have fully exited (join) before the new task
- * may enter the plugin -- a family's plugin never re-enters (latest-wins
- * strict serialization / max_running==1).
+ * Preemption is asynchronous (mbf/nav2 style): start() on a busy family
+ * marks the running execution canceled (cancel() already publishes the
+ * zeroed stop command synchronously), parks the new goal in a one-slot
+ * pending record and returns immediately. When the in-flight driver task
+ * fully exits (its execution joined), the teardown chains the pending goal
+ * onto a fresh driver thread -- so the tick thread never blocks on a slow
+ * plugin call, while the plugin still never re-enters. Use cancelAll() for
+ * the synchronous stop/destructor path (cancel + wait for everything).
  *
- * Concurrency control: a handoff mutex serializes the
- * start/cancel/cancelGoal transaction "cancel + wait for the old task to
- * exit -> start the new one". The handoff lock only briefly takes task_mutex
- * and never waits for the old task while holding task_mutex (task_cv.wait
- * releases it), so old-task teardown (run() still takes task_mutex at its
- * end) cannot deadlock with start. The task_done flag + task_cv turn the old
- * join(std::thread) into an event wait: run() sets task_done and notifies
- * before returning; start/cancelAll wait on that flag.
+ * Concurrency control: a handoff mutex serializes start/cancel transactions
+ * and the teardown chaining decision; it is held only briefly and never
+ * across a join. The task_done flag + task_cv turn joins into event waits.
  *
  * Mainline control flow: the derived Action::acceptGoal returns a TaskHandle
  * straight to the caller (BT node), bypassing NavigationCallbacks.
@@ -52,26 +50,148 @@ class ActionBase {
   ActionBase() = default;
   virtual ~ActionBase() { cancelAll(); }
 
-  /// @brief Start one execution. If a task is already in flight, first
-  /// preempt it (cancel) and wait for the old driver task to fully exit
-  /// (equivalent to joining the old thread) before submitting the new one.
-  /// The execution uses shared_ptr to match InFlight::execution's type (the
-  /// createExecution factory returns shared_ptr).
-  void start(const GoalHandleType& goal_handle, ExecutionPtr exec);
+  /// @brief Submit one execution. Non-blocking: if a task is in flight the
+  /// running execution is canceled (asynchronously torn down) and the new
+  /// goal is parked in the pending slot; the driver for it is chained by the
+  /// exiting task's teardown. A goal parked here that is itself replaced or
+  /// canceled before starting is settled via finishPendingGoal().
+  void start(const GoalHandleType& goal_handle, ExecutionPtr exec) {
+    std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
+    std::vector<GoalHandleType> dropped;
+    bool spawn_now = false;
+    {
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (pending_start) {
+        dropped.push_back(pending_start->goal_handle);
+        pending_start.reset();
+      }
+      if (task.in_use) {
+        // Mark the old execution canceled (it publishes its stop command
+        // synchronously inside cancel()); its teardown chains the new goal.
+        if (task.execution) {
+          task.execution->cancel();
+        }
+        pending_start = PendingStart{goal_handle, std::move(exec)};
+      } else {
+        // Reap a finished-but-unjoined predecessor first: assigning a new
+        // thread over a joinable handle would terminate. The predecessor
+        // already published task_done, so it holds no lock anymore and this
+        // join cannot deadlock.
+        if (task.worker.joinable()) {
+          task.worker.join();
+        }
+        task.execution = exec;
+        task.goal = goal_handle.goal;
+        task.goal_id = goal_handle.id;
+        task.task_done = false;
+        task.in_use = true;
+        spawn_now = true;
+      }
+    }
+    for (const auto& handle : dropped) {
+      finishPendingGoal(handle);
+    }
+    if (spawn_now) {
+      task.worker = std::thread([this, goal_handle, exec]() {
+        run(goal_handle, exec);
+      });
+    }
+  }
 
   /// @brief Cancel the in-flight execution (forwards to the plugin cancel).
-  void cancel();
-
-  /// @brief Cancel and wait for the in-flight task to finish (used by the
-  /// destructor and preemption teardown).
-  void cancelAll();
+  void cancel() {
+    std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
+    std::vector<GoalHandleType> dropped;
+    ExecutionPtr exec;
+    {
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (pending_start) {
+        dropped.push_back(pending_start->goal_handle);
+        pending_start.reset();
+      }
+      if (task.in_use) {
+        exec = task.execution;
+      }
+    }
+    for (const auto& handle : dropped) {
+      finishPendingGoal(handle);
+    }
+    if (exec) {
+      exec->cancel();
+    }
+  }
 
   /// @brief Cancel the in-flight execution only if it owns the given goal
-  /// (TaskHandle::cancel forwarded via the server). Returns false when the
-  /// goal is not the one in flight.
-  bool cancelGoal(uint64_t goal_id);
+  /// (TaskHandle::cancel forwarded via the server). Also settles a pending
+  /// goal with the same id (canceled before its driver ever started).
+  /// Returns false when the goal is not the one in flight/pending.
+  bool cancelGoal(uint64_t goal_id) {
+    std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
+    std::optional<GoalHandleType> dropped;
+    ExecutionPtr exec;
+    {
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (pending_start && pending_start->goal_handle.id == goal_id) {
+        dropped = pending_start->goal_handle;
+        pending_start.reset();
+      } else if (task.in_use && task.goal_id == goal_id) {
+        exec = task.execution;
+      }
+    }
+    if (dropped) {
+      finishPendingGoal(*dropped);
+      return true;
+    }
+    if (!exec) {
+      return false;
+    }
+    exec->cancel();
+    return true;
+  }
 
-  bool isRunning() const;
+  /// @brief Non-blocking preemption: settle the pending goal, mark the
+  /// in-flight execution canceled and return. Used by runtime paths running
+  /// on the BT tick thread (halt / recovery start) that must not block on a
+  /// slow plugin call.
+  void preemptAll() {
+    std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
+    std::vector<GoalHandleType> dropped;
+    ExecutionPtr exec;
+    {
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (pending_start) {
+        dropped.push_back(pending_start->goal_handle);
+        pending_start.reset();
+      }
+      if (task.in_use) {
+        exec = task.execution;
+      }
+    }
+    for (const auto& handle : dropped) {
+      finishPendingGoal(handle);
+    }
+    if (exec) {
+      exec->cancel();
+    }
+  }
+
+  /// @brief Cancel and wait for the in-flight task to finish (used by the
+  /// destructor and the stop/teardown path, where plugin lifetime requires
+  /// a synchronous shutdown).
+  void cancelAll() {
+    preemptAll();
+    std::unique_lock<std::mutex> lock(task_mutex);
+    task_cv.wait(lock, [this] { return task.task_done; });
+    if (task.worker.joinable()) {
+      task.worker.join();
+    }
+    task.execution.reset();
+  }
+
+  bool isRunning() const {
+    std::lock_guard<std::mutex> lock(task_mutex);
+    return task.in_use;
+  }
 
  protected:
   /// @brief Derived classes implement the execution driver: configure the
@@ -92,6 +212,13 @@ class ActionBase {
   /// an already-finished goal. Default no-op (pure test stubs may skip
   /// overriding).
   virtual void abortGoal(const GoalHandleType& goal_handle) {
+    (void)goal_handle;
+  }
+
+  /// @brief Settle a goal that was preempted from the pending slot (replaced
+  /// by a newer goal or canceled) before its driver ever started. Derived
+  /// classes publish a CANCELED result so the TaskHandle never hangs.
+  virtual void finishPendingGoal(const GoalHandleType& goal_handle) {
     (void)goal_handle;
   }
 
@@ -134,11 +261,78 @@ class ActionBase {
 
   /// @brief Driver task entry (runs on the driver thread): runImpl -> wait
   /// for the execution state machine to finish -> release the in-flight
-  /// record, set task_done and publish the completion signal (for
-  /// start/cancelAll join).
-  void run(const GoalHandleType& goal_handle, ExecutionPtr exec);
+  /// record; if a pending goal was parked meanwhile, chain it onto a fresh
+  /// driver thread (strict serialization: the new goal enters the plugin
+  /// only after this task fully exits).
+  void run(const GoalHandleType& goal_handle, ExecutionPtr exec) {
+    if (!exec) {
+      // Null execution (defensive path): clear the occupancy and publish the
+      // completion signal, otherwise waiters would hang.
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (task.in_use && task.goal_id == goal_handle.id) {
+        task.in_use = false;
+      }
+      task.task_done = true;
+      task_cv.notify_all();
+      return;
+    }
+    try {
+      runImpl(goal_handle, *exec);
+    } catch (const std::exception& e) {
+      // runImpl does not throw internally; the fallback publishes ABORTED to
+      // guarantee TaskHandle completion (waiters and the onComplete resource
+      // protocol do not hang).
+      abortGoal(goal_handle);
+      (void)e;
+    } catch (...) {
+      abortGoal(goal_handle);
+    }
+    exec->join();
+    // Teardown: release the occupancy, then either chain a pending goal onto
+    // a fresh driver thread or settle this task as done. The handoff mutex
+    // serializes the chaining decision against concurrent
+    // start/cancel/cancelGoal; it is never held across a join.
+    std::optional<PendingStart> next;
+    std::thread retiring_worker;
+    {
+      std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
+      std::lock_guard<std::mutex> lock(task_mutex);
+      if (task.in_use && task.goal_id == goal_handle.id) {
+        task.in_use = false;
+        task.execution.reset();
+      }
+      next = std::move(pending_start);
+      pending_start.reset();
+      if (next) {
+        retiring_worker = std::move(task.worker);
+        task.execution = next->execution;
+        task.goal = next->goal_handle.goal;
+        task.goal_id = next->goal_handle.id;
+        task.in_use = true;
+        task.task_done = false;  // the chained task is in flight now
+        task.worker = std::thread([this, gh = next->goal_handle,
+                                   chained = next->execution]() mutable {
+          run(gh, chained);
+        });
+      } else {
+        task.task_done = true;
+      }
+    }
+    task_cv.notify_all();
+    // The retiring handle is this thread itself (it is about to exit);
+    // detaching avoids the joinable-destructor terminate.
+    if (retiring_worker.joinable()) {
+      retiring_worker.detach();
+    }
+    (void)next;
+  }
 
  private:
+  struct PendingStart {
+    GoalHandleType goal_handle;
+    ExecutionPtr execution;
+  };
+
   struct InFlight {
     ExecutionPtr execution;
     /// @brief This task's driver thread (joined and reaped on exit).
@@ -146,15 +340,19 @@ class ActionBase {
     Goal goal;
     bool in_use{false};
     uint64_t goal_id{0};
-    /// @brief Whether the driver task has fully exited (set at the end of
-    /// run; precondition for join).
+    /// @brief Whether the driver task has fully exited and nothing was
+    /// chained after it (precondition for cancelAll's join).
     bool task_done{true};
   };
 
   /// @brief Single in-flight record: a family's plugin never re-enters.
   InFlight task;
-  mutable std::mutex task_mutex;  ///< protects the task record fields
-  /// @brief Serializes the start/cancel/cancelGoal transaction.
+  /// @brief Goal parked while a preemption waits for the in-flight task to
+  /// exit (one slot: newer goals replace it).
+  std::optional<PendingStart> pending_start;
+  mutable std::mutex task_mutex;  ///< protects the task/pending records
+  /// @brief Serializes the start/cancel/cancelGoal/preempt transactions and
+  /// the teardown chaining decision.
   std::mutex handoff_mutex;
   /// @brief Driver-task completion notification (paired with task_mutex;
   /// the predicate is task_done).
@@ -163,7 +361,7 @@ class ActionBase {
  protected:
   /// @brief Find the in-flight execution by goal_id (for in-place updates,
   /// e.g. controller path/version updates). Returns nullptr when the goal is
-  /// not the one in flight.
+  /// not the one in flight (a still-pending goal cannot be updated).
   ExecutionPtr executionForGoal(uint64_t goal_id) const {
     std::lock_guard<std::mutex> lock(task_mutex);
     if (task.in_use && task.goal_id == goal_id) {
@@ -172,158 +370,6 @@ class ActionBase {
     return ExecutionPtr{};
   }
 };
-
-template <typename Goal, typename Execution>
-void ActionBase<Goal, Execution>::start(const GoalHandleType& goal_handle,
-                                        ExecutionPtr exec) {
-  // Take the handoff lock: the preemption transaction is strictly
-  // serialized against concurrent cancel/cancelGoal.
-  std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
-
-  ExecutionPtr old_exec;
-  {
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (task.in_use) {
-      old_exec = task.execution;
-      task.in_use = false;  // Occupancy removed: concurrent cancel during the preemption window no longer hits the old execution
-    }
-  }
-  // Strict preemption: first cancel the old execution to interrupt its blocking plugin calls.
-  if (old_exec) {
-    old_exec->cancel();
-  }
-  {
-    // Event-driven wait for the old driver task to fully exit (equivalent
-    // to joining the old driver thread): the old task is ActionBase::run and
-    // only counts as finished at its end (after exec->join has waited for
-    // the old execution state machine to fully exit, task_done is then set);
-    // only then may the new task enter the plugin (never re-enters).
-    // The exiting thread no longer touches task_mutex, so joining under
-    // the lock cannot deadlock.
-    std::unique_lock<std::mutex> lock(task_mutex);
-    task_cv.wait(lock, [this] { return task.task_done; });
-    if (task.worker.joinable()) {
-      task.worker.join();
-    }
-    task.execution = exec;
-    task.goal = goal_handle.goal;
-    task.goal_id = goal_handle.id;
-    task.task_done = false;  // New driver task in flight
-    task.in_use = true;
-    // Driver task = one temporary thread ("one full runImpl execution");
-    // the threading model mirrors ExecutionBase, task lifecycle is managed
-    // by task_done + join.
-    task.worker = std::thread([this, goal_handle, exec]() {
-      run(goal_handle, exec);
-    });
-  }
-}
-
-template <typename Goal, typename Execution>
-void ActionBase<Goal, Execution>::cancel() {
-  std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
-  ExecutionPtr exec;
-  {
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (!task.in_use) {
-      return;
-    }
-    exec = task.execution;
-  }
-  if (exec) {
-    exec->cancel();
-  }
-}
-
-template <typename Goal, typename Execution>
-bool ActionBase<Goal, Execution>::cancelGoal(uint64_t goal_id) {
-  // Take the handoff lock, then re-check that the in-flight goal matches and cancel.
-  std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
-  ExecutionPtr exec;
-  {
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (task.in_use && task.goal_id == goal_id) {
-      exec = task.execution;
-    }
-  }
-  if (!exec) {
-    return false;
-  }
-  exec->cancel();
-  return true;
-}
-
-template <typename Goal, typename Execution>
-void ActionBase<Goal, Execution>::cancelAll() {
-  ExecutionPtr to_cancel;
-  {
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (task.in_use && task.execution) {
-      to_cancel = task.execution;
-    }
-    // Occupancy removed: after cancelAll the task teardown no longer hits
-    // the old execution; the execution reference is reset in the unified
-    // teardown after its task exits.
-    task.in_use = false;
-  }
-  if (to_cancel) {
-    to_cancel->cancel();
-  }
-  // Event-driven wait for the driver task to fully exit; join and reap the driver thread.
-  std::unique_lock<std::mutex> lock(task_mutex);
-  task_cv.wait(lock, [this] { return task.task_done; });
-  if (task.worker.joinable()) {
-    task.worker.join();
-  }
-  task.execution.reset();
-}
-
-template <typename Goal, typename Execution>
-bool ActionBase<Goal, Execution>::isRunning() const {
-  std::lock_guard<std::mutex> lock(task_mutex);
-  return task.in_use;
-}
-
-template <typename Goal, typename Execution>
-void ActionBase<Goal, Execution>::run(const GoalHandleType& goal_handle,
-                                      ExecutionPtr exec) {
-  if (!exec) {
-    // Null execution (defensive path): clear the occupancy and publish the completion signal, otherwise waiters would hang.
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (task.in_use && task.goal_id == goal_handle.id) {
-      task.in_use = false;
-    }
-    task.task_done = true;
-    task_cv.notify_all();
-    return;
-  }
-  try {
-    runImpl(goal_handle, *exec);
-  } catch (const std::exception& e) {
-    // runImpl does not throw internally; the fallback publishes ABORTED to
-    // guarantee TaskHandle completion (waiters and the onComplete resource
-    // protocol do not hang).
-    abortGoal(goal_handle);
-    (void)e;
-  } catch (...) {
-    abortGoal(goal_handle);
-  }
-  exec->join();
-  // Teardown (before this driver thread exits): if the task is still
-  // occupied, mark it idle and release the execution; regardless of
-  // occupancy (in_use is already false when preempted by a new
-  // start/cancelAll), publish the completion signal so start/cancelAll can
-  // join and reap this thread.
-  {
-    std::lock_guard<std::mutex> lock(task_mutex);
-    if (task.in_use && task.goal_id == goal_handle.id) {
-      task.in_use = false;
-      task.execution.reset();
-    }
-    task.task_done = true;
-  }
-  task_cv.notify_all();
-}
 
 } // namespace components
 } // namespace ayanami

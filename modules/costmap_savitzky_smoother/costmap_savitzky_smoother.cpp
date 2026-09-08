@@ -79,11 +79,14 @@ void CostmapSavitzkySmoother::configure(
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
   const Config& file = context.config;
+  // Param section convention: the section key = the module json "name"
+  // field, delivered as PluginContext::name.
+  const std::string& section = context.name;
   param.do_refinement =
-      file.param<bool>("costmap_savitzky_smoother", "do_refinement",
+      file.param<bool>(section, "do_refinement",
                        param.do_refinement);
   param.refinement_num =
-      file.param<int>("costmap_savitzky_smoother", "refinement_num",
+      file.param<int>(section, "refinement_num",
                       param.refinement_num);
   map_context = std::move(map);
 }

@@ -153,7 +153,7 @@ TEST(ContinuousGoalReplacement, rapidSameGoalSubmissionsOnlyLastWins) {
   int succeeded = 0;
   int canceled = 0;
   for (auto& task : tasks) {
-    ASSERT_TRUE(readyWithin(task, 2000)) << "task 未在时限内完成 (hang?)";
+    ASSERT_TRUE(readyWithin(task, 2000)) << "task did not finish in time (hang?)";
     if (task.status() == GoalStatus::SUCCEEDED) {
       ++succeeded;
     } else if (task.status() == GoalStatus::CANCELED) {

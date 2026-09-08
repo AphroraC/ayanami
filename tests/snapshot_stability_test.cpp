@@ -164,7 +164,7 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
   EXPECT_GE(smoother->reader_released.load(), 0);
   EXPECT_GE(writer_acquired.load(), 0);
   EXPECT_LE(smoother->reader_released.load(), writer_acquired.load())
-      << "写者在读者仍持 shared 锁期间即获锁 (排他语义被破坏)";
+      << "writer acquired the lock while a reader still held it (exclusivity broken)";
   EXPECT_EQ(writes.load(), 1);
   // (c): the reader re-reads (shared lock) and sees the new data written by the writer.
   {
@@ -212,8 +212,8 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
   }
   writer.join();
 
-  EXPECT_EQ(writes.load(), k_writes) << "写者被慢读者饿死 (未完成全部写入)";
+  EXPECT_EQ(writes.load(), k_writes) << "writer starved by slow readers (not all writes completed)";
   EXPECT_EQ(smoother->calls.load(), 30);
   EXPECT_EQ(smoother->torn_pairs.load(), 0)
-      << "读者持 shared 锁读到 torn 栅格对 (锁排他性失效)";
+      << "reader observed a torn grid pair under the shared lock (lock exclusivity broken)";
 }
