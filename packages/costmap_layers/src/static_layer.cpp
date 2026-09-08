@@ -11,7 +11,7 @@ namespace costmap_2d_layers {
 
 namespace {
 
-// PGM 头 token 读取: 跳过空行与 '#' 注释行。
+// PGM header token reading: skips blank lines and '#' comment lines.
 std::string readToken(std::istream& in) {
   std::string token;
   while (in >> token) {
@@ -103,7 +103,7 @@ void StaticLayer::setMapPath(const std::string& path, double resolution,
   const std::size_t pixel_count =
       static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
   if (magic == "P5") {
-    input.get();  // 吃掉 maxval 后的单个空白符
+    input.get();  // Consume the single whitespace after maxval
     for (std::size_t i = 0; i < pixel_count; ++i) {
       unsigned int value = 0;
       if (max_value < 256) {
@@ -248,9 +248,9 @@ void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
                                          static_cast<unsigned int>(y)));
         continue;
       }
-      // rolling global costmap (M2) 下 master
-      // grid 原点随机器人滚动, 不能按相同 cell 索引直拷; 改用 cell 中心世界
-      // 坐标在静态图上采样, 让窗口内正确渲染地图数据。
+      // Under a rolling global costmap (M2) the master grid origin
+      // rolls with the robot, so a direct copy by identical cell index is invalid;
+      // instead sample the static map at the cell center world coordinates so the window renders map data correctly.
       double wx = 0.0;
       double wy = 0.0;
       master_grid.mapToWorld(static_cast<unsigned int>(x),

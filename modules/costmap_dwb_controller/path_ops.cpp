@@ -1,4 +1,4 @@
-// path_ops.cpp — 迁移自 nav_2d_utils/src/path_ops.cpp (纯算法)。
+// path_ops.cpp -- ported from nav_2d_utils/src/path_ops.cpp (pure algorithms).
 #include "path_ops.hpp"
 
 #include <cmath>

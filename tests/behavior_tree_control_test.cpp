@@ -24,8 +24,8 @@ using ayanami::nav_msgs::Path;
 
 namespace {
 
-// 可返回任意 NodeStatus 的异步 Action 桩（需 RUNNING 能力，故继承 ActionNodeBase 而非
-// SyncActionNode）。tick 次数与每次返回的状态由测试直接控制。
+/// Async action stub that can return any NodeStatus (needs RUNNING capability, so it derives from ActionNodeBase rather
+/// than SyncActionNode). The test directly controls the tick count and each returned status.
 class MockChild : public BT::ActionNodeBase {
  public:
   MockChild(const std::string& name, const BT::NodeConfig& config)
@@ -91,11 +91,11 @@ TEST(BehaviorTreeControlTest, recoveryNodeExhaustsRetriesAfterThreeFailures) {
   mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // fail #1 -> recovery SUCCESS -> 重试, 返回 RUNNING
+  // fail #1 -> recovery SUCCESS -> retry, returns RUNNING
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // fail #2 -> recovery SUCCESS -> 重试, 返回 RUNNING
+  // fail #2 -> recovery SUCCESS -> retry, returns RUNNING
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // fail #3 -> retries(2) 耗尽 -> 整体 FAILURE
+  // fail #3 -> retries(2) exhausted -> overall FAILURE
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks[0]->tick_count, 3);
   EXPECT_EQ(mocks[1]->tick_count, 2);
@@ -159,8 +159,8 @@ TEST(BehaviorTreeControlTest, recoverySequenceAdvancesOnFailureAndStopsOnSuccess
 }
 
 TEST(BehaviorTreeControlTest, recoverySequenceRestartsFromFirstAfterSuccess) {
-  // 顺序恢复语义: 某个 recovery 成功 -> 整体 SUCCESS (外层 RecoveryNode 回主
-  // 任务); 下一次进入恢复分支时从第一个 recovery 重新开始 (脱困后恢复轮次)。
+  // Sequential recovery semantics: one recovery succeeding -> overall SUCCESS (the outer RecoveryNode returns to the
+  // main task); the next entry into the recovery branch restarts from the first recovery (recovery rounds after escaping).
   auto factory = makeFactory();
   factory.registerNodeType<RecoverySequence>("RecoverySequence");
   auto tree = factory.createTreeFromText(R"(
@@ -170,19 +170,19 @@ TEST(BehaviorTreeControlTest, recoverySequenceRestartsFromFirstAfterSuccess) {
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
 
-  // 第一轮: first 失败, second 成功 -> 整体 SUCCESS。
+  // Round 1: first fails, second succeeds -> overall SUCCESS.
   mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
-  // 第二轮 (脱困后再次卡住): 从 first 重新开始。
+  // Round 2 (stuck again after escaping): restarts from first.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
 TEST(BehaviorTreeControlTest, recoverySequenceExhaustsToFailure) {
-  // 全部 recovery 失败 -> 整体 FAILURE (恢复序列耗尽)。
+  // All recoveries fail -> overall FAILURE (recovery sequence exhausted).
   auto factory = makeFactory();
   factory.registerNodeType<RecoverySequence>("RecoverySequence");
   auto tree = factory.createTreeFromText(R"(
@@ -198,7 +198,7 @@ TEST(BehaviorTreeControlTest, recoverySequenceExhaustsToFailure) {
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
   EXPECT_EQ(mocks[2]->tick_count, 1);
-  // 耗尽后复位: 下一 tick 重新从 first 开始 (可再次进入恢复轮次)。
+  // Reset after exhaustion: the next tick restarts from first (recovery rounds can be entered again).
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks[0]->tick_count, 2);
 }
@@ -213,13 +213,13 @@ TEST(BehaviorTreeControlTest, recoveryNodeResetsRetriesAfterSuccess) {
   ASSERT_EQ(mocks.size(), 2u);
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // 首轮成功 -> retry 计数复位
+  // First round succeeds -> retry counter resets
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 0);
 
-  // 复位后重新计数: 2 次失败 + 2 次 recovery 成功后第 3 次失败耗尽
+  // Re-count after reset: 2 failures + 2 recovery successes, then the 3rd failure exhausts
   mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
@@ -251,8 +251,8 @@ TEST(BehaviorTreeControlTest, rateControllerGatesTicksAtHz) {
   ASSERT_EQ(mocks.size(), 1u);
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // 100Hz tick 100ms (10 tick, 每 10ms): hz=10 -> 周期 100ms, 首 tick 立即执行,
-  // 其余在冷却期内返回缓存, 因此 child 只被执行 1 次。
+  // 100Hz tick for 100ms (10 ticks, one every 10ms): hz=10 -> 100ms period; the first tick executes immediately,
+  // the rest return the cached status during the cooldown, so the child executes only once.
   for (int i = 0; i < 10; ++i) {
     EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
     now += std::chrono::milliseconds(10);
@@ -290,7 +290,7 @@ TEST(BehaviorTreeControlTest, rateControllerRunsAgainAfterPeriodElapsed) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
 
-  // 周期 (100ms) 内不执行, 跨过周期后再次执行
+  // No execution within the (100ms) period; executes again after crossing the period
   now += std::chrono::milliseconds(50);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
@@ -322,7 +322,7 @@ TEST(BehaviorTreeControlTest, rateControllerHzMinusOneRunsOnceThenCaches) {
   ASSERT_EQ(mocks.size(), 1u);
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // hz=-1: 单次执行后缓存 SUCCESS
+  // hz=-1: caches SUCCESS after a single execution
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
@@ -353,19 +353,19 @@ TEST(BehaviorTreeControlTest, rateControllerResetTokenReexecutesCachedChild) {
   ASSERT_EQ(mocks.size(), 1u);
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // 单次模式缓存 SUCCESS, 后续 tick 不再执行 child
+  // Single-shot mode caches SUCCESS; subsequent ticks no longer execute the child
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 1);
 
-  // reset_token 变化 (新 goal -> goal_revision 递增): 无视缓存立即重执行。
-  // 这是 "新 goal 立即重规划/重平滑" 的机制 (默认树 planner/smoother
-  // RateController 均绑定 reset_token="{goal_revision}")。
+  // reset_token changed (new goal -> goal_revision incremented): re-executes immediately, ignoring the cache.
+  // This is the mechanism behind "replan/re-smooth immediately on a new goal" (in the default tree the planner/smoother
+  // RateControllers both bind reset_token="{goal_revision}").
   bb->set<uint64_t>("goal_revision", 1u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
 
-  // token 未变时继续缓存
+  // Keeps caching while the token is unchanged
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
 
@@ -393,14 +393,14 @@ TEST(BehaviorTreeControlTest, pipelineSequenceStaysOnRunningChildAndAdvances) {
   ASSERT_EQ(mocks.size(), 2u);
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // child0 RUNNING 时下次 tick 依然执行 child0
+  // While child0 is RUNNING, the next tick still executes child0
   mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 0);
 
-  // child0 SUCCESS 后从 child0 转 child1 继续
+  // After child0 SUCCESS, moves from child0 on to child1
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 3);
@@ -425,14 +425,14 @@ TEST(BehaviorTreeControlTest, pipelineSequenceFailsWhenAnyChildFails) {
   auto mocks = collectMocks(tree);
   ASSERT_EQ(mocks.size(), 2u);
 
-  // child0 直接 FAILURE -> 整树 FAILURE
+  // child0 fails outright -> whole tree FAILURE
   mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 0);
 
-  // child1 FAILURE -> 整树 FAILURE
+  // child1 FAILURE -> whole tree FAILURE
   auto factory2 = makeFactory();
   factory2.registerNodeType<PipelineSequence>("PipelineSequence");
   auto bb2 = BT::Blackboard::create();
@@ -490,17 +490,17 @@ TEST(BehaviorTreeControlTest, goalUpdatedDetectsGoalChange) {
 </root>)",
                                           bb);
 
-  // 首次 tick 初始化基线 -> FAILURE
+  // First tick initializes the baseline -> FAILURE
   bb->set<PoseStamped>(k_goal, makePose(0.0));
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
-  // 黑板 goal 变化 -> SUCCESS
+  // Blackboard goal changed -> SUCCESS
   auto changed = makePose(5.0);
   changed.header.stamp = ayanami::Timestamp{static_cast<std::int64_t>(1)};
   bb->set<PoseStamped>(k_goal, changed);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
-  // 未变化 -> FAILURE
+  // Unchanged -> FAILURE
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 }
 
@@ -561,7 +561,7 @@ TEST(BehaviorTreeControlTest, isRobotStuckTokenResetClearsState) {
 </root>)",
                                           bb);
 
-  // 静止 + 远离目标 (连续 3 tick 判定卡住)
+  // Stationary + far from the goal (stuck detected over 3 consecutive ticks)
   bb->set<uint64_t>(k_reset_stuck_token, 1u);
   bb->set<Odometry>("robot_odometry", Odometry{});
   bb->set<PoseStamped>("robot_pose", makePose(0.0));
@@ -571,7 +571,7 @@ TEST(BehaviorTreeControlTest, isRobotStuckTokenResetClearsState) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
-  // reset_stuck_token 变化 -> 状态清零 (防 static 跨任务残留)
+  // reset_stuck_token changed -> state cleared (prevents static state leaking across tasks)
   bb->set<uint64_t>(k_reset_stuck_token, 2u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);

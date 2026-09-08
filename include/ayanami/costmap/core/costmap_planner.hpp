@@ -11,13 +11,18 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 全局路径规划插件基类 (costmap族, MBF 式分层)。
+ * @brief Global planning plugin base class (costmap family, MBF-style
+ * layering).
  *
- * 在 abstract::AbstractPlanner (零地图纯虚接口) 之上只新增地图族注入点:
- * - configure(context, map): 插件逻辑名 + 自身配置 + costmap 地图模块
- *   (宿主持有所有权, 注入 const 智能指针; 插件绝不改图)。
- * - makePlan(...): 即 abstract 纯虚签名; 实现经持有的 map lockGlobal()
- *   (RAII shared 锁 + 零拷贝) 读图, 单次规划 (<10ms) 持锁, 地图写者等锁写入。
+ * On top of abstract::AbstractPlanner (zero-map pure virtual interface),
+ * only the map-family injection point is added:
+ * - configure(context, map): plugin logical name + its own config + the
+ *   costmap map module (owned by the host, injected as a const smart
+ *   pointer; the plugin never modifies the map).
+ * - makePlan(...): the abstract pure virtual signature; the implementation
+ *   reads the map through its held map's lockGlobal() (RAII shared lock +
+ *   zero copy), holding the lock for a single planning call (<10ms); the
+ *   map writer waits for the lock to write.
  */
 class CostmapPlanner : public ayanami::abstract::AbstractPlanner {
  public:

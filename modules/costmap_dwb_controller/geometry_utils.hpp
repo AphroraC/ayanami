@@ -1,5 +1,5 @@
-// geometry_utils.hpp — nav2_util/geometry_utils.hpp 中 DWB 用到的纯几何函数
-// (euclideanDistance / first_after_integrated_distance, 迁移自 nav2)。
+// geometry_utils.hpp -- pure geometry functions used by DWB from nav2_util/geometry_utils.hpp
+// (euclideanDistance / first_after_integrated_distance, ported from nav2).
 #pragma once
 
 #include <cmath>

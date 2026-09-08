@@ -9,20 +9,20 @@
 
 namespace costmap_2d_layers {
 
-// 静态地图层: 持有一份只读地图, 每个更新周期把地图 cost 写回 master grid。
-// 纯 C++ (无 ROS publisher), 地图通过 setMap / setMapPath 注入。
+/// Static map layer: holds a read-only map and writes the map costs back into the master grid each update cycle.
+/// Pure C++ (no ROS publisher); the map is injected via setMap / setMapPath.
 class StaticLayer : public costmap_2d::Layer {
  public:
-  // 拷贝一份静态地图 (size/resolution/origin/costs)。仅用于初始化线程；
-  // 运行期生产者必须用 queueMap, 由 update cycle 安全应用。
+  /// Copies a static map (size/resolution/origin/costs). For the initialization thread only;
+  /// runtime producers must use queueMap, which the update cycle applies safely.
   void setMap(const costmap_2d::Costmap2D& map);
   // Nav2-style deferred update: callbacks/producers queue a map, the costmap
   // update cycle applies it at the beginning of updateBounds.
   void queueMap(const costmap_2d::Costmap2D& map);
 
-  // 从 PGM (P5/P2, 8 位) 文件加载静态地图。
-  // 像素映射: 0(black) -> LETHAL_OBSTACLE, 255(white) -> FREE_SPACE,
-  // 其余 -> NO_INFORMATION。PGM 不含分辨率, 由调用方给出。
+  /// Loads a static map from a PGM (P5/P2, 8-bit) file.
+  /// Pixel mapping: 0 (black) -> LETHAL_OBSTACLE, 255 (white) -> FREE_SPACE,
+  /// everything else -> NO_INFORMATION. A PGM carries no resolution; the caller supplies it.
   void setMapPath(const std::string& path, double resolution = 1.0,
                   double origin_x = 0.0, double origin_y = 0.0);
 
@@ -30,7 +30,7 @@ class StaticLayer : public costmap_2d::Layer {
                     double* min_x, double* min_y, double* max_x,
                     double* max_y) override;
 
-  // 把窗口内层地图 cost 写回 master (true overwrite, 含 NO_INFORMATION)。
+  /// Writes the in-window layer map costs back into the master (true overwrite, including NO_INFORMATION).
   void updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j,
                    int max_i, int max_j) override;
 

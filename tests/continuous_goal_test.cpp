@@ -1,8 +1,8 @@
-// 复刻 legacy continuous_goal_test.cpp 契约 (新接口等价改写)。
+// Re-creates the legacy continuous_goal_test.cpp contract (equivalent rewrite on the new interface).
 //
-// 契约: 同 goal 连续 acceptGoal (间隔极小) 不应导致系统无限 spin。新接口下
-// 同 goal 同 slot 走 preempt+join+start, 旧 goal 被抢占 (CANCELED), 新 goal
-// 正常 RUNNING 至 SUCCEEDED; 全程有界完成 (无 hang), TaskHandle 完成顺序兼容。
+// Contract: rapidly repeated acceptGoal of the same goal (tiny intervals) must not spin the system forever. On the
+// new interface, the same goal on the same slot goes preempt+join+start: the old goal is preempted (CANCELED) and
+// the new goal runs normally from RUNNING to SUCCEEDED; everything completes in bounded time (no hang), with compatible TaskHandle completion order.
 
 #include <gtest/gtest.h>
 
@@ -25,18 +25,18 @@
 
 namespace {
 
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 阻塞型 planner: makePlan 等待 release 或 cancel 才返回。
-// cancel 置 canceled 并唤醒; 每次调用后清零, 使抢占与释放语义可预测。
+/// Blocking planner: makePlan waits for release or cancel before returning.
+/// cancel sets canceled and wakes; it is cleared after each call, making preemption and release semantics predictable.
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     ++calls;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -45,11 +45,12 @@ public:
                        [this] { return canceled.load() || released.load(); });
     }
     (void)canceled.exchange(false);
-    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    // The cancelled path also returns a success path: the execution detects cancel_requested and yields CANCELED.
     Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
 
   bool cancel() override {
@@ -99,8 +100,8 @@ bool readyWithin(Task& t, int max_ms) {
 
 }  // namespace
 
-// 同 goal 两次快速 acceptGoal: 第二次 ACCEPTED; 第一个被抢占 CANCELED,
-// 第二个最终 SUCCEEDED; 全程有界完成 (无 hang)。
+/// Two rapid acceptGoal calls with the same goal: the second is ACCEPTED; the first is preempted CANCELED,
+/// the second eventually SUCCEEDED; everything completes in bounded time (no hang).
 TEST(ContinuousGoalReplacement, sameGoalRapidResubmissionIsStable) {
   auto planner = std::make_shared<GatedPlanner>();
   ayanami::components::PlannerAction action(planner);
@@ -109,7 +110,7 @@ TEST(ContinuousGoalReplacement, sameGoalRapidResubmissionIsStable) {
   auto first = action.acceptGoal(goal);
   ASSERT_TRUE(first.valid());
 
-  // 等第一个进入 makePlan
+  // Wait for the first to enter makePlan
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->entered.wait_for(
@@ -117,23 +118,23 @@ TEST(ContinuousGoalReplacement, sameGoalRapidResubmissionIsStable) {
         [&] { return planner->calls.load() >= 1; }));
   }
 
-  // 同 goal 快速再发 (间隔极小): 第二次必须 ACCEPTED
+  // Rapidly resubmit the same goal (tiny interval): the second must be ACCEPTED
   auto second = action.acceptGoal(goal);
   ASSERT_TRUE(second.valid());
 
-  // 第一个被抢占 → CANCELED; 第二个 RUNNING (等其进入 makePlan 即被 accept)
+  // The first was preempted -> CANCELED; the second is RUNNING (accepted once it enters makePlan)
   ASSERT_TRUE(readyWithin(first, 1000));
   EXPECT_EQ(first.status(), GoalStatus::CANCELED);
 
-  // 释放第二个 → SUCCEEDED
+  // Release the second -> SUCCEEDED
   planner->release();
   ASSERT_TRUE(readyWithin(second, 2000));
   EXPECT_EQ(second.status(), GoalStatus::SUCCEEDED);
   EXPECT_GE(planner->calls.load(), 2);
 }
 
-// 快速连续提交多个同 goal: 只有最后一个 SUCCEEDED, 其余全部被抢占 CANCELED,
-// 所有 TaskHandle 在时限内完成 (无 hang / 无无限 spin)。
+/// Rapidly submit the same goal many times in a row: only the last one SUCCEEDED, all others preempted CANCELED,
+/// all TaskHandles complete within the deadline (no hang / no endless spin).
 TEST(ContinuousGoalReplacement, rapidSameGoalSubmissionsOnlyLastWins) {
   auto planner = std::make_shared<GatedPlanner>();
   ayanami::components::PlannerAction action(planner);
@@ -146,7 +147,7 @@ TEST(ContinuousGoalReplacement, rapidSameGoalSubmissionsOnlyLastWins) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 
-  // 释放最后一个 (其余已被抢占)
+  // Release the last one (the rest were already preempted)
   planner->release();
 
   int succeeded = 0;
@@ -162,8 +163,8 @@ TEST(ContinuousGoalReplacement, rapidSameGoalSubmissionsOnlyLastWins) {
 
   EXPECT_EQ(succeeded, 1);
   EXPECT_EQ(canceled, 4);
-  // 无无限 spin: 调用次数有界 (线性于提交数; 共享 cancel 标志的抢占竞态最多
-  // 让某个 makePlan 多重试一次, 仍远小于无限重试)。
+  // No endless spin: the call count is bounded (linear in the number of submissions; the shared cancel-flag preemption race can
+  // at most retry one makePlan once more, still far from unbounded retries).
   EXPECT_GE(planner->calls.load(), 1);
   EXPECT_LE(planner->calls.load(), 10);
 }

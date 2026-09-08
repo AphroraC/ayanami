@@ -1,13 +1,13 @@
-// goal_update_follow_test: 导航进行中下发新 goal 的端到端回归测试。
+// goal_update_follow_test: end-to-end regression for delivering a new goal while navigation is in progress.
 //
-// 复现并锁死 rviz 场景 bug ("新 goal 已重新规划, 但机器人不跟随新路径"):
-// 常驻默认树 + 真实 NavigationServerBase + 真实插件执行线程, 在 controller
-// 跟踪 goal1 路径途中投递 goal2, 断言:
-// 1. planner 立即按 goal2 重规划 (planned_goal 更新);
-// 2. smoother 对新路径重新平滑 (smoothed_goal 更新) —— 修复点: smoother 分支
-// 以 {path_id} 为 reset_token, 新路径落地即重平滑;
-// 3. controller 经 in-place updatePlan 跟上 (followed_goal 更新, 且首个
-// controller 任务未被 cancel/重建 —— set_plan 连续计数)。
+// Reproduces and locks the rviz-scenario bug ("the new goal was replanned, but the robot does not follow the new path"):
+// a resident default tree + a real NavigationServerBase + real plugin execution threads; goal2 is delivered while the
+// controller is tracking the goal1 path, asserting:
+// 1. the planner immediately replans for goal2 (planned_goal updated);
+// 2. the smoother re-smooths the new path (smoothed_goal updated) -- the fix: the smoother branch uses
+// {path_id} as reset_token, so a newly landed path is re-smoothed immediately;
+// 3. the controller catches up via in-place updatePlan (followed_goal updated, and the first
+// controller task is not cancelled/rebuilt -- the set_plan count stays continuous).
 
 #include <gtest/gtest.h>
 
@@ -48,9 +48,9 @@ using ayanami::components::ControllerExecution;
 using ayanami::components::NavigationServerBase;
 using ayanami::geometry_msgs::PoseStamped;
 
-// 与 tests/plugins/goal_update_follow_plugins.cpp 内 POD 布局逐字段一致。
-// 每个 .so 内嵌独立 Probe 单例 (静态实例按 DSO 隔离), 只写本角色字段;
-// 测试侧从三个 .so 分别取指针, 各读各的字段。
+/// Field-by-field identical POD layout to the one in tests/plugins/goal_update_follow_plugins.cpp.
+/// Each .so embeds its own Probe singleton (static instances are isolated per DSO) and writes only its own role fields;
+/// the test takes a pointer from each of the three .so files and reads the respective fields.
 struct GoalUpdateProbe {
   int planner_calls;
   double planned_goal_x;
@@ -72,7 +72,7 @@ GoalUpdateProbe* loadProbe(const std::string& so_path) {
   return fn ? fn() : nullptr;
 }
 
-// ---- 测试专用 checker (直接在测试二进制内实现, 不经插件装载) ----
+// ---- Test-only checkers (implemented directly in the test binary, not loaded as plugins) ----
 
 class NeverArrivedGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
@@ -94,7 +94,7 @@ class AlwaysProgressChecker
   bool check(const PoseStamped&) override { return true; }
 };
 
-// ---- 测试服务器: 经保护 PluginManager 直接装载 goal_update 插件族 ----
+// ---- Test server: loads the goal_update plugin family via the protected PluginManager ----
 
 class GoalUpdateTestServer : public NavigationServerBase {
  public:
@@ -113,7 +113,7 @@ class GoalUpdateTestServer : public NavigationServerBase {
  protected:
   void configureControllerExecution(
       std::shared_ptr<ControllerExecution> exec) const override {
-    // 永不到达: FollowPath 持续 RUNNING, 供中途 goal 更新断言。
+    // Never arrives: FollowPath stays RUNNING to support mid-navigation goal update assertions.
     exec->setGoalChecker(goal_checker);
     exec->setProgressChecker(progress_checker);
     exec->setMaximumVelocity(0.5, 0.0, 1.5);
@@ -135,8 +135,8 @@ PoseStamped makeGoal(double x, double y) {
   return p;
 }
 
-// 临时配置目录: 只驱动 pilot (BT 扩展 + 频率)。planner_frequency=-1 = 每次目标
-// 修订只重规划一次 (生产配置语义, 精确暴露 smoother 陈旧缓存回归)。
+/// Temp config dir: only drives the pilot (BT extension + frequency). planner_frequency=-1 means one replan per goal
+/// revision (production config semantics, precisely exposing the smoother stale-cache regression).
 std::filesystem::path makeConfigDir() {
   const auto dir =
       std::filesystem::temp_directory_path() / "ayanami_goal_update_test";
@@ -206,12 +206,12 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
   ASSERT_NE(planner_probe, nullptr);
   ASSERT_NE(smoother_probe, nullptr);
   ASSERT_NE(controller_probe, nullptr);
-  // probe 静态计数按 DSO 存活且跨本进程测试累积: 断言一律用相对基线增量。
+  // Probe static counters live per DSO and accumulate across tests in this process: assertions always use relative baseline deltas.
   const int planner_base = planner_probe->planner_calls;
   const int smooth_base = smoother_probe->smooth_calls;
   const int set_plan_base = controller_probe->set_plan_calls;
 
-  // 机器人状态: 位姿 = 原点 (map←odom←base_link 全 identity); 速度 = 零。
+  // Robot state: pose = origin (map<-odom<-base_link all identity); velocity = zero.
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 0.25);
   robot_state.setTransform("map", "odom", ayanami::Timestamp::latest(),
@@ -228,22 +228,22 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
   BehaviorTreePilot pilot;
   const auto dir = makeConfigDir();
   pilot.configure(dir.string());
-  pilot.loadFromFile("", "");  // 空路径 -> 内嵌生产默认树
+  pilot.loadFromFile("", "");  // Empty path -> the embedded production default tree
   pilot.setNavigationRuntime(server);
 
   {
     PilotRunner runner(&pilot);
     pilot.beginNavigation(makeGoal(5.0, 0.0));
-    // 1) 首个 goal: controller 跟上 goal1 路径。
+    // 1) First goal: the controller catches up with the goal1 path.
     ASSERT_TRUE(waitForControllerFollow(controller_probe, 5.0, 0.0, 1, 5000,
                                         set_plan_base))
         << "controller never followed the first plan";
 
-    // 2) 导航进行中投递新 goal (rviz 场景): 不取消 controller, 机器人持续
-    // 跟旧路径直到新路径可用。
+    // 2) Deliver a new goal mid-navigation (rviz scenario): the controller is not cancelled and the robot keeps
+    // following the old path until the new path is available.
     pilot.beginNavigation(makeGoal(0.0, 5.0));
 
-    // 3) planner 立即按 goal2 重规划。
+    // 3) The planner immediately replans for goal2.
     const auto replan_deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
     while (std::chrono::steady_clock::now() < replan_deadline &&
@@ -255,7 +255,7 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
     ASSERT_NEAR(planner_probe->planned_goal_y, 5.0, 1e-6);
     EXPECT_EQ(planner_probe->planner_calls - planner_base, 2);
 
-    // 4) smoother 对新路径重新平滑 (修复点回归断言)。
+    // 4) The smoother re-smooths the new path (fix-point regression assertion).
     const auto smooth_deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
     while (std::chrono::steady_clock::now() < smooth_deadline &&
@@ -267,8 +267,8 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
     EXPECT_NEAR(smoother_probe->smoothed_goal_y, 5.0, 1e-6);
     EXPECT_GE(smoother_probe->smooth_calls - smooth_base, 2);
 
-    // 5) 核心回归断言: controller 经 in-place 更新跟上 goal2 路径 (而非永远
-    // 跟踪 goal1 旧路径)。
+    // 5) Core regression assertion: the controller catches up with the goal2 path via the in-place update (instead of
+    // tracking the old goal1 path forever).
     EXPECT_TRUE(waitForControllerFollow(controller_probe, 0.0, 5.0, 1, 5000,
                                         set_plan_base + 1))
         << "controller did not follow the replanned path after goal update";
@@ -311,7 +311,7 @@ TEST(GoalUpdateFollowTest, plannerAndSmootherFireOncePerFreshPlan) {
   {
     PilotRunner runner(&pilot);
     pilot.beginNavigation(makeGoal(3.0, 0.0));
-    // planner_frequency=-1: 首个 goal 一次规划 + 一次平滑后不再重复。
+    // planner_frequency=-1: one plan + one smooth for the first goal, then no repetition.
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
     while (std::chrono::steady_clock::now() < deadline &&

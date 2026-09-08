@@ -12,8 +12,10 @@
 namespace ayanami {
 namespace behavior_tree {
 
-/// @brief goal 等价判定 (容忍位姿数值噪声): stamp/frame_id + position/orientation
-/// isApprox。旧 header.seq 已随 ROS2 Header 布局移除, 目标变化检测统一走本函数。
+/// @brief Goal equivalence check (tolerates pose numeric noise):
+/// stamp/frame_id + position/orientation isApprox. The old header.seq was
+/// removed along with the ROS2 Header layout; goal-change detection goes
+/// uniformly through this function.
 inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
                        const geometry_msgs::PoseStamped& rhs) {
   if (lhs.header.stamp.count() != rhs.header.stamp.count()) {
@@ -26,8 +28,9 @@ inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
          lhs.pose.orientation.isApprox(rhs.pose.orientation);
 }
 
-// 黑板协议集中常量 : 所有端口/黑名单键名唯一来源, 把运行时端口名错误
-// 变成编译期/启动期失败。
+// Centralized blackboard protocol constants: the single source of all
+// port/blackboard key names, turning runtime port-name errors into
+// compile-time/startup failures.
 inline constexpr const char* k_goal = "goal";
 inline constexpr const char* k_raw_path = "raw_path";
 inline constexpr const char* k_path_id = "path_id";
@@ -45,19 +48,23 @@ inline constexpr const char* k_goal_revision = "goal_revision";
 inline constexpr const char* k_reset_stuck_token = "reset_stuck_token";
 inline constexpr const char* k_failure_context = "failure_context";
 
-/// 全部必需黑板项 (createTree 之后 validateRequiredBlackboardEntries 扫一遍)。
+/// Core-required blackboard entries (validateRequiredBlackboardEntries
+/// scans them once after createTree). Recovery role ids
+/// (k_clear_costmap_id/k_spin_id/k_wait_id/k_backup_id) are NOT core: they
+/// are declared and provided by the BT extension that references them
+/// (BehaviorTreeExtension::requiredBlackboardEntries/provideBlackboardEntries)
+/// -- the BT only orchestrates recoveries and never decides what they do.
 inline const std::vector<const char*>& requiredBlackboardEntries() {
   static const std::vector<const char*> k_required = {
     k_goal, k_raw_path, k_path_id, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
-    k_clear_costmap_id,
-    k_spin_id, k_wait_id, k_backup_id, k_session_id, k_plan_version, k_reset_stuck_token,
+    k_session_id, k_plan_version, k_reset_stuck_token,
     k_failure_context, k_goal_revision,
   };
   return k_required;
 }
 
-/// 校验协议要求的黑板项全部存在, 缺失立即 throw 。
+/// Verify all protocol-required blackboard entries exist; throw immediately on any missing one.
 inline void validateRequiredBlackboardEntries(const BT::Blackboard::Ptr& blackboard) {
   if (!blackboard) {
     throw std::runtime_error("blackboard_protocol: blackboard is null");

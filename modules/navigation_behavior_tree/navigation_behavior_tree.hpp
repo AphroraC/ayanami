@@ -1,7 +1,7 @@
-// navigation_behavior_tree 扩展模块头 。
+// navigation_behavior_tree extension module header.
 //
-// 默认导航树 (XML) + 全部自定义导航 BT 节点注册下沉到这里: 核心
-// BehaviorTreePilot 不含任何默认导航 XML/策略, 只装载并持有本扩展。
+// The default navigation tree (XML) + all custom navigation BT node registrations sink to this module: the core
+// BehaviorTreePilot contains no default navigation XML/policies; it only loads and holds this extension.
 
 #pragma once
 
@@ -15,13 +15,13 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 默认导航 BT 扩展 (BehaviorTreeExtension 派生)。
+ * @brief Default navigation BT extension (derives BehaviorTreeExtension).
  *
- * - registerNodes: 注册全部自定义导航节点 (ComputePathToPose / SmoothPath /
- *   FollowPath / Recovery / 条件 / 控制节点, 经核心 registerNavigationBehaviorTreeNodes)。
- * - registerTrees: 注册内嵌默认导航树 XML (生产唯一来源; 原 config/BT/navigation.xml
- *   文件已删除)。
- * - defaultTreeId: "NavigateWithReplanningAndSmoothing"。
+ * - registerNodes: registers all custom navigation nodes (ComputePathToPose / SmoothPath /
+ *   FollowPath / Recovery / conditions / control nodes, via the core registerNavigationBehaviorTreeNodes).
+ * - registerTrees: registers the embedded default navigation tree XML (the single production source; the original
+ *   config/BT/navigation.xml file was deleted).
+ * - defaultTreeId: "NavigateWithReplanningAndSmoothing".
  */
 class NavigationBehaviorTreeExtension
     final : public ayanami::behavior_tree::BehaviorTreeExtension {
@@ -40,24 +40,31 @@ class NavigationBehaviorTreeExtension
 
   std::string defaultTreeId() const override { return k_default_tree_id; }
 
+  // Recovery role ids are a tree-level contract (this tree references them
+  // by role), declared and provided here -- the core pilot stays agnostic
+  // of what the recoveries do.
+  std::vector<const char*> requiredBlackboardEntries() const override;
+
+  void provideBlackboardEntries(BT::Blackboard::Ptr blackboard) const override;
+
  private:
-  // 内嵌默认导航树 (verbatim, 生产单一来源; 文件版不在生产安装)。
+  // Embedded default navigation tree (verbatim, single production source; the file version is not installed in production).
   //
-  // goal 更新纪律: planner 分支以 {goal_revision} 为 reset_token (新 goal 即重
-  // 规划); smoother 分支以 {path_id} 为 reset_token (ComputePathToPose 每次成功
-  // 规划 bump path_id, 新路径落地即重新平滑 + bump plan_version), FollowPath 在
-  // plan_version 变化时对运行中 controller 做 in-place updatePlan —— 机器人持续
-  // 跟随旧路径直到新路径可用, 不会出现"已重规划但不跟随"的陈旧平滑缓存。
+  // Goal update discipline: the planner branch uses {goal_revision} as reset_token (a new goal triggers
+  // replanning); the smoother branch uses {path_id} as reset_token (ComputePathToPose bumps path_id on each
+  // successful plan, so a newly landed path is re-smoothed + bumps plan_version); FollowPath performs an in-place updatePlan on the running controller
+  // when plan_version changes -- the robot keeps following the old path until the new one is available, avoiding a stale
+  // smoothing cache where "replanning happened but is not being followed".
  //
- // 恢复轮换纪律 (nav2 对齐): 外层恢复分支用 RoundRobin 而非顺序重试 —— 游标
- // 跨成功保持前进, 重试轮换 spin→wait→backup→spin..., 避免单一恢复反复执行
- // (顺序重试在首个恢复"假成功"时永远轮不到后续手段)。
+ // Recovery rotation discipline (nav2 aligned): the outer recovery branch uses RoundRobin instead of sequential retry -- the cursor
+ // keeps advancing across successes, rotating retries spin->wait->backup->spin..., avoiding a single recovery running repeatedly
+ // (with sequential retries, a first recovery's "false success" would starve all later options forever).
   static constexpr const char* k_default_tree_id =
       "NavigateWithReplanningAndSmoothing";
   static constexpr const char* k_default_navigation_xml = R"(
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
-    <RecoveryNode name="NavigateRecovery" number_of_retries="6">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="6" budget_reset_token="{goal_revision}">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
@@ -73,7 +80,7 @@ class NavigationBehaviorTreeExtension
         <RateController hz="{smoother_frequency}" reset_token="{path_id}">
                <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
         </RateController>
-        <RecoveryNode name="FollowPath" number_of_retries="1">
+        <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">
            <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
             <Recovery recovery="{clear_costmap_id}"/>

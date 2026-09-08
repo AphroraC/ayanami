@@ -28,13 +28,9 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
-using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
@@ -56,12 +52,12 @@ std::shared_ptr<ayanami::costmap::CostmapMapContext> makeContext(
   return ctx;
 }
 
-// 阻塞直到被 cancel: 让执行停在 run 内, 便于观察 preRun/postRun 的激活状态。
+/// Blocks until cancelled: keeps the execution inside run so the preRun/postRun activation state can be observed.
 class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -69,11 +65,12 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
       release.wait_for(lock, std::chrono::milliseconds(2000),
                         [this] { return canceled.load(); });
     }
-    // 被取消也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    // The cancelled path also returns a success path: the execution detects cancel_requested and yields CANCELED.
     (void)canceled.exchange(false);
     ayanami::nav_msgs::Path plan;
     plan.poses.resize(2);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override {
     canceled = true;
@@ -90,7 +87,7 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
 class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
  public:
   void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     calls++;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -100,7 +97,8 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
     }
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override {
     canceled = true;
@@ -117,20 +115,19 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
 class TestController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
 };
 
-// checker 测试桩: 永不到达 + 恒有进展 (controller 逻辑测试专用)。
+/// Checker test stubs: never reached + always progressing (for controller logic tests only).
 class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
   void reset() override {}
@@ -158,15 +155,16 @@ class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 class TestRecovery : public ayanami::costmap::CostmapRecovery {
  public:
   void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };
 
-// 暴露 protected createExecution 工厂, 验证派生 Action 返回 costmap 版 execution。
+/// Exposes the protected createExecution factory to verify the derived Action returns the costmap execution.
 class TestablePlannerAction : public ayanami::costmap::CostmapPlannerAction {
  public:
   using CostmapPlannerAction::CostmapPlannerAction;
@@ -187,7 +185,7 @@ class TestableRecoveryAction : public ayanami::costmap::CostmapRecoveryAction {
 
 }  // namespace
 
-// ---- CostmapPlannerExecution: preRun 激活 / postRun 停用 / 不持写锁 ----
+// ---- CostmapPlannerExecution: preRun activates / postRun deactivates / never holds the write lock ----
 
 TEST(CostmapComponentsTest, plannerExecutionActivatesBeforeAndDeactivatesAfter) {
   auto wrapper = makeWrapper();
@@ -203,12 +201,12 @@ TEST(CostmapComponentsTest, plannerExecutionActivatesBeforeAndDeactivatesAfter) 
         lock, std::chrono::milliseconds(1000),
         [&] { return planner->calls.load() >= 1; }));
   }
-  // 执行中: preRun 已 checkActivate
+  // During execution: preRun has called checkActivate
   EXPECT_TRUE(wrapper->isActive());
 
   exec.cancel();
   exec.join();
-  // 执行后: postRun 已 checkDeactivate
+  // After execution: postRun has called checkDeactivate
   EXPECT_FALSE(wrapper->isActive());
 }
 
@@ -225,7 +223,7 @@ TEST(CostmapComponentsTest, plannerExecutionDoesNotHoldCostmapMutex) {
         lock, std::chrono::milliseconds(1000),
         [&] { return planner->calls.load() >= 1; }));
   }
-  // 快照纪律: planner 执行全程不持 wrapper 写锁 —— obstacle 写者可自由获取。
+  // Snapshot discipline: the planner never holds the wrapper write lock while executing -- the obstacle writer can take it freely.
   const bool locked = wrapper->mutex().try_lock();
   ASSERT_TRUE(locked);
   wrapper->mutex().unlock();
@@ -234,7 +232,7 @@ TEST(CostmapComponentsTest, plannerExecutionDoesNotHoldCostmapMutex) {
   exec.join();
 }
 
-// ---- CostmapControllerExecution: safetyCheck 接 isCurrent, 非 current 不发速度 ----
+// ---- CostmapControllerExecution: safetyCheck uses isCurrent; no velocity when not current ----
 
 TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   auto wrapper = makeWrapper();
@@ -242,14 +240,14 @@ TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   auto controller = std::make_shared<TestController>();
   ayanami::costmap::CostmapControllerExecution exec(
       "test_controller", controller, makeContext(nullptr, wrapper));
-  // checker 注入 (execution 要求 checker 存在; 本场景只验证 safetyCheck 不发速度)。
+  // Checker injected (the execution requires a checker to exist; this scenario only verifies safetyCheck issues no velocity).
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
   std::atomic<int> stop_cmds{0};
   int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
       [&](const TwistStamped& cmd) {
-        // 非 current: 只允许清零停止命令, 不允许任何非零速度
+        // Not current: only the zeroed stop command is allowed, no non-zero velocity of any kind
         EXPECT_DOUBLE_EQ(cmd.twist.linear.x(), 0.0);
         EXPECT_DOUBLE_EQ(cmd.twist.linear.y(), 0.0);
         EXPECT_DOUBLE_EQ(cmd.twist.angular.z(), 0.0);
@@ -263,7 +261,7 @@ TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   exec.start();
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  // safetyCheck false 每周期发布停止命令, computeVelocityCommands 不被调
+  // With safetyCheck false, the stop command is published every cycle and computeVelocityCommands is never called
   EXPECT_EQ(controller->calls, 0);
   EXPECT_GE(stop_cmds.load(), 1);
 
@@ -272,7 +270,7 @@ TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
 }
 
-// ---- CostmapControllerExecution: 无进展 → NO_PROGRESS (ABORTED 映射) ----
+// ---- CostmapControllerExecution: no progress -> NO_PROGRESS (mapped to ABORTED) ----
 
 TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
@@ -306,7 +304,7 @@ TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   exec.join();
 }
 
-// ---- CostmapRecoveryExecution: 激活/停用 global+local 两 costmap ----
+// ---- CostmapRecoveryExecution: activates/deactivates both the global+local costmaps ----
 
 TEST(CostmapComponentsTest, recoveryExecutionActivatesDeactivatesBothCostmaps) {
   auto global = makeWrapper();
@@ -333,7 +331,7 @@ TEST(CostmapComponentsTest, recoveryExecutionActivatesDeactivatesBothCostmaps) {
   EXPECT_FALSE(local->isActive());
 }
 
-// ---- 派生 Action createExecution 工厂返回 costmap 版 execution ----
+// ---- Derived Action createExecution factory returns the costmap execution ----
 
 TEST(CostmapComponentsTest, plannerActionFactoryReturnsCostmapPlannerExecution) {
   auto wrapper = makeWrapper();

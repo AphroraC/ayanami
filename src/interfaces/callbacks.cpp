@@ -3,9 +3,11 @@
 namespace ayanami {
 namespace interfaces {
 
-// 槽对象实体定义 —— 只在 libayanami 内一份 (关键纪律)。
-// 不用 inline static: 否则每个 .so 各持一份实例, 插件 add 的回调与核心
-// emit 落在不同对象上, 跨 .so 静默失效。
+// Slot object definitions -- exactly one copy inside libayanami (key
+// discipline).
+// inline static is not used: otherwise each .so would hold its own instance,
+// and callbacks added by plugins and emitted by the core would land on
+// different objects, silently failing across .so boundaries.
 
 CallbackSlot<void(const ayanami::actions::GetPathGoal&)> NavigationCallbacks::on_get_path_goal;
 CallbackSlot<void(const ayanami::actions::GetPathFeedback&)> NavigationCallbacks::on_get_path_feedback;
@@ -21,6 +23,8 @@ CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> NavigationCallback
 CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> NavigationCallbacks::on_recovery_result;
 CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_velocity_command;
 CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_costmap_visualization;
+CallbackSlot<void(const ayanami::actions::NavigationResult&)>
+    NavigationCallbacks::on_navigation_result;
 
 } // namespace interfaces
 } // namespace ayanami

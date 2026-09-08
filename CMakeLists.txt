@@ -5,10 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 
-# libstdc++ 的 shared_ptr 原子自由函数只有启用 cmpxchg16b 时才走无锁路径
-# (-mcx16), 否则退回按桶自旋锁实现。所有编译 CallbackSlot/CostmapWrapper 头
-# 文件的 TU (lib、模块插件、测试、下游 ayanami_ros) 必须使用同一策略, 否则
-# 同进程内 lock-free 读者与锁池写者混用同一 shared_ptr 对象是未定义行为。
+# libstdc++'s shared_ptr atomic free functions only take the lock-free path when cmpxchg16b is enabled
+# (-mcx16); otherwise they fall back to a per-bucket spinlock implementation. All TUs compiling
+# CallbackSlot/CostmapWrapper headers (lib, module plugins, tests, downstream ayanami_ros) must use the same policy,
+# otherwise mixing lock-free readers and lock-pool writers on the same shared_ptr object in one process is undefined behavior.
 include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-mcx16" AYANAMI_HAS_MCX16)
 if(AYANAMI_HAS_MCX16)
@@ -29,38 +29,38 @@ endif()
 
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
-find_package(spdlog REQUIRED)  # 或 vendored
+find_package(spdlog REQUIRED)  # or vendored
 
-# M2 Controller Ruling #M2-1: catkin 作构建系统 (不依赖 ROS 通信层)
-# 仅引入 catkin_package() 让 catkin workspace 识别 ayanami 为 catkin pkg
-# 并生成 devel/share/ayanami/cmake/ayanamiConfig.cmake 供下游 ayanami_ros
-# find_package(ayanami COMPONENTS) 解析 (catkin component 解析路径)。
-# M1 纯 CMake install export (lib/cmake/ayanami/) 与本 catkin_package 并存，
-# 不破坏外部 (非 catkin 环境) 的 find_package(ayanami CONFIG)。
+# M2 Controller Ruling #M2-1: catkin as the build system (no dependency on the ROS communication layer);
+# only catkin_package() is declared so the catkin workspace recognizes ayanami as a catkin package
+# and generates devel/share/ayanami/cmake/ayanamiConfig.cmake so downstream ayanami_ros
+# can resolve find_package(ayanami COMPONENTS) (catkin component resolution path).
+# The M1 pure-CMake install export (lib/cmake/ayanami/) coexists with this catkin_package
+# without breaking external (non-catkin) find_package(ayanami CONFIG).
 find_package(catkin QUIET)
 if(catkin_FOUND)
   catkin_package(
     INCLUDE_DIRS include
     LIBRARIES ayanami
-    CFG_EXTRAS ""   # 不附加 catkin 自动 macros
+    CFG_EXTRAS ""   # no catkin auto macros attached
   )
 endif()
 
-# 第三方接口库 (新增 cmake/thirdparty.cmake 引入)
-include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # 定义 BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
+# Third-party interface libraries (introduced via the new cmake/thirdparty.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # defines BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
 
-# Task 14: BT 依赖源 (BUILD_WITH_BT=OFF 时剔除, 避免缺 BT 头编译失败)
+# Task 14: BT-dependent sources (excluded when BUILD_WITH_BT=OFF to avoid compile failures from missing BT headers)
 set(AYANAMI_BT_SOURCES "")
 if(BUILD_WITH_BT)
   list(APPEND AYANAMI_BT_SOURCES src/behavior_tree/pilot.cpp)
 endif()
 
-# Task 15: packages/* 纯 C++ 子库
+# Task 15: packages/* pure C++ sub-libraries
 add_subdirectory(packages/costmap_2d)
 add_subdirectory(packages/costmap_layers)
 add_subdirectory(packages/costmap_server)
 
-# ayanami_add_module(name src...) 宏: 生成 SHARED 模块 .so, 链接 libayanami
+# ayanami_add_module(name src...) macro: builds a SHARED module .so linked against libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
   src/utility/logging.cpp
@@ -84,12 +84,12 @@ if(AYANAMI_HAS_MCX16)
   target_compile_options(ayanami PUBLIC -mcx16)
 endif()
 target_link_libraries(ayanami PUBLIC Eigen3::Eigen spdlog::spdlog)
-# Task 20: CostmapNavigationServer 公开头 include costmap_server/costmap_wrapper.hpp
+# Task 20: CostmapNavigationServer public headers include costmap_server/costmap_wrapper.hpp
 target_link_libraries(ayanami PUBLIC costmap_server::costmap_server)
 # src/utility/load_module.cpp uses dlfcn (dlopen/dlsym)
 target_link_libraries(ayanami PRIVATE ${CMAKE_DL_LIBS})
-# src/utility/config.cpp (via config_impl.hpp) 依赖 vendored nlohmann；
-# 公开头 config.hpp 不 include nlohmann (spec §2.1)，故 PRIVATE 即可。
+# src/utility/config.cpp (via config_impl.hpp) depends on the vendored nlohmann;
+# the public header config.hpp does not include nlohmann (spec §2.1), so PRIVATE is enough.
 target_link_libraries(ayanami PRIVATE nlohmann_json::nlohmann_json)
 if(BUILD_WITH_BT)
   target_link_libraries(ayanami PUBLIC BT::behaviortree_cpp fast_tf::fast_tf)
@@ -100,7 +100,7 @@ install(DIRECTORY include/ DESTINATION include FILES_MATCHING PATTERN "*.hpp" PA
 install(DIRECTORY config config_sentry DESTINATION share/ayanami
   PATTERN "*.yaml" EXCLUDE PATTERN "*.yml" EXCLUDE)
 
-# 模块宏
+# Module macro
 function(ayanami_add_module name)
   add_library(${name} SHARED ${ARGN})
   target_link_libraries(${name} PRIVATE ayanami)
@@ -112,23 +112,23 @@ function(ayanami_add_module name)
   set(AYANAMI_INSTALL_TARGETS ${AYANAMI_INSTALL_TARGETS} PARENT_SCOPE)
 endfunction()
 
-# Task 21: modules/costmap_smac_planner (A* 全局路径规划插件)
+# Task 21: modules/costmap_smac_planner (A* global path planner plugin)
 ayanami_add_module(costmap_smac_planner
   modules/costmap_smac_planner/costmap_smac_planner.cpp
   modules/costmap_smac_planner/module.cpp)
 
-# Task 22: modules/costmap_savitzky_smoother (7 点 SG 路径平滑插件)
+# Task 22: modules/costmap_savitzky_smoother (7-point SG path smoother plugin)
 ayanami_add_module(costmap_savitzky_smoother
   modules/costmap_savitzky_smoother/costmap_savitzky_smoother.cpp
   modules/costmap_savitzky_smoother/module.cpp)
 
-# Task 23: modules/costmap_pid_controller (3 轴 PID 局部控制器插件)
+# Task 23: modules/costmap_pid_controller (3-axis PID local controller plugin)
 ayanami_add_module(costmap_pid_controller
   modules/costmap_pid_controller/costmap_pid_controller.cpp
   modules/costmap_pid_controller/module.cpp)
 
-# modules/costmap_dwb_controller (DWB 局部控制器, 迁移自 nav2_dwb_controller;
-# 零 ROS: pluginlib→静态注册表 / tf2→TransformStore / rclcpp→Config)
+# modules/costmap_dwb_controller (DWB local controller, ported from nav2_dwb_controller;
+# zero ROS: pluginlib -> static registry / tf2 -> TransformStore / rclcpp -> Config)
 ayanami_add_module(costmap_dwb_controller
   modules/costmap_dwb_controller/costmap_dwb_controller.cpp
   modules/costmap_dwb_controller/module.cpp
@@ -155,7 +155,7 @@ ayanami_add_module(costmap_dwb_controller
   modules/costmap_dwb_controller/critics/rotate_to_goal.cpp
   modules/costmap_dwb_controller/critics/twirling.cpp)
 
-# Task 24: modules/costmap_*_recovery (4 个恢复插件, spec §6.6 命名)
+# Task 24: modules/costmap_*_recovery (4 recovery plugins, named per spec §6.6)
 ayanami_add_module(costmap_spin_recovery
   modules/costmap_spin_recovery/costmap_spin_recovery.cpp
   modules/costmap_spin_recovery/module.cpp)
@@ -169,13 +169,13 @@ ayanami_add_module(costmap_clear_costmap_recovery
   modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.cpp
   modules/costmap_clear_costmap_recovery/module.cpp)
 
-# Task 25: modules/costmap_navigation (AbstractNavigation 宿主插件)
+# Task 25: modules/costmap_navigation (AbstractNavigation host plugin)
 ayanami_add_module(costmap_navigation
   modules/costmap_navigation/costmap_navigation.cpp
   modules/costmap_navigation/module.cpp)
 
 # Task 26+: modules/simple_goal_checker / simple_progress_checker
-# (目标检查 + 进展检查插件, abstract 族, 无地图依赖)
+# (goal check + progress check plugins, abstract family, no map dependency)
 ayanami_add_module(simple_goal_checker
   modules/simple_goal_checker/simple_goal_checker.cpp
   modules/simple_goal_checker/module.cpp)
@@ -183,14 +183,14 @@ ayanami_add_module(simple_progress_checker
   modules/simple_progress_checker/simple_progress_checker.cpp
   modules/simple_progress_checker/module.cpp)
 
-# Requirement 3: modules/navigation_behavior_tree (BehaviorTreeExtension 扩展)。
-# 默认导航树 (XML) 与全部自定义导航 BT 节点注册下沉到该 .so; 核心
-# BehaviorTreePilot 泛型化: 只装载/持有 BehaviorTreeExtension(s)。
+# Requirement 3: modules/navigation_behavior_tree (BehaviorTreeExtension extension).
+# The default navigation tree (XML) and all custom navigation BT node registrations live in this .so; the core
+# BehaviorTreePilot is genericized: it only loads/holds BehaviorTreeExtension(s).
 ayanami_add_module(navigation_behavior_tree
   modules/navigation_behavior_tree/navigation_behavior_tree.cpp
   modules/navigation_behavior_tree/module.cpp)
 
-# 包导出
+# Package export
 install(EXPORT ayanamiTargets NAMESPACE ayanami:: FILE ayanamiTargets.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ayanami)
 include(CMakePackageConfigHelpers)
@@ -218,7 +218,7 @@ if(BUILD_TESTING)
     target_link_libraries(callback_slot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME CallbackSlotTest COMMAND callback_slot_test)
 
-    # load_module / ExtensionModule 测试插件 (被 dlopen 的 .so)
+    # load_module / ExtensionModule test plugins (.so loaded via dlopen)
     add_library(dummy_planner_module SHARED tests/plugins/dummy_planner_module.cpp)
     target_link_libraries(dummy_planner_module PRIVATE ayanami)
     set_target_properties(dummy_planner_module PROPERTIES PREFIX "lib")
@@ -238,8 +238,8 @@ if(BUILD_TESTING)
     target_link_libraries(robot_state_controller_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME RobotStateControllerTest COMMAND robot_state_controller_test)
 
-    # RobotStateController 跨 DSO 单例: instance() 定义在 libayanami .cpp,
-    # dlopen 插件 (链接 libayanami) 与主二进制解析到同一实例、共享状态。
+    # RobotStateController cross-DSO singleton: instance() is defined in a libayanami .cpp,
+    # so dlopen'ed plugins (linked against libayanami) and the main binary resolve to the same instance and share state.
     add_library(robot_state_dso_extension SHARED
       tests/plugins/robot_state_dso_extension.cpp)
     target_link_libraries(robot_state_dso_extension PRIVATE ayanami)
@@ -258,7 +258,7 @@ if(BUILD_TESTING)
     add_test(NAME LoadModuleTest COMMAND load_module_test
       $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
 
-    # NavigationCallbacks 跨 .so echo 测试插件 (dlopen 后 add 到槽, 链接 libayanami)
+    # NavigationCallbacks cross-.so echo test plugin (added to the slot after dlopen, linked against libayanami)
     add_library(echo_extension SHARED tests/plugins/echo_extension.cpp)
     target_link_libraries(echo_extension PRIVATE ayanami)
     set_target_properties(echo_extension PROPERTIES PREFIX "lib")
@@ -285,13 +285,13 @@ if(BUILD_TESTING)
     add_test(NAME PluginManagerTest COMMAND plugin_manager_test
       $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
 
-    # Task 0: BLOCK #2 派生析构经 base ptr 可调 (abstract base virtual ~ 缺失 UB)
+    # Task 0: BLOCK #2 derived destructors callable through a base pointer (UB from missing virtual ~ in abstract base)
     add_executable(plugin_teardown_no_ub_test tests/plugin_teardown_no_ub_test.cpp)
     target_link_libraries(plugin_teardown_no_ub_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME PluginTeardownNoUB COMMAND plugin_teardown_no_ub_test)
 
-    # Task 11: NavigationServerBase (4 族插件工厂在测试插件 .so, 每个 .so 单一
-    # 公共 create_extension_module 工厂; 类型化由 PluginManager dynamic_cast 完成)。
+    # Task 11: NavigationServerBase (the 4 plugin-family factories live in test plugin .so files; each .so has a single
+    # public create_extension_module factory; typing is done by PluginManager dynamic_cast).
     add_library(test_planner_plugin SHARED tests/plugins/test_planner_plugin.cpp)
     target_link_libraries(test_planner_plugin PRIVATE ayanami)
     set_target_properties(test_planner_plugin PROPERTIES PREFIX "lib")
@@ -310,7 +310,7 @@ if(BUILD_TESTING)
     add_library(test_recovery_plugin SHARED tests/plugins/test_recovery_plugin.cpp)
     target_link_libraries(test_recovery_plugin PRIVATE ayanami)
     set_target_properties(test_recovery_plugin PROPERTIES PREFIX "lib")
-    # 异常注入: start() 抛异常的 recovery (异常路径闭合回归)。
+    # Exception injection: a recovery whose start() throws (regression closing the exception path).
     add_library(test_throwing_recovery_plugin SHARED
       tests/plugins/test_throwing_recovery_plugin.cpp)
     target_link_libraries(test_throwing_recovery_plugin PRIVATE ayanami)
@@ -334,12 +334,12 @@ if(BUILD_TESTING)
       $<TARGET_FILE:test_controller_plugin>
       $<TARGET_FILE:test_recovery_plugin>)
 
-    # Task 12: BT 控制节点 + 条件节点 + 黑板协议
+    # Task 12: BT control nodes + condition nodes + blackboard protocol
     add_executable(behavior_tree_control_test tests/behavior_tree_control_test.cpp)
     target_link_libraries(behavior_tree_control_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME BehaviorTreeControlTest COMMAND behavior_tree_control_test)
 
-    # Task 13: BT action 节点 (TaskHandle 直连) + 注册 + 扩展默认 XML
+    # Task 13: BT action nodes (wired directly to TaskHandle) + registration + extension default XML
     add_executable(behavior_tree_action_test tests/behavior_tree_action_test.cpp)
     target_link_libraries(behavior_tree_action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(behavior_tree_action_test PRIVATE
@@ -347,7 +347,7 @@ if(BUILD_TESTING)
       AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME BehaviorTreeActionTest COMMAND behavior_tree_action_test)
 
-    # Task 14: BT Pilot (常驻树 + pending_goal 黑板 + 抢占零速度)
+    # Task 14: BT Pilot (resident tree + pending_goal blackboard + zero velocity on preemption)
     if(BUILD_WITH_BT)
       add_executable(pilot_test tests/pilot_test.cpp)
       target_link_libraries(pilot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
@@ -357,7 +357,7 @@ if(BUILD_TESTING)
       add_test(NAME PilotTest COMMAND pilot_test)
     endif()
 
-    # Task 15: packages/costmap_2d (纯 C++ header-only 子库)
+    # Task 15: packages/costmap_2d (pure C++ header-only sub-library)
     add_executable(costmap_2d_test tests/costmap_2d_test.cpp)
     target_link_libraries(costmap_2d_test PRIVATE costmap_2d::costmap_2d GTest::gtest GTest::gtest_main)
     add_test(NAME Costmap2DTest COMMAND costmap_2d_test)
@@ -380,7 +380,7 @@ if(BUILD_TESTING)
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapContextTest COMMAND costmap_context_test)
 
-    # Map Family 抽象: 非 costmap 地图族经同一虚钩子装配 (核心零 costmap 依赖)
+    # Map Family abstraction: non-costmap map families are assembled through the same virtual hooks (zero costmap dependency in the core)
     add_executable(map_family_abstraction_test tests/map_family_abstraction_test.cpp)
     target_link_libraries(map_family_abstraction_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
@@ -392,8 +392,8 @@ if(BUILD_TESTING)
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME CostmapComponentsTest COMMAND costmap_components_test)
 
-    # Task 1 (M2 阶段 A BLOCK #1): controller 整循环持锁 → per-cycle short lock,
-    # 防 obstacle feed 饿死 (并发 controller + 障碍回调饿死回归)。
+    # Task 1 (M2 Phase A BLOCK #1): controller held the lock for the whole cycle -> per-cycle short lock,
+    # preventing obstacle feed starvation (regression: concurrent controller + obstacle callback starvation).
     add_executable(concurrent_controller_obstacle_test
       tests/concurrent_controller_obstacle_test.cpp)
     target_link_libraries(concurrent_controller_obstacle_test PRIVATE
@@ -401,8 +401,8 @@ if(BUILD_TESTING)
     add_test(NAME ConcurrentControllerObstacle COMMAND concurrent_controller_obstacle_test)
     set_tests_properties(ConcurrentControllerObstacle PROPERTIES TIMEOUT 10)
 
-    # Task 2 (M2 阶段 A BLOCK #3): recovery 锁 global+local (scoped_lock) 防
-    # clear_costmap 写 local master grid 与 handleObstaclePointCloud 并发竞态。
+    # Task 2 (M2 Phase A BLOCK #3): recovery locks global+local (scoped_lock) to prevent
+    # a concurrent race between clear_costmap writing the local master grid and handleObstaclePointCloud.
     add_executable(recovery_vs_obstacle_test tests/recovery_vs_obstacle_test.cpp)
     target_link_libraries(recovery_vs_obstacle_test PRIVATE
       ayanami costmap_clear_costmap_recovery
@@ -411,14 +411,14 @@ if(BUILD_TESTING)
     add_test(NAME RecoveryVsObstacle COMMAND recovery_vs_obstacle_test)
     set_tests_properties(RecoveryVsObstacle PROPERTIES TIMEOUT 10)
 
-    # Redesign: smoother 持有稳定快照 vs 并发 obstacle 写者 (不可变 epoch)。
+    # Redesign: smoother holds a stable snapshot vs concurrent obstacle writers (immutable epoch).
     add_executable(snapshot_stability_test tests/snapshot_stability_test.cpp)
     target_link_libraries(snapshot_stability_test PRIVATE
       ayanami costmap_server::costmap_server GTest::gtest GTest::gtest_main)
     add_test(NAME SnapshotStability COMMAND snapshot_stability_test)
     set_tests_properties(SnapshotStability PROPERTIES TIMEOUT 10)
 
-    # Redesign: 长时 planner 不阻塞 obstacle 写者 (快照取代整规划持锁)。
+    # Redesign: a long-running planner does not block obstacle writers (snapshot replaces holding the lock for the whole plan).
     add_executable(planner_writer_concurrency_test
       tests/planner_writer_concurrency_test.cpp)
     target_link_libraries(planner_writer_concurrency_test PRIVATE
@@ -426,9 +426,9 @@ if(BUILD_TESTING)
     add_test(NAME PlannerWriterConcurrency COMMAND planner_writer_concurrency_test)
     set_tests_properties(PlannerWriterConcurrency PROPERTIES TIMEOUT 10)
 
-    # Task 3 (M2 阶段 A 收尾): minor carry wiring 综合 5 项
-    # (smac start fallback / robot_frame 单一来源 / 二次 configureCoreMaps 守护 /
-    #  pid 粗签名 / cmake find_dependency)。
+    # Task 3 (M2 Phase A wrap-up): minor carry wiring, 5 items combined
+    # (smac start fallback / single source for robot_frame / guard against double configureCoreMaps /
+    #  pid coarse signature / cmake find_dependency).
     add_executable(minor_carry_wirings_test tests/minor_carry_wirings_test.cpp)
     target_link_libraries(minor_carry_wirings_test PRIVATE
       ayanami costmap_smac_planner costmap_pid_controller
@@ -436,8 +436,8 @@ if(BUILD_TESTING)
       GTest::gtest GTest::gtest_main)
     add_test(NAME MinorCarryWiring COMMAND minor_carry_wirings_test)
 
-    # Task 20: costmap/components (CostmapNavigationServer virtual 注入地图)。
-    # 每个测试插件 .so 单一公共 create_extension_module 工厂。
+    # Task 20: costmap/components (CostmapNavigationServer virtual map injection).
+    # Each test plugin .so has a single public create_extension_module factory.
     foreach(plugin test_costmap_planner test_costmap_smoother
                  test_costmap_controller test_costmap_recovery
                  test_plain_planner test_plain_smoother
@@ -464,7 +464,7 @@ if(BUILD_TESTING)
       $<TARGET_FILE:test_plain_controller_plugin>
       $<TARGET_FILE:test_plain_recovery_plugin>)
 
-    # modules/costmap_dwb_controller (DWB, 迁移自 nav2_dwb_controller)
+    # modules/costmap_dwb_controller (DWB, ported from nav2_dwb_controller)
     add_executable(costmap_dwb_controller_test
       tests/costmap_dwb_controller_test.cpp)
     target_link_libraries(costmap_dwb_controller_test PRIVATE
@@ -475,7 +475,7 @@ if(BUILD_TESTING)
     add_test(NAME CostmapDwBControllerTest COMMAND costmap_dwb_controller_test
       ${CMAKE_SOURCE_DIR}/config/modules/costmap_dwb_controller.json)
 
-    # Task 21: modules/costmap_smac_planner (A* 全局路径规划插件)
+# Task 21: modules/costmap_smac_planner (A* global path planner plugin)
     add_executable(costmap_smac_planner_test tests/costmap_smac_planner_test.cpp)
     target_link_libraries(costmap_smac_planner_test PRIVATE
       ayanami costmap_smac_planner costmap_2d_layers::costmap_2d_layers
@@ -483,7 +483,7 @@ if(BUILD_TESTING)
     add_test(NAME CostmapSmacPlannerTest COMMAND costmap_smac_planner_test
       $<TARGET_FILE:costmap_smac_planner>)
 
-    # Task 22: modules/costmap_savitzky_smoother (7 点 SG 路径平滑插件)
+# Task 22: modules/costmap_savitzky_smoother (7-point SG path smoother plugin)
     add_executable(costmap_savitzky_smoother_test
       tests/costmap_savitzky_smoother_test.cpp)
     target_link_libraries(costmap_savitzky_smoother_test PRIVATE
@@ -492,7 +492,7 @@ if(BUILD_TESTING)
     add_test(NAME CostmapSavitzkySmootherTest COMMAND
       costmap_savitzky_smoother_test $<TARGET_FILE:costmap_savitzky_smoother>)
 
-    # Task 23: modules/costmap_pid_controller (3 轴 PID 局部控制器插件)
+# Task 23: modules/costmap_pid_controller (3-axis PID local controller plugin)
     add_executable(costmap_pid_controller_test
       tests/costmap_pid_controller_test.cpp)
     target_link_libraries(costmap_pid_controller_test PRIVATE
@@ -500,7 +500,7 @@ if(BUILD_TESTING)
     add_test(NAME CostmapPidControllerTest COMMAND costmap_pid_controller_test
       $<TARGET_FILE:costmap_pid_controller>)
 
-    # Task 24: modules/costmap_*_recovery (4 个恢复插件 + dlopen 工厂)
+    # Task 24: modules/costmap_*_recovery (4 recovery plugins + dlopen factories)
     add_executable(costmap_recovery_modules_test
       tests/costmap_recovery_modules_test.cpp)
     target_link_libraries(costmap_recovery_modules_test PRIVATE
@@ -516,7 +516,7 @@ if(BUILD_TESTING)
       $<TARGET_FILE:costmap_clear_costmap_recovery>
       "${CMAKE_SOURCE_DIR}/modules")
 
-    # Task 25: modules/costmap_navigation (AbstractNavigation 宿主 + BT 抢占零速度)
+    # Task 25: modules/costmap_navigation (AbstractNavigation host + BT preemption zero velocity)
     add_library(navigation_test_controller SHARED
       tests/plugins/navigation_test_controller.cpp)
     target_link_libraries(navigation_test_controller PRIVATE
@@ -539,8 +539,8 @@ if(BUILD_TESTING)
       $<TARGET_FILE:simple_goal_checker>
       $<TARGET_FILE:simple_progress_checker>)
 
-    # Task 28 (M1 终止): headless E2E 全链路 (dlopen 宿主 + 模拟 robot pose/pointcloud
-    # + cmd_vel 旁路断言 + 析构不崩)。
+    # Task 28 (M1 terminus): headless end-to-end E2E (dlopen host + simulated robot pose/pointcloud
+    # + cmd_vel side-channel assertions + no crash on destruction).
     if(BUILD_WITH_BT)
       add_executable(headless_e2e_test tests/headless_e2e_test.cpp)
       target_link_libraries(headless_e2e_test PRIVATE
@@ -559,9 +559,9 @@ if(BUILD_TESTING)
         "${CMAKE_SOURCE_DIR}/tests/assets")
     endif()
 
-    # Task 26 收尾: checker 单测 (AbstractGoalChecker/AbstractProgressChecker 抽象
-    # + SimpleGoalChecker/SimpleProgressChecker 模块 + PluginManager 装载 +
-    # NavigationServerBase createActions 注入 ControllerExecution)。
+    # Task 26 wrap-up: checker unit tests (AbstractGoalChecker/AbstractProgressChecker abstractions
+    # + SimpleGoalChecker/SimpleProgressChecker modules + PluginManager loading +
+    # NavigationServerBase createActions injecting ControllerExecution).
     add_executable(checker_test tests/checker_test.cpp)
     target_link_libraries(checker_test PRIVATE
       ayanami simple_goal_checker simple_progress_checker
@@ -574,8 +574,8 @@ if(BUILD_TESTING)
       $<TARGET_FILE:test_looping_controller_plugin>
       $<TARGET_FILE:test_recovery_plugin>)
 
-    # Task 26: config/*.json 全套 + id↔name 一致性检查 (spec §6.6/§9)。
-    # 需要 host 模块 dlopen + 真实算法模块 .so 做反向解析断言。
+    # Task 26: full config/*.json set + id<->name consistency check (spec §6.6/§9).
+    # Requires dlopen'ing the host module + real algorithm module .so files for reverse-resolution assertions.
     add_executable(config_consistency_test tests/config_consistency_test.cpp)
     target_link_libraries(config_consistency_test PRIVATE
       ayanami costmap_navigation costmap_server::costmap_server
@@ -593,7 +593,7 @@ if(BUILD_TESTING)
       $<TARGET_FILE:costmap_wait_recovery>
       $<TARGET_FILE:costmap_clear_costmap_recovery>)
 
-    # Task 27: 复刻 legacy 6 个 gtest 契约 (新接口等价改写断言)
+    # Task 27: replicates the 6 legacy gtest contracts (assertions rewritten equivalently against the new interfaces)
     add_executable(action_protocol_test tests/action_protocol_test.cpp)
     target_link_libraries(action_protocol_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
@@ -626,8 +626,8 @@ if(BUILD_TESTING)
       add_test(NAME RecoveryExhaustionTest COMMAND recovery_exhaustion_test)
     endif()
 
-    # Requirement 2/3: 所有生产模块经公共工厂装载 (类型化 cast) + 默认树扩展
-    # 独立装载/注册/执行。
+    # Requirement 2/3: all production modules loaded through the common factory (typed cast) + default tree extension
+    # loaded/registered/executed independently.
     add_executable(extension_module_factory_test
       tests/extension_module_factory_test.cpp)
     target_link_libraries(extension_module_factory_test PRIVATE
@@ -646,8 +646,8 @@ if(BUILD_TESTING)
       $<TARGET_FILE:simple_progress_checker>
       $<TARGET_FILE:navigation_behavior_tree>)
 
-    # 本 phase: session/version 单一来源 + failure context + plugin id 分派 +
-    # controller in-place plan update (焦点测试)。
+    # This phase: single source for session/version + failure context + plugin id dispatch +
+    # controller in-place plan update (focus tests).
     add_executable(session_state_dispatch_test tests/session_state_dispatch_test.cpp)
     target_link_libraries(session_state_dispatch_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
@@ -659,16 +659,16 @@ if(BUILD_TESTING)
       $<TARGET_FILE:test_controller_plugin>
       $<TARGET_FILE:test_recovery_plugin>)
 
-    # PipelineSequence / RecoveryNode / RateController reset 关键场景专项测试
-    # (nav2 语义对照: planner+controller 并行、重规划不中断跟踪、recovery 重试)。
+    # Dedicated tests for PipelineSequence / RecoveryNode / RateController reset key scenarios
+    # (nav2 semantics: planner+controller in parallel, replanning does not interrupt tracking, recovery retries).
     add_executable(pipeline_sequence_scenarios_test
       tests/pipeline_sequence_scenarios_test.cpp)
     target_link_libraries(pipeline_sequence_scenarios_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME PipelineSequenceScenarios COMMAND pipeline_sequence_scenarios_test)
 
-    # goal_update_follow_test: 导航中 goal 更新 -> planner 重规划 + smoother
-    # 重平滑 + controller in-place 跟随新路径 (rviz 抢占场景回归, 生产默认树)。
+    # goal_update_follow_test: goal update during navigation -> planner replans + smoother
+    # re-smooths + controller follows the new path in place (rviz preemption scenario regression, production default tree).
     foreach(role PLANNER SMOOTHER CONTROLLER)
       add_library(goal_update_${role} SHARED
         tests/plugins/goal_update_follow_plugins.cpp)
@@ -689,15 +689,15 @@ if(BUILD_TESTING)
     add_test(NAME GoalUpdateFollow COMMAND goal_update_follow_test)
     set_tests_properties(GoalUpdateFollow PROPERTIES TIMEOUT 60)
 
-    # production_tree_recovery_test: 生产默认树 + MockRuntime 恢复重入集成
-    # 测试 (rviz 恢复风暴 bug 回归: FollowPath 必须重入 + 重试预算有界)。
+    # production_tree_recovery_test: production default tree + MockRuntime recovery re-entry integration
+    # test (regression for the rviz recovery storm bug: FollowPath must be re-enterable + bounded retry budget).
     add_executable(production_tree_recovery_test
       tests/production_tree_recovery_test.cpp)
     target_link_libraries(production_tree_recovery_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME ProductionTreeRecovery COMMAND production_tree_recovery_test)
 
-    # local_window_rolling_test: 局部滚动窗口跟随机器人 (卡死 bug 回归)。
+    # local_window_rolling_test: local rolling window follows the robot (regression for the stall bug).
     add_executable(local_window_rolling_test
       tests/local_window_rolling_test.cpp)
     target_link_libraries(local_window_rolling_test PRIVATE

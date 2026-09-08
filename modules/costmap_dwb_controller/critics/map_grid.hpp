@@ -1,5 +1,5 @@
-// map_grid.hpp — 迁移自 dwb_critics/map_grid.hpp (nav2_costmap_2d::Costmap2D
-// 换 costmap_2d::Costmap2D)。
+// map_grid.hpp -- ported from dwb_critics/map_grid.hpp (nav2_costmap_2d::Costmap2D
+// becomes costmap_2d::Costmap2D).
 #pragma once
 
 #include <memory>
@@ -25,8 +25,8 @@ public:
       std::vector<std::pair<std::string, std::vector<float>>>&
           cost_channels) override;
   double getScale() const override {
-    // 快照纪律: 未绑定网格 (setPlan 先于首次 computeVelocityCommands 绑定) 时
-    // 返回 0.0, 使打分循环把该 critic 视为无贡献 (cs.scale==0 跳过), 不崩。
+    // Snapshot discipline: when no grid is bound yet (setPlan runs before the first computeVelocityCommands binds it),
+    // return 0.0 so the scoring loop treats this critic as contributing nothing (cs.scale==0 skips it) instead of crashing.
     return costmap ? costmap->getResolution() * 0.5 * scale : 0.0;
   }
 

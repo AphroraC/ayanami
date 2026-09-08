@@ -1,12 +1,12 @@
-// modules/costmap_savitzky_smoother — 7 点 Savitzky-Golay 路径平滑。
+// modules/costmap_savitzky_smoother -- 7-point Savitzky-Golay path smoothing.
 //
-// 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
-// 碰撞检查。核心为 7 点 SG 卷积 (nav2 SavitzkyGolaySmoother 语义):
-// - 系数 [-2, 3, 6, 7, 6, 3, -2] / 21, 首尾端点固定, 内部点按窗口卷积
-// - 边界不足窗口处用重复填充 (clamp 到端点)
-// - do_refinement: 对结果再应用 refinement_num 轮过滤 (受 max_duration 限时)
-// - check_for_collision: 平滑后逐点查 costmap, 任一 cost >=
-// INSCRIBED_INFLATED_OBSTACLE (253 起 lethal) 即回滚 original
+// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapView (global master grid).
+// The core is the 7-point SG convolution (nav2 SavitzkyGolaySmoother semantics):
+// - coefficients [-2, 3, 6, 7, 6, 3, -2] / 21; end points fixed; interior points convolved over the window
+// - places with less than a full window at the boundaries use replicated padding (clamped to the end points)
+// - do_refinement: applies refinement_num more filter rounds to the result (bounded by max_duration)
+// - collision check: after smoothing, queries the local costmap point by point; any cost >=
+// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original
 
 #include "costmap_savitzky_smoother.hpp"
 
@@ -25,19 +25,19 @@ namespace modules {
 
 namespace {
 
-// 7 点 SG 滤波器系数 (nav2_smoother §2, 归一化 /21)。
+// 7-point SG filter coefficients (nav2_smoother §2, normalized /21).
 constexpr std::array<double, 7> k_filter = {-2.0 / 21.0, 3.0 / 21.0, 6.0 / 21.0,
                                            7.0 / 21.0,  6.0 / 21.0, 3.0 / 21.0,
                                            -2.0 / 21.0};
 
-// 重复填充窗口索引: 越界 clamp 到 [0, n-1]。
+// Replicated-padding window index: out-of-range values clamp to [0, n-1].
 std::size_t clampIndex(std::size_t i, int k, std::size_t n) {
   const long long idx = static_cast<long long>(i) + k;
   return static_cast<std::size_t>(
       std::clamp(idx, 0LL, static_cast<long long>(n - 1)));
 }
 
-// 对内部点 (1..n-2) 应用一轮 SG 卷积, 端点固定。读原始值, 一次写入。
+// Applies one SG convolution round to interior points (1..n-2); end points are fixed. Reads original values, writes once.
 void applySmoothPass(std::vector<ayanami::geometry_msgs::PoseStamped>& poses) {
   const std::size_t n = poses.size();
   std::vector<Eigen::Vector3d> smoothed(n);
@@ -59,7 +59,7 @@ void applySmoothPass(std::vector<ayanami::geometry_msgs::PoseStamped>& poses) {
   }
 }
 
-// 内部点朝向对齐到切线方向 (端点保持原始朝向)。
+// Aligns interior point orientations to the tangent direction (end points keep their original orientations).
 void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses) {
   for (std::size_t i = 1; i + 1 < poses.size(); ++i) {
     const Eigen::Vector3d d = poses[i + 1].pose.position -
@@ -77,7 +77,7 @@ void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses)
 void CostmapSavitzkySmoother::configure(
     const PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局)。
+  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
   const Config& file = context.config;
   param.do_refinement =
       file.param<bool>("costmap_savitzky_smoother", "do_refinement",
@@ -93,25 +93,24 @@ bool CostmapSavitzkySmoother::cancel() {
   return true;
 }
 
-SmootherResultT CostmapSavitzkySmoother::smoothPath(
-    ayanami::nav_msgs::Path& path, double max_duration,
-    bool check_for_collision) {
-  // 碰撞检查需要读图: 需要时持 shared 锁 (整个平滑调用持有, <10ms), 零拷贝。
+ResultT<void> CostmapSavitzkySmoother::smoothPath(
+    ayanami::nav_msgs::Path& path, double max_duration) {
+  // Collision checking needs the map (family read contract: smoother reads
+  // the LOCAL map): shared lock held for the whole smoothing call (<10 ms),
+  // zero copy.
   std::optional<ayanami::costmap::CostmapView> costmap;
-  if (check_for_collision) {
-    if (!map_context) {
-      return SmootherResultT::failure(
-          ErrorCode::MAP_UNAVAILABLE,
-          "CostmapSavitzkySmoother has no costmap module");
-    }
-    costmap = map_context->lockGlobal();
+  if (!map_context) {
+    return ResultT<void>::failure(
+        ErrorCode::MAP_UNAVAILABLE,
+        "CostmapSavitzkySmoother has no costmap module");
   }
+  costmap = map_context->lockLocal();
   const ayanami::nav_msgs::Path original = path;
   canceled.store(false);
 
-  // 空 path 或点数 < 7: 无窗口可平滑, 直接 SUCCESS, path 不变。
+  // Empty path or fewer than 7 points: no window to smooth, return SUCCESS directly with path unchanged.
   if (path.poses.size() < 7) {
-    auto result = SmootherResultT::success(path);
+    auto result = ResultT<void>::success();
     result.message = "path too short to smooth";
     return result;
   }
@@ -121,18 +120,18 @@ SmootherResultT CostmapSavitzkySmoother::smoothPath(
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
         .count();
   };
-  // max_duration < 0 视为不限时。
+  // max_duration < 0 means unlimited time.
   const bool timed = max_duration >= 0.0;
 
-  // 预算耗尽仍未开始: SUCCESS + 部分平滑 (= 无)。
+  // Budget exhausted before starting: SUCCESS + partial smoothing (= none).
   if (timed && elapsed() > max_duration) {
-    return SmootherResultT::success(path);
+    return ResultT<void>::success();
   }
 
-  // 名义一轮过滤 (核心平滑)。
+  // Nominal one filter round (core smoothing).
   applySmoothPass(path.poses);
 
-  // 精化轮 (时间预算 / cancel 约束下提前停止, 已平滑部分保留)。
+  // Refinement rounds (early stop under the time budget / cancel constraint; the already-smoothed part is kept).
   if (param.do_refinement) {
     for (int r = 0; r < param.refinement_num; ++r) {
       if (canceled.load() || (timed && elapsed() >= max_duration)) {
@@ -144,29 +143,27 @@ SmootherResultT CostmapSavitzkySmoother::smoothPath(
 
   updateOrientations(path.poses);
 
-  // 碰撞检查: 平滑后逐点查加锁读视图, 命中 lethal 回滚到 original。
-  if (check_for_collision) {
-    const costmap_2d::Costmap2D* cm = costmap ? costmap->grid() : nullptr;
-    if (cm) {
-      for (const auto& p : path.poses) {
-        unsigned int mx = 0;
-        unsigned int my = 0;
-        if (!cm->worldToMap(p.pose.position.x(), p.pose.position.y(),
-                            mx, my)) {
-          continue;
-        }
-        if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
-          path = original;
-          auto result = SmootherResultT::success(path);
-          result.message = "collision detected; rolled back to original path";
-          return result;
-        }
+  // Collision check: after smoothing, query the lock-held read view point by point; on a lethal hit roll back to the original.
+  const costmap_2d::Costmap2D* cm = costmap ? costmap->grid() : nullptr;
+  if (cm) {
+    for (const auto& p : path.poses) {
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      if (!cm->worldToMap(p.pose.position.x(), p.pose.position.y(),
+                          mx, my)) {
+        continue;
+      }
+      if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+        path = original;
+        auto result = ResultT<void>::success();
+        result.message = "collision detected; rolled back to original path";
+        return result;
       }
     }
   }
 
-  // 与 original 完全一致时同样退化为 SUCCESS。
-  return SmootherResultT::success(path);
+  // Identical to the original also degenerates to SUCCESS.
+  return ResultT<void>::success();
 }
 
 }  // namespace modules

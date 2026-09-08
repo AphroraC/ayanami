@@ -1,5 +1,5 @@
-// registration.hpp — critic / trajectory generator 静态注册表 (pluginlib 的
-// ayanami 替代: 全部子插件编译进模块 .so, 按简化类名查找)。
+// registration.hpp -- static registries for critics / trajectory generators (the ayanami
+// replacement for pluginlib: all sub-plugins are compiled into the module .so, looked up by short class name).
 #pragma once
 
 #include <functional>
@@ -13,19 +13,19 @@
 namespace ayanami {
 namespace modules {
 
-/// @brief critic 工厂注册表 (键: 简化类名, 如 "BaseObstacleCritic")。
+/// @brief Critic factory registry (key: short class name, e.g. "BaseObstacleCritic").
 std::map<std::string, std::function<dwb_core::TrajectoryCritic::Ptr()>>&
 criticRegistry();
 
-/// @brief trajectory generator 工厂注册表 (键: "StandardTrajectoryGenerator"
-/// / "LimitedAccelGenerator")。
+/// @brief Trajectory generator factory registry (keys: "StandardTrajectoryGenerator"
+/// / "LimitedAccelGenerator").
 std::map<std::string, std::function<dwb_core::TrajectoryGenerator::Ptr()>>&
 trajectoryGeneratorRegistry();
 
-/// @brief 注册全部内置 critic (11 个 + 基类不可实例化)。
+/// @brief Registers all built-in critics (11; the base class is not instantiable).
 void registerAllCritics();
 
-/// @brief 注册全部内置 trajectory generator (2 个)。
+/// @brief Registers all built-in trajectory generators (2).
 void registerAllTrajectoryGenerators();
 
 }  // namespace modules

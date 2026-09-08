@@ -10,27 +10,26 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 7 点 Savitzky-Golay 路径平滑模块 (CostmapSmoother 族)。
+ * @brief 7-point Savitzky-Golay path smoother module (CostmapSmoother family).
  *
- * 系数 [-2, 3, 6, 7, 6, 3, -2] / 21。首尾端点固定, 内部点按窗口卷积
- * (边界用重复填充 clamp)。可选 refinement 轮次做二次平滑 (受 max_duration
- * 时间预算约束)。check_for_collision 时对地图模块加锁直读 (shared 锁) 逐点查询
- * global grid, 命中 inscribed-inflated (>=253) 即回滚到 original
- * path。不持有 context / wrapper / 可变 grid。
+ * Coefficients [-2, 3, 6, 7, 6, 3, -2] / 21. The end points are fixed; interior points are convolved over the window
+ * (boundaries use replicated clamp padding). Optional refinement rounds perform a second smoothing pass (bounded by the
+ * max_duration time budget). The local map is read under a shared lock and the grid is
+ * queried point by point; any inscribed-inflated hit (>=253) rolls back to the original path.
+ * Holds no context / wrapper / mutable grid.
  */
 class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
  public:
   CostmapSavitzkySmoother() = default;
-  // smoother 族基类无虚析构, 派生类补虚拟析构 (不加 override)。
+  // The smoother family base class has no virtual destructor; the derived class adds one (without override).
   virtual ~CostmapSavitzkySmoother() = default;
 
   void configure(const PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
-  /// @brief in-place 平滑: 直接修改 path; 失败/回滚时恢复原路径。
-  SmootherResultT smoothPath(ayanami::nav_msgs::Path& path,
-                             double max_duration,
-                             bool check_for_collision) override;
+  /// @brief In-place smoothing: modifies path directly; restores the original path on failure/rollback.
+  ResultT<void> smoothPath(ayanami::nav_msgs::Path& path,
+                           double max_duration) override;
 
   bool cancel() override;
 

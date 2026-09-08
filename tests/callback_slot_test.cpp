@@ -296,8 +296,8 @@ struct Payload {
 };
 }  // namespace
 
-// 右值防护放行路径: trivially-copyable 按值实参 (move == copy), 每个 observer
-// 都拿到完整值, 不会出现第一个 observer 搬空参数的情况。
+/// Rvalue-guard pass-through path: trivially-copyable by-value arguments (move == copy), so every observer
+/// receives the full value; the first observer never moves the argument away.
 TEST(CallbackSlotTest, trivialByValueArgumentReachesAllObservers) {
   ayanami::CallbackSlot<void(Payload)> slot;
   std::vector<int> seen;
@@ -313,8 +313,8 @@ TEST(CallbackSlotTest, trivialByValueArgumentReachesAllObservers) {
   EXPECT_EQ(seen[2], 7);
 }
 
-// 非平凡类型以左值传入 (Args 推为引用), 不触碰 move-from 防护, 全部 observer
-// 可见完整内容。
+/// Non-trivial types are passed as lvalues (Args deduced as references), bypassing the move-from guard; every observer
+/// sees the full content.
 TEST(CallbackSlotTest, nontrivialLvalueArgumentReachesAllObservers) {
   ayanami::CallbackSlot<void(const std::string&)> slot;
   std::string order;

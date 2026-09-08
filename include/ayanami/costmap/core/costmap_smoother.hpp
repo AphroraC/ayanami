@@ -11,12 +11,17 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 路径平滑插件基类 (costmap族, MBF 式分层)。
+ * @brief Path smoothing plugin base class (costmap family, MBF-style
+ * layering).
  *
- * 在 abstract::AbstractSmoother (零地图纯虚接口) 之上只新增地图族注入点:
- * - configure(context, map): 注入插件逻辑名 + 自身配置 + 地图模块 const 指针。
- * - smoothPath(...): 即 abstract 纯虚 in-place 签名; 需要碰撞检查时实现
- *   内部经 map->lockGlobal() 加锁读图 (零拷贝, 不拷贝不快照)。
+ * On top of abstract::AbstractSmoother (zero-map pure virtual interface),
+ * only the map-family injection point is added:
+ * - configure(context, map): injects the plugin logical name + its own
+ *   config + a const pointer to the map module.
+ * - smoothPath(...): the abstract pure virtual in-place signature; when
+ *   collision checking is needed, the implementation reads the map under a
+ *   lock internally via map->lockGlobal() (zero copy, no copies or
+ *   snapshots).
  */
 class CostmapSmoother : public ayanami::abstract::AbstractSmoother {
  public:

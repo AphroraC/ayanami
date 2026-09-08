@@ -11,14 +11,16 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 路径平滑执行 (单次 in-place 执行)。
+ * @brief Path smoothing execution (single in-place run).
  *
- * 职责表: 插件只做平滑; 失败立即映射为 ErrorCode 终态, 重试由 BT 决定。
- * in-place 语义: 路径以值传入, 插件就地修改; 成功后 getSmoothedPath()
- * 返回已平滑路径。
+ * Responsibility table: the plugin only performs smoothing; a failure is
+ * mapped immediately to an ErrorCode terminal state, and retries are
+ * decided by the BT.
+ * In-place semantics: the path is passed by value and the plugin modifies
+ * it in place; on success getSmoothedPath() returns the smoothed path.
  *
- * 状态机: INITIALIZED→STARTED→SMOOTHING→SMOOTHED_PATH (或
- * NO_SMOOTHED_PATH/CANCELED/STOPPED/INTERNAL_ERROR)。
+ * State machine: INITIALIZED->STARTED->SMOOTHING->SMOOTHED_PATH (or
+ * NO_SMOOTHED_PATH/CANCELED/STOPPED/INTERNAL_ERROR).
  */
 class SmootherExecution : public ExecutionBase {
 public:
@@ -38,17 +40,15 @@ public:
   explicit SmootherExecution(ayanami::abstract::AbstractSmoother::Ptr smoother)
       : smoother(std::move(smoother)) {}
 
-  /// @brief 记录入参 (路径按值接管) 并启动平滑线程。
+  /// @brief Record the inputs (taking the path by value) and start the smoothing thread.
   using ExecutionBase::start;
-  void smoothPath(nav_msgs::Path path, double max_duration,
-                  bool check_for_collision) {
+  void smoothPath(nav_msgs::Path path, double max_duration) {
     this->path = std::move(path);
     this->max_duration = max_duration;
-    this->check_for_collision = check_for_collision;
     ExecutionBase::start();
   }
 
-  /// @brief 取消: 置 cancel_requested 并透传到 smoother 插件 (协作式)。
+  /// @brief Cancel: set cancel_requested and forward to the smoother plugin (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (smoother) smoother->cancel();
@@ -59,16 +59,20 @@ public:
     return static_cast<SmootherState>(state.load());
   }
 
-  /// @brief 平滑结果 (in-place: 成功后即输入路径的平滑版本)。
+  /// @brief The smoothing result (in-place: on success, the smoothed version of the input path).
   const nav_msgs::Path& getSmoothedPath() const { return path; }
 
+  /// @brief Move-out: the action layer takes the smoothed path once the
+  /// execution is terminal, avoiding a full path copy. Single-shot execution.
+  nav_msgs::Path takeSmoothedPath() { return std::move(path); }
+
 protected:
-  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
-  /// typed 调用 (执行层完成地图访问)。
-  virtual SmootherResultT callSmoother(nav_msgs::Path& path,
-                                       double max_duration,
-                                       bool check_for_collision) {
-    return smoother->smoothPath(path, max_duration, check_for_collision);
+  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// map-family executions override it with a typed call (the execution
+  /// layer performs map access).
+  virtual ResultT<void> callSmoother(nav_msgs::Path& path,
+                                     double max_duration) {
+    return smoother->smoothPath(path, max_duration);
   }
 
   void run() override {
@@ -86,8 +90,8 @@ protected:
       }
       setState(SMOOTHING, false);
 
-      const SmootherResultT result =
-          callSmoother(path, max_duration, check_for_collision);
+      const ResultT<void> result =
+          callSmoother(path, max_duration);
 
       if (cancel_requested) {
         error = ErrorCode::CANCELED;
@@ -95,15 +99,13 @@ protected:
         return;
       }
       if (result.ok) {
-        // in-place 语义: 成功结果以 result.data 为准 (插件 success(path) 会
-        // move 走 execution 的 path 成员), 回填保持 getSmoothedPath 有效。
-        path = std::move(result.data);
+        // In-place semantics: the plugin already modified the path member in place; getSmoothedPath is directly valid.
         error = ErrorCode::NONE;
         message = result.message;
         setState(SMOOTHED_PATH, true);
         return;
       }
-      // 失败立即返回错误码 (重试由 BT 决定)。
+      // Return the error code immediately on failure (retries are decided by the BT).
       error = result.error;
       message = result.message;
       setState(NO_SMOOTHED_PATH, true);
@@ -119,7 +121,6 @@ protected:
   ayanami::abstract::AbstractSmoother::Ptr smoother;
   nav_msgs::Path path;
   double max_duration{0.0};
-  bool check_for_collision{false};
 };
 
 } // namespace components

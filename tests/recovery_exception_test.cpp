@@ -1,11 +1,11 @@
-// recovery_exception_test: 异常路径闭合回归 (高优缺陷 #1)。
+// recovery_exception_test: exception-path closure regression (high-priority defect #1).
 //
-// 锁死三类异常场景的行为契约:
-// 1. recovery 插件 start 抛异常 → 任务有界时间内以 ABORTED/INTERNAL_ERROR
-// 结算 (不再悬挂驱动任务), recovery_exclusive 释放 (后续 planner 请求
-// 不再 RESOURCE_BUSY);
-// 2. ExecutionBase::run 逃逸异常 → runTask 兜底置 k_aborted 终态;
-// 3. finish 抛异常不破坏已完成的终态结算。
+// Locks the behavioral contracts for three exception scenarios:
+// 1. a recovery plugin whose start throws -> the task settles as ABORTED/INTERNAL_ERROR within bounded time
+// (the driving task no longer hangs) and recovery_exclusive is released (later planner requests
+// no longer get RESOURCE_BUSY);
+// 2. an exception escaping ExecutionBase::run -> the runTask backstop sets the k_aborted terminal state;
+// 3. an exception thrown from finish must not corrupt an already-completed terminal settlement.
 
 #include <gtest/gtest.h>
 
@@ -35,7 +35,8 @@
 
 namespace {
 
-using ayanami::RecoveryResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::ResultT;
 using ayanami::abstract::AbstractRecovery;
 using ayanami::actions::GoalStatus;
 using ayanami::actions::RecoveryGoal;
@@ -54,23 +55,24 @@ bool readyWithin(Task& task, int timeout_ms) {
   return task.ready();
 }
 
-// start 抛异常的 recovery (测试二进制内直连 RecoveryAction, 不经 dlopen)。
+/// A recovery whose start throws (wired directly to RecoveryAction inside the test binary, no dlopen).
 class ThrowingStartRecovery : public AbstractRecovery {
  public:
   void start() override { throw std::runtime_error("recovery start exploded"); }
-  RecoveryResultT tick() override {
-    return RecoveryResultT::success(ayanami::RecoveryCycleData{});
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
+    cycle = ayanami::RecoveryCycleData{};
+    return ResultT<void>::success();
   }
 };
 
-// finish 抛异常的 recovery: start/tick 正常, 收尾炸 —— 已完成的终态结算
-// 不应被破坏。
+/// A recovery whose finish throws: start/tick are normal, the epilogue explodes -- an already-completed terminal
+/// settlement must not be corrupted.
 class ThrowingFinishRecovery : public AbstractRecovery {
  public:
   void finish() override { throw std::runtime_error("recovery finish exploded"); }
-  RecoveryResultT tick() override {
-    return RecoveryResultT::success(
-        ayanami::RecoveryCycleData{ayanami::RecoveryStatus::SUCCESS, {}});
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
+    cycle = ayanami::RecoveryCycleData{ayanami::RecoveryStatus::SUCCESS, {}};
+    return ResultT<void>::success();
   }
 };
 
@@ -85,12 +87,12 @@ TEST(RecoveryExceptionTest, throwingStartSettlesTaskAndReleasesSlot) {
   auto task = action.acceptGoal(goal);
   ASSERT_TRUE(task.valid());
 
-  // 修复前: start 逃逸 run → 状态停在 STARTED → 任务永不完成 (悬挂)。
+  // Before the fix: an exception escaping start left the state stuck at STARTED -> the task never completed (hang).
   ASSERT_TRUE(readyWithin(task, 2000)) << "task never settled after start() threw";
   const auto completion_status = task.status();
   EXPECT_EQ(completion_status, GoalStatus::ABORTED);
   EXPECT_EQ(task.result().error, ayanami::ErrorCode::INTERNAL_ERROR);
-  EXPECT_FALSE(action.isRunning(0));
+  EXPECT_FALSE(action.isRunning());
 }
 
 TEST(RecoveryExceptionTest, throwingFinishKeepsCompletedOutcome) {
@@ -103,12 +105,12 @@ TEST(RecoveryExceptionTest, throwingFinishKeepsCompletedOutcome) {
   ASSERT_TRUE(task.valid());
 
   ASSERT_TRUE(readyWithin(task, 2000));
-  // tick 已 SUCCESS 结算; finish 的逃逸异常不允许改写结果或悬挂。
+  // The tick already settled SUCCESS; an escaping exception from finish must not rewrite the result or hang.
   EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   EXPECT_EQ(task.result().error, ayanami::ErrorCode::NONE);
 }
 
-// runTask 兜底: run 逃逸异常 → k_aborted 终态 (基类契约)。
+// runTask backstop: an exception escaping run -> the k_aborted terminal state (base-class contract).
 TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   class ThrowingExecution : public ayanami::components::ExecutionBase {
    public:
@@ -127,8 +129,8 @@ TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   exec.join();
 }
 
-// 资源协议回归: 经完整 server 走 requestRecovery, start 抛异常后互斥必须
-// 释放 —— 后续 planner 请求不得 RESOURCE_BUSY (修复前为永久死锁)。
+// Resource protocol regression: requestRecovery via the full server; after a start exception the mutex must be
+// released -- later planner requests must not get RESOURCE_BUSY (a permanent deadlock before the fix).
 namespace {
 
 class RecoveryExceptionServer : public ayanami::components::NavigationServerBase {
@@ -157,7 +159,7 @@ TEST(RecoveryExceptionTest, failedRecoveryReleasesExclusiveResourceProtocol) {
       << "recovery task never settled; recovery_exclusive would deadlock";
   EXPECT_EQ(recovery_task.status(), GoalStatus::ABORTED);
 
-  // 互斥已释放: planner 请求被正常接受并成功结算 (而非 RESOURCE_BUSY 拒绝)。
+  // The mutex was released: the planner request is accepted normally and settles successfully (not rejected with RESOURCE_BUSY).
   ayanami::actions::GetPathGoal path_goal;
   auto path_task = server.requestPath(path_goal);
   ASSERT_TRUE(path_task.valid());

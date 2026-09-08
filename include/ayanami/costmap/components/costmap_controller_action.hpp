@@ -13,13 +13,16 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 局部控制的 costmap 版 Action ( 生产路径)。
+ * @brief The costmap variant of the local control Action (production
+ * path).
  *
- * 复用 ControllerAction 全部协议, 只覆写 createExecution 工厂:
- * 返回 CostmapControllerExecution (带 CostmapMapContext: 激活/停用 local +
- * 每 cycle 加锁读图 + safetyCheck→isCurrent; 清零停止命令仍由
- * ControllerExecution 保证)。执行配置器 (server 装配: goal/progress
- * checker + 速度上限 + 机器人状态源) 经 configure 注入。
+ * Reuses the entire ControllerAction protocol and only overrides the
+ * createExecution factory: it returns a CostmapControllerExecution (with
+ * CostmapMapContext: activate/deactivate the local map + per-cycle locked
+ * map reads + safetyCheck->isCurrent; the zeroed stop command is still
+ * guaranteed by ControllerExecution). The execution configurator (server
+ * assembly: goal/progress checkers + velocity limits + robot state source)
+ * is injected via configure.
  */
 class CostmapControllerAction : public ayanami::components::ControllerAction {
  public:

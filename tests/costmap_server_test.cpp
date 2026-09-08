@@ -10,7 +10,7 @@
 
 namespace {
 
-// rolling_window=true, origin=(0,0) 的小地图, 便于按 cell 推世界坐标。
+/// A small rolling_window=true map with origin=(0,0) so world coordinates can be derived per cell.
 std::shared_ptr<costmap_2d::LayeredCostmap> makeRollingGrid(
     unsigned int size, double resolution) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -21,7 +21,7 @@ std::shared_ptr<costmap_2d::LayeredCostmap> makeRollingGrid(
 
 }  // namespace
 
-// ---------- 构造 ----------
+// ---------- Construction ----------
 
 TEST(CostmapServerTest, constructionHoldsLayeredCostmapWithStaticLayer) {
   auto lm = makeRollingGrid(20, 0.5);
@@ -38,16 +38,16 @@ TEST(CostmapServerTest, constructionHoldsLayeredCostmapWithStaticLayer) {
   EXPECT_EQ(wrapper.get().getGlobalFrameID(), "map");
 }
 
-// ---------- 生命周期 ----------
+// ---------- Lifecycle ----------
 
 TEST(CostmapServerTest, checkActivateIsIdempotent) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
-  // 首次: inactive -> active 翻转, 返回 true
+  // First call: flips inactive -> active, returns true
   EXPECT_TRUE(wrapper.checkActivate());
   EXPECT_TRUE(wrapper.isActive());
-  // 重复调用: 已是 active, 不再重复 act, 返回 false (幂等)
+  // Repeated call: already active, no repeated activation, returns false (idempotent)
   EXPECT_FALSE(wrapper.checkActivate());
   EXPECT_FALSE(wrapper.checkActivate());
   EXPECT_TRUE(wrapper.isActive());
@@ -58,32 +58,32 @@ TEST(CostmapServerTest, checkDeactivateIsIdempotent) {
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
   EXPECT_TRUE(wrapper.checkActivate());
-  // 首次: active -> inactive 翻转, 返回 true
+  // First call: flips active -> inactive, returns true
   EXPECT_TRUE(wrapper.checkDeactivate());
   EXPECT_FALSE(wrapper.isActive());
-  // 重复调用: 已是 inactive, 不再重复 act, 返回 false (对偶)
+  // Repeated call: already inactive, no repeated deactivation, returns false (dual case)
   EXPECT_FALSE(wrapper.checkDeactivate());
   EXPECT_FALSE(wrapper.checkDeactivate());
   EXPECT_FALSE(wrapper.isActive());
 }
 
-// ---------- 线程安全 ----------
+// ---------- Thread safety ----------
 
 TEST(CostmapServerTest, mutexIsSharedExclusive) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
   auto& m = wrapper.mutex();
-  // 读者可并发持 shared 锁。
+  // Readers can hold the shared lock concurrently.
   {
     std::shared_lock<std::shared_mutex> r1(m);
     std::shared_lock<std::shared_mutex> r2(m);
   }
-  // 写者 unique 锁期间读者不可进入 (语义由 shared_mutex 保证)。
+  // Readers cannot enter while the writer holds the unique lock (guaranteed by shared_mutex semantics).
   {
     std::unique_lock<std::shared_mutex> w(m);
-    // 同一线程内 updateMap 会再次取 unique 锁 -> shared_mutex 非递归, 写者
-    // 复合更新应使用 updateMapUnlocked (与 clearCostmapArea 一致)。
+    // Calling updateMap in the same thread would take the unique lock again -> shared_mutex is non-recursive, so writers
+    // should use updateMapUnlocked for composite updates (consistent with clearCostmapArea).
     wrapper.updateMapUnlocked(1.0, 2.0, 0.0);
   }
   wrapper.updateMap(1.0, 2.0, 0.0);
@@ -92,19 +92,19 @@ TEST(CostmapServerTest, mutexIsSharedExclusive) {
 // ---------- updateMap / rolling window ----------
 
 TEST(CostmapServerTest, updateMapRollingWindowPreservesOverlap) {
-  auto lm = makeRollingGrid(10, 0.5);  // 10x10 cells, 覆盖 [0,5) x [0,5)
+  auto lm = makeRollingGrid(10, 0.5);  // 10x10 cells, covering [0,5) x [0,5)
   lm->getCostmap()->setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
 
   costmap_2d::CostmapWrapper wrapper(lm, "map");
-  // 新 origin = (1.0-2.5, 2.0-2.5) = (-1.5, -0.5) -> 数据右移 3 cells, 上移 1 cell
+  // New origin = (1.0-2.5, 2.0-2.5) = (-1.5, -0.5) -> data shifts right 3 cells and up 1 cell
   wrapper.updateMap(1.0, 2.0, 0.0);
 
   auto* cm = lm->getCostmap();
   EXPECT_NEAR(cm->getOriginX(), -1.5, 1e-9);
   EXPECT_NEAR(cm->getOriginY(), -0.5, 1e-9);
-  // 重叠数据保留: 原 (5,5) 移到 (8,6)
+  // Overlapping data preserved: the old (5,5) moved to (8,6)
   EXPECT_EQ(cm->getCost(8, 6), costmap_2d::LETHAL_OBSTACLE);
-  // 移出区域恢复默认
+  // Regions moved out of the window return to the default
   EXPECT_EQ(cm->getCost(5, 5), costmap_2d::FREE_SPACE);
 }
 

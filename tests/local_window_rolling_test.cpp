@@ -1,11 +1,11 @@
-// local_window_rolling_test: 局部滚动代价地图窗口必须跟随机器人。
+// local_window_rolling_test: the local rolling costmap window must follow the robot.
 //
-// 背景 bug (rviz 实测): 机器人向西行驶 ~1.5m 后卡死 —— local rolling 窗口
-// 钉死在世界原点 (origin 恒 (-1.5,-1.5)), 机器人撞上自己窗口的西边缘后,
-// DWB 所有前进轨迹出界无效, 只能原地抖动。
+// Background bug (observed live in rviz): the robot froze after driving ~1.5m west -- the local rolling window
+// was pinned to the world origin (origin stuck at (-1.5,-1.5)); after hitting the west edge of its own window,
+// all forward DWB trajectories were out-of-bounds/invalid and the robot could only jitter in place.
 //
-// 本测试锁死语义: updateMapUnlocked / handleObstacle* 以机器人位姿为中心
-// 滚动 local 窗口 (LayeredCostmap::updateMap → updateOrigin)。
+// This test locks the semantics: updateMapUnlocked / handleObstacle* roll the local window centered on the robot
+// pose (LayeredCostmap::updateMap -> updateOrigin).
 
 #include <gtest/gtest.h>
 
@@ -59,7 +59,7 @@ ayanami::sensor_msgs::LaserScan makeScan(float range = 2.0f) {
   scan.angle_increment = 0.05;
   scan.range_min = 0.1;
   scan.range_max = 3.5;
-  // 一圈均匀命中 (无 inf), 触发 mark + raytrace 管线。
+  // A uniform ring of hits (no inf), triggering the mark + raytrace pipeline.
   for (int i = 0; i < 126; ++i) {
     scan.ranges.push_back(range);
   }
@@ -76,7 +76,7 @@ TEST(LocalWindowRolling, localWindowFollowsRobotPose) {
   const double initial_origin_y =
       server.localCostmap()->get().getCostmap()->getOriginY();
 
-  // 机器人 (base_link) 在 odom (3,3), laser 与车体同位。
+  // The robot (base_link) is at odom (3,3) with the laser co-located with the body.
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 5.0);
   Eigen::Isometry3d t_odom_base = Eigen::Isometry3d::Identity();
@@ -97,12 +97,12 @@ TEST(LocalWindowRolling, localWindowFollowsRobotPose) {
                   << initial_origin_y << ") after=(" << origin_x << ","
                   << origin_y << ")";
 
-  // 滚动语义: 窗口中心跟随机器人 (3,3) → origin ≈ (1.5,1.5)。
+  // Rolling semantics: the window center follows the robot (3,3) -> origin ~ (1.5,1.5).
   EXPECT_NEAR(origin_x, 1.5, 0.11) << "local window did not roll to robot";
   EXPECT_NEAR(origin_y, 1.5, 0.11) << "local window did not roll to robot";
 }
 
-// ---- 定位修正跳变: 全局动态层整体清空 (静态层保留) ----
+// ---- Localization correction jump: the global dynamic layer is cleared wholesale (static layer kept) ----
 
 TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
   auto dir = makeRollingConfigDir();
@@ -111,18 +111,18 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
 
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 5.0);
-  // 机器人置于原点 (全局图 1m x 1m, 扫描端点 0.3m 全部在界内)。
-  // fast_tf 注意事项: (1) 动态边 set 对同一时间戳不覆盖 (emplace 语义),
-  // 必须用递增时间戳, 否则测试 1 留下的旧样本无法被覆盖; (2) 树跨测试残留,
-  // 必须经 (map,odom) 挂载 (与 live 50Hz 同步同路径), 直接 (map,base_link)
-  // 会触发 "cannot merge unconnected trees"。
+  // Robot at the origin (global map 1m x 1m; the 0.3m scan endpoints are all inside bounds).
+  // fast_tf caveats: (1) a dynamic-edge set does not overwrite the same timestamp (emplace semantics);
+  // timestamps must increase, otherwise old samples left by test 1 cannot be overwritten; (2) trees persist across tests,
+  // so mount via (map,odom) (the same path as live 50Hz sync); mounting (map,base_link) directly
+  // triggers "cannot merge unconnected trees".
   Eigen::Isometry3d t_map_base = Eigen::Isometry3d::Identity();
-  int64_t stamp_ns = 1000000000;  // 1s 起, 每条边递增
+  int64_t stamp_ns = 1000000000;  // Starting at 1s, incremented per edge
   auto next_stamp = [&stamp_ns] {
     return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
   };
- // 每周期三边等戳写入 (镜像 live 50Hz 同步): latest common time 语义下
- // 多跳链路统一切刻采样, 交错戳的单样本边会在公共时刻外无覆盖而失败。
+ // All three edges are written with equal stamps each cycle (mirroring live 50Hz sync): under latest common time semantics
+ // multi-hop chains sample one instant consistently; staggered-stamp single-sample edges would lack coverage outside the common instant and fail.
   const auto cycle_stamp = next_stamp();
   rsc.setTransform("odom", "base_link", cycle_stamp, t_map_base, false);
   rsc.setTransform("odom", "laser", cycle_stamp,
@@ -144,15 +144,15 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
     return lethal;
   };
 
-  // 落图前基线 (static 层 20x20 全空 → 无 lethal)
+  // Baseline before mapping (static layer 20x20 all empty -> no lethal)
   const int baseline = countGlobalLethal();
 
-  // 注入一圈 0.3m 扫描 → 全局图出现动态标记 (端点保持在 1m 界内)
+  // Inject a 0.3m ring scan -> dynamic marks appear on the global map (endpoints stay within the 1m bounds)
   server.handleObstacleLaserScan(makeScan(0.3f));
   const int after_mark = countGlobalLethal();
   EXPECT_GT(after_mark, baseline) << "scan marks did not reach global map";
 
-  // 定位修正跳变处理: 清空全局动态层 (clear_radius<=0 = 整图动态层)
+  // Localization correction jump handling: clear the global dynamic layer (clear_radius<=0 = the whole dynamic layer)
   ayanami::costmap::ClearCostmapCommand command;
   command.affected_maps = "global";
   command.clear_radius = 0.0;
@@ -178,7 +178,7 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
   }
 }
 
-// ---- 滚动解耦: 无 scan 流时 spinOnce 周期滚动仍跟随机器人 ----
+// ---- Rolling decoupling: spinOnce periodic rolling follows the robot even without a scan stream ----
 
 TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
   auto dir = makeRollingConfigDir();
@@ -190,7 +190,7 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
   const double initial_origin_y =
       server.localCostmap()->get().getCostmap()->getOriginY();
 
- // 机器人置于 (2, 2), 不注入任何 scan
+ // Robot placed at (2, 2) with no scan injected
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 5.0);
   int64_t stamp_ns = 3000000000;
@@ -205,7 +205,7 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
   rsc.setTransform("map", "odom", next_stamp(),
                    Eigen::Isometry3d::Identity(), false);
 
- // 多次调用周期滚动 (内部按 update_frequency 节流): 窗口必须跟随
+ // Repeated periodic rolling calls (throttled internally by update_frequency): the window must follow
   for (int i = 0; i < 3; ++i) {
     server.updateRollingWindows();
     std::this_thread::sleep_for(std::chrono::milliseconds(110));
@@ -222,7 +222,7 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
       << "rolling window did not follow robot without sensor stream";
 }
 
-// ---- isPathValid 最近点起点 (nav2 对齐): 已走过路段的占用不判无效 ----
+// ---- isPathValid starts at the closest point (nav2-aligned): occupancy on the already-traveled segment is not invalid ----
 
 TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
   auto dir = makeRollingConfigDir();
@@ -231,12 +231,12 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
 
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 5.0);
- // 时基必须晚于本进程内更早执行的测试 (fast_tf latest 取最新样本)
+ // The time base must be later than tests executed earlier in this process (fast_tf latest takes the newest samples)
   int64_t stamp_ns = 4000000000;
   auto next_stamp = [&stamp_ns] {
     return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
   };
- // 每周期三边等戳写入 (镜像 live 50Hz 同步, 见 localizationJump 注释)。
+ // All three edges written with equal stamps per cycle (mirrors live 50Hz sync; see the localizationJump comment).
   auto set_base = [&](double x, double y) {
     const auto stamp = next_stamp();
     Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
@@ -248,7 +248,7 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
                      Eigen::Isometry3d::Identity(), false);
   };
 
- // 路径: x 从 0.1 到 0.9, 每 0.1m 一点 (全局图 1m x 1m @0.05m)
+ // Path: x from 0.1 to 0.9, one point every 0.1m (global map 1m x 1m @0.05m)
   ayanami::nav_msgs::Path path;
   path.header.frame_id = "map";
   for (int i = 1; i <= 9; ++i) {
@@ -258,25 +258,25 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
     path.poses.push_back(pt);
   }
 
- // 在路径起点 (已走过段) 落一圈障碍: 机器人置 (0.2, 0)
+ // Drop a ring of obstacles at the path start (already-traveled segment): robot placed at (0.2, 0)
   set_base(0.2, 0.0);
   server.handleObstacleLaserScan(makeScan(0.25f));
 
- // 机器人已前进到 x≈0.8 (路径末端): 起点障碍在"最近点"之前 → 有效
+ // The robot has advanced to x~0.8 (path end): the start obstacles lie before the "closest point" -> valid
   set_base(0.8, 0.0);
   EXPECT_TRUE(server.isPathValid(path))
       << "occupied already-passed segment must not invalidate the path";
 
- // 机器人仍在起点: 最近点即被占据的起点 → 无效
+ // The robot is still at the start: the closest point is the occupied start -> invalid
   set_base(0.2, 0.0);
   EXPECT_FALSE(server.isPathValid(path))
       << "occupied segment at the robot's position must invalidate the path";
 }
 
-// ---- 落图时序: scan 戳查询 (采集时刻位姿) 而非 latest ----
-// 场景: 机器人原地旋转, map<-odom 修正在 5s->6s 间平移 (0.3,0) (AMCL 修正
-// 演化)。同一圆环 scan (半径 0.6) 分别标注 5s / 6s: 标记必须落在各自采集
-// 时刻的 map 位姿 —— 用 latest 会把两帧都烙在最新修正位姿上 (旋转歪斜)。
+// ---- Mapping timing: scans are queried by stamp (pose at capture time), not latest ----
+// Scenario: the robot spins in place while the map<-odom correction translates by (0.3,0) between 5s and 6s (an AMCL
+// correction evolution). The same ring scan (radius 0.6) is stamped 5s / 6s: the marks must land at the map pose of
+// their own capture time -- using latest would stamp both frames with the newest corrected pose (rotational skew).
 
 TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
   auto dir = makeRollingConfigDir();
@@ -285,12 +285,12 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
 
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 5.0);
- // fast_tf 动态边缓冲只保留最近 500ms (dynamic_transform 默认 dur_) ——
- // 所有 TF 样本与 scan 戳必须收进单个 500ms 窗口。
- // 时间轴: 5.000 base/laser/map=id | 5.100 base/laser/map=id |
- // 5.200 base/laser/map=(0.3,0) | 5.300 同 | 5.400 同 (newest)
- // scan A @5.050: map<-odom 插值 = id -> mark (0.6, 0) 附近
- // scan B @5.250: map<-odom 插值 = (0.3, 0) -> mark (0.9, 0) 附近
+ // The fast_tf dynamic-edge buffer keeps only the most recent 500ms (dynamic_transform default dur_) --
+ // all TF samples and scan stamps must fit inside a single 500ms window.
+ // Timeline: 5.000 base/laser/map=id | 5.100 base/laser/map=id |
+ // 5.200 base/laser/map=(0.3,0) | 5.300 same | 5.400 same (newest)
+ // scan A @5.050: map<-odom interpolation = id -> mark near (0.6, 0)
+ // scan B @5.250: map<-odom interpolation = (0.3, 0) -> mark near (0.9, 0)
   auto identity = Eigen::Isometry3d::Identity();
   Eigen::Isometry3d t_m_o = Eigen::Isometry3d::Identity();
   t_m_o.translation() = Eigen::Vector3d(0.3, 0.0, 0.0);
@@ -315,7 +315,7 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
     return server.globalCostmap()->get().getCostmap()->getCost(mx, my);
   };
 
- // Scan A @5.050s: 圆环 0.6, map<-odom 插值 = id -> bearing 0 标记 cell (11,0)
+ // Scan A @5.050s: ring 0.6, map<-odom interpolation = id -> bearing 0 marks cell (11,0)
   ayanami::sensor_msgs::LaserScan scan_a = makeScan(0.6f);
   scan_a.header.stamp = at(0.05);
   server.handleObstacleLaserScan(scan_a);
@@ -324,7 +324,7 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
   EXPECT_LT(countCell(18, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
       << "cell 18 must not be marked before scan B (latest 语义会提前烙上)";
 
- // Scan B @5.250s: 同一圆环, map<-odom 插值 = (0.3,0) -> cell (18,0)
+ // Scan B @5.250s: same ring, map<-odom interpolation = (0.3,0) -> cell (18,0)
   ayanami::sensor_msgs::LaserScan scan_b = makeScan(0.6f);
   scan_b.header.stamp = at(0.25);
   server.handleObstacleLaserScan(scan_b);

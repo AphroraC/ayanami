@@ -11,7 +11,7 @@ namespace ayanami {
 namespace sensor_msgs {
 
 /**
- * @brief 点云字段描述 (等价 sensor_msgs/PointField)。
+ * @brief Point cloud field description (equivalent to sensor_msgs/PointField).
  */
 struct PointField {
   enum DataType : uint8_t {
@@ -33,7 +33,7 @@ struct PointField {
 };
 
 /**
- * @brief 点云 (等价 sensor_msgs/PointCloud2)，data 为逐点字节，简化版 Eigen 无关。
+ * @brief Point cloud (equivalent to sensor_msgs/PointCloud2); data is per-point bytes, a simplified Eigen-independent version.
  */
 struct PointCloud2 {
   ayanami::geometry_msgs::Header header;
@@ -50,7 +50,7 @@ struct PointCloud2 {
 };
 
 /**
- * @brief 二维激光 (等价 sensor_msgs/LaserScan)。
+ * @brief 2D laser scan (equivalent to sensor_msgs/LaserScan).
  */
 struct LaserScan {
   ayanami::geometry_msgs::Header header;

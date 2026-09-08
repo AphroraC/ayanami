@@ -18,21 +18,26 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 局部控制器执行 (周期循环)。
+ * @brief Local controller execution (periodic loop).
  *
- * 按 controller_frequency 循环: progress_checker 判进展 → goal_checker 判
- * 到达 → computeVelocityCommand; cmd_vel 经
- * NavigationCallbacks::on_velocity_command 旁路发布。
+ * Loops at controller_frequency: progress_checker judges progress ->
+ * goal_checker judges arrival -> computeVelocityCommand; cmd_vel is
+ * published via the NavigationCallbacks::on_velocity_command side path.
  *
- * 机器人状态单一来源: RobotStateController::instance() (位姿 + 速度)。
+ * Single source of truth for robot state:
+ * RobotStateController::instance() (pose + velocity).
  *
- * 关键纪律 (Global Constraints): 每次发布前强制清零 TwistStamped, 修脏内存
- * 历史 bug; publishStopCommand() 也显式清零。
+ * Key discipline (Global Constraints): force-clear the TwistStamped before
+ * every publish, fixing a historical dirty-memory bug;
+ * publishStopCommand() also clears explicitly.
  *
- * 失败语义 (职责表): 插件返回失败码或无效命令时, 执行层清零发布并继续循环
- * (execution 内部不做重试计数); 只有 patience > 0 且从 start 起算超过该时长
- * 仍无有效命令时才终态上报 (对标 nav2 controller failure_tolerance), 重试
- * 与恢复决策一律由 BT 决定。
+ * Failure semantics (responsibility table): when the plugin returns a
+ * failure code or an invalid command, the execution layer publishes a
+ * zeroed command and keeps looping (the execution itself keeps no retry
+ * count); only when patience > 0 and no valid command has appeared for
+ * longer than that duration since start is a terminal state reported
+ * (mirroring the nav2 controller failure_tolerance). Retry and recovery
+ * decisions are always made by the BT.
  */
 class ControllerExecution : public ExecutionBase {
 public:
@@ -58,29 +63,31 @@ public:
   explicit ControllerExecution(ayanami::abstract::AbstractController::Ptr controller)
       : controller(std::move(controller)) {}
 
-  /// @brief 设置要跟踪的路径 (可运行中更新, 连续重规划安全)。
+  /// @brief Set the path to follow (can be updated while running, safe for continuous replanning).
   void setNewPlan(const nav_msgs::Path& plan) {
     std::lock_guard<std::mutex> guard(plan_mutex);
     new_plan = true;
     this->plan = plan;
   }
 
-  /// @brief 提交本 goal 的规划版本 (pending); run 循环消费并 setPlan 成功后
-  /// 才进入 applied (getPlanVersion 只回报已应用版本)。
+  /// @brief Submit the plan version for this goal (pending); it becomes
+  /// applied only after the run loop consumes it and setPlan succeeds
+  /// (getPlanVersion only reports the applied version).
   void setPlanVersion(uint64_t plan_version) {
     std::lock_guard<std::mutex> guard(plan_mutex);
     pending_plan_version = plan_version;
   }
 
-  /// @brief 已应用版本: 仅在 run 循环消费新 plan 且 controller->setPlan
-  /// 成功后推进 (in-flight 更新不计入)。
+  /// @brief Applied version: advances only after the run loop consumes a
+  /// new plan and controller->setPlan succeeds (in-flight updates are not
+  /// counted).
   uint64_t getPlanVersion() const {
     std::lock_guard<std::mutex> guard(plan_mutex);
     return applied_plan_version;
   }
 
-  /// @brief 运行中 in-place 更新路径+版本 (无 cancel/join/new Execution)。
-  /// 下一 cycle 的 run 循环消费。
+  /// @brief In-place update of path+version while running (no cancel/join/
+  /// new Execution). Consumed by the run loop on the next cycle.
   bool updatePlan(const nav_msgs::Path& plan, uint64_t plan_version) {
     std::lock_guard<std::mutex> guard(plan_mutex);
     if (isTerminalLocked()) {
@@ -97,7 +104,7 @@ public:
     return new_plan;
   }
 
-  /// @brief 原子消费路径+版本, 避免更新线程在两次读取之间插入。
+  /// @brief Atomically consume path+version, preventing the update thread from interleaving between two reads.
   std::pair<nav_msgs::Path, uint64_t> takeNewPlan() {
     std::lock_guard<std::mutex> guard(plan_mutex);
     new_plan = false;
@@ -112,10 +119,16 @@ public:
 
   double getControllerFrequency() const { return controller_frequency; }
 
-  /// @brief 无有效命令的耐心 (秒, 对标 nav2 failure_tolerance); <=0 关闭
-  /// (默认): 失败清零发布并继续循环, 终态只由到达/进展/取消/停止决定。
+  /// @brief Patience for lacking valid commands (seconds, mirrors nav2
+  /// failure_tolerance); <=0 disables it (default): failures publish a
+  /// zeroed command and keep looping; terminal states are decided only by
+  /// arrival/progress/cancel/stop.
   void setPatience(double seconds) {
     patience = std::chrono::duration<double>(seconds);
+  }
+
+  double getPatience() const {
+    return patience.count();
   }
 
   bool isPatienceExceeded() const {
@@ -130,7 +143,7 @@ public:
     max_angular_z = angular_z;
   }
 
-  /// @brief 注入目标检查插件 (NavigationServerBase createActions 时 wired)。
+  /// @brief Inject the goal-checker plugin (wired by NavigationServerBase createActions).
   void setGoalChecker(ayanami::abstract::AbstractGoalChecker::Ptr checker) {
     goal_checker = std::move(checker);
   }
@@ -139,7 +152,7 @@ public:
     return goal_checker;
   }
 
-  /// @brief 注入进展检查插件 (同上, 运行时消费)。
+  /// @brief Inject the progress-checker plugin (same as above, consumed at runtime).
   void setProgressChecker(
       ayanami::abstract::AbstractProgressChecker::Ptr checker) {
     progress_checker = std::move(checker);
@@ -153,14 +166,15 @@ public:
     return static_cast<ControllerState>(state.load());
   }
 
-  /// @brief 覆写: 清零 TwistStamped 后发布停止命令 (safety cancel)。
+  /// @brief Override: publish a stop command with a cleared TwistStamped (safety cancel).
   void publishStopCommand() override {
-    geometry_msgs::TwistStamped cmd = {};  // 全字段清零
+    geometry_msgs::TwistStamped cmd = {};  // all fields zeroed
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd);
   }
 
-  /// @brief 取消: 置 cancel_requested → 透传到 controller 插件 →
-  /// 发布清零停止命令 → notify 唤醒 waitForStateUpdate。
+  /// @brief Cancel: set cancel_requested -> forward to the controller
+  /// plugin -> publish a zeroed stop command -> notify to wake
+  /// waitForStateUpdate.
   void cancel() override {
     cancel_requested = true;
     if (controller) controller->cancel();
@@ -169,19 +183,21 @@ public:
   }
 
 protected:
-  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 每 cycle
-  /// 覆写为 typed 调用 (插件不接触地图模块)。
-  virtual ControllerResultT callController(
+  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// map-family executions override it per cycle with a typed call (plugins
+  /// never touch map modules).
+  virtual ResultT<void> callController(
       const geometry_msgs::PoseStamped& pose,
-      const geometry_msgs::TwistStamped& velocity) {
-    return controller->computeVelocityCommand(pose, velocity);
+      const geometry_msgs::TwistStamped& velocity,
+      geometry_msgs::TwistStamped& cmd) {
+    return controller->computeVelocityCommand(pose, velocity, cmd);
   }
 
   void run() override {
     start_time = std::chrono::steady_clock::now();
     setState(STARTED, false);
 
-    // 循环周期按 controller_frequency
+    // Loop period from controller_frequency
     const auto period = std::chrono::microseconds(
         static_cast<long long>(1e6 / controller_frequency));
 
@@ -193,7 +209,7 @@ protected:
       return;
     }
 
-    // goal/progress checker 必须注入: 缺失为内部错误, 不回退 controller 自身判定。
+    // goal/progress checkers must be injected: a missing one is an internal error; no fallback to the controller's own judgment.
     if (!goal_checker || !progress_checker) {
       error = ErrorCode::INTERNAL_ERROR;
       message = !goal_checker ? "Goal checker is not set"
@@ -224,7 +240,7 @@ protected:
           continue;
         }
 
-        // 动态更新路径 (连续重规划安全)
+        // Dynamically update the path (safe for continuous replanning)
         if (hasNewPlan()) {
           uint64_t plan_version = 0;
           std::tie(plan, plan_version) = takeNewPlan();
@@ -240,18 +256,18 @@ protected:
             setState(INVALID_PLAN, true);
             return;
           }
-          // setPlan 成功后版本才进入 applied (结果只报已应用版本)。
+          // The version becomes applied only after setPlan succeeds (results report only applied versions).
           {
             std::lock_guard<std::mutex> guard(plan_mutex);
             applied_plan_version = plan_version;
           }
-          // 新 plan 成功应用后: 快照 goal 位姿 + reset goal/progress 基线。
+          // After a new plan is applied: snapshot the goal pose + reset the goal/progress baselines.
           goal = plan.poses.back();
           goal_checker->reset();
           progress_checker->reset();
         }
 
-        // 机器人状态单一来源: 全局 RobotStateController (位姿 + 最新速度)。
+        // Single source of truth for robot state: global RobotStateController (pose + latest velocity).
         geometry_msgs::PoseStamped robot_pose;
         geometry_msgs::TwistStamped robot_velocity;
         if (!RobotStateController::instance().getRobotState(
@@ -263,7 +279,7 @@ protected:
           return;
         }
 
-        // 目标检查: goal_checker 是唯一到达判定
+        // Goal check: goal_checker is the sole arrival decision
         if (goal_checker->isGoalReached(robot_pose, goal, robot_velocity)) {
           error = ErrorCode::NONE;
           message = "Reached the goal";
@@ -283,19 +299,20 @@ protected:
 
         setState(PLANNING, false);
 
-        const ControllerResultT result =
-            callController(robot_pose, robot_velocity);
+        // Zero-before-publish discipline: the buffer is cleared before the plugin call and overwritten on plugin success.
+        geometry_msgs::TwistStamped cmd_vel = {};
+        const ResultT<void> result =
+            callController(robot_pose, robot_velocity, cmd_vel);
 
-        // 插件调用期间发生取消/停止: 不发布本轮命令 (防止 recovery 启动瞬间
-        // 漏出一条旧速度命令), 下一轮循环顶部统一结算 CANCELED/STOPPED。
+        // Cancel/stop during the plugin call: do not publish this round's
+        // command (prevents leaking a stale velocity command at recovery
+        // startup); CANCELED/STOPPED is settled uniformly at the top of the
+        // next loop round.
         if (cancel_requested || should_exit) {
           continue;
         }
 
         if (result.ok) {
-          // 关键: 发布前清零 (Global Constraints, 修脏内存 bug)
-          geometry_msgs::TwistStamped cmd_vel = {};
-          cmd_vel = result.data.velocity;
           if (!validVelocityCommand(cmd_vel)) {
             error = ErrorCode::NO_VALID_COMMAND;
             message = "Controller produced an invalid velocity command";
@@ -332,8 +349,9 @@ protected:
     }
   }
 
-// 成员 protected: 供派生 (如 CostmapControllerExecution) 覆写钩子
-// callController 以注入地图访问 (不用复刻整个 run 循环)。
+// Members are protected: derived classes (e.g. CostmapControllerExecution)
+// can override the callController hook to inject map access (without
+// replicating the entire run loop).
 protected:
   ayanami::abstract::AbstractController::Ptr controller;
   ayanami::abstract::AbstractGoalChecker::Ptr goal_checker;
@@ -346,7 +364,7 @@ protected:
   uint64_t pending_plan_version{0};
   uint64_t applied_plan_version{0};
 
-  /// @brief 锁内调用: 状态机是否已到终态 (run 循环已 return)。
+  /// @brief Call with the lock held: whether the state machine has reached a terminal state (run loop has returned).
   bool isTerminalLocked() const {
     switch (static_cast<ControllerState>(state.load())) {
       case NO_PLAN:
@@ -364,7 +382,7 @@ protected:
     }
   }
 
-  /// @brief 周期等待; cancel/stop 立即打断 (不等满周期)。
+  /// @brief Periodic wait; cancel/stop interrupts immediately (does not wait out the full period).
   void sleepInterruptibly(std::chrono::microseconds period) {
     std::unique_lock<std::mutex> lock(mutex);
     condition.wait_for(lock, period, [this] {

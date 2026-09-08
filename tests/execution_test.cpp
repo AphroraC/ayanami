@@ -27,22 +27,19 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
-using ayanami::SmootherResultT;
 
-// ---- 测试插件: 记录调用次数, 输出确定结果, 记录 cancel 透传 ----
+// ---- Test plugins: record call counts, produce deterministic results, record cancel pass-through ----
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
-    return PlannerResultT::success(Path{});
+    plan_out = Path{};
+    return ResultT<void>::success();
   }
   bool cancel() override {
     cancel_called = true;
@@ -54,14 +51,13 @@ public:
 
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
-    // 插件只写 linear.x, 其余字段必须由 execution 在发布前 `= {}` 清零保证已初始化
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    // The plugin only writes linear.x; the remaining fields must be guaranteed initialized by the execution via its pre-publish = {} zeroing
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override {
@@ -72,17 +68,16 @@ public:
   std::atomic<bool> cancel_called{false};
 };
 
-// 永不达目标 (goal_checker 永不判到达): 用于观察 cancel → CANCELED
-// (而非 STOPPED) 的退出语义
+/// Never reaches the goal (the goal_checker never declares arrival): used to observe the cancel -> CANCELED
+/// (rather than STOPPED) exit semantics.
 class NeverReachingController : public ayanami::abstract::AbstractController {
 public:
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override {
@@ -93,9 +88,9 @@ public:
   std::atomic<bool> cancel_called{false};
 };
 
-// ---- checker 测试桩 ----
+// ---- checker test stubs ----
 
-// 目标检查: 自身第 N 次调用后才判到达 (check 先于 compute, N=4 ⇒ 至少 3 帧 compute)。
+/// Goal check: declares arrival only on its own Nth call (check runs before compute, N=4 => at least 3 compute frames).
 class ReachAfterNChecksGoalChecker : public ayanami::abstract::AbstractGoalChecker {
 public:
   explicit ReachAfterNChecksGoalChecker(int threshold = 4)
@@ -114,7 +109,7 @@ private:
   int calls{0};
 };
 
-// 永不到达。
+/// Never reached.
 class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
 public:
   void reset() override {}
@@ -127,14 +122,14 @@ public:
   }
 };
 
-// 恒有进展。
+/// Always progressing.
 class TrueProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 public:
   void reset() override {}
   bool check(const PoseStamped&) override { return true; }
 };
 
-// 恒无进展。
+/// Never progressing.
 class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 public:
   void reset() override {}
@@ -143,8 +138,8 @@ public:
 
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  SmootherResultT smoothPath(Path&, double, bool) override {
-    return SmootherResultT::success(Path{});
+  ResultT<void> smoothPath(Path&, double) override {
+    return ResultT<void>::success();
   }
   bool cancel() override {
     cancel_called = true;
@@ -155,10 +150,11 @@ public:
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override {
     cancel_called = true;
@@ -167,17 +163,18 @@ public:
   std::atomic<bool> cancel_called{false};
 };
 
-// 运行中每周期返回 RUNNING, 直到被 cancel: 验证恢复执行取消后进入 CANCELED
-// 且 cancel 透传到插件 (旧 BlockingRecovery::runRecovery 阻塞循环的 tick
-// 状态机等价写法: 阻塞让位给 execution 周期驱动, 语义不变)。
+/// Returns RUNNING on every cycle while running, until cancelled: verifies the recovery execution enters CANCELED
+/// after cancel and that cancel passes through to the plugin (a tick-state-machine equivalent of the old
+/// BlockingRecovery::runRecovery blocking loop: blocking yields to execution cycle driving, semantics unchanged).
 class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     if (cancel_requested) {
-      return RecoveryResultT::failure(ErrorCode::CANCELED, "canceled");
+      return ResultT<void>::failure(ErrorCode::CANCELED, "canceled");
     }
-    RecoveryCycleData data;  // 默认 RUNNING
-    return RecoveryResultT::success(std::move(data));
+    RecoveryCycleData data;  // RUNNING by default
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override {
     cancel_called = true;
@@ -188,7 +185,7 @@ public:
   std::atomic<bool> cancel_requested{false};
 };
 
-// 轮询直至 terminal state 或超时 (waitForStateUpdate 返回无 timeout 即状态已更新)
+/// Polls until a terminal state or timeout (waitForStateUpdate returning without timeout means the state was updated)
 template <typename Exec>
 bool waitForState(Exec& e, int target, int max_iters = 100) {
   for (int i = 0; i < max_iters; ++i) {
@@ -220,7 +217,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   auto controller = std::make_shared<TestController>();
   ayanami::components::ControllerExecution exec(controller);
   exec.setControllerFrequency(500.0);
-  // 到达判定由 goal_checker 完成 (唯一到达判定, 不再经 controller)。
+  // Arrival is decided by the goal_checker (the only arrival decision, no longer via the controller).
   exec.setGoalChecker(std::make_shared<ReachAfterNChecksGoalChecker>());
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
@@ -229,7 +226,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
       ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&received_cmd](const TwistStamped& cmd) {
         received_cmd = true;
-        // Global Constraint: 发布前清零 ⇒ linear.x 等字段已初始化 (非 NaN/Inf)
+        // Global constraint: zeroed before publishing => linear.x and other fields are initialized (non-NaN/Inf)
         EXPECT_TRUE(std::isfinite(cmd.twist.linear.x()));
         EXPECT_TRUE(std::isfinite(cmd.twist.linear.y()));
         EXPECT_TRUE(std::isfinite(cmd.twist.linear.z()));
@@ -248,7 +245,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   EXPECT_TRUE(received_cmd);
 
   exec.join();
-}  // cmd_cb 析构自动退订
+}  // cmd_cb destructor unsubscribes automatically
 
 TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
@@ -270,10 +267,10 @@ TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
         EXPECT_EQ(cmd.twist.angular.z(), 0.0);
       });
 
-  exec.cancel();  // 触发 publishStopCommand (safety cancel)
+  exec.cancel();  // Triggers publishStopCommand (safety cancel)
 
   EXPECT_TRUE(received);
-  // cb 析构自动退订
+  // cb destructor unsubscribes automatically
 }
 
 TEST(ExecutionRecovery, runRecoveryReachesDone) {
@@ -290,7 +287,7 @@ TEST(ExecutionSmoother, smoothPathReachesSmoothed) {
   auto smoother = std::make_shared<TestSmoother>();
   ayanami::components::SmootherExecution exec(smoother);
   Path path;
-  exec.smoothPath(path, 2.0, false);
+  exec.smoothPath(path, 2.0);
   ASSERT_TRUE(waitForState(exec, ayanami::components::SmootherExecution::SMOOTHED_PATH));
   EXPECT_EQ(exec.getState(), ayanami::components::SmootherExecution::SMOOTHED_PATH);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
@@ -322,7 +319,7 @@ TEST(ExecutionRecovery, cancelDuringBlockingRecoveryEndsInCanceledAndForwards) {
   auto recovery = std::make_shared<BlockingRecovery>();
   ayanami::components::RecoveryExecution exec(recovery);
   exec.start();
-  // 等恢复进入周期循环 (tick 返回 RUNNING, cancel_requested 仍 false)
+  // Wait for the recovery to enter its cycle loop (tick returns RUNNING, cancel_requested still false)
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   exec.cancel();
   EXPECT_TRUE(recovery->cancel_called);
@@ -343,7 +340,7 @@ TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToPlugin) {
   exec.setNewPlan(plan);
   exec.start();
 
-  // 等至少一次 computeVelocityCommand 跑过, 再 cancel
+  // Wait for at least one computeVelocityCommand to run, then cancel
   for (int i = 0; i < 100 && controller->calls == 0; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -352,7 +349,7 @@ TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToPlugin) {
   exec.cancel();
   EXPECT_TRUE(controller->cancel_called);
 
-  // 取消 → CANCELED (而非 stop 的 STOPPED)
+  // Cancel -> CANCELED (rather than the STOPPED of a stop)
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::CANCELED));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::CANCELED);
   EXPECT_NE(exec.getState(), ayanami::components::ControllerExecution::STOPPED);
@@ -374,7 +371,7 @@ TEST(ExecutionController, noProgressMapsToNoProgressStateAndFailure) {
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::NO_PROGRESS));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::NO_PROGRESS);
   EXPECT_EQ(exec.getError(), ErrorCode::NO_PROGRESS);
-  EXPECT_EQ(controller->calls, 0);  // 无进展即终止, controller 不被调用
+  EXPECT_EQ(controller->calls, 0);  // Terminates on no progress; the controller is never called
   exec.join();
 }
 
@@ -395,20 +392,19 @@ TEST(ExecutionController, missingCheckersIsInternalError) {
   exec.join();
 }
 
-// 控制器输出超过 setMaximumVelocity 上限 → validVelocityCommand 拒绝 →
-// NO_LOCAL_CMD (不发非零超限速度); max_vel_y=0 额外禁止横移 (|linear.y| 必须为 0)。
+// Controller output above the setMaximumVelocity cap -> validVelocityCommand rejects ->
+// NO_LOCAL_CMD (no over-limit non-zero velocity published); max_vel_y=0 additionally forbids lateral motion (|linear.y| must be 0).
 TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   class OverspeedController : public ayanami::abstract::AbstractController {
    public:
-    ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                             const TwistStamped&) override {
+    ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                             const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
       calls++;
-      ControllerCommand cmd;
-      cmd.velocity = TwistStamped{};
-      cmd.velocity.twist.linear.x() = 5.0;
-      cmd.velocity.twist.linear.y() = 2.0;
-      cmd.velocity.twist.angular.z() = 3.0;
-      return ControllerResultT::success(std::move(cmd));
+      cmd = TwistStamped{};
+      cmd.twist.linear.x() = 5.0;
+      cmd.twist.linear.y() = 2.0;
+      cmd.twist.angular.z() = 3.0;
+      return ResultT<void>::success();
     }
     bool setPlan(const Path&) override { return true; }
     bool cancel() override { return true; }
@@ -419,7 +415,7 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   exec.setControllerFrequency(500.0);
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
-  // 速度上限: x<=1.0, y==0 (禁止横移), theta<=1.0。
+  // Velocity caps: x<=1.0, y==0 (lateral motion forbidden), theta<=1.0.
   exec.setMaximumVelocity(1.0, 0.0, 1.0);
 
   std::atomic<int> overspeed_cmds{0};
@@ -437,7 +433,7 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   exec.setNewPlan(plan);
   exec.start();
 
-  // 每周期都命中超限 → NO_LOCAL_CMD (非终态, 循环继续), 超限速度从未发布。
+  // Every cycle hits the cap -> NO_LOCAL_CMD (non-terminal, loop continues); the over-limit velocity is never published.
   for (int i = 0; i < 100 &&
                   exec.getState() !=
                       ayanami::components::ControllerExecution::NO_LOCAL_CMD;
@@ -452,19 +448,18 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
 
   exec.cancel();
   exec.join();
-}  // cmd_cb 析构自动退订
+}  // cmd_cb destructor unsubscribes automatically
 
-// setMaximumVelocity 上限宽松时超限被放行 (对照: 拒绝路径真因上限而非其他)。
+// With a loose setMaximumVelocity cap the over-limit value is admitted (control: the rejection was truly caused by the cap, nothing else).
 TEST(ExecutionController, velocityWithinMaxIsPublished) {
   class FastController : public ayanami::abstract::AbstractController {
    public:
-    ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                             const TwistStamped&) override {
-      ControllerCommand cmd;
-      cmd.velocity = TwistStamped{};
-      cmd.velocity.twist.linear.x() = 0.4;
-      cmd.velocity.twist.angular.z() = 0.5;
-      return ControllerResultT::success(std::move(cmd));
+    ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                             const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
+      cmd = TwistStamped{};
+      cmd.twist.linear.x() = 0.4;
+      cmd.twist.angular.z() = 0.5;
+      return ResultT<void>::success();
     }
     bool setPlan(const Path&) override { return true; }
     bool cancel() override { return true; }
@@ -490,4 +485,4 @@ TEST(ExecutionController, velocityWithinMaxIsPublished) {
   EXPECT_TRUE(received);
 
   exec.join();
-}  // cmd_cb 析构自动退订
+}  // cmd_cb destructor unsubscribes automatically

@@ -13,12 +13,15 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 全局路径规划的 costmap 版 Action ( 生产路径)。
+ * @brief The costmap variant of the global planning Action (production
+ * path).
  *
- * 复用 PlannerAction 全部协议 (TaskHandle 直连 + 旁路 emit + 抢占),
- * 只覆写 createExecution 工厂: 返回 CostmapPlannerExecution
- * (带 CostmapMapContext 的激活动作 / 停用 / safetyCheck / 加锁读图)。
- * 执行配置器 (server 装配: 无额外注入) 经 configure 注入, 默认无操作。
+ * Reuses the entire PlannerAction protocol (TaskHandle direct + side-path
+ * emit + preemption) and only overrides the createExecution factory:
+ * returns a CostmapPlannerExecution (with CostmapMapContext activation /
+ * deactivation / safetyCheck / locked map reads).
+ * The execution configurator (server assembly: no extra injection) is
+ * injected via configure; a no-op by default.
  */
 class CostmapPlannerAction : public ayanami::components::PlannerAction {
  public:

@@ -2,6 +2,8 @@
 
 #include <behaviortree_cpp/control_node.h>
 
+#include "ayanami/behavior_tree/navigation_node_state.hpp"
+
 #include <cstddef>
 #include <stdexcept>
 
@@ -9,14 +11,17 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief nav2 风格 PipelineSequence。
+ * @brief nav2-style PipelineSequence.
  *
- * - 每次从 child_0 开始，使规划分支在 controller RUNNING 时继续被 tick;
- * - 前序 child RUNNING 且以前已推进到更后 child 时，继续 tick 后续流水线;
- * - 任一 child FAILURE -> halt 全部 children 并整体 FAILURE;
- * - 全部 SUCCESS -> 复位回开头并返回 SUCCESS。
+ * - Restarts from child_0 each tick so the planning branch keeps being
+ *   ticked while the controller is RUNNING;
+ * - When an earlier child is RUNNING and progress previously reached a later
+ *   child, keeps ticking the later pipeline stages;
+ * - Any child FAILURE -> halt all children and return FAILURE;
+ * - All SUCCESS -> reset back to the beginning and return SUCCESS.
  */
-class PipelineSequence : public BT::ControlNode {
+class PipelineSequence : public BT::ControlNode,
+                         public NavigationTreeNodeState {
  public:
   PipelineSequence(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -52,8 +57,9 @@ class PipelineSequence : public BT::ControlNode {
     current_child_idx = 0;
   }
 
-  /// @brief 树生命终端后的逻辑重置 (v4 halt 只传播到 RUNNING child, 见
-  /// RateController::resetState 注释)。
+  /// @brief Logical reset after a tree-life terminal state (v4 halt only
+  /// propagates to RUNNING children, see the
+  /// RateController::resetState comment).
   void resetState() { current_child_idx = 0; }
 
  private:

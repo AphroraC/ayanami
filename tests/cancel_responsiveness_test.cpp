@@ -1,8 +1,8 @@
-// 复刻 legacy cancel_responsiveness_test.cpp 契约 (新接口等价改写)。
+// Re-creates the legacy cancel_responsiveness_test.cpp contract (equivalent rewrite on the new interface).
 //
-// 契约: 对 RUNNING 的 planner / recovery action 调 cancel, 任务必须在有界
-// 时间内完成 (ready), 且最终 GoalStatus 为 CANCELED。慢插件 (makePlan /
-// runRecovery 本需 200ms) 必须在 cancel 后立即释放, 使任务 100ms 内 ready。
+// Contract: calling cancel on a RUNNING planner / recovery action must settle the task within a bounded
+// time (ready) with final GoalStatus CANCELED. Slow plugins (makePlan /
+// runRecovery would normally take 200ms) must be released immediately on cancel so the task is ready within 100ms.
 
 #include <gtest/gtest.h>
 
@@ -27,20 +27,20 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::PlannerResultT;
-using ayanami::RecoveryResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::ResultT;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::actions::RecoveryGoal;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 慢 planner: makePlan 阻塞最多 200ms (模拟长规划); cancel 立即释放使其
-// 快速返回。被取消时返回成功路径, 执行层经 cancel_requested 判 CANCELED。
+/// Slow planner: makePlan blocks for up to 200ms (simulating a long plan); cancel releases it immediately so it
+/// returns quickly. When cancelled it still returns a success path; the execution layer yields CANCELED via cancel_requested.
 class SlowPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -50,8 +50,9 @@ public:
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
     (void)canceled.exchange(false);
-    // 取消路径也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
-    return PlannerResultT::success(Path{});
+    // The cancelled path also returns a success path: the execution detects cancel_requested and yields CANCELED.
+    plan_out = Path{};
+    return ResultT<void>::success();
   }
 
   bool cancel() override {
@@ -68,10 +69,10 @@ public:
   std::condition_variable release;
 };
 
-// 慢 recovery: tick 首周期阻塞最多 200ms; cancel 立即释放返回取消终态。
+/// Slow recovery: the first tick cycle blocks for up to 200ms; cancel releases it immediately and returns the cancelled terminal state.
 class SlowRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -81,9 +82,9 @@ public:
     release.wait_for(lock, std::chrono::milliseconds(200),
                      [this] { return canceled.load(); });
     if (canceled.exchange(false)) {
-      return RecoveryResultT::failure(ErrorCode::CANCELED, "canceled");
+      return ResultT<void>::failure(ErrorCode::CANCELED, "canceled");
     }
-    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+    return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED,
                                     "unexpected completion");
   }
 
@@ -107,7 +108,7 @@ PoseStamped makePose(double x = 0.0, double y = 0.0) {
   return p;
 }
 
-// 断言 task 在 deadline 内 ready (cancel 响应性核心契约)。
+/// Asserts the task becomes ready within the deadline (core cancel-responsiveness contract).
 template <typename Task>
 bool readyWithin(Task& t, int max_ms) {
   const auto deadline =
@@ -133,7 +134,7 @@ TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
   auto task = action.acceptGoal(goal);
   ASSERT_TRUE(task.valid());
 
-  // 等 planner 进入 makePlan (RUNNING)
+  // Wait for the planner to enter makePlan (RUNNING)
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->started_cv.wait_for(
@@ -141,12 +142,12 @@ TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
         [&] { return planner->started.load(); }));
   }
 
-  // cancel 后必须在 100ms 内 ready (慢插件 200ms 被立即打断)
+  // After cancel it must become ready within 100ms (the slow 200ms plugin is interrupted immediately)
   ASSERT_TRUE(task.cancel());
   ASSERT_TRUE(readyWithin(task, 100));
   EXPECT_EQ(task.status(), GoalStatus::CANCELED);
-  // 失败码由插件返回时机决定, finish 与插件线程存在竞态; 稳定契约为
-  // status==CANCELED。
+  // The failure code depends on when the plugin returns; finish races with the plugin thread, so the stable contract is
+  // status==CANCELED.
 }
 
 TEST(CancelResponsiveness, cancelDuringRecoveryReadyWithinBudget) {

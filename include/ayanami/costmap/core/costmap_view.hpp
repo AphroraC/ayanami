@@ -13,17 +13,25 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 加锁读视图: 算法 (planner/smoother/controller/recovery) 单次调用的
- * 地图输入。
+ * @brief Locked read view: the map input for a single algorithm call
+ * (planner/smoother/controller/recovery).
  *
- * 取代旧的 CostmapSnapshot (整图深拷贝/COW epoch) —— 视图 RAII 持有地图
- * shared 锁, grid 指针直指 master grid, 零拷贝。单次规划 <10ms, 地图写者
- * (≈10Hz) 等待读者释放后写入。
+ * Replaces the old CostmapSnapshot (full deep copy / COW epoch) -- the view
+ * holds the map's shared lock via RAII and the grid pointer points straight
+ * at the master grid, zero copy. A single planning call is <10ms; the map
+ * writer (~10Hz) waits for readers to release before writing.
  *
- * - grid(): master grid 指针, 仅在本视图存活期内有效 (锁随视图析构释放)。
- * - footprint: 该 map 的车体 footprint (configure 期缓存, 不可变, 无需锁)。
- * - robot_pose: 视图构建时解析的机器人位姿 (TransformStore, 无锁查询)。
- * - frame / current: 元数据。
+ * - grid(): master grid pointer, valid only within this view's lifetime
+ *   (the lock is released when the view is destroyed).
+ * - Red line: the snapshot IS the lock, never a copy. COW or any deep-copy
+ *   snapshot (CostmapSnapshot-style) is forbidden; planner/smoother
+ *   guarantee <10ms per call, so holding the shared lock for the whole
+ *   call is the only sanctioned map access.
+ * - footprint: this map's robot footprint (configure-time cache, immutable,
+ *   no lock needed).
+ * - robot_pose: the robot pose resolved at view construction (TransformStore,
+ *   lock-free query).
+ * - frame / current: metadata.
  */
 class CostmapView {
  public:
@@ -46,22 +54,22 @@ class CostmapView {
         robot_pose_valid(has_robot_pose),
         is_current(current) {}
 
-  /// @brief master grid (只读; 仅在本视图存活期内有效, 可能为 null)。
+  /// @brief The master grid (read-only; valid only within this view's lifetime, may be null).
   const costmap_2d::Costmap2D* grid() const { return costmap_grid; }
 
-  /// @brief 视图帧名。
+  /// @brief The view's frame name.
   const std::string& frame() const { return view_frame; }
 
-  /// @brief 车体 footprint (configure 期缓存, 不可变; 可能为 null)。
+  /// @brief The robot footprint (configure-time cache, immutable; may be null).
   const costmap_2d::Footprint* footprint() const { return cached_footprint; }
 
-  /// @brief 机器人 (frame) 位姿。
+  /// @brief The robot pose in the frame.
   const ayanami::geometry_msgs::PoseStamped& robot_pose() const {
     return view_robot_pose;
   }
   bool has_robot_pose() const { return robot_pose_valid; }
 
-  /// @brief 构建时刻的地图新鲜度。
+  /// @brief Map freshness at construction time.
   bool current() const { return is_current; }
 
   bool valid() const { return costmap_grid != nullptr; }

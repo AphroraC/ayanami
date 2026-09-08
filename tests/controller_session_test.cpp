@@ -1,9 +1,9 @@
-// 复刻 legacy controller_session_test.cpp 契约 (新接口等价改写)。
+// Re-creates the legacy controller_session_test.cpp contract (equivalent rewrite on the new interface).
 //
-// 契约: ControllerAction 一次 acceptGoal (携带 10-pose 路径) → 执行层持续
-// 多帧 computeVelocityCommands → goal_checker 触发 ARRIVED_GOAL → result
-// SUCCEEDED + reached=true; 中间帧经 on_velocity_command 旁路发布 cmd_vel
-// (count>=1), setPlan 收到完整的 10-pose 路径。
+// Contract: one ControllerAction acceptGoal (carrying a 10-pose path) -> the execution layer runs
+// computeVelocityCommands over multiple frames -> the goal_checker triggers ARRIVED_GOAL -> result
+// SUCCEEDED + reached=true; intermediate frames publish cmd_vel via the on_velocity_command bypass
+// (count>=1), and setPlan receives the full 10-pose path.
 
 #include <gtest/gtest.h>
 
@@ -31,25 +31,23 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
+using ayanami::ResultT;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::GoalStatus;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
-// 记录型控制器: 到达判定交给 goal_checker (N 帧 compute 后触发);
-// setPlan 记录收到的路径尺寸 (验证 10-pose 路径被完整应用)。
+/// Recording controller: the arrival decision is delegated to the goal_checker (triggered after N compute frames);
+/// setPlan records the received path size (verifies the 10-pose path is fully applied).
 class RecordingController : public ayanami::abstract::AbstractController {
 public:
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     ++calls;
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
 
   bool setPlan(const Path& plan) override {
@@ -65,7 +63,7 @@ public:
   std::vector<std::size_t> applied_sizes;
 };
 
-// ---- checker 测试桩 ----
+// ---- checker test stubs ----
 
 class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
@@ -91,8 +89,8 @@ class AlwaysTrueProgressChecker
   bool check(const PoseStamped&) override { return true; }
 };
 
-// ControllerAction 派生: createExecution 内注入 checker (NavigationServerBase
-// 生产路径注入, 直连 action 测试用此子类)。
+/// ControllerAction derivative: injects the checker inside createExecution (the NavigationServerBase
+/// production-path injection; direct action tests use this subclass).
 class TestControllerAction : public ayanami::components::ControllerAction {
  public:
   using ControllerAction::ControllerAction;
@@ -154,7 +152,7 @@ TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
           [&controller] { return controller->calls >= 3; }),
       std::make_shared<AlwaysTrueProgressChecker>());
 
-  // 捕获 on_velocity_command 旁路 (controller execution 每帧发布 cmd_vel)。
+  // Captures the on_velocity_command bypass (the controller execution publishes cmd_vel every frame).
   std::atomic<int> cmd_count{0};
   ayanami::CallbackSubscription cmd_cb =
       ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
@@ -169,16 +167,16 @@ TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
   EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
   EXPECT_TRUE(task.result().reached);
   EXPECT_EQ(task.result().error, ErrorCode::NONE);
-  // 持续多帧 computeVelocityCommand (至少 3 帧)
+  // Runs computeVelocityCommands over multiple frames (at least 3)
   EXPECT_GE(controller->calls.load(), 3);
-  // 中间帧 cmd_vel 已经 on_velocity_command 旁路发布
+  // Intermediate-frame cmd_vel was published via the on_velocity_command bypass
   EXPECT_GE(cmd_count.load(), 1);
 
-  // setPlan 收到完整 10-pose 路径
+  // setPlan received the full 10-pose path
   {
     std::lock_guard<std::mutex> lock(controller->mutex);
     ASSERT_FALSE(controller->applied_sizes.empty());
     EXPECT_EQ(controller->applied_sizes.back(), 10u);
   }
 
-}  // cmd_cb 析构自动退订
+}  // cmd_cb destructor unsubscribes automatically

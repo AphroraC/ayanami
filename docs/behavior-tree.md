@@ -110,3 +110,18 @@ tick 返回终端状态后调用 `resetNavigationTreeState`。
 - nav2 的 GoalUpdated 短路恢复、RoundRobin 轮换语义已保留；
   nav2 的 `ClearEntireCostmap` 服务调用在 ayanami 中变为
   `Recovery` 节点 → 命令端口（进程内，无 service）。
+
+## 常驻树控制节点协议（v4 适配）
+
+- `NavigationTreeNodeState`：导航控制/装饰节点的公共状态复位接口；
+  `resetNavigationTreeState` walker 只经该接口调 `resetState()`（新增节点
+  实现即自动纳入），并对所有非 IDLE 节点做 v3 式强复位（树生命期终态时
+  终态缓存节点必须回到 IDLE，否则下一轮不再执行）。
+- `RecoveryNode::budget_reset_token`：令牌（{goal_revision}）变化时重置
+  恢复预算，**不**打断在飞恢复——goal 更新永不消耗恢复预算。
+- 恢复角色映射（role→插件 id）属于 **BT 扩展**：
+  `BehaviorTreeExtension::requiredBlackboardEntries/provideBlackboardEntries`
+  声明并写入角色 id 板项；核心 pilot 与黑板协议不感知具体恢复行为，
+  BT 只做编排。
+- 会话级导航终态：`NavigationCallbacks::on_navigation_result`
+  （SUCCESS/FAILURE/CANCELED + FailureContext，每树生命期恰一次）。

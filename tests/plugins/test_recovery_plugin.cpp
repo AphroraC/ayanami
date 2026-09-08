@@ -1,7 +1,7 @@
-// 测试插件: 成功 recovery (SuccessRecovery), 经公共工厂 create_extension_module 导出。
+// Test plugin: success recovery (SuccessRecovery), exported via the common create_extension_module factory.
 //
-// 旧 API runRecovery 一次性返回成功; 新协议下由 start 做准备, tick 首个
-// 周期即返回 SUCCESS 终态 (保持原一次性语义)。
+// The old API runRecovery returned success in one shot; under the new protocol start prepares and the first tick
+// cycle returns the SUCCESS terminal state (the original one-shot semantics preserved).
 
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -11,15 +11,16 @@
 namespace {
 
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryStatus;
 
 class SuccessRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

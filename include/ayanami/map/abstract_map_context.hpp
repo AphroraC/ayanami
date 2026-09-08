@@ -14,15 +14,30 @@ class MapCommandPort {
   virtual ~MapCommandPort() = default;
 };
 
+// Capability bits are objective map facts only (what the family can do),
+// never usage intents (planning targets are assembly decisions, not
+// capabilities).
 enum class MapCapability : std::uint32_t {
   None = 0,
   CollisionQuery = 1u << 0,
-  GlobalPlanning = 1u << 1,
-  LocalPlanning = 1u << 2,
-  DynamicObstacleUpdate = 1u << 3,
-  ClearRegion = 1u << 4,
+  DynamicObstacleUpdate = 1u << 1,
+  ClearRegion = 1u << 2,
 };
 
+/**
+ * @brief Map-family-neutral map context contract.
+ *
+ * Family convention (frames): every family exposes a global reference frame
+ * and a local working frame. Read contracts per plugin family:
+ * - planner: reads the overlay (superposition) of the global and local map
+ *   content;
+ * - smoother: reads only the local map content;
+ * - controller/recovery: family-defined (costmap: local).
+ *
+ * Robot state is NOT part of the map context: pose/velocity queries go
+ * through RobotStateController exclusively (single query facade).
+ * Freshness is expressed by isCurrent() only (no versioning).
+ */
 class AbstractMapContext {
  public:
   using Ptr = std::shared_ptr<AbstractMapContext>;
@@ -35,18 +50,17 @@ class AbstractMapContext {
   virtual std::string localFrame() const = 0;
   virtual std::string robotFrame() const = 0;
   virtual bool isCurrent() const = 0;
-  virtual std::uint64_t version() const = 0;
   virtual std::uint32_t capabilities() const = 0;
   virtual MapCommandPort::Ptr commandPort() const { return nullptr; }
-  virtual bool getRobotState(
-      geometry_msgs::PoseStamped& pose,
-      geometry_msgs::TwistStamped& velocity) const = 0;
 
-  /// @brief 路径有效性查询 (collision/query capability, MapCapability::
-  /// CollisionQuery): 路径各点是否可通行由地图族定义 (costmap = 无 lethal/
-  /// unknown 且在界内)。
-  /// 默认实现: 非空即有效 —— 无碰撞查询能力的地图族的保守退化, 供 BT
-  /// IsPathValid 条件在无 runtime/无地图环境回退。
+  /// @brief Path validity query (collision/query capability,
+  /// MapCapability::CollisionQuery): whether every path point is traversable
+  /// is defined by the map family (costmap = no lethal/unknown and in
+  /// bounds).
+  /// Default implementation: valid iff non-empty -- the conservative
+  /// degradation for map families without collision query, used by the BT
+  /// IsPathValid condition to fall back in runtime-free/map-free
+  /// environments.
   virtual bool isPathValid(const ayanami::nav_msgs::Path& path) const {
     return !path.poses.empty();
   }

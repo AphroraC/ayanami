@@ -19,9 +19,11 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 单个目标的生命周期 (goal_id + goal 内容 + 当前 GoalStatus)。
+ * @brief Lifecycle of a single goal (goal_id + goal content + current
+ * GoalStatus).
  *
- * 状态沿用 actions::GoalStatus (ACTIVE 通态合并 Accepted/Executing)。
+ * States follow actions::GoalStatus (the ACTIVE common state merges
+ * Accepted/Executing).
  */
 template <typename Goal>
 struct GoalHandle {
@@ -31,7 +33,7 @@ struct GoalHandle {
   bool cancel_requested{false};
 };
 
-/// @brief 反馈封装 (goal_id + feedback)。
+/// @brief Feedback wrapper (goal_id + feedback).
 template <typename Feedback>
 struct GoalFeedback {
   uint64_t goal_id{0};
@@ -39,10 +41,12 @@ struct GoalFeedback {
 };
 
 /**
- * @brief TaskHandle 的共享完成状态 (promise/future + onComplete 槽)。
+ * @brief Shared completion state of a TaskHandle (promise/future + the
+ * onComplete slot).
  *
- * 完成负载是 actions::GoalResult<Result> (status + result 聚合)。
- * goal 从 ActionServer map 移出后, 本对象仍被 TaskHandle 持有, 可安全读结果。
+ * The completion payload is actions::GoalResult<Result> (status + result
+ * aggregate). After the goal is removed from the ActionServer map, this
+ * object is still held by the TaskHandle, so the result can be read safely.
  */
 template <typename Result>
 struct TaskState {
@@ -93,11 +97,14 @@ struct TaskState {
 };
 
 /**
- * @brief BT 节点直连的核心↔调用者句柄 (主流控制流)。
+ * @brief Core<->caller handle used directly by BT nodes (mainline control
+ * flow).
  *
- * 主流: BT 节点调 requestPath 等拿 TaskHandle, completion 回调里
- * emitWakeUpSignal() 唤醒 BT 循环; 本类不走 NavigationCallbacks。
- * 旁路 (rviz 扩展/可视化/回退) 由 Action 层单独 emit 到 NavigationCallbacks。
+ * Mainline: a BT node calls requestPath etc. to obtain a TaskHandle, and
+ * its completion callback calls emitWakeUpSignal() to wake the BT loop;
+ * this class does not go through NavigationCallbacks.
+ * The side path (rviz extension/visualization/fallback) is emitted to
+ * NavigationCallbacks separately by the Action layer.
  */
 template <typename Result>
 class TaskHandle {
@@ -112,28 +119,28 @@ public:
         state(std::move(state)),
         cancel_fn(std::move(cancel)) {}
 
-  /// @brief 是否绑定到真实 goal。
+  /// @brief Whether bound to a real goal.
   bool valid() const noexcept {
     return goal_handle_id != 0 && static_cast<bool>(state);
   }
 
   uint64_t goal_id() const noexcept { return goal_handle_id; }
 
-  /// @brief 是否已完成 (future ready)。
+  /// @brief Whether completed (future ready).
   bool ready() const {
     return valid() && state->future.wait_for(std::chrono::seconds(0)) ==
                           std::future_status::ready;
   }
 
-  /// @brief 整体目标状态 (阻塞到完成; ready==false 时调用会阻塞)。
+  /// @brief Overall goal status (blocks until completion; the call blocks when ready==false).
   ayanami::actions::GoalStatus status() const {
     return state->future.get().status;
   }
 
-  /// @brief 各 action 族的 Result 负载 (阻塞到完成)。
+  /// @brief The Result payload of each action family (blocks until completion).
   const Result& result() const { return state->future.get().result; }
 
-  /// @brief 注册完成回调 (已完成则立即调用)。
+  /// @brief Register a completion callback (invoked immediately if already completed).
   void onComplete(std::function<void()> cb) const {
     if (!cb || !state) {
       return;
@@ -141,7 +148,7 @@ public:
     state->onComplete([cb](const Completion&) { cb(); });
   }
 
-  /// @brief 请求取消 (置 cancel_requested, 由 Action 层透传到 execution)。
+  /// @brief Request cancellation (sets cancel_requested, forwarded to the execution by the Action layer).
   bool cancel() const { return cancel_fn && cancel_fn(); }
 
 private:
@@ -151,12 +158,15 @@ private:
 };
 
 /**
- * @brief 线程安全 action 协议服务器 (对标 MBF AbstractActionServer)。
+ * @brief Thread-safe action protocol server (modeled after MBF
+ * AbstractActionServer).
  *
- * 内部状态机沿用 actions::GoalStatus : Pending → Active (ACTIVE
- * 通态合并 Accepted/Executing) → Succeeded/Aborted/Canceled。goal 完成后从
- * map 移除 (不累积, 对标 legacy CompletedGoalsDoNotAccumulate); TaskHandle
- * 持共享 future, goal 移出后仍可读取结果。
+ * The internal state machine follows actions::GoalStatus: Pending -> Active
+ * (the ACTIVE common state merges Accepted/Executing) ->
+ * Succeeded/Aborted/Canceled. Finished goals are removed from the map (no
+ * accumulation, mirroring legacy CompletedGoalsDoNotAccumulate); TaskHandle
+ * holds a shared future, so the result remains readable after the goal is
+ * removed.
  */
 template <typename Goal, typename Result, typename Feedback>
 class ActionServer {
@@ -172,7 +182,7 @@ public:
   ActionServer() = default;
   ~ActionServer() { cancelAll(); }
 
-  // ---- 回调注入 (派生 Action 接旁路 emit / execution 透传) ----
+  // ---- Callback injection (derived Actions hook side-path emits / forward to executions) ----
   void setGoalCallback(GoalCallback cb) { goal_callback = std::move(cb); }
   void setCancelCallback(CancelCallback cb) { cancel_callback = std::move(cb); }
   void setResultCallback(ResultCallback cb) { result_callback = std::move(cb); }
@@ -180,7 +190,7 @@ public:
     feedback_callback = std::move(cb);
   }
 
-  /// @brief 接受目标: 建 goal 状态 + TaskHandle (含 future), 调 goal 旁路回调。
+  /// @brief Accept a goal: create the goal state + TaskHandle (with future), invoke the goal side-path callback.
   Task acceptGoal(const Goal& goal) {
     const uint64_t goal_id = next_goal_id.fetch_add(1);
     GoalHandleType handle{goal_id, goal, ayanami::actions::GoalStatus::PENDING,
@@ -197,8 +207,9 @@ public:
                 [this, goal_id]() { return cancelGoal(goal_id); });
   }
 
-  /// @brief 取消目标: 置 cancel_requested 并调 cancel 旁路回调
-  /// (Action 层透传到 execution)。返回 false 若 goal 不存在。
+  /// @brief Cancel a goal: set cancel_requested and invoke the cancel
+  /// side-path callback (forwarded to the execution by the Action layer).
+  /// Returns false if the goal does not exist.
   bool cancelGoal(uint64_t goal_id) {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -214,7 +225,7 @@ public:
     return true;
   }
 
-  /// @brief 取消所有未完成目标。
+  /// @brief Cancel all unfinished goals.
   void cancelAll() {
     std::vector<uint64_t> ids;
     {
@@ -229,7 +240,7 @@ public:
     }
   }
 
-  // ---- 状态迁移 (ACTIVE 通态: Accepted/Executing 合并) ----
+  // ---- State transitions (ACTIVE common state: Accepted/Executing merged) ----
   bool setActive(uint64_t goal_id) {
     return updateStatus(goal_id, ayanami::actions::GoalStatus::ACTIVE);
   }
@@ -238,7 +249,7 @@ public:
     return updateStatus(goal_id, ayanami::actions::GoalStatus::ACTIVE);
   }
 
-  /// @brief 完成目标 (terminal)。返回 false 若 goal 不存在或已 terminal。
+  /// @brief Finish a goal (terminal). Returns false if the goal does not exist or is already terminal.
   bool publishResult(uint64_t goal_id, ayanami::actions::GoalStatus status,
                      const Result& result) {
     ResultCallback callback;
@@ -266,7 +277,7 @@ public:
     return true;
   }
 
-  /// @brief 发布反馈 (经 feedback 旁路回调)。
+  /// @brief Publish feedback (via the feedback side-path callback).
   void publishFeedback(uint64_t goal_id, const Feedback& feedback) {
     if (feedback_callback) {
       feedback_callback(GoalFeedback<Feedback>{goal_id, feedback});
@@ -278,7 +289,7 @@ public:
     return goals.find(goal_id) != goals.end();
   }
 
-  /// @brief 当前非 terminal 的 goal 数量 (对标 legacy activeGoalCount)。
+  /// @brief Number of currently non-terminal goals (mirrors legacy activeGoalCount).
   std::size_t activeGoalCount() const {
     std::lock_guard<std::mutex> lock(mutex);
     return goals.size();
@@ -290,7 +301,7 @@ public:
     return iter != goals.end() && iter->second.handle.cancel_requested;
   }
 
-  /// @brief 取 goal 句柄副本 (ActionBase::start 用)。
+  /// @brief Get a copy of the goal handle (used by ActionBase::start).
   std::optional<GoalHandleType> getGoal(uint64_t goal_id) const {
     std::lock_guard<std::mutex> lock(mutex);
     auto iter = goals.find(goal_id);

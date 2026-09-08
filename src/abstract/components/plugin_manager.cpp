@@ -1,8 +1,10 @@
-// 模板 dlopen 加载路径的显式实例化 。
+// Explicit instantiations for the template dlopen loading path.
 //
-// PluginManager<T> 方法在 plugin_manager.hpp 内联定义; 此处为 的
-// 4 个导航插件抽象做显式实例化, 把 dlopen/dlsym 加载路径预编译进 libayanami,
-// 避免每次编译整块模板展开。新增 PluginType 使用点需在此补实例化。
+// PluginManager<T> methods are defined inline in plugin_manager.hpp; this
+// file provides explicit instantiations for the
+// 4 navigation plugin abstractions, precompiling the dlopen/dlsym loading
+// path into libayanami to avoid re-expanding the whole template on every
+// build. New PluginType use sites must add their instantiation here.
 
 #include "ayanami/abstract/components/plugin_manager.hpp"
 

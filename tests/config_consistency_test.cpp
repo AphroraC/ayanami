@@ -1,19 +1,19 @@
-// config/*.json 全套 + id↔name 一致性检查 (/ §9)。
-// R1 (Controller 选项 a): *_id 值统一为插件 full name (含 _recovery 后缀),
-// 使 BT `{spin_id}` 等黑板书值直接等于 PluginManager/recovery_actions 的 name key,
-// requestRecovery 不再 miss (修历史 recovery_id 与插件 name 不匹配的坑)。
+// Full config/*.json suite + id<->name consistency check (/ §9).
+// R1 (Controller option a): *_id values are uniformly the plugin full name (including the _recovery suffix),
+// so BT blackboard writes like {spin_id} directly equal the PluginManager/recovery_actions name key,
+// and requestRecovery no longer misses (fixes the historical pitfall of recovery_id not matching the plugin name).
 //
-// 测试分层:
-// A. 纯配置层: 加载 config/ → 读 costmap_navigation.json ids → 断言每个 id 值
-// 就是对应插件 json 的 name 字段 (full plugin name)。
-// B. 真实 dlopen: PluginManager<Abstract* 族> 装载真实模块 .so, 装载名与
-// costmap_navigation.json id 值一致。
-// C. 宿主初始化: dlopen host → initialize(config/) → 枚举 loaded recovery action。
-// D. requestRecovery 实调: full name → valid TaskHandle; unsuffixed id → invalid
-// (NOT FOUND, 反向证明旧无后缀 id 现真是 miss)。
-// E. BT 恢复分支: 跑真实 BT 树 `<Recovery recovery="{spin_id}"/>` → 触发
-// requestRecovery(full name) → 插件 costmap_spin_recovery 实际被调用
-// (on_velocity_command 角速度事件 = runRecovery 计数)。
+// Test layers:
+// A. Pure config layer: load config/ -> read the costmap_navigation.json ids -> assert each id value
+// equals the name field of the corresponding plugin json (full plugin name).
+// B. Real dlopen: PluginManager<Abstract* family> loads the real module .so files; the loaded names match
+// the costmap_navigation.json id values.
+// C. Host init: dlopen host -> initialize(config/) -> enumerate the loaded recovery actions.
+// D. Real requestRecovery calls: full name -> valid TaskHandle; unsuffixed id -> invalid
+// (NOT FOUND; proves negatively that the old unsuffixed id is now truly a miss).
+// E. BT recovery branch: run the real BT tree <Recovery recovery="{spin_id}"/> -> triggers
+// requestRecovery(full name) -> the costmap_spin_recovery plugin is actually invoked
+// (the on_velocity_command angular-velocity events = the runRecovery count).
 //
 // argv: 1=config_dir, 2=host.so, 3=smac.so, 4=savitzky.so, 5=pid.so,
 // 6=spin.so, 7=back_up.so, 8=wait.so, 9=clear.so
@@ -74,7 +74,7 @@ std::string g_backup_so;
 std::string g_wait_so;
 std::string g_clear_so;
 
-// costmap_navigation.json 的 *_id 字段集合 。R1 后 id 值 == 插件 full name。
+// The *_id field set of costmap_navigation.json. After R1, id values == the plugin full name.
 struct NavIds {
   std::string planner_id;
   std::string smoother_id;
@@ -86,8 +86,8 @@ struct NavIds {
   std::string backup_id;
 };
 
-// config_recovery 有序文件族在 config_navigation 的 navigation 段
-// (单字符串或字符串数组), 解析为相对 config_path 的完整路径。
+// The ordered config_recovery file family lives in the navigation section of config_navigation
+// (a single string or a string array), resolved to full paths relative to config_path.
 std::vector<std::string> recoveryFamilyFiles() {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
   const ayanami::Config navigation(ayanami::GlobalConfig::getConfigPath(
@@ -98,7 +98,7 @@ std::vector<std::string> recoveryFamilyFiles() {
       entries = navigation.param<std::vector<std::string>>(
           "navigation", "config_recovery", {});
     } catch (const std::exception&) {
-      // config_recovery 是单字符串。
+      // config_recovery is a single string.
     }
     if (entries.empty()) {
       const std::string single =
@@ -164,7 +164,7 @@ NavIds readNavIds() {
   return ids;
 }
 
-// 读某插件 json 的 name 字段。module_section 为 json 顶层段名。
+/// Reads the name field of a plugin json. module_section is the top-level json section name.
 std::string pluginName(const std::string& config_key,
                        const std::string& module_section) {
   const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
@@ -178,7 +178,7 @@ std::string pluginName(const std::string& config_key,
   return cfg.param<std::string>(module_section, "name", "");
 }
 
-// config_recovery 数组按 role 定位插件 json, 读 name (工厂统一公共符号)。
+/// Locates the plugin json by role in the config_recovery array and reads its name (unified common factory symbol).
 std::string recoveryPluginName(const std::string& role) {
   const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
       "config_navigation"));
@@ -197,9 +197,9 @@ std::string recoveryPluginName(const std::string& role) {
   return "";
 }
 
-// dlopen host 模块 (公共工厂) → AbstractNavigation → CostmapNavigation*, 已 initialize。
-// 亲引用: 组件寿命 = 进程 (不 dlclose), 宿主 shared_ptr 特意泄漏保值,
-// 测试仍负责 delete host。
+/// dlopen the host module (common factory) -> AbstractNavigation -> CostmapNavigation*, already initialized.
+/// Owning reference: component lifetime = process lifetime (no dlclose); the host shared_ptr is intentionally leaked to stay alive,
+/// and the test is still responsible for deleting the host.
 CostmapNavigation* createHost(const std::string& config_dir) {
   auto nav = std::dynamic_pointer_cast<AbstractNavigation>(
       ayanami::ExtensionModule::load_module(g_host_so));
@@ -228,7 +228,7 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
   return fn();
 }
 
-// ---- A. 纯配置层: id 值 == 插件 full name ----
+// ---- A. Pure config layer: id value == plugin full name ----
 
 TEST(ConfigConsistencyTest, allIdsNonEmpty) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
@@ -247,13 +247,13 @@ TEST(ConfigConsistencyTest, idsAreFullPluginNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
 
-  // planner/controller/smoother: name == id (本就等于插件 name / PluginManager key)。
+  // planner/controller/smoother: name == id (already equal to the plugin name / PluginManager key).
   EXPECT_EQ(pluginName("config_planner", "planner"), ids.planner_id);
   EXPECT_EQ(pluginName("config_controller", "controller"), ids.controller_id);
   EXPECT_EQ(pluginName("config_smoother", "smoother"), ids.smoother_id);
 
-  // recovery: id 值直接 == 插件 name (full plugin name, 含 _recovery 后缀)。
-  // BT `{spin_id}` 黑板书值 = costmap_spin_recovery → requestRecovery 直接命中。
+  // recovery: the id value directly == the plugin name (full plugin name, including the _recovery suffix).
+  // The BT {spin_id} blackboard write = costmap_spin_recovery -> requestRecovery hits directly.
   EXPECT_EQ(ids.spin_id, "costmap_spin_recovery");
   EXPECT_EQ(recoveryPluginName("spin"), ids.spin_id);
 
@@ -263,13 +263,13 @@ TEST(ConfigConsistencyTest, idsAreFullPluginNames) {
   EXPECT_EQ(ids.backup_id, "costmap_back_up_recovery");
   EXPECT_EQ(recoveryPluginName("backup"), ids.backup_id);
 
-  // clear_costmap_id 与 recovery_id 指向同一插件 (full name)。
+  // clear_costmap_id and recovery_id point to the same plugin (full name).
   EXPECT_EQ(ids.recovery_id, ids.clear_costmap_id);
   EXPECT_EQ(ids.clear_costmap_id, "costmap_clear_costmap_recovery");
   EXPECT_EQ(recoveryPluginName("clear_costmap"), ids.recovery_id);
 }
 
-// ---- B. 真实 dlopen: PluginManager 装载名与 costmap_navigation.json 一致 ----
+// ---- B. Real dlopen: PluginManager loaded names match costmap_navigation.json ----
 
 TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
@@ -310,7 +310,7 @@ TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
     EXPECT_TRUE(mgr.hasPlugin(ids.controller_id));
   }
   {
-    // 4 个 recovery 全装载, 名必须 == id 值 (full plugin name)。
+    // All 4 recoveries loaded; each name must == the id value (full plugin name).
     PluginManager<AbstractRecovery> mgr;
     const struct {
       const char* role;
@@ -339,26 +339,26 @@ TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
   }
 }
 
-// ---- C. 宿主初始化: dlopen host → initialize(config/) → 装载名与 json 一致 ----
+// ---- C. Host init: dlopen host -> initialize(config/) -> loaded names match the json ----
 
 TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentPlugins) {
   CostmapNavigation* host = createHost(g_config_dir);
   ASSERT_NE(host, nullptr);
 
-  // loadPlugins 按 config_planner/.../config_recovery 装载 → createActions。
-  // pid 已是 costmap 族 (CostmapController), 可被 costmap 宿主注入,
-  // controller action 一并创建 (四族 costmap 全接受)。
+  // loadPlugins loads via config_planner/.../config_recovery -> createActions.
+  // pid is already in the costmap family (CostmapController), so the costmap host can inject it;
+  // the controller action is created as well (all four costmap families accepted).
   ASSERT_NE(host->navigationServer().plannerAction(), nullptr);
   ASSERT_NE(host->navigationServer().smootherAction(), nullptr);
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
 
-  // recovery: config_recovery 指向的 clear_costmap 插件 action 已建
-  // (装载名 = clear_costmap_id 值, 即 full plugin name)。
+  // recovery: the clear_costmap plugin action pointed to by config_recovery has been created
+  // (loaded name = the clear_costmap_id value, i.e. the full plugin name).
   const NavIds ids = readNavIds();
   ASSERT_NE(host->navigationServer().recoveryAction(ids.clear_costmap_id),
             nullptr);
 
-  // 枚举恢复 action 名, 必须含 clear_costmap 对应插件名。
+  // Enumerate the recovery action names; must include the plugin name for clear_costmap.
   bool found = false;
   for (const auto& name : host->navigationServer().recoveryActionNames()) {
     if (name == ids.clear_costmap_id) {
@@ -371,7 +371,7 @@ TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentPlugins) {
   delete host;
 }
 
-// ---- D. requestRecovery 实调: full name → valid; unsuffixed → invalid ----
+// ---- D. Real requestRecovery calls: full name -> valid; unsuffixed -> invalid ----
 
 TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
   CostmapNavigation* host = createHost(g_config_dir);
@@ -379,7 +379,7 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
 
   const NavIds ids = readNavIds();
 
-  // full plugin name (recovery_id 值 = costmap_clear_costmap_recovery) → valid。
+  // Full plugin name (the recovery_id value = costmap_clear_costmap_recovery) -> valid.
   {
     RecoveryGoal goal;
     goal.recovery_id = ids.recovery_id;
@@ -387,14 +387,14 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
     EXPECT_TRUE(task.valid());
     if (task.valid()) {
       task.cancel();
-      // recovery 是独占的: 上一条 recovery 任务完成后其 onComplete 才释放
-      // recovery_exclusive。等待其终态, 否则下一条 requestRecovery 会因
-      // "another recovery is active" 误报 RecoveryFailed (与无效 id 语义混叠)。
+      // Recovery is exclusive: only after the previous recovery task completes does its onComplete release
+      // recovery_exclusive. Wait for its terminal state; otherwise the next requestRecovery reports RecoveryFailed
+      // because "another recovery is active" (semantically aliased with an invalid id).
       ASSERT_TRUE(waitUntil([&task] { return task.ready(); }));
     }
   }
-  // 反向证明: 旧无后缀 id (costmap_clear_costmap) 现真是 NOT FOUND → 结构化
-  // 失败 TaskHandle (valid + ABORTED + InvalidInput), 不静默回退默认。
+  // Negative proof: the old unsuffixed id (costmap_clear_costmap) is now truly NOT FOUND -> a structured
+  // failure TaskHandle (valid + ABORTED + InvalidInput), not a silent fallback to the default.
   {
     RecoveryGoal goal;
     goal.recovery_id = "costmap_clear_costmap";
@@ -404,8 +404,8 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
     EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::ABORTED);
     EXPECT_EQ(task.result().error, ayanami::ErrorCode::INVALID_INPUT);
   }
-  // config_recovery 数组现装载全部 4 个 recovery 插件 (WIP 一配多文件),
-  // spin full name 也已装载 → valid。
+  // The config_recovery array now loads all 4 recovery plugins (WIP one-config-many-files),
+  // and the spin full name is loaded too -> valid.
   {
     RecoveryGoal goal;
     goal.recovery_id = "costmap_spin_recovery";
@@ -420,11 +420,11 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
   delete host;
 }
 
-// ---- E. BT 恢复分支: `<Recovery recovery="{spin_id}"/>` 实际调用 spin 插件 ----
+// ---- E. BT recovery branch: <Recovery recovery="{spin_id}"/> actually invokes the spin plugin ----
 
 namespace {
 
-// 最小 recovery BT 树: 单 Recovery 节点, 端口来自黑板 {spin_id} (R1 后为 full name)。
+// Minimal recovery BT tree: a single Recovery node whose port comes from the blackboard {spin_id} (the full name after R1).
 constexpr const char* k_recovery_only_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="recovery_only">
@@ -433,14 +433,14 @@ constexpr const char* k_recovery_only_xml = R"(
 </root>)";
 
 std::atomic<int> g_spin_velocity_cmds{0};
-// RAII 订阅句柄: attach 时替换, detach 时析构退订 (无悬挂 id)。
+// RAII subscription handle: replaced on attach, unsubscribed on destruction at detach (no dangling id).
 ayanami::CallbackSubscription g_spin_cb;
 
 void attachSpinObserver() {
   g_spin_velocity_cmds.store(0);
   g_spin_cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [](const TwistStamped& t) {
-        // spin recovery tick 每帧发非零角速度 → 证明插件被实际调用。
+        // Each spin recovery tick emits a non-zero angular velocity -> proves the plugin is actually invoked.
         if (std::abs(t.twist.angular.z()) > 1e-6) {
           g_spin_velocity_cmds.fetch_add(1);
         }
@@ -457,9 +457,9 @@ void writeFile(const std::filesystem::path& path,
   ofs << content;
 }
 
-// 建临时 config 目录: config_recovery 指向 spin 恢复插件 (full name), 让宿主
-// loadPlugins 把 costmap_spin_recovery 装入 recovery_actions。其余插件 json
-// 缺省即可 (loadPlugins 对缺失文件回退空配置, 不 crash)。
+// Build a temp config dir: config_recovery points at the spin recovery plugin (full name) so the host
+// loadPlugins loads costmap_spin_recovery into recovery_actions. The other plugin jsons
+// can be omitted (loadPlugins falls back to empty config for missing files, no crash).
 std::filesystem::path makeSpinConfigDir() {
   std::filesystem::path dir = std::filesystem::temp_directory_path() /
                               "ayanami_config_consistency_spin";
@@ -488,7 +488,7 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"tick_frequency\": 100.0\n"
              "  }\n");
 
-  // spin 恢复插件: full name + 真实 .so。spin_dist 设小以缩短测试时长。
+  // Spin recovery plugin: full name + a real .so. spin_dist is set small to shorten the test.
   writeFile(dir / "spin_recovery.json",
              "{\n  \"recovery\": {\n"
              "    \"name\": \"costmap_spin_recovery\",\n"
@@ -499,7 +499,7 @@ std::filesystem::path makeSpinConfigDir() {
                  "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
                  "  }\n}\n");
 
-  // 最小 global/local costmap (configureCoreMaps 需要; 已并入 navigation 文件)。
+  // Minimal global/local costmap (needed by configureCoreMaps; merged into the navigation file).
   {
     std::ofstream nav(dir / "costmap_navigation.json", std::ios::app);
     nav << ",\n  \"costmap\": {\n"
@@ -524,7 +524,7 @@ std::filesystem::path makeSpinConfigDir() {
         << "}\n";
   }
 
-  // pilot.loadFromFile 需要 BT/navigation.xml (id 用默认树名)。
+  // pilot.loadFromFile needs BT/navigation.xml (id uses the default tree name).
   writeFile(dir / "BT" / "navigation.xml",
              R"(<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
@@ -548,7 +548,7 @@ TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinPlugin) {
   CostmapNavigation* host = createHost(dir.string());
   ASSERT_NE(host, nullptr);
 
-  // spin 插件已由 loadPlugins 装入 recovery_actions (name=costmap_spin_recovery)。
+  // The spin plugin was loaded into recovery_actions by loadPlugins (name=costmap_spin_recovery).
   ASSERT_NE(host->navigationServer().recoveryAction("costmap_spin_recovery"),
             nullptr);
 
@@ -565,10 +565,10 @@ TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinPlugin) {
   ayanami::behavior_tree::registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_recovery_only_xml, bb);
 
-  // 首 tick: onStart → requestRecovery("costmap_spin_recovery") → 命中 → RUNNING。
+  // First tick: onStart -> requestRecovery("costmap_spin_recovery") -> hit -> RUNNING.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // spin runRecovery 逐帧发角速度 → 等插件被实际调用 (runRecovery 计数 >=1)。
+  // spin runRecovery emits angular velocity every frame -> wait for the plugin to be actually invoked (runRecovery count >= 1).
   EXPECT_TRUE(waitUntil([&] { return g_spin_velocity_cmds.load() >= 1; }))
       << "costmap_spin_recovery plugin runRecovery not invoked";
 

@@ -1,12 +1,12 @@
-// logging_test: logLevelFromString 解析 + configureLogging 行为
-// (console_output / file_output / 轮转参数 / 级别, 学习 asuka 参数集)。
+// logging_test: logLevelFromString parsing + configureLogging behavior
+// (console_output / file_output / rotation parameters / level, modeled on the asuka parameter set).
 //
-// 覆盖:
-// 1. 级别字符串解析 (trace/debug/info/warn/warning/error/critical/off/未知)
-// 2. file_output=true → 日志文件创建且内容写入; console_output=false →
-// console sink 移除
-// 3. logging_level 全局同步到已注册 logger
-// 4. 轮转参数传递 (rotating_file_sink)
+// Coverage:
+// 1. Level string parsing (trace/debug/info/warn/warning/error/critical/off/unknown)
+// 2. file_output=true -> the log file is created and written; console_output=false ->
+// the console sink is removed
+// 3. logging_level is globally synchronized to registered loggers
+// 4. Rotation parameters passed through (rotating_file_sink)
 
 #include <gtest/gtest.h>
 
@@ -67,18 +67,18 @@ bool has_file_sink(const std::shared_ptr<spdlog::logger>& logger) {
   return false;
 }
 
-// 写最小 config 目录: config.json (logging 段内联, 单一来源)。
+/// Writes a minimal config dir: config.json (inline logging section, single source).
 std::filesystem::path makeConfigDir(const std::string& logging_json) {
   const auto dir = makeTempDir();
-  // logging_dir 占位符替换为实际测试目录。
+  // The logging_dir placeholder is replaced with the actual test directory.
   std::string json = logging_json;
   const std::string k_placeholder = "LOGGING_DIR_PLACEHOLDER";
   const auto pos = json.find(k_placeholder);
   if (pos != std::string::npos) {
     json.replace(pos, k_placeholder.size(), dir.string());
   }
-  // 调用方传入完整 {"logging": {...}} 对象: 剥掉外层花括号后与 global 段
-  // 同级合并, 保证合法 JSON。
+  // The caller passes a complete {"logging": {...}} object: after stripping the outer braces it is merged at the same
+  // level as the global section, keeping the JSON valid.
   write_file(dir / "config.json",
              "{\n  \"global\": {}," + json.substr(1) + "\n");
   return dir;
@@ -96,7 +96,7 @@ TEST(LoggingTest, logLevelFromStringParses) {
   EXPECT_EQ(logLevelFromString("ERROR"), spdlog::level::err);
   EXPECT_EQ(logLevelFromString("critical"), spdlog::level::critical);
   EXPECT_EQ(logLevelFromString("off"), spdlog::level::off);
-  // 未知字符串回退 info。
+  // Unknown strings fall back to info.
   EXPECT_EQ(logLevelFromString("bogus"), spdlog::level::info);
 }
 
@@ -147,10 +147,10 @@ TEST(LoggingTest, consoleOutputTrueKeepsConsoleAndRotatingSink) {
   ASSERT_NE(logger, nullptr);
   EXPECT_TRUE(has_console_sink(logger));
   EXPECT_TRUE(has_file_sink(logger));
-  // logger 总闸 = min(info, debug) = debug (console 更详细不被截断)。
+  // The logger master level = min(info, debug) = debug (the more verbose console is not truncated).
   EXPECT_EQ(logger->level(), spdlog::level::debug);
 
-  // rotating sink: 创建目录 + 文件可写。
+  // Rotating sink: directory created + file writable.
   spdlog::info("rotating marker");
   logger->flush();
   std::ifstream ifs(dir / "ayanami.log");
@@ -172,7 +172,7 @@ TEST(LoggingTest, reconfigureIsIdempotentNoSinkDuplication) {
   const auto sink_count = logger->sinks().size();
   ASSERT_GE(sink_count, 2u);
 
-  // 再次配置: sink 重建而非追加。
+  // Reconfiguring: the sink is rebuilt rather than appended to.
   ayanami::configureLogging();
   EXPECT_EQ(logger->sinks().size(), sink_count);
 }

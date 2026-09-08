@@ -57,10 +57,10 @@ void GlobalConfig::create(const std::string& config_path) {
 
   std::filesystem::path directory = config_path.empty() ? "." : config_path;
   if (std::filesystem::is_regular_file(directory)) {
-    // 文件 -> 父目录
+    // File -> parent directory
     directory = directory.parent_path();
   } else if (!std::filesystem::exists(directory / "config.json")) {
-    // 目录: 兜底兼容 config/ 与 configs/
+    // Directory: fallback compatibility for config/ and configs/
     if (std::filesystem::exists(directory / "config" / "config.json")) {
       directory /= "config";
     } else if (std::filesystem::exists(directory / "configs" / "config.json")) {
@@ -75,7 +75,7 @@ void GlobalConfig::create(const std::string& config_path) {
 GlobalConfig* GlobalConfig::instance(const std::string& config_path,
                                      bool override_path) {
   if (override_path) {
-    // 显式重建 (单线程生命周期操作): 删旧实例并重新解析路径
+    // Explicit rebuild (single-threaded lifecycle operation): delete the old instance and re-resolve the path
     std::lock_guard<std::mutex> lock(g_global_config_mutex);
     delete inst;
     inst = nullptr;
@@ -83,7 +83,7 @@ GlobalConfig* GlobalConfig::instance(const std::string& config_path,
     return inst;
   }
 
-  // 常规惰性路径: std::call_once 保证首个初始化仅执行一次且线程安全
+  // Regular lazy path: std::call_once guarantees the first initialization runs exactly once and thread-safely
   std::call_once(g_global_config_once, [&config_path]() {
     std::lock_guard<std::mutex> lock(g_global_config_mutex);
     create(config_path);
@@ -96,9 +96,11 @@ std::string GlobalConfig::getConfigPath(const std::string& config_name) {
   const std::filesystem::path directory =
       config->param<std::string>("global", "config_path", ".");
   std::string filename = config_name + ".json";
-  // global 段单层索引只解析根级键 (config_navigation/config_ros);
-  // 插件文件指针统一在 config_navigation 的 navigation 段, 由
-  // NavigationServerBase::loadPlugins 直接枚举, 不经本入口。
+  // The global section's single-level index only resolves root-level keys
+  // (config_navigation/config_ros);
+  // plugin file pointers live uniformly in config_navigation's navigation
+  // section, enumerated directly by NavigationServerBase::loadPlugins,
+  // bypassing this entry point.
   if (config->hasParam("global", config_name)) {
     try {
       filename = config->param<std::string>(

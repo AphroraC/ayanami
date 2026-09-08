@@ -13,13 +13,15 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 全局路径规划插件抽象 (MBF 式分层)。
+ * @brief Global path planner plugin abstraction (MBF-style layering).
  *
- * 零地图类型: 接口不包含任何地图参数。地图依赖只出现在地图族层
- * (如 CostmapPlanner) 的 configure(PluginContext, 地图模块) 注入点, 由宿主
- * (XXXNavigationServer) 持有地图模块所有权并注入。
+ * Zero map types: the interface contains no map parameters. Map dependency
+ * appears only at the map-family layer's injection point
+ * configure(PluginContext, map module) (e.g. CostmapPlanner); the host
+ * (XXXNavigationServer) owns the map module and injects it.
  *
- * 职责表: 插件只做路径搜索; 失败立即以 ErrorCode 返回, 重试由 BT 决定。
+ * Responsibility table: the plugin only performs path search; failures
+ * return an ErrorCode immediately, and retries are decided by the BT.
  */
 class AbstractPlanner : public virtual ExtensionModule {
  public:
@@ -27,21 +29,23 @@ class AbstractPlanner : public virtual ExtensionModule {
 
   virtual ~AbstractPlanner() = default;
 
-  /// @brief 计算 start→goal 的全局路径 (纯虚)。
-  /// @return PlannerResultT: ok=true 携带路径; 失败携带 ErrorCode + 诊断。
-  virtual PlannerResultT makePlan(
+  /// @brief Compute a global path from start to goal (pure virtual).
+  /// @param plan Output parameter: on success (ok=true) the path is
+  ///        written; on failure the content is undefined.
+  /// @return Unified ResultT<void>: failures carry ErrorCode + diagnostics.
+  virtual ResultT<void> makePlan(
       const ayanami::geometry_msgs::PoseStamped& start,
       const ayanami::geometry_msgs::PoseStamped& goal,
-      double tolerance) = 0;
+      double tolerance, ayanami::nav_msgs::Path& plan) = 0;
 
   virtual void activate() {}
   virtual void deactivate() {}
   virtual void cleanup() {}
 
-  /// @brief 取消进行中的规划 (协作式中断; 默认不支持)。
+  /// @brief Cancel in-progress planning (cooperative interrupt; unsupported by default).
   virtual bool cancel() { return false; }
 
-  /// @brief 运行中 in-place 目标更新 (latest-wins seam; 可选)。
+  /// @brief In-place goal update while running (latest-wins seam; optional).
   virtual bool setNewGoal(const ayanami::geometry_msgs::PoseStamped&,
                           const ayanami::geometry_msgs::PoseStamped&, double) {
     return false;

@@ -1,18 +1,18 @@
-// production_tree_recovery_test: 生产默认树 (NavigateWithReplanningAndSmoothing)
-// + 可编程 MockNavigationRuntime 的恢复重入集成测试。
+// production_tree_recovery_test: recovery reentry integration test using the production default tree
+// (NavigateWithReplanningAndSmoothing) + a programmable MockNavigationRuntime.
 //
-// 背景 bug (rviz 实测 + rosbag 取证): controller NoProgress ABORT 后, 外层
-// RecoveryActions 连续执行 28 次恢复 (spin 风暴) 而 FollowPath 零重入, 且
-// 28 > 外层 number_of_retries=6 —— 恢复重入与重试上限双双失效, 机器人原地
-// 自转永不恢复导航。
+// Background bug (observed live in rviz + rosbag evidence): after a controller NoProgress ABORT, the outer
+// RecoveryActions ran 28 consecutive recoveries (a spin storm) while FollowPath never reentered, and
+// 28 > the outer number_of_retries=6 -- both recovery reentry and the retry cap had failed; the robot spun in place
+// forever and never resumed navigation.
 //
-// 本测试用与生产一致的树 XML + pilot 式 tick 循环锁死两个不变量:
-// I1 (重入): controller 失败 + 恢复成功后, FollowPath 必须被重新请求
-// (exe_request_count >= 2), 树重启后 planner 必须重新规划;
-// I2 (有界): 单次树生命周期内恢复请求数 <= 内外层重试预算之和。
-// 瞬时故障变体: 第二次执行成功 -> 整树 SUCCESS, 恢复只走 clear_costmap。
+// Using production-identical tree XML + a pilot-style tick loop, this test locks two invariants:
+// I1 (reentry): after a controller failure + a successful recovery, FollowPath must be requested again
+// (exe_request_count >= 2), and the planner must replan after the tree restarts;
+// I2 (bounded): within a single tree lifetime the recovery request count <= the sum of the inner+outer retry budgets.
+// Transient-failure variant: the second execution succeeds -> whole tree SUCCESS; recovery only takes the clear_costmap path.
 //
-// 调试: AYANAMI_BT_TRACE=1 输出逐节点状态迁移。
+// Debugging: AYANAMI_BT_TRACE=1 prints per-node status transitions.
 
 #include <gtest/gtest.h>
 
@@ -48,7 +48,7 @@ using ayanami::nav_msgs::Path;
 
 namespace {
 
-// 与 navigation_behavior_tree.hpp 内嵌生产树逐字一致。
+// Verbatim identical to the production tree embedded in navigation_behavior_tree.hpp.
 constexpr const char* k_production_xml = R"XML(
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
@@ -112,21 +112,21 @@ Path makePath() {
   return p;
 }
 
-/// @brief 可编程延迟完成: 请求入 pending 队列, pump 推进年龄并按策略结算。
+/// @brief Programmable deferred completion: requests enter a pending queue; pump advances their age and settles them per policy.
 class MockRuntime final : public NavigationRuntime {
  public:
-  // ---- 观测 ----
+  // ---- Observation ----
   int path_requests{0};
   int smooth_requests{0};
   int exe_requests{0};
   int recovery_requests{0};
   std::map<std::string, int> recovery_by_id;
 
-  // ---- 策略 ----
-  int settle_after{2};  // pump 次数后结算
+  // ---- Policy ----
+  int settle_after{2};  // settled after this many pumps
   bool controller_always_fails{true};
 
-  // ---- 会话/版本 ----
+  // ---- Session/version ----
   std::atomic<uint64_t> session{1};
   std::atomic<uint64_t> plan_version{0};
 
@@ -232,8 +232,8 @@ class MockRuntime final : public NavigationRuntime {
     typename TaskState<SmoothPathResult>::Completion c;
     c.status = ayanami::actions::GoalStatus::SUCCEEDED;
     c.result.smoothed_path = makePath();
-    // 对齐生产: result 携带"被接受时"的版本, 节点 onRunning 校验通过后才
-    // incrementPlanVersion (经 mock 的 incrementPlanVersion)。
+    // Aligned with production: the result carries the version "at accept time"; only after the node onRunning check passes
+    // does incrementPlanVersion run (via the mock incrementPlanVersion).
     stamp(c.result);
     state->complete(c);
   }
@@ -276,7 +276,7 @@ class ProductionTreeRecovery : public ::testing::Test {
     bb->set<PoseStamped>(k_goal, makeGoal());
     bb->set<Path>(k_raw_path, Path{});
     bb->set<Path>(k_smoothed_path, Path{});
-    // 生产配置 (costmap_navigation.json): planner/smoother 均为 -1 (单次缓存)
+    // Production config (costmap_navigation.json): planner/smoother both -1 (single-shot caching)
     bb->set<double>(k_planner_frequency, -1.0);
     bb->set<double>(k_smoother_frequency, -1.0);
     bb->set<double>(k_controller_frequency, 20.0);
@@ -299,9 +299,9 @@ class ProductionTreeRecovery : public ::testing::Test {
     }
   }
 
-  /// @brief pilot 契约的测试镜像: tick 一次, 树返回终端状态时全量逻辑重置
-  /// (BehaviorTreePilot::run 同款; v4 halt 不重置终态缓存子树, 见
-  /// resetNavigationTreeState 注释)。
+  /// @brief Test mirror of the pilot contract: tick once and do the full logical reset when the tree returns a terminal
+  /// status (same as BehaviorTreePilot::run; v4 halt does not reset terminal-cached subtrees, see the
+  /// resetNavigationTreeState comment).
   BT::NodeStatus tickTree() {
     const BT::NodeStatus status = tree.tickExactlyOnce();
     if (status != BT::NodeStatus::RUNNING) {
@@ -317,7 +317,7 @@ class ProductionTreeRecovery : public ::testing::Test {
   std::unique_ptr<BT::StdCoutLogger> logger;
 };
 
-// ---- I1/I2: controller 永久 NoProgress -> 恢复后必须重入 + 有界 ----
+// ---- I1/I2: controller permanent NoProgress -> must reenter after recovery + stay bounded ----
 TEST_F(ProductionTreeRecovery,
        controllerFailureMustReenterFollowPathWithBoundedRecoveries) {
   writeBlackboard();
@@ -336,24 +336,24 @@ TEST_F(ProductionTreeRecovery,
                   << " spin=" << runtime->recovery_by_id["spin"]
                   << " backup=" << runtime->recovery_by_id["backup"];
 
-  // I1: 恢复成功后 FollowPath 必须重入 (生产 bug: exe=1 恒定)。
+  // I1: after a successful recovery FollowPath must reenter (production bug: exe stayed constant at 1).
   EXPECT_GE(runtime->exe_requests, 2)
       << "FollowPath was never re-entered after recovery (storm bug)";
-  // I1b: 树重启生命周期里 planner 必须重新规划 (生产 bug: path=1 恒定)。
+  // I1b: the planner must replan within the restarted tree lifetime (production bug: path stayed constant at 1).
   EXPECT_GE(runtime->path_requests, 2)
       << "planner never replanned across tree lives";
-  // I2: 重试预算有界 —— nav2 等价预算: 每树生命 = 外层 6 次重试, 每次重试
-  // 至多 1 外层恢复 + 1 内层 clear_costmap = 12 次; 每次树生命都伴随重规划,
-  // 故恢复数相对规划数必须有界 (风暴 bug: path 恒 1 而 recovery 无限)。
+  // I2: bounded retry budget -- nav2-equivalent budget: per tree life = 6 outer retries, each retry at most
+  // 1 outer recovery + 1 inner clear_costmap = 12; every tree life is accompanied by a replan,
+  // so the recovery count must be bounded relative to the plan count (storm bug: path stuck at 1 while recoveries were unbounded).
   EXPECT_LE(runtime->recovery_requests,
             13 * std::max(1, runtime->path_requests))
       << "recovery storm: unbounded recoveries per tree life";
 }
 
-// ---- 瞬时故障: 第二次执行成功 -> 整树 SUCCESS, 外层恢复不应触发 ----
+// ---- Transient failure: the second execution succeeds -> whole tree SUCCESS, the outer recovery must not fire ----
 TEST_F(ProductionTreeRecovery, transientControllerFailureRecoversAndSucceeds) {
   writeBlackboard();
-  runtime->controller_always_fails = true;  // 首次执行失败 (NoProgress)
+  runtime->controller_always_fails = true;  // The first execution fails (NoProgress)
   buildTree();
 
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
@@ -361,7 +361,7 @@ TEST_F(ProductionTreeRecovery, transientControllerFailureRecoversAndSucceeds) {
     status = tickTree();
     runtime->pump();
     if (runtime->exe_requests >= 1) {
-      runtime->controller_always_fails = false;  // 之后永久成功
+      runtime->controller_always_fails = false;  // Afterwards it always succeeds
     }
     if (status != BT::NodeStatus::RUNNING) {
       break;
@@ -371,7 +371,7 @@ TEST_F(ProductionTreeRecovery, transientControllerFailureRecoversAndSucceeds) {
       << "path=" << runtime->path_requests
       << " exe=" << runtime->exe_requests
       << " recovery=" << runtime->recovery_requests;
-  // 恢复预算: 内层 FollowPath 分支 1 次 clear_costmap (外层不应触发)。
+  // Recovery budget: 1 clear_costmap in the inner FollowPath branch (the outer must not fire).
   EXPECT_LE(runtime->recovery_requests, 1)
       << "recovery=" << runtime->recovery_requests;
 }

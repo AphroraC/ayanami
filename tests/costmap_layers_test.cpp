@@ -13,7 +13,7 @@
 
 namespace {
 
-// 建一个 origin=(0,0) 的小地图, 便于按 cell 推世界坐标。
+/// Builds a small map with origin=(0,0) so world coordinates can be derived per cell.
 costmap_2d::Costmap2D makeGrid(unsigned int size_x, unsigned int size_y,
                                double resolution) {
   return costmap_2d::Costmap2D(size_x, size_y, resolution, 0.0, 0.0,
@@ -57,10 +57,10 @@ TEST(CostmapLayersTest, staticLayerInlineMapCoversFullMap) {
   EXPECT_EQ(master.getCost(5, 5), costmap_2d::LETHAL_OBSTACLE);
   EXPECT_EQ(master.getCost(9, 9), costmap_2d::NO_INFORMATION);
 
-  // 层地图之外的区域保持默认值 (不受 StaticLayer 影响)
+  // Regions outside the layer map keep the default value (unaffected by StaticLayer)
   EXPECT_EQ(master.getCost(15, 15), costmap_2d::FREE_SPACE);
 
-  // 三种 cost 值都要出现在 master grid 中
+  // All three cost values must appear in the master grid
   const unsigned char* cmap = master.getCharMap();
   bool has_free = false;
   bool has_lethal = false;
@@ -83,7 +83,7 @@ TEST(CostmapLayersTest, staticLayerInlineMapCoversFullMap) {
 }
 
 TEST(CostmapLayersTest, staticLayerLoadsPgm) {
-  // 写一个 3x3 P5 PGM: 0(black)->LETHAL, 255(white)->FREE, 128->NO_INFORMATION
+  // Write a 3x3 P5 PGM: 0(black)->LETHAL, 255(white)->FREE, 128->NO_INFORMATION
   const char* path = "/tmp/opencode/static_layer_test.pgm";
   {
     std::ofstream out(path, std::ios::binary);
@@ -185,7 +185,7 @@ TEST(CostmapLayersTest, simpleObstacleLayerMarkThenClear) {
   EXPECT_EQ(master.getCost(4, 5), costmap_2d::LETHAL_OBSTACLE);
   EXPECT_EQ(master.getCost(0, 0), costmap_2d::FREE_SPACE);
 
-  // clear 恰好盖住 cell (5,5) 的世界矩形 [2.5,3.0) x [2.5,3.0)
+  // clear covers exactly the world rectangle [2.5,3.0) x [2.5,3.0) over cell (5,5)
   layer.clearArea(2.5, 2.5, 3.0, 3.0);
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                     static_cast<int>(master.getSizeInCellsY()));
@@ -214,27 +214,27 @@ TEST(CostmapLayersTest, inflationLayerInflatesAroundLethal) {
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                     static_cast<int>(master.getSizeInCellsY()));
 
-  // 障碍 cell 本身保持 lethal
+  // The obstacle cell itself stays lethal
   EXPECT_EQ(master.getCost(5, 5), costmap_2d::LETHAL_OBSTACLE);
-  // 正交 4 邻域 (距离 1 cell) 落入 inscribed band -> 253
+  // Orthogonal 4-neighborhood (distance 1 cell) falls into the inscribed band -> 253
   EXPECT_EQ(master.getCost(5, 6), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   EXPECT_EQ(master.getCost(4, 5), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   EXPECT_EQ(master.getCost(6, 5), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   EXPECT_EQ(master.getCost(5, 4), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
-  // 对角 8 邻域 (距离 sqrt(2) cell) 有非零膨胀值
+  // Diagonal 8-neighborhood (distance sqrt(2) cells) has a non-zero inflation value
   EXPECT_GE(master.getCost(4, 4), 100);
   EXPECT_GE(master.getCost(6, 6), 100);
-  // 衰减: 离障碍越远 cost 越低
+  // Decay: the farther from the obstacle, the lower the cost
   EXPECT_LT(master.getCost(5, 7), master.getCost(5, 6));
   EXPECT_GT(master.getCost(5, 7), 0);
-  // 超过 inflation_radius (3 cells) 的 cell 保持默认 0
+  // Cells beyond inflation_radius (3 cells) keep the default 0
   EXPECT_EQ(master.getCost(5, 12), costmap_2d::FREE_SPACE);
 }
 
 TEST(CostmapLayersTest, inflationLayerSmoothGradientWithRealisticParams) {
-  // 真实 config 参数 (costmap_navigation.json): res 0.05, inflation 0.5,
-  // inscribed 0.3, csf 10.0。断言 inscribed 带外代价严格递减且末端平滑趋零
-  // (可视化上呈现渐变而非单一颜色)。
+  // Real config parameters (costmap_navigation.json): res 0.05, inflation 0.5,
+  // inscribed 0.3, csf 10.0. Assert the cost decays strictly beyond the inscribed band and tapers smoothly to zero at the end
+  // (a gradient rather than a single color when visualized).
   constexpr double res = 0.05;
   auto master = makeGrid(60, 60, res);
   master.setCost(30, 30, costmap_2d::LETHAL_OBSTACLE);
@@ -247,25 +247,25 @@ TEST(CostmapLayersTest, inflationLayerSmoothGradientWithRealisticParams) {
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                     static_cast<int>(master.getSizeInCellsY()));
 
-  // inscribed 带 (< 0.3m) 恒 253; 边界 cell (6*0.05 浮点略超 0.3) 允许 252。
+  // The inscribed band (< 0.3m) is constantly 253; the boundary cell (6*0.05, slightly over 0.3 in float) may be 252.
   for (int d = 1; d <= 5; ++d) {
     EXPECT_EQ(master.getCost(30 + d, 30),
               costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
         << "d=" << d;
   }
   EXPECT_GE(master.getCost(36, 30), 252);
-  // 衰减带 (0.3m~0.5m) 严格递减。
+  // The decay band (0.3m to 0.5m) decreases strictly.
   int prev = costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
   for (int d = 7; d <= 10; ++d) {
     const int cost = master.getCost(30 + d, 30);
     EXPECT_LT(cost, prev) << "d=" << d << " cost=" << cost;
     prev = cost;
   }
-  // 末端 (0.5m) 平滑趋零: csf=10 → 252*e^-2 ≈ 34。
+  // At the end (0.5m) it tapers smoothly to zero: csf=10 -> 252*e^-2 ~ 34.
   const int edge_cost = master.getCost(30 + 10, 30);
   EXPECT_GT(edge_cost, 0);
   EXPECT_LT(edge_cost, 60);
-  // 半径外保持 free。
+  // Beyond the radius stays free.
   EXPECT_EQ(master.getCost(30 + 11, 30), costmap_2d::FREE_SPACE);
 }
 
@@ -303,16 +303,16 @@ TEST(CostmapLayersTest, inflationLayerClipsRadiusTo1000) {
   master.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
 
   costmap_2d_layers::InflationLayer layer;
-  layer.setInflationRadius(1e6);  // 换算成 cells 远超 1000, 应 clamp 且警告
+  layer.setInflationRadius(1e6);  // Converts to far more than 1000 cells; should clamp and warn
   layer.setInscribedRadius(0.5);
   layer.setCostScalingFactor(2.0);
 
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
                     static_cast<int>(master.getSizeInCellsY()));
 
-  // 半径被 clamp 到 1000 cells 后仍能正常膨胀: 源保持 lethal, 正交邻域 inscribed
+  // After the radius is clamped to 1000 cells inflation still works: the source stays lethal, orthogonal neighbors inscribed
   EXPECT_EQ(master.getCost(5, 5), costmap_2d::LETHAL_OBSTACLE);
   EXPECT_EQ(master.getCost(5, 6), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
-  // 远离障碍处 (距离 7 cells) 仅有极低衰减 cost, 不再是 lethal
+  // Far from the obstacle (distance 7 cells) there is only a very low decay cost, no longer lethal
   EXPECT_LT(master.getCost(5, 12), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
 }

@@ -17,11 +17,13 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 局部控制 Action (对标 MBF ControllerAction)。
+ * @brief Local control Action (modeled after MBF ControllerAction).
  *
- * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_exe_path_result。
- * cmd_vel 发布由 ControllerExecution 经 on_velocity_command 旁路完成。
- * 映射: ARRIVED_GOAL→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。
+ * Mainline: acceptGoal returns a TaskHandle directly; the side path emits
+ * on_exe_path_result. cmd_vel publishing is done by ControllerExecution via
+ * the on_velocity_command side path.
+ * Mapping: ARRIVED_GOAL->SUCCEEDED, CANCELED->CANCELED, other
+ * terminal->ABORTED.
  */
 class ControllerAction : public ActionBase<ayanami::actions::ExePathGoal,
                                            ControllerExecution> {
@@ -69,13 +71,13 @@ public:
                              result);
       return task;
     }
-    Base::start(*gh, createExecution(), 0);
+    Base::start(*gh, createExecution());
     return task;
   }
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
-  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  /// @brief Driver task exception fallback: publish ABORTED to guarantee TaskHandle completion (idempotent).
   void abortGoal(const GoalHandleType& gh) override {
     Result result;
     result.error = ErrorCode::INTERNAL_ERROR;
@@ -86,10 +88,14 @@ public:
                                  ayanami::actions::GoalStatus::ABORTED, result);
   }
 
-  /// @brief 运行中 in-place 更新目标路径 + 规划版本 (spec in-place plan update)。
-  /// 不 cancel / 不 join / 不新建 Execution; 线程安全 (execution plan_mutex)。
-  /// 返回 false 表示 goal 已不在跑 (任务已完成/取消) 或 execution 已到终态
-  /// (该次更新不会被消费)。调用方应重查已完成任务并消费结果, 而非误报失败。
+  /// @brief In-place update of the goal path + plan version while running
+  /// (spec in-place plan update).
+  /// No cancel / no join / no new Execution; thread-safe (execution
+  /// plan_mutex).
+  /// Returns false when the goal is no longer running (task already
+  /// finished/canceled) or the execution has reached a terminal state (that
+  /// update will not be consumed). The caller should re-check the finished
+  /// task and consume its result instead of falsely reporting failure.
   bool updatePlan(uint64_t goal_id, const nav_msgs::Path& path,
                   uint64_t plan_version) {
     auto exec = Base::executionForGoal(goal_id);
@@ -106,9 +112,11 @@ public:
 
   ServerPtr server() const { return action_server; }
 
-  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子
-  /// 返回带地图的 execution)。取代旧的 Server*Action 私有子类间接层。
-  /// 未注入时 createExecution 默认构造 abstract execution。
+  /// @brief Inject an execution factory (for server assembly: the virtual
+  /// new*Execution hooks return executions carrying a map). Replaces the
+  /// old Server*Action private-subclass indirection layer.
+  /// When not injected, createExecution default-constructs the abstract
+  /// execution.
   void setExecutionFactory(std::function<ControllerExecution::Ptr()> factory) {
     execution_factory = std::move(factory);
   }
@@ -179,9 +187,11 @@ private:
     result.message = exec.getMessage();
     result.reached = exec.getState() == ControllerExecution::ARRIVED_GOAL;
     result.session_id = gh.goal.session_id;
-    // 最终结果只携带真正被 controller->setPlan 消费的已应用版本 (applied),
-    // 不携带仅在途/未消费的 pending 版本: in-place updatePlan 提交的版本只有
-    // 在执行循环消费并 setPlan 成功后才会反映到 exec.getPlanVersion。
+    // The final result carries only the applied version actually consumed
+    // by controller->setPlan, not a merely in-flight/unconsumed pending
+    // version: a version submitted by in-place updatePlan is reflected in
+    // exec.getPlanVersion only after the execution loop consumes it and
+    // setPlan succeeds.
     result.plan_version = exec.getPlanVersion();
     action_server->publishResult(gh.id, status, result);
   }

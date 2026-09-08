@@ -1,11 +1,11 @@
-// goal_update_follow_test 专用测试插件族。
+// Test plugin family dedicated to goal_update_follow_test.
 //
-// 一个源文件按 AYANAMI_GOAL_UPDATE_ROLE_{PLANNER,SMOOTHER,CONTROLLER} 展开
-// 三个角色, 各生成一个 .so (每 .so 单一公共工厂 create_extension_module)。
+// One source file expanded by AYANAMI_GOAL_UPDATE_ROLE_{PLANNER,SMOOTHER,CONTROLLER} into
+// three roles, each producing one .so (a single common factory create_extension_module per .so).
 //
-// 跨 DSO 观测: 三个 .so 各自内嵌一个 Probe 单例, 经 extern "C"
-// ayanami_goal_update_probe 导出; 测试可执行文件 dlopen 同一路径后 dlsym
-// 取指针, 直接断言插件内部行为 (makePlan goal / smoothed 末点 / setPlan 末点)。
+// Cross-DSO observation: each of the three .so files embeds its own Probe singleton, exported via extern "C"
+// ayanami_goal_update_probe; the test executable dlopens the same path, dlsyms
+// the pointer, and directly asserts plugin-internal behavior (makePlan goal / smoothed endpoint / setPlan endpoint).
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_planner.hpp>
@@ -18,7 +18,7 @@
 
 namespace {
 
-// 跨 DSO 探针 (POD 布局, 锁内仅原子写方; 测试侧只在 wait 轮询中读取)。
+/// Cross-DSO probe (POD layout, only atomic writers under the lock; the test side reads only inside wait polling).
 struct GoalUpdateProbe {
   int planner_calls{0};
   double planned_goal_x{0.0};
@@ -42,13 +42,13 @@ extern "C" GoalUpdateProbe* ayanami_goal_update_probe() { return probe(); }
 
 #if defined(AYANAMI_GOAL_UPDATE_ROLE_PLANNER)
 
-// 直线 planner: [start, goal] 两点路径 (真实使用 goal 入参)。
+/// Straight-line planner: a [start, goal] two-point path (really uses the goal input).
 class StraightPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  ayanami::PlannerResultT makePlan(
+  ayanami::ResultT<void> makePlan(
       const ayanami::geometry_msgs::PoseStamped& start,
       const ayanami::geometry_msgs::PoseStamped& goal,
-      double /*tolerance*/) override {
+      double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
     auto* p = probe();
     p->planner_calls++;
     p->planned_goal_x = goal.pose.position.x();
@@ -57,7 +57,8 @@ class StraightPlanner : public ayanami::abstract::AbstractPlanner {
     plan.header.frame_id = "map";
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return ayanami::PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ayanami::ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };
@@ -68,12 +69,11 @@ extern "C" ayanami::ExtensionModule* create_extension_module() {
 
 #elif defined(AYANAMI_GOAL_UPDATE_ROLE_SMOOTHER)
 
-// 透传 smoother: in-place 语义 (直接修改传入路径), 记录平滑后的末点。
+/// Pass-through smoother: in-place semantics (modifies the given path directly), records the smoothed endpoint.
 class ProbeSmoother : public ayanami::abstract::AbstractSmoother {
  public:
-  ayanami::SmootherResultT smoothPath(
-      ayanami::nav_msgs::Path& path, double /*max_duration*/,
-      bool /*check_for_collision*/) override {
+  ayanami::ResultT<void> smoothPath(ayanami::nav_msgs::Path& path,
+                             double /*max_duration*/) override {
     auto* p = probe();
     p->smooth_calls++;
     if (!path.poses.empty()) {
@@ -81,7 +81,7 @@ class ProbeSmoother : public ayanami::abstract::AbstractSmoother {
       p->smoothed_goal_y = path.poses.back().pose.position.y();
     }
     path.header.frame_id = "map";
-    return ayanami::SmootherResultT::success(std::move(path));
+    return ayanami::ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };
@@ -92,8 +92,8 @@ extern "C" ayanami::ExtensionModule* create_extension_module() {
 
 #elif defined(AYANAMI_GOAL_UPDATE_ROLE_CONTROLLER)
 
-// 记录型 controller: setPlan 记录跟踪路径末点 (到达判定由 execution 的
-// goal_checker 负责, 插件自身永不判到达)。
+/// Recording controller: setPlan records the tracked path endpoint (arrival is decided by the execution
+/// goal_checker; the plugin itself never declares arrival).
 class ProbeController : public ayanami::abstract::AbstractController {
  public:
   bool setPlan(const ayanami::nav_msgs::Path& plan) override {
@@ -106,13 +106,12 @@ class ProbeController : public ayanami::abstract::AbstractController {
     return true;
   }
 
-  ayanami::ControllerResultT computeVelocityCommand(
+  ayanami::ResultT<void> computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped& /*pose*/,
-      const ayanami::geometry_msgs::TwistStamped& /*velocity*/) override {
-    ayanami::ControllerCommand cmd;
-    cmd.velocity = ayanami::geometry_msgs::TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.2;
-    return ayanami::ControllerResultT::success(std::move(cmd));
+      const ayanami::geometry_msgs::TwistStamped& /*velocity*/, ayanami::geometry_msgs::TwistStamped& cmd) override {
+    cmd = ayanami::geometry_msgs::TwistStamped{};
+    cmd.twist.linear.x() = 0.2;
+    return ayanami::ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

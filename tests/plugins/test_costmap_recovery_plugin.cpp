@@ -1,7 +1,7 @@
-// 测试插件: costmap 族 recovery (SoCostmapRecovery), 公共工厂导出。
+// Test plugin: costmap-family recovery (SoCostmapRecovery), common factory export.
 //
-// 旧 API runRecovery 一次性返回成功; 新协议下 tick 首个周期即返回 SUCCESS
-// 终态 (保持原一次性语义)。
+// The old API runRecovery returned success in one shot; under the new protocol the first tick cycle returns the SUCCESS
+// terminal state (the original one-shot semantics preserved).
 
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -11,17 +11,18 @@
 namespace {
 
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryStatus;
 
 class SoCostmapRecovery : public ayanami::costmap::CostmapRecovery {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

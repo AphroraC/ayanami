@@ -1,4 +1,4 @@
-// obstacle_footprint.hpp — 迁移自 dwb_critics/obstacle_footprint.hpp。
+// obstacle_footprint.hpp -- ported from dwb_critics/obstacle_footprint.hpp.
 #pragma once
 
 #include <vector>

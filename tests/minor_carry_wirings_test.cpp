@@ -1,14 +1,14 @@
-// (M2 阶段 A 收尾): wiring 综合 5 项。
+// (M2 phase A wrap-up): 5 wiring integration items.
 //
-// 覆盖 (brief Step 1 verbatim):
-// - SmacPlannerFallsBackToRobotPose: makePlan(start 留空) → costmap_context
-// getRobotPose fallback → path 首位 pose ≈ (1, 2, pi/4) (mock transform)。
-// - RobotFrameSingleSourceFromCostmapNavigationJson: robot_frame 单一来源改为
-// costmap_navigation.json::navigation::robot_frame (costmap.json 不再读)。
-// - ConfigureCoreMapsTwiceWarns: 二次 configureCoreMaps spdlog warn + 不替换
-// costmap_context (同一 ptr)。
-// - PidSignatureCoarseSameGoalNoReset: 同 goal 同 size 仅中间点稍异的 plan,
-// 粗签名 (goal+size) 相同 → setPlan 不重置 PID 状态 (ramp 连续)。
+// Coverage (brief Step 1 verbatim):
+// - SmacPlannerFallsBackToRobotPose: makePlan(start left empty) -> costmap_context
+// getRobotPose fallback -> the first path pose ~ (1, 2, pi/4) (mock transform).
+// - RobotFrameSingleSourceFromCostmapNavigationJson: the robot_frame single source moves to
+// costmap_navigation.json::navigation::robot_frame (costmap.json is no longer read).
+// - ConfigureCoreMapsTwiceWarns: a second configureCoreMaps logs an spdlog warn + keeps the
+// costmap_context (same ptr).
+// - PidSignatureCoarseSameGoalNoReset: plans with the same goal and size but slightly different interior points share
+// the same coarse signature (goal+size) -> setPlan does not reset the PID state (continuous ramp).
 
 #include <gtest/gtest.h>
 
@@ -45,7 +45,7 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 using ayanami::geometry_msgs::PoseStamped;
@@ -58,9 +58,9 @@ constexpr double k_max_acc = 1.0;
 constexpr double k_dt = 0.05;
 constexpr double k_pi = 3.14159265358979323846;
 
-std::filesystem::path g_module_dir;  // pid/smac 模块配置目录
+std::filesystem::path g_module_dir;  // pid/smac module config directory
 
-// ---------------- 通用工具 ----------------
+// ---------------- Common utilities ----------------
 
 void write_file(const std::filesystem::path& path,
                 const std::string& content) {
@@ -76,7 +76,7 @@ std::filesystem::path makeUniqueDir(const std::string& tag) {
   return dir;
 }
 
-// 让 GlobalConfig 指向模块配置目录 (pid/smac loadConfig 用)。
+/// Points GlobalConfig at the module config directory (used by pid/smac loadConfig).
 void resetModuleConfig() {
   ayanami::GlobalConfig::instance(g_module_dir.string(), true);
 }
@@ -91,7 +91,7 @@ PoseStamped makePose(double x, double y, double yaw = 0.0) {
 
 // ---------------- Test 1: smac fallback ----------------
 
-// NxN @ res, origin=(0,0), 全 free 的 LayeredCostmap + StaticLayer。
+// An NxN @ res, origin=(0,0), all-free LayeredCostmap + StaticLayer.
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(unsigned int size,
                                                         double res) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -113,8 +113,8 @@ PoseStamped cellCenter(unsigned int mx, unsigned int my, double res = 0.5) {
 
 // ---------------- Test 2/3: configureCoreMaps ----------------
 
-// 临时配置目录: costmap_navigation.json 含 robot_frame + costmap 段 (原
-// costmap.json 参数已并入 navigation 文件)。static_map 留空 (不需要真实地图文件)。
+// Temp config dir: costmap_navigation.json contains robot_frame + the costmap section (the old
+// costmap.json parameters were merged into the navigation file). static_map left empty (no real map file needed).
 std::filesystem::path makeNavigationConfigDir(
     const std::string& robot_frame) {
   auto dir = makeUniqueDir("nav_cfg" + robot_frame);
@@ -152,7 +152,7 @@ std::filesystem::path makeNavigationConfigDir(
   return dir;
 }
 
-// ---------------- Test 4: pid 粗签名 ----------------
+// ---------------- Test 4: pid coarse signature ----------------
 
 std::string pidConfigContent() {
   return "{\n  \"costmap_pid_controller\": {\n"
@@ -169,7 +169,7 @@ std::string pidConfigContent() {
          "  }\n}\n";
 }
 
-// 沿 X 轴的 10 个 pose, 从 (0,0) 到 (goal_x, 0), 朝向 +X。
+/// Ten poses along the X axis, from (0,0) to (goal_x, 0), facing +X.
 Path makeXPath(double goal_x = 9.0) {
   Path p;
   p.header.frame_id = "map";
@@ -181,7 +181,7 @@ Path makeXPath(double goal_x = 9.0) {
 
 std::shared_ptr<CostmapPidController> makeController() {
   auto ctl = std::make_shared<CostmapPidController>();
-  // 新 API: 参数经 PluginContext.config (本模块 json) 注入。
+  // New API: parameters are injected via PluginContext.config (this module json).
   ctl->configure(ayanami::PluginContext{
                      "test_pid",
                      ayanami::Config((g_module_dir /
@@ -193,10 +193,11 @@ std::shared_ptr<CostmapPidController> makeController() {
 TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
                      const PoseStamped& robot, ErrorCode& error,
                      std::string& message) {
-  const auto result = ctl->computeVelocityCommand(robot, TwistStamped{});
+  TwistStamped cmd;
+  const auto result = ctl->computeVelocityCommand(robot, TwistStamped{}, cmd);
   error = result.error;
   message = result.message;
-  return result.ok ? result.data.velocity : TwistStamped{};
+  return result.ok ? cmd : TwistStamped{};
 }
 
 }  // namespace
@@ -206,13 +207,13 @@ TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
 TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   resetModuleConfig();
 
-  auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5 = 10m x 10m, 全 free
+  auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5 = 10m x 10m, all free
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(wrapper);
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "map", "base_link");
 
-  // mock robot pose (1, 2, pi/4) in map frame。
+  // Mock robot pose (1, 2, pi/4) in the map frame.
   auto& rsc = ayanami::components::RobotStateController::instance();
   Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
   T_robot.translation() = Eigen::Vector3d(1.0, 2.0, 0.0);
@@ -225,15 +226,15 @@ TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
-  // start 留空 (默认构造: translation 全零 + frame_id 空)。
+  // start left empty (default constructed: all-zero translation + empty frame_id).
   const PoseStamped start;
   const PoseStamped goal = cellCenter(17, 17);
-  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
+  Path plan;
+  const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
 
   ASSERT_TRUE(result.ok) << result.message;
-  const Path& plan = result.data;
   ASSERT_FALSE(plan.poses.empty());
-  // 首位 pose == fallback 的 robot pose (1, 2, pi/4)。
+  // The first pose == the fallback robot pose (1, 2, pi/4).
   EXPECT_NEAR(plan.poses.front().pose.position.x(), 1.0, 1e-6);
   EXPECT_NEAR(plan.poses.front().pose.position.y(), 2.0, 1e-6);
   const auto& q = plan.poses.front().pose.orientation;
@@ -250,7 +251,7 @@ TEST(MinorCarryWiring, robotFrameSingleSourceFromCostmapNavigationJson) {
   server.configureCoreMaps(dir.string());
 
   ASSERT_NE(server.costmapContext(), nullptr);
-  // costmap.json 无 robot_frame → 单一来源 = costmap_navigation.json。
+  // costmap.json has no robot_frame -> single source = costmap_navigation.json.
   EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_footprint");
   // RobotStateController is the single configured robot-state source.
   EXPECT_EQ(ayanami::components::RobotStateController::instance().getRobotFrame(),
@@ -266,7 +267,7 @@ TEST(MinorCarryWiring, configureCoreMapsTwiceWarns) {
   const auto ctx1 = server.costmapContext();
   ASSERT_NE(ctx1, nullptr);
 
-  // 挂一个 ostream sink 捕获 spdlog 输出 (默认 logger)。
+  // Attach an ostream sink to capture spdlog output (default logger).
   std::ostringstream oss;
   auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
   spdlog::default_logger()->sinks().push_back(sink);
@@ -275,9 +276,9 @@ TEST(MinorCarryWiring, configureCoreMapsTwiceWarns) {
 
   spdlog::default_logger()->sinks().pop_back();
 
-  // 二次 configure 不替换 context (同一 ptr)。
+  // A second configure does not replace the context (same ptr).
   EXPECT_EQ(server.costmapContext(), ctx1);
-  // 触发 spdlog warn。
+  // Triggers the spdlog warn.
   EXPECT_NE(oss.str().find("called twice"), std::string::npos);
 }
 
@@ -299,7 +300,7 @@ TEST(MinorCarryWiring, pidSignatureCoarseSameGoalNoReset) {
   ASSERT_EQ(failure, ErrorCode::NONE);
   ASSERT_GT(c2.twist.linear.x(), c1.twist.linear.x());
 
-  // 同 goal (9,0) 同 size (10), 仅中间点稍移 y → 粗签名 (goal+size) 相同。
+  // Same goal (9,0) and size (10), only interior points shifted slightly in y -> the coarse signature (goal+size) matches.
   Path plan2 = plan1;
   for (int i = 1; i + 1 < static_cast<int>(plan2.poses.size()); ++i) {
     plan2.poses[i].pose.position.y() += 0.005;
@@ -309,7 +310,7 @@ TEST(MinorCarryWiring, pidSignatureCoarseSameGoalNoReset) {
   const TwistStamped c3 = compute(ctl, robot, failure, message);
   ASSERT_EQ(failure, ErrorCode::NONE);
 
-  // 不重置: ramp 连续 (c3 ≈ 3*k_max_acc*k_dt), 而不是掉回 k_max_acc*k_dt。
+  // No reset: the ramp is continuous (c3 ~ 3*k_max_acc*k_dt) instead of dropping back to k_max_acc*k_dt.
   EXPECT_GT(c3.twist.linear.x(), c2.twist.linear.x());
   EXPECT_NEAR(c3.twist.linear.x(), 3.0 * k_max_acc * k_dt, 1e-9);
 }
@@ -317,7 +318,7 @@ TEST(MinorCarryWiring, pidSignatureCoarseSameGoalNoReset) {
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
 
-  // 模块配置目录 (严格单层索引; pid/smac 构造时经 getConfigPath 显式读取)。
+  // Module config directory (strictly single-level index; read explicitly by pid/smac constructors via getConfigPath).
   g_module_dir = makeUniqueDir("modules");
   write_file(g_module_dir / "config.json",
              "{\n  \"global\": {\n"

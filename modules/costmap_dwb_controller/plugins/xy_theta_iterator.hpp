@@ -1,4 +1,4 @@
-// xy_theta_iterator.hpp — 迁移自 dwb_plugins/xy_theta_iterator.hpp。
+// xy_theta_iterator.hpp -- ported from dwb_plugins/xy_theta_iterator.hpp.
 #pragma once
 
 #include <memory>

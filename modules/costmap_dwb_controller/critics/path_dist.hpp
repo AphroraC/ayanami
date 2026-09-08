@@ -1,4 +1,4 @@
-// path_dist.hpp — 迁移自 dwb_critics/path_dist.hpp。
+// path_dist.hpp -- ported from dwb_critics/path_dist.hpp.
 #pragma once
 
 #include <vector>

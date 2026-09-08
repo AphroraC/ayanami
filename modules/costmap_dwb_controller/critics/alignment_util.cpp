@@ -1,4 +1,4 @@
-// alignment_util.cpp — 迁移自 dwb_critics/src/alignment_util.cpp。
+// alignment_util.cpp -- ported from dwb_critics/src/alignment_util.cpp.
 #include "alignment_util.hpp"
 
 #include <cmath>

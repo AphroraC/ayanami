@@ -1,4 +1,4 @@
-// goal_align.hpp — 迁移自 dwb_critics/goal_align.hpp。
+// goal_align.hpp -- ported from dwb_critics/goal_align.hpp.
 #pragma once
 
 #include <string>

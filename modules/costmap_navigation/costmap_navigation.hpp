@@ -17,20 +17,20 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief AbstractNavigation 宿主插件 : 把 costmap 全套组装为 dlopen 入口。
+ * @brief AbstractNavigation host plugin: assembles the full costmap stack behind a dlopen entry point.
  *
- * 职责 (抢占纪律 +):
- * - 持 CostmapNavigationServer (costmap 家族 server) + BehaviorTreePilot 常驻树。
- * - initialize: configureCoreMaps → loadPlugins (触发虚 initialize*Plugin 注入
- *   costmap context, 内部含 createActions) → bt_pilot wiring: configure →
- * loadFromFile → setNavigationRuntime (显式三连, 不靠 bt_pilot 自动)。
- * - setGoal: 单导航线程复用 (bt_pilot.run 常驻循环, beginNavigation 只重写黑板 +
- *   唤醒); 抢占先发零速度 (Global Constraint P9) + halt + controller cancelAll。
- * - publishMapsForVisualization: global/local CostmapWrapper → OccupancyGrid →
- *   旁路 NavigationCallbacks::on_costmap_visualization。
+ * Responsibilities (preemption discipline and more):
+ * - Holds a CostmapNavigationServer (costmap family server) + a BehaviorTreePilot with a resident tree.
+ * - initialize: configureCoreMaps -> loadPlugins (triggering the virtual initialize*Plugin injections of the
+ *   costmap context, which internally includes createActions) -> bt_pilot wiring: configure ->
+ *   loadFromFile -> setNavigationRuntime (explicit three-step sequence, not relying on bt_pilot auto-wiring).
+ * - setGoal: single navigation thread reuse (bt_pilot.run is a resident loop; beginNavigation only rewrites the blackboard +
+ *   wakes it); preemption first publishes zero velocity (Global Constraint P9) + halt + controller cancelAll.
+ * - publishMapForVisualization: CostmapWrapper -> OccupancyGrid ->
+ *   side-channel NavigationCallbacks::on_costmap_visualization.
  *
- * 生命周期 : 析构先 stop join 导航线程, 再 bt_pilot stop, 再 server
- * stop (BT 节点不再持有过期插件指针时 server 才 clearPlugins)。
+ * Lifecycle: on destruction, first stop joins the navigation thread, then bt_pilot stop, then server
+ * stop (the server calls clearPlugins only once BT nodes no longer hold stale plugin pointers).
  */
 class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
  public:
@@ -47,12 +47,12 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
   void setPointcloud(const ayanami::sensor_msgs::PointCloud2& cloud) override;
   void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) override;
 
-  /// @brief 定位修正跳变: 清空全局代价图动态层 (旧修正下的标记不可信;
-  /// 静态层保留, 后续扫描按新修正重建)。local 为 odom 系, 不受 AMCL 跳变
-  /// 影响, 不清。
+  /// @brief Localization correction jump: clears the global costmap dynamic layers (marks made under the old
+  /// correction are untrusted; the static layer is kept, and later scans rebuild it under the new correction).
+  /// local is in the odom frame, unaffected by AMCL jumps, so it is not cleared.
   void onLocalizationJump() override;
 
-  // ---- 测试/宿主支撑访问器 ----
+  // ---- Test/host support accessors ----
   behavior_tree::BehaviorTreePilot& pilot() { return bt_pilot; }
    costmap::CostmapNavigationServer& navigationServer() {
     return *navigation_server;
@@ -66,8 +66,17 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
    }
 
  private:
-  /// @brief 转 global/local costmap → OccupancyGrid, 发旁路槽。
-  void publishMapsForVisualization();
+  /// @brief Converts one costmap to OccupancyGrid and publishes to the
+  /// side-channel slot (core message; rviz_viewer re-publishes as ROS).
+  void publishMapForVisualization(const std::string& name,
+                                  const costmap_2d::CostmapWrapper::Ptr&
+                                      wrapper);
+  /// @brief Global map: static + inflation content changes only on configure
+  /// / clear commands -> published ONCE (latched downstream), not per tick.
+  void publishGlobalMapForVisualization();
+  /// @brief Local map: rolling window with per-cycle obstacle updates ->
+  /// republished at costmap_visualization_rate.
+  void publishLocalMapForVisualization();
 
   std::shared_ptr<costmap::CostmapNavigationServer> navigation_server;
   behavior_tree::BehaviorTreePilot bt_pilot;

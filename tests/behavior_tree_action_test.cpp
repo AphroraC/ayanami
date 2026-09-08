@@ -59,14 +59,14 @@ Path makePath(size_t n) {
   return p;
 }
 
-// 注入 NavigationRuntime::Ptr 到黑板 (构造期注入)。
+/// Injects the NavigationRuntime::Ptr into the blackboard (at construction time).
 void setNavServer(const BT::Blackboard::Ptr& bb,
                   ayanami::components::NavigationRuntime::Ptr server) {
   bb->set<ayanami::components::NavigationRuntime::Ptr>(k_navigation_runtime,
                                                        server);
 }
 
-// 填满 17 个必需板项 (默认值即可; 含 failure_context)。
+/// Fills all 17 required blackboard entries (defaults suffice; includes failure_context).
 void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<PoseStamped>(k_goal, makePose(0.0));
   bb->set<Path>(k_raw_path, Path{});
@@ -86,11 +86,14 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
 }
 
 /**
- * @brief MockNavigationServer: 继承 NavigationServerBase, 覆写 request* 返回
- * 固定 TaskHandle (ActionServer 协议)。支持两种模式:
- *  - sync (默认): request* 内同步 publishResult, 节点下次 onRunning 即收结果;
- *  - async: 任务挂起, 用于验证 onHalted -> task.cancel() 透传。
- * session/plan_version 走基类原子计数 (currentSessionId 等非虚, 不覆写)。
+ * @brief MockNavigationServer: derives from NavigationServerBase and overrides
+ * request* to return fixed TaskHandles (ActionServer protocol). Two modes:
+ *  - sync (default): request* publishes the result synchronously; the node
+ *    receives it on the next onRunning;
+ *  - async: the task stays pending, used to verify onHalted -> task.cancel()
+ *    pass-through.
+ * session/plan_version use the base-class atomic counters (currentSessionId
+ * etc. are non-virtual and not overridden).
  */
 class MockNavServer : public ayanami::components::NavigationServerBase {
  public:
@@ -112,7 +115,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     });
   }
 
-  /// @brief 模拟新 goal 抢占使 session 过期 。
+  /// @brief Simulates a new-goal preemption that expires the session.
   void bumpSession() { startNewSession(); }
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
@@ -174,16 +177,16 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     return task;
   }
 
-  /// @brief 模拟 in-place 控制器规划更新请求 (FollowPathNode plan_version 变化
-  /// 时调用; 真实实现 = ServerControllerAction::updatePlan, 无 cancel/new
-  /// Execution)。记录请求, 不模拟执行 (requestExecution 已同步发布结果)。
+  /// @brief Simulates an in-place controller plan update request (called when the
+  /// FollowPathNode plan_version changes; the real implementation is
+  /// ServerControllerAction::updatePlan, with no cancel/new Execution). Records the request, does not simulate execution (requestExecution already publishes the result synchronously).
   bool requestPlanUpdate(uint64_t goal_id, const ExePathGoal& goal) override {
     ++plan_update_count;
     last_plan_update = goal;
     return true;
   }
 
-  std::atomic<int> cancel_count{0};  // 先声明, 后析构 (servers 的 cancel 回调仍安全)
+  std::atomic<int> cancel_count{0};  // Declared before use, destroyed after (the servers cancel callbacks remain safe)
 
   bool path_sync = true;
   ErrorCode path_failure = ErrorCode::NONE;
@@ -203,7 +206,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   int path_request_count = 0;
 
-  // in-place 规划更新记录 (FollowPathNode 经 requestPlanUpdate)。
+  // In-place plan update record (FollowPathNode via requestPlanUpdate).
   int plan_update_count = 0;
   ExePathGoal last_plan_update;
 
@@ -252,9 +255,9 @@ constexpr const char* k_recovery_xml = R"(
   </BehaviorTree>
 </root>)";
 
-// ComputePath RecoveryNode 同构 : 主任务 = 完整规划序列, 恢复 =
-// <Recovery recovery="{clear_costmap_id}"/> 直连 (无 AlwaysFailure 包装)。
-// recovery 成功应返回 SUCCESS → RecoveryNode 重试主任务。
+/// Isomorphic to the ComputePath RecoveryNode: main task = the full planning sequence, recovery =
+/// a direct <Recovery recovery="{clear_costmap_id}"/> (no AlwaysFailure wrapper).
+/// A successful recovery should return SUCCESS -> the RecoveryNode retries the main task.
 constexpr const char* k_compute_path_recovery_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
@@ -286,11 +289,11 @@ TEST(BehaviorTreeActionTest, pipelineSequenceWritesPathsAndBumpsPlanVersion) {
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_pipeline_xml, bb);
 
-  // onStart 已同步 publish -> RUNNING; 下次 onRunning 收结果
+  // onStart already published synchronously -> RUNNING; the result arrives on the next onRunning
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // ComputePath onRunning 写 raw_path; Smooth onStart -> RUNNING
+  // ComputePath onRunning writes raw_path; Smooth onStart -> RUNNING
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // Smooth onRunning 写 smoothed_path; 全 PipelineSequence SUCCESS
+  // Smooth onRunning writes smoothed_path; whole PipelineSequence SUCCESS
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
   Path raw;
@@ -323,8 +326,8 @@ TEST(BehaviorTreeActionTest, followPathUpdatesPlanInPlaceWhenPlanVersionChanges)
   ASSERT_EQ(server->exe_request_count, 1);
   EXPECT_EQ(server->last_exe_goal.plan_version, 0u);
 
-  // plan_version 变化: FollowPathNode 走 in-place 控制器更新 (requestPlanUpdate),
-  // 不 cancel / 不 join / 不新建 Execution —— exe_request_count 保持 1。
+  // plan_version changed: FollowPathNode takes the in-place controller update path (requestPlanUpdate),
+  // without cancel / join / a new Execution -- exe_request_count stays 1.
   bb->set<Path>(k_smoothed_path, makePath(4));
   server->incrementPlanVersion();
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
@@ -332,7 +335,7 @@ TEST(BehaviorTreeActionTest, followPathUpdatesPlanInPlaceWhenPlanVersionChanges)
   EXPECT_EQ(server->plan_update_count, 1);
   EXPECT_EQ(server->last_plan_update.plan_version, 1u);
   EXPECT_FALSE(server->last_plan_update.path.poses.empty());
-  // 无中间停止: 未取消旧 task (requestExecution 不再走 cancel 路径)。
+  // No intermediate stop: the old task was not cancelled (requestExecution no longer takes the cancel path).
   EXPECT_EQ(server->cancel_count.load(), 0);
 }
 
@@ -368,33 +371,33 @@ TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
   setRequiredEntries(bb);
   bb->set<PoseStamped>(k_goal, makePose(1.0, 2.0));
 
-  // 用 RecoveryNode 包裹: 平滑失败是显式 FAILURE → 触发 recovery (clear) →
-  // recovery 成功后重试主任务 → 重试仍失败且 retries 耗尽 → 整树 FAILURE。
+  // Wrapped in a RecoveryNode: a smoothing failure is an explicit FAILURE -> triggers recovery (clear) ->
+  // after recovery succeeds the main task is retried -> the retry still fails and retries are exhausted -> whole tree FAILURE.
   BT::BehaviorTreeFactory factory;
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_compute_path_recovery_xml, bb);
 
-  // 平滑失败 → 触发 recovery (clear) → 重试主任务 → 重试仍失败且 retries
-  // 耗尽 → 整树终态 FAILURE。逐拍模型依赖内部节点状态恢复细节, 这里驱动到
-  // 非 RUNNING 终态断言结果 (有界迭代防死循环)。
+  // Smoothing failure -> triggers recovery (clear) -> retries the main task -> the retry still fails and retries
+  // are exhausted -> whole tree terminates in FAILURE. A cycle-exact model would depend on internal node state
+  // restore details, so here we drive to a non-RUNNING terminal state and assert the result (bounded iterations prevent a hang).
   BT::NodeStatus final_status = BT::NodeStatus::RUNNING;
   for (int i = 0; i < 32 && final_status == BT::NodeStatus::RUNNING; ++i) {
     final_status = tree.tickExactlyOnce();
   }
   EXPECT_EQ(final_status, BT::NodeStatus::FAILURE);
 
-  // 平滑失败显式化后确实进入了 recovery (一次 clear)。
+  // With the smoothing failure made explicit, recovery was indeed entered (one clear).
   EXPECT_EQ(server->recovery_request_count, 1);
 
-  // 平滑从未成功 -> plan version 不被推进。
+  // Smoothing never succeeded -> the plan version is not advanced.
   EXPECT_EQ(server->currentPlanVersion(), 0u);
 
-  // 输出路径未被降级污染 (仍为空, 无 best-effort raw path 回退)。
+  // The output path was not polluted by a degraded fallback (still empty; no best-effort raw path fallback).
   Path smooth;
   ASSERT_TRUE(bb->get<Path>(k_smoothed_path, smooth));
   EXPECT_TRUE(smooth.poses.empty());
 
-  // failure_context 记录 Smoother 失败, 供上层 recovery/诊断使用。
+  // failure_context records the Smoother failure for upper-layer recovery/diagnostics.
   ayanami::FailureContext after;
   ASSERT_TRUE(bb->get<ayanami::FailureContext>(k_failure_context, after));
   EXPECT_EQ(after.stage, ayanami::FailureStage::Smoother);
@@ -416,11 +419,11 @@ TEST(BehaviorTreeActionTest, staleSessionIsRejectedOnRunning) {
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // 新 goal 抢占: 任务完成前 session 已过期
+  // New goal preemption: the session expired before the task finished
   server->bumpSession();
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
-  // 拒收: raw_path 不写入, plan_version 不自增 (关键纪律)
+  // Rejected: raw_path not written, plan_version not incremented (key discipline)
   Path raw;
   ASSERT_TRUE(bb->get<Path>(k_raw_path, raw));
   EXPECT_TRUE(raw.poses.empty());
@@ -442,12 +445,12 @@ TEST(BehaviorTreeActionTest, versionStaleResultRejected) {
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // result 带 current session 但 plan_version 陈旧 (current-1): 任务完成前新路径
-  // 已生成并自增 plan_version (session/version 双校验)
+  // Result carries the current session but a stale plan_version (current-1): before the task finished a new path
+  // had been produced and plan_version incremented (session/version double check)
   server->incrementPlanVersion();
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
 
-  // 拒收: raw_path 不写入 (plan_version stale 拒收纪律)
+  // Rejected: raw_path not written (stale plan_version rejection discipline)
   Path raw;
   ASSERT_TRUE(bb->get<Path>(k_raw_path, raw));
   EXPECT_TRUE(raw.poses.empty());
@@ -455,7 +458,7 @@ TEST(BehaviorTreeActionTest, versionStaleResultRejected) {
 
 TEST(BehaviorTreeActionTest, haltedNodeCancelsTask) {
   auto server = std::make_shared<MockNavServer>();
-  server->path_sync = false;  // 任务挂起, 节点保持 RUNNING
+  server->path_sync = false;  // Task pending, node stays RUNNING
 
   auto bb = BT::Blackboard::create();
   setNavServer(bb, server);
@@ -510,8 +513,8 @@ TEST(BehaviorTreeActionTest, recoveryActionCompletesOnSuccess) {
   EXPECT_EQ(server->last_recovery_goal.recovery_id, "spin");
 }
 
-// 移除 AlwaysFailure 包装的核心契约: recovery 成功 → RecoveryNode child1 SUCCESS →
-// 返回 RUNNING 让主任务 (完整规划序列) 重试; 重试成功后 RecoveryNode 整体 SUCCESS。
+/// Core contract with the AlwaysFailure wrapper removed: recovery success -> RecoveryNode child1 SUCCESS ->
+/// returns RUNNING so the main task (full planning sequence) is retried; once the retry succeeds the whole RecoveryNode is SUCCESS.
 TEST(BehaviorTreeActionTest, successfulRecoveryRetriesMainChild) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
@@ -528,26 +531,26 @@ TEST(BehaviorTreeActionTest, successfulRecoveryRetriesMainChild) {
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_compute_path_recovery_xml, bb);
 
-  // tick 1: 首次规划 onStart (同步 SUCCEEDED 但 failure=PathNotFound)。
+  // tick 1: first planning onStart (synchronous SUCCEEDED but failure=PathNotFound).
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // tick 2: 规划 onRunning 收失败 → 主序列 FAILURE → RecoveryNode 进入恢复分支。
+  // tick 2: planning onRunning receives the failure -> main sequence FAILURE -> RecoveryNode enters the recovery branch.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // tick 3: recovery action 成功 → RecoveryNode 返回 RUNNING 让主任务重试。
+  // tick 3: recovery action succeeds -> RecoveryNode returns RUNNING so the main task retries.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // recovery 已被请求一次且成功执行。
+  // recovery was requested once and executed successfully.
   EXPECT_EQ(server->last_recovery_goal.recovery_id, "clear_costmap");
   EXPECT_EQ(server->path_request_count, 1);
 
-  // 恢复后规划恢复正常: 重试任务 (第 2 次 requestPath) 应成功。
+  // After recovery, planning is healthy again: the retried task (2nd requestPath) should succeed.
   server->path_failure = ErrorCode::NONE;
 
-  // tick 4: 主任务重试 → 规划 onStart (第 2 次 requestPath)。
+  // tick 4: the main task retries -> planning onStart (2nd requestPath).
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(server->path_request_count, 2);
   EXPECT_EQ(server->last_recovery_goal.recovery_id, "clear_costmap");
 
-  // tick 5/6: 重试路径成功 (规划 → 校验 → 平滑 → 校验) → RecoveryNode 整体 SUCCESS。
+  // tick 5/6: the retried path succeeds (plan -> validate -> smooth -> validate) -> RecoveryNode overall SUCCESS.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(server->path_request_count, 2);
@@ -563,8 +566,8 @@ TEST(BehaviorTreeActionTest, defaultEmbeddedXmlLoadsValidatesAndTicks) {
   setRequiredEntries(bb);
   bb->set<PoseStamped>(k_goal, makePose(1.0, 2.0));
 
-  // 默认树来自 navigation_behavior_tree 扩展模块: 公共工厂装载 → cast →
-  // registerNodes + registerTrees → defaultTreeId 建树 。
+  // The default tree comes from the navigation_behavior_tree extension module: common factory load -> cast ->
+  // registerNodes + registerTrees -> defaultTreeId builds the tree.
   BT::BehaviorTreeFactory factory;
   auto ext = std::dynamic_pointer_cast<ayanami::behavior_tree::BehaviorTreeExtension>(
       ayanami::ExtensionModule::load_module(AYANAMI_TEST_BT_EXT_SO));
@@ -574,7 +577,7 @@ TEST(BehaviorTreeActionTest, defaultEmbeddedXmlLoadsValidatesAndTicks) {
   auto tree = factory.createTree(ext->defaultTreeId(), bb);
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));
 
-  // 简单 tick 路径: 首次进入 ComputePathToPose 分支 (RateController 首 tick 立即执行)
+  // Simple tick path: enters the ComputePathToPose branch on the first tick (RateController executes immediately on the first tick)
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_NE(server->last_path_goal.goal.pose.position.x(), 0.0);
 }
@@ -593,7 +596,7 @@ TEST(BehaviorTreeActionTest, defaultFileXmlIsIsomorphicAndLoads) {
   auto tree = factory.createTree("NavigateWithReplanningAndSmoothing", bb);
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));
 
-  // 文件版与内嵌版同构: 同一 tick 路径 (首 tick 进入 ComputePathToPose)
+  // File version is isomorphic to the inline version: same tick path (first tick enters ComputePathToPose)
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 }
 
@@ -607,8 +610,8 @@ TEST(BehaviorTreeActionTest, recoveryForwardsPerCallBehaviorOverrides) {
   BT::BehaviorTreeFactory factory;
   registerNavigationBehaviorTreeNodes(factory);
 
-  // XML 提供按次覆盖: target_yaw 应进入 RecoveryGoal.behavior; 未提供的
-  // 端口保持 nullopt (空值绝不能解释为 0)。
+  // The XML provides a per-instance override: target_yaw must land in RecoveryGoal.behavior; ports
+  // that are not provided stay nullopt (an empty value must never be interpreted as 0).
   constexpr const char* k_override_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
@@ -627,7 +630,7 @@ TEST(BehaviorTreeActionTest, recoveryForwardsPerCallBehaviorOverrides) {
   EXPECT_FALSE(server->last_recovery_goal.behavior.backup_speed.has_value());
   EXPECT_FALSE(server->last_recovery_goal.behavior.wait_duration.has_value());
 
-  // 无覆盖属性的 <Recovery recovery="{...}"/>: behavior 全空。
+  // <Recovery recovery="{...}"/> without override attributes: behavior entirely empty.
   server->recovery_request_count = 0;
   auto tree2 = factory.createTreeFromText(k_recovery_xml, bb);
   EXPECT_EQ(tree2.tickExactlyOnce(), BT::NodeStatus::RUNNING);

@@ -12,8 +12,8 @@
 
 namespace costmap_2d {
 
-// 主成本图宿主：持有主 grid + 插件层列表，每周期 updateMap 驱动各层
-// updateBounds -> updateCosts 把层数据写回主 grid。
+/// Host of the master costmap: owns the master grid plus the plugin layer list; each cycle updateMap drives every layer
+/// through updateBounds -> updateCosts to write layer data back into the master grid.
 class LayeredCostmap {
  public:
   using Ptr = std::shared_ptr<LayeredCostmap>;
@@ -43,7 +43,7 @@ class LayeredCostmap {
     }
   }
 
-  // 驱动所有启用层: 先 updateBounds 收集待刷新边界, 再 updateCosts 写主 grid。
+  // Drive all enabled layers: first updateBounds collects the bounds to refresh, then updateCosts writes the master grid.
   void updateMap(double robot_x, double robot_y, double robot_yaw) {
     if (rolling_window) {
       costmap.updateOrigin(robot_x - costmap.getSizeInMetersX() * 0.5,

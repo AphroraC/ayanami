@@ -1,11 +1,11 @@
-// 复刻 legacy action_protocol_test.cpp 契约 (新接口等价改写, 不 copy)。
+// Re-creates the legacy action_protocol_test.cpp contract (equivalent rewrite on the new interface, not a copy).
 //
-// Goal lifecycle: Pending→Active→Succeeded/Aborted/Canceled 法定转换。
-// - ActionServer 协议层: PENDING→ACTIVE (setActive/setExecuting 同态)→terminal;
-// terminal 是吸收态 (后续 setActive/publishResult/cancelGoal 均被拒)。
-// - PlannerAction acceptGoal 主流: 目标在 server 中先 ACTIVE, 结果 ready 后
-// SUCCEEDED/ABORTED/CANCELED, 完成后从 server 移除 (不累积)。
-// - 非法转换 (重复 finish / 未知 goal_id / terminal 后再转换) 必须被拒。
+// Goal lifecycle: Pending -> Active -> Succeeded/Aborted/Canceled legal transitions.
+// - ActionServer protocol layer: PENDING -> ACTIVE (setActive/setExecuting same state) -> terminal;
+// terminal is an absorbing state (subsequent setActive/publishResult/cancelGoal are all rejected).
+// - PlannerAction acceptGoal main flow: the goal is ACTIVE in the server first; once the result is ready it goes
+// to SUCCEEDED/ABORTED/CANCELED and is removed from the server when done (no accumulation).
+// - Illegal transitions (repeated finish / unknown goal_id / further transitions after terminal) must be rejected.
 
 #include <gtest/gtest.h>
 
@@ -29,7 +29,7 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::actions::GetPathFeedback;
 using ayanami::actions::GetPathGoal;
 using ayanami::actions::GetPathResult;
@@ -49,26 +49,27 @@ bool waitReady(Task& t, int max_ms = 3000) {
   return t.ready();
 }
 
-// 即时成功 planner: 填 path, 验 SUCCEEDED + path 非空。
+/// Instant-success planner: fills the path; verifies SUCCEEDED + non-empty path.
 class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
     Path plan;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
 };
 
-// 慢速成功 planner: 阻塞到 release 才填 path (观察 ACTIVE 中间态用)。
+/// Slow-success planner: blocks until release before filling the path (used to observe the ACTIVE intermediate state).
 class GatedPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     {
       std::lock_guard<std::mutex> lock(mutex);
       started.store(true);
@@ -81,7 +82,8 @@ public:
     Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
   void release() {
@@ -96,11 +98,11 @@ public:
   std::condition_variable release_cv;
 };
 
-// 抛异常 planner: PlannerExecution 捕获 → INTERNAL_ERROR → ABORTED 映射。
+/// Exception-throwing planner: PlannerExecution catches it -> INTERNAL_ERROR -> ABORTED mapping.
 class ThrowingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     throw std::runtime_error("planner internal error");
   }
   bool cancel() override { return true; }
@@ -123,7 +125,7 @@ GetPathGoal makeGoal(uint64_t session, uint64_t version) {
 
 }  // namespace
 
-// ---- ActionServer 协议层: PENDING→ACTIVE→terminal 法定转换 ----
+// ---- ActionServer protocol layer: PENDING -> ACTIVE -> terminal legal transitions ----
 
 TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
   Server server;
@@ -134,7 +136,7 @@ TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
   ASSERT_TRUE(gh.has_value());
   EXPECT_EQ(gh->status, GoalStatus::PENDING);
 
-  // 合法转换: PENDING → ACTIVE (Accepted/Executing 同态)
+  // Legal transition: PENDING -> ACTIVE (Accepted/Executing same state)
   EXPECT_TRUE(server.setActive(task.goal_id()));
   gh = server.getGoal(task.goal_id());
   ASSERT_TRUE(gh.has_value());
@@ -144,7 +146,7 @@ TEST(ActionProtocol, lifecyclePendingActiveSucceeded) {
   ASSERT_TRUE(gh.has_value());
   EXPECT_EQ(gh->status, GoalStatus::ACTIVE);
 
-  // → SUCCEEDED
+  // -> SUCCEEDED
   GetPathResult result;
   result.error = ErrorCode::NONE;
   EXPECT_TRUE(
@@ -195,13 +197,13 @@ TEST(ActionProtocol, terminalIsAbsorbingRejectsFurtherTransitions) {
       server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, result));
   ASSERT_TRUE(waitReady(task));
 
-  // terminal 后: setActive / setExecuting / 再 finish / cancelGoal 全被拒
+  // After terminal: setActive / setExecuting / finishing again / cancelGoal are all rejected
   EXPECT_FALSE(server.setActive(task.goal_id()));
   EXPECT_FALSE(server.setExecuting(task.goal_id()));
   EXPECT_FALSE(
       server.publishResult(task.goal_id(), GoalStatus::ABORTED, result));
   EXPECT_FALSE(server.cancelGoal(task.goal_id()));
-  // 完成的 goal 已从 map 移出
+  // Completed goal has been removed from the map
   EXPECT_FALSE(server.getGoal(task.goal_id()).has_value());
   EXPECT_EQ(server.activeGoalCount(), 0u);
 }
@@ -217,7 +219,7 @@ TEST(ActionProtocol, unknownGoalRejectsEveryOperation) {
   EXPECT_FALSE(server.getGoal(9999).has_value());
 }
 
-// ---- PlannerAction 主流: acceptGoal → ACTIVE → terminal ----
+// ---- PlannerAction main flow: acceptGoal -> ACTIVE -> terminal ----
 
 TEST(ActionProtocol, plannerAcceptGoalReachesActiveThenSucceeded) {
   auto planner = std::make_shared<GatedPlanner>();
@@ -226,7 +228,7 @@ TEST(ActionProtocol, plannerAcceptGoalReachesActiveThenSucceeded) {
   auto task = action.acceptGoal(makeGoal(7, 11));
   ASSERT_TRUE(task.valid());
 
-  // runImpl 先 setActive 再 exec.start: 阻塞 planner 期可观察到 ACTIVE
+  // runImpl calls setActive before exec.start: ACTIVE is observable while the planner blocks
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->started_cv.wait_for(

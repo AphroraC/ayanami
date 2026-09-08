@@ -14,35 +14,42 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局单例机器人状态控制器 (扩展)。
+ * @brief Global singleton robot state controller (extension).
  *
- * 维护最新速度 (由 ayanami_ros odomCallback 直写) + 从 fast_tf TransformStore
- * 查询最新位姿 (global_frame ← robot_frame)。帧名与 velocity_timeout 只在
- * 一次性 initialize() 时读 Config 并缓存; hot getRobotState() 永不读 Config。
+ * Maintains the latest velocity (written directly by the ayanami_ros
+ * odomCallback) + queries the latest pose from the fast_tf TransformStore
+ * (global_frame <- robot_frame). Frame names and velocity_timeout are read
+ * from Config only once in initialize() and cached; the hot
+ * getRobotState() never reads Config.
  *
- * 语义: 位姿恒取最新 TF; 速度取最新 odom, 距上次写入超过 velocity_timeout
- * 视为过期 → 返回零速度但位姿仍有效。
+ * Semantics: the pose always takes the latest TF; the velocity takes the
+ * latest odom, and if the last write is older than velocity_timeout it is
+ * considered stale -> return zero velocity while the pose stays valid.
  *
- * 单例纪律 (同类): instance 与全部方法定义只在 libayanami 的
- * src/components/robot_state_controller.cpp 内 (不 header-inline), 使 ayanami_ros
- * 写者与核心 controller execution 读者跨 DSO 解析到同一实例。
+ * Singleton discipline (same class): instance and all method definitions
+ * live only in libayanami's src/components/robot_state_controller.cpp (not
+ * header-inlined), so the ayanami_ros writer and the core controller
+ * execution readers resolve to the same instance across DSOs.
  *
- * 线程安全: 全部公共方法经 mutex 串行化; getRobotState 锁内只做 TF 查询 +
- * 缓存拷贝, 不触发 IO/Config。
+ * Thread safety: all public methods are serialized by a mutex; inside the
+ * lock getRobotState only does a TF query + cached copies, never
+ * triggering IO/Config.
  */
 class RobotStateController {
  public:
   static RobotStateController& instance();
 
-  /// @brief 一次性初始化: 缓存帧名 + 速度超时 (hot path 不再读 Config)。
-  /// @param local_frame 局部地图/局部视图解析机器人位姿的帧 (语义上通常是
-  /// odom 帧; 与 costmap.local_frame 单一来源对齐, 非独立的 ROS TF
-  /// odom 帧配置)。
+  /// @brief One-time initialization: cache frame names + velocity timeout
+  /// (the hot path no longer reads Config).
+  /// @param local_frame Frame in which the local map/local view resolves
+  /// the robot pose (semantically usually the odom frame; aligned with the
+  /// costmap.local_frame single source, not an independent ROS TF odom
+  /// frame configuration).
   void initialize(const std::string& global_frame,
                   const std::string& local_frame,
                   const std::string& robot_frame, double velocity_timeout);
 
-  /// @brief 更新最新速度 (ayanami_ros odomCallback 直写入口)。线程安全。
+  /// @brief Update the latest velocity (direct write entry from the ayanami_ros odomCallback). Thread-safe.
   void setVelocity(const geometry_msgs::TwistStamped& velocity);
 
   void setOdometry(const geometry_msgs::TwistStamped& odometry);
@@ -56,20 +63,22 @@ class RobotStateController {
                        ayanami::Timestamp stamp, Eigen::Isometry3d& transform,
                        double timeout = 0.0) const;
 
-  /// @brief 读最新机器人状态: pose = TransformStore 最新 global←robot;
-  /// velocity = 最新速度, 超过 velocity_timeout (或无速度) 时返回零速度。
-  /// @return false 表示无可用位姿 (调用方按无位姿处理, 速度无效)。
+  /// @brief Read the latest robot state: pose = TransformStore's latest
+  /// global<-robot; velocity = latest velocity, or zero velocity when older
+  /// than velocity_timeout (or absent).
+  /// @return false means no pose is available (the caller treats it as
+  /// poseless; the velocity is invalid).
   bool getRobotState(geometry_msgs::PoseStamped& pose,
                      geometry_msgs::TwistStamped& velocity) const;
 
-  /// @brief 便捷访问器 (测试/观察); 语义同 getRobotState 对应字段。
+  /// @brief Convenience accessors (testing/observation); semantics match the corresponding getRobotState fields.
   geometry_msgs::PoseStamped getRobotPose() const;
   geometry_msgs::TwistStamped getRobotVelocity() const;
 
-  /// @brief 速度是否新鲜 (存在且在超时窗口内)。
+  /// @brief Whether the velocity is fresh (present and within the timeout window).
   bool hasFreshVelocity() const;
 
-  /// @brief 清空缓存速度 (测试用, 模拟超时)。
+  /// @brief Clear the cached velocity (for tests, to simulate a timeout).
   void resetVelocity();
 
   std::string getGlobalFrame() const;
@@ -83,9 +92,9 @@ class RobotStateController {
   RobotStateController(const RobotStateController&) = delete;
   RobotStateController& operator=(const RobotStateController&) = delete;
 
-  /// @brief 锁内调用: TransformStore 查询最新位姿 (global ← robot)。
+  /// @brief Call with the lock held: query the latest pose from TransformStore (global <- robot).
   bool poseFromTransformStore(geometry_msgs::PoseStamped& pose) const;
-  /// @brief 锁内调用: 最新速度 (过期则零速度)。
+  /// @brief Call with the lock held: latest velocity (zero velocity when stale).
   geometry_msgs::TwistStamped velocityLocked() const;
 
   mutable std::mutex mutex;

@@ -1,7 +1,7 @@
-// SimpleProgressChecker — 简单进展检查模块。
+// SimpleProgressChecker -- simple progress checker module.
 //
-// 纯 C++ (零 ROS): time_period 时间窗内从基线移动 required_movement 距离或
-// movement_angle_required 转角才判有进展, 否则无进展 (卡住)。
+// Pure C++ (zero ROS): progress is declared only if, within the time_period window, the robot moves required_movement distance or
+// rotates movement_angle_required; otherwise no progress (stuck).
 
 #include "simple_progress_checker.hpp"
 
@@ -15,8 +15,8 @@ constexpr double k_pi = 3.14159265358979323846;
 }
 
 void SimpleProgressChecker::configure(const ayanami::PluginContext& context) {
-  // 参数单一来源: 本模块 json (config_progress_checker 指向文件) 的
-  // simple_progress_checker 段。
+  // Single source of parameters: the
+  // simple_progress_checker section of this module's json (the file config_progress_checker points to).
   param.required_movement = context.config.param<double>(
       "simple_progress_checker", "required_movement", param.required_movement);
   param.movement_angle_required = context.config.param<double>(
@@ -33,7 +33,7 @@ void SimpleProgressChecker::reset() {
 
 namespace {
 
-// Eigen 四元数 → 2D 偏航角 [-pi, pi] (normalize 到偏航主值)。
+// Eigen quaternion -> 2D yaw angle [-pi, pi] (normalized to the yaw principal value).
 double yawOf(const ayanami::geometry_msgs::Pose& pose) {
   const Eigen::Quaterniond& q = pose.orientation;
   double yaw = std::atan2(
@@ -78,7 +78,7 @@ bool SimpleProgressChecker::check(
   }
 
   if (elapsed > param.time_period) {
-    return false;  // 无进展 (卡住)
+    return false;  // no progress (stuck)
   }
   return true;
 }

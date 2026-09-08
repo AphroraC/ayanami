@@ -17,10 +17,12 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 路径平滑 Action (对标 MBF PlanRefinerAction)。
+ * @brief Path smoothing Action (modeled after MBF PlanRefinerAction).
  *
- * 主流: acceptGoal 返回 TaskHandle 直连; 旁路 emit on_smooth_path_result。
- * 映射: SMOOTHED_PATH→SUCCEEDED, CANCELED→CANCELED, 其余 terminal→ABORTED。
+ * Mainline: acceptGoal returns a TaskHandle directly; the side path emits
+ * on_smooth_path_result.
+ * Mapping: SMOOTHED_PATH->SUCCEEDED, CANCELED->CANCELED, other
+ * terminal->ABORTED.
  */
 class SmootherAction : public ActionBase<ayanami::actions::SmoothPathGoal,
                                          SmootherExecution> {
@@ -68,13 +70,13 @@ public:
                              result);
       return task;
     }
-    Base::start(*gh, createExecution(), 0);
+    Base::start(*gh, createExecution());
     return task;
   }
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
-  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  /// @brief Driver task exception fallback: publish ABORTED to guarantee TaskHandle completion (idempotent).
   void abortGoal(const GoalHandleType& gh) override {
     Result result;
     result.error = ErrorCode::INTERNAL_ERROR;
@@ -92,9 +94,11 @@ public:
 
   ServerPtr server() const { return action_server; }
 
-  /// @brief 注入 execution 工厂 (server 装配用: 经虚 new*Execution 钩子
-  /// 返回带地图的 execution)。取代旧的 Server*Action 私有子类间接层。
-  /// 未注入时 createExecution 默认构造 abstract execution。
+  /// @brief Inject an execution factory (for server assembly: the virtual
+  /// new*Execution hooks return executions carrying a map). Replaces the
+  /// old Server*Action private-subclass indirection layer.
+  /// When not injected, createExecution default-constructs the abstract
+  /// execution.
   void setExecutionFactory(std::function<SmootherExecution::Ptr()> factory) {
     execution_factory = std::move(factory);
   }
@@ -102,8 +106,7 @@ public:
 protected:
   void runImpl(const GoalHandleType& gh, SmootherExecution& exec) override {
     action_server->setActive(gh.id);
-    exec.smoothPath(gh.goal.path, gh.goal.max_duration,
-                    gh.goal.check_for_collision);
+    exec.smoothPath(gh.goal.path, gh.goal.max_duration);
     runImplCommon(
         gh, exec,
         [this](const GoalHandleType& gh, SmootherExecution& exec) -> bool {
@@ -145,7 +148,7 @@ protected:
   ayanami::abstract::AbstractSmoother::Ptr smoother;
 
 private:
-  void finishResult(const GoalHandleType& gh, const SmootherExecution& exec,
+  void finishResult(const GoalHandleType& gh, SmootherExecution& exec,
                     ayanami::actions::GoalStatus status) {
     Result result;
     result.error = exec.getError();
@@ -158,7 +161,7 @@ private:
       result.error = ErrorCode::INTERNAL_ERROR;
     }
     result.message = exec.getMessage();
-    result.smoothed_path = exec.getSmoothedPath();
+    result.smoothed_path = exec.takeSmoothedPath();
     result.session_id = gh.goal.session_id;
     result.plan_version = gh.goal.plan_version;
     action_server->publishResult(gh.id, status, result);

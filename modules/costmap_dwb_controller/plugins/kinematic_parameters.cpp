@@ -1,5 +1,5 @@
-// kinematic_parameters.cpp — 迁移自 dwb_plugins/src/kinematic_parameters.cpp
-// (rclcpp 参数声明换 Config::param; 移除动态参数回调, 参数一次性读取)。
+// kinematic_parameters.cpp -- ported from dwb_plugins/src/kinematic_parameters.cpp
+// (rclcpp parameter declarations become Config::param; dynamic parameter callbacks removed, parameters read once).
 #include "kinematic_parameters.hpp"
 
 #include <string>

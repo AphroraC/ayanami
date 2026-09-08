@@ -1,10 +1,10 @@
-// modules/costmap_back_up_recovery — 后退恢复模块。
+// modules/costmap_back_up_recovery -- back-up recovery module.
 //
-// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回负向线速度
-// 建议 (vx = -max_v), 由 RecoveryExecution 作为唯一发布者按周期发布并终态
-// 补零; 插件不自行循环等待、不直接旁路发布速度命令。M1 headless 不依赖
-// 底盘实际运动, 发完 duration 即 SUCCESS。碰撞检测 (加锁读 global grid,
-// 机器人附近 >= 253) → FAILED(RecoveryFailed), message 含 "collision detected"。
+// Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Each cycle returns a negative linear velocity
+// suggestion (vx = -max_v); RecoveryExecution acts as the sole publisher, publishing per cycle and zeroing
+// on the final state; the plugin neither loops/waits on its own nor bypass-publishes velocity commands. M1 headless does not depend on
+// actual base motion; SUCCESS is returned once duration has elapsed. Collision detection (lock-held global grid read,
+// any cell >= 253 near the robot) -> FAILED(RecoveryFailed), message contains "collision detected".
 
 #include "costmap_back_up_recovery.hpp"
 
@@ -21,7 +21,7 @@ constexpr int k_lethal_threshold = 253;  //
 void CostmapBackUpRecovery::configure(
     const ayanami::PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.backup_dist =
       context.config.param<double>("recovery", "backup_dist", param.backup_dist);
   param.max_v = context.config.param<double>("recovery", "max_v", param.max_v);
@@ -34,7 +34,7 @@ void CostmapBackUpRecovery::configure(
 
 void CostmapBackUpRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
-  // nullopt 字段保留 configure 期默认值 (禁止把 nullopt 解释为 0)。
+  // nullopt fields keep the configure-time defaults (interpreting nullopt as 0 is forbidden).
   if (params.backup_distance) {
     param.backup_dist = *params.backup_distance;
   }
@@ -50,14 +50,14 @@ void CostmapBackUpRecovery::start() {
       std::max(param.backup_dist, 0.0) / std::max(param.max_v, 1e-6) / dt));
 }
 
-RecoveryResultT CostmapBackUpRecovery::tick() {
-  // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
+ResultT<void> CostmapBackUpRecovery::tick(RecoveryCycleData& cycle) {
+  // Hold the shared lock to read the map (released at the end of the cycle), zero copy.
   auto costmap = map_context->lockGlobal();
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
   if (canceled.load()) {
-    return RecoveryResultT::failure(ErrorCode::CANCELED,
+    return ResultT<void>::failure(ErrorCode::CANCELED,
                                     "back up recovery canceled");
   }
 
@@ -66,23 +66,21 @@ RecoveryResultT CostmapBackUpRecovery::tick() {
       costmap.has_robot_pose() &&
       (robot_pose = costmap.robot_pose().pose.toIsometry(), true);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
-    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+    return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED,
                                     "collision detected");
   }
 
   if (remaining_frames <= 0) {
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+      cycle.status = RecoveryStatus::SUCCESS;
+    return ResultT<void>::success();
   }
   --remaining_frames;
-  RecoveryCycleData data;
-  data.status = RecoveryStatus::RUNNING;
+  cycle.status = RecoveryStatus::RUNNING;
   ayanami::geometry_msgs::TwistStamped velocity;
   velocity.header.frame_id = frame;
   velocity.twist.linear.x() = -param.max_v;
-  data.velocity = std::move(velocity);
-  return RecoveryResultT::success(std::move(data));
+  cycle.velocity = std::move(velocity);
+  return ResultT<void>::success();
 }
 
 bool CostmapBackUpRecovery::cancel() {

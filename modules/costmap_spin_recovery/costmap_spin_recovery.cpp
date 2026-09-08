@@ -1,10 +1,10 @@
-// modules/costmap_spin_recovery — 原地旋转恢复模块。
+// modules/costmap_spin_recovery -- rotate-in-place recovery module.
 //
-// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回纯角速度
-// 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
-// 在终态补零。插件不自行循环等待、不直接旁路发布速度命令。M1 headless
-// 无真底盘: 不依赖底盘实际运动, 发完 spin_dist/max_w 时长即 SUCCESS。
-// 碰撞检测 (不可变 global 快照, 机器人附近 >= 253) → FAILED(RecoveryFailed)。
+// Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Each cycle returns a pure angular velocity
+// suggestion (angular.z = max_w); RecoveryExecution acts as the sole publisher, publishing per cycle and
+// zeroing on the final state. The plugin neither loops/wait on its own nor bypass-publishes velocity commands. M1 headless
+// has no real base: it does not depend on actual base motion; SUCCESS is returned after spinning for spin_dist/max_w seconds.
+// Collision detection (immutable global snapshot, any cell >= 253 near the robot) -> FAILED(RecoveryFailed).
 
 #include "costmap_spin_recovery.hpp"
 
@@ -17,7 +17,7 @@ namespace ayanami {
 namespace modules {
 
 namespace {
-constexpr int k_lethal_threshold = 253;  // inscribed inflated 起 lethal
+constexpr int k_lethal_threshold = 253;  // inscribed inflated counts as lethal
 
 bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
                     ::Eigen::Isometry3d& out) {
@@ -30,7 +30,7 @@ bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
 void CostmapSpinRecovery::configure(
     const ayanami::PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.spin_dist =
       context.config.param<double>("recovery", "spin_dist", param.spin_dist);
   param.max_w = context.config.param<double>("recovery", "max_w", param.max_w);
@@ -43,7 +43,7 @@ void CostmapSpinRecovery::configure(
 
 void CostmapSpinRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
-  // nullopt 字段保留 configure 期默认值 (禁止把 nullopt 解释为 0)。
+  // nullopt fields keep the configure-time defaults (interpreting nullopt as 0 is forbidden).
   if (params.target_yaw) {
     param.spin_dist = *params.target_yaw;
   }
@@ -56,40 +56,38 @@ void CostmapSpinRecovery::start() {
       std::max(param.spin_dist, 0.0) / std::max(param.max_w, 1e-6) / dt));
 }
 
-RecoveryResultT CostmapSpinRecovery::tick() {
-  // 持 shared 锁读图 (整个周期结束释放), 零拷贝。
+ResultT<void> CostmapSpinRecovery::tick(RecoveryCycleData& cycle) {
+  // Hold the shared lock to read the map (released at the end of the cycle), zero copy.
   auto costmap = map_context->lockGlobal();
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
   if (canceled.load()) {
-    return RecoveryResultT::failure(ErrorCode::CANCELED,
+    return ResultT<void>::failure(ErrorCode::CANCELED,
                                     "spin recovery canceled");
   }
 
-  // 只取一次机器人位姿 (M1 headless 无底盘运动, 视为静态; 由读视图解析)。
+  // Take the robot pose once (M1 headless has no base motion, treat as static; resolved by the read view).
   ::Eigen::Isometry3d robot_pose = ::Eigen::Isometry3d::Identity();
   const bool have_pose =
       costmap.has_robot_pose() &&
       poseToIsometry(costmap.robot_pose(), robot_pose);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
-    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED,
+    return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED,
                                     "collision detected during spin");
   }
 
   if (remaining_frames <= 0) {
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+      cycle.status = RecoveryStatus::SUCCESS;
+    return ResultT<void>::success();
   }
   --remaining_frames;
-  RecoveryCycleData data;
-  data.status = RecoveryStatus::RUNNING;
+  cycle.status = RecoveryStatus::RUNNING;
   ayanami::geometry_msgs::TwistStamped velocity;
   velocity.header.frame_id = frame;
   velocity.twist.angular.z() = param.max_w;
-  data.velocity = std::move(velocity);
-  return RecoveryResultT::success(std::move(data));
+  cycle.velocity = std::move(velocity);
+  return ResultT<void>::success();
 }
 
 bool CostmapSpinRecovery::cancel() {

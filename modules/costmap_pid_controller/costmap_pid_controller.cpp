@@ -1,15 +1,15 @@
-// modules/costmap_pid_controller — 3 轴 PID 局部控制器模块。
+// modules/costmap_pid_controller -- 3-axis PID local controller module.
 //
-// 纯 C++ (零 ROS): 继承 costmap::CostmapController (costmap 族 controller,
-// 只读 pose+path, 算法不读图但按族契约实现 configure)。
-// 参考 _legacy pid_controller 语义重写, 收尾历史五项控制修复:
-// - computeVelocityCommands 入口 cmd_vel 强制清零 (脏内存 bug)
-// - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
-// - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
-// - linear 按 max_acc_x/max_decel_x 分开限幅; angular 受 max_acc_theta 限幅
-// - distanceDecay 临近 goal 减速; 位置进入 param.goal_tolerance XY 容差后
-// linear=0, 仅 angular PID 对齐 goal 朝向; 到达判定由 execution 层 goal_checker
-// 宣布 (computeVelocityCommands 不再接收 goal_checker, 控制器自身不判到达)。
+// Pure C++ (zero ROS): derives costmap::CostmapController (costmap family controller,
+// reads only pose+path; the algorithm does not read the map but implements configure per the family contract).
+// Rewritten with the semantics of the _legacy pid_controller, wrapping up the five historical control fixes:
+// - computeVelocityCommands forcibly zeroes cmd_vel at entry (dirty memory bug)
+// - diff mode: yaw control aims straight at the target (no sign flip); omni mode picks the nearest body-frame direction angle
+// - repeated setPlan with the same goal does not reset PID state (plan_signature comparison)
+// - linear is rate-limited separately by max_acc_x/max_decel_x; angular is limited by max_acc_theta
+// - distanceDecay decelerates near the goal; once the position enters the param.goal_tolerance XY tolerance,
+// linear=0 and only the angular PID aligns the goal heading; arrival is declared by the execution layer goal_checker
+// (computeVelocityCommands no longer takes a goal_checker; the controller itself does not judge arrival).
 
 #include "costmap_pid_controller.hpp"
 
@@ -58,9 +58,9 @@ double distance2d(const geometry_msgs::PoseStamped& a,
   return std::hypot(pa.x() - pb.x(), pa.y() - pb.y());
 }
 
-// 粗路径签名 : 仅末位 goal (x, y) × 1000 + path size, 不逐
-// pose hash。re-smooth 后同 goal 同 size 的 plan 得到相同签名 → setPlan 不重置
-// PID 状态 (防止 re-smooth 触发 PID reset stutter); 不同 goal 签名不同 (重置)。
+// Coarse plan signature: only the final goal (x, y) * 1000 + path size, no per-pose
+// hashing. After a re-smooth, a plan with the same goal and same size gets the same signature -> setPlan does not reset
+// PID state (prevents PID reset stutter triggered by re-smoothing); different goals give different signatures (reset).
 uint64_t computePlanSignature(const nav_msgs::Path& plan) {
   if (plan.poses.empty()) {
     return 0;
@@ -99,8 +99,8 @@ CostmapPidController::CostmapPidController() = default;
 void CostmapPidController::configure(
     const PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
-  // 键缺失时保持默认值。
+  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout);
+  // missing keys keep the default values.
   {
     const Config& file = context.config;
     param.max_vel_x = file.param<double>("costmap_pid_controller", "max_vel_x",
@@ -147,7 +147,7 @@ void CostmapPidController::configure(
                                          param.mode);
   }
 
-  // 纯 path tracker 不读图: 满足 costmap 族契约仅持有地图指针。
+  // Pure path tracker does not read the map: to satisfy the costmap family contract it only holds the map pointer.
   map_context = std::move(map);
 
   pid_x.kp = param.kp_v;
@@ -170,7 +170,7 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   goal = plan.poses.back();
   canceled.store(false);
   if (signature != plan_signature) {
-    // 新 goal (或首帧): 重置跟踪状态, 确保 setPlan 首帧从 0 起步 (不携带旧速度)。
+    // New goal (or first frame): reset tracking state so the first setPlan frame starts from 0 (no stale velocity carried over).
     plan_signature = signature;
     resetTrackingState();
     last_track_idx = 1;
@@ -178,33 +178,34 @@ bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   return true;
 }
 
-ControllerResultT CostmapPidController::computeVelocityCommand(
+ResultT<void> CostmapPidController::computeVelocityCommand(
     const geometry_msgs::PoseStamped& pose,
-    const geometry_msgs::TwistStamped& velocity) {
-  // 历史脏内存 bug: 入口强制清零后填充。
+    const geometry_msgs::TwistStamped& velocity,
+    geometry_msgs::TwistStamped& cmd) {
+  // Historical dirty memory bug: forcibly zero at entry, then fill.
   geometry_msgs::TwistStamped cmd_vel = geometry_msgs::TwistStamped{};
   cmd_vel.twist = geometry_msgs::Twist{};
   cmd_vel.header = pose.header;
 
   if (plan.poses.empty()) {
-    return ControllerResultT::failure(ErrorCode::NO_VALID_COMMAND,
+    return ResultT<void>::failure(ErrorCode::NO_VALID_COMMAND,
                                       "PID controller has no plan");
   }
   if (canceled.load()) {
     resetTrackingState();
-    return ControllerResultT::failure(ErrorCode::CANCELED,
+    return ResultT<void>::failure(ErrorCode::CANCELED,
                                       "PID controller canceled");
   }
 
   last_pose = pose;
   const double dt = std::max(param.default_dt, 1e-6);
 
-  // 到达判定由 execution 层 goal_checker 全权负责; PID 自身使用 param 的
-  // goal_tolerance (自身 param) 作为停线速度的 XY 边界。
+  // Arrival is entirely the execution layer goal_checker's responsibility; the PID itself uses param's
+  // goal_tolerance (its own param) as the XY bound for stopping linear velocity.
   const double xy_tol = param.goal_tolerance;
 
-  // ---- 位置已进入 goal XY 容差: 停止线速度, 仅 angular PID 对齐 goal 朝向 ----
-  // (goal_checker 在 execution 层最终宣布到达)
+  // ---- Position already inside the goal XY tolerance: stop linear velocity, only the angular PID aligns the goal heading ----
+  // (the goal_checker in the execution layer finally declares arrival)
   if (distance2d(last_pose, goal) < xy_tol) {
     const double yaw_err =
         shortestAngularDistance(yawOf(pose), yawOf(goal));
@@ -219,12 +220,13 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
     cmd_vel.twist.linear.x() = 0.0;
     cmd_vel.twist.linear.y() = 0.0;
     cmd_vel.twist.angular.z() = angular_w;
-    auto result = ControllerResultT::success(ControllerCommand{cmd_vel});
+    cmd = cmd_vel;
+  auto result = ResultT<void>::success();
     result.message = "PID controller reached goal position, aligning heading";
     return result;
   }
 
-  // ---- 选择局部跟踪目标 (最近点 + lookahead 窗口) ----
+  // ---- Select the local tracking target (nearest point + lookahead window) ----
   const double robot_yaw = yawOf(pose);
   size_t nearest = 0;
   double min_dist = std::numeric_limits<double>::infinity();
@@ -235,8 +237,8 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
       nearest = i;
     }
   }
-  // 向前推进到第一个 >= slide_window 的点 (或末点), 避免在路径点处
-  // lookahead 窗口塌缩导致目标距离≈0 的停车停顿。
+  // Advance forward to the first point >= slide_window (or the last point), avoiding stop-and-stall where the target
+  // distance collapses to ~0 when the lookahead window shrinks at dense path points.
   size_t target_idx = nearest;
   while (target_idx + 1 < plan.poses.size() &&
          distance2d(pose, plan.poses[target_idx]) < param.slide_window) {
@@ -248,12 +250,12 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
       plan.poses[target_idx].pose.position - pose.pose.position;
   const double c = std::cos(robot_yaw);
   const double s = std::sin(robot_yaw);
-  const double local_x = c * rel.x() + s * rel.y();   // 前向
-  const double local_y = -s * rel.x() + c * rel.y();  // 左向
+  const double local_x = c * rel.x() + s * rel.y();   // forward
+  const double local_y = -s * rel.x() + c * rel.y();  // leftward
 
   double target_theta = std::atan2(local_y, local_x);
   if (param.mode == "omni") {
-    // 全向底盘: 选最近车体运动方向角 (0 / ±90° / 180°)。
+    // Omnidirectional base: pick the nearest body-frame motion direction angle (0 / +-90 deg / 180 deg).
     std::map<double, double> candidates;
     for (const double reference : {0.0, k_pi / 2.0, k_pi, -k_pi / 2.0}) {
       const double diff = shortestAngularDistance(reference, target_theta);
@@ -261,12 +263,12 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
     }
     target_theta = candidates.begin()->second;
   }
-  // 差速底盘: 仅 yaw 控制直接朝向 target (不取负号)。
+  // Differential base: yaw control aims straight at the target (no sign flip).
   if (std::abs(target_theta) < param.heading_deadband) {
     target_theta = 0.0;
   }
 
-  // ---- 三轴 PID ----
+  // ---- Three-axis PID ----
   double linear_x = 0.0;
   double linear_y = 0.0;
   if (param.mode == "omni") {
@@ -283,7 +285,7 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
   }
   double angular_w = pid_w.compute(target_theta, dt);
 
-  // 线速度上限。
+  // Linear velocity upper bound.
   double cur_v = std::hypot(linear_x, linear_y);
   if (cur_v > param.max_vel_x) {
     const double k = param.max_vel_x / cur_v;
@@ -292,13 +294,13 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
     cur_v = param.max_vel_x;
   }
 
-  // 角速度: max_vel_theta 钳制 + max_acc_theta 限幅。
+  // Angular velocity: max_vel_theta clamp + max_acc_theta rate limit.
   angular_w = std::clamp(angular_w, -param.max_vel_theta, param.max_vel_theta);
   angular_w = limitAcceleration(last_angular_vel, angular_w,
                                 param.max_acc_theta, param.max_acc_theta, dt);
   last_angular_vel = angular_w;
 
-  // 线速度: distanceDecay 临近 goal 减速 + max_acc_x/max_decel_x 分开限幅。
+  // Linear velocity: distanceDecay deceleration near the goal + separate max_acc_x/max_decel_x rate limits.
   double desired_vel = 0.0;
   if (cur_v > 1e-9) {
     const double goal_dist = distance2d(pose, goal);
@@ -317,7 +319,8 @@ ControllerResultT CostmapPidController::computeVelocityCommand(
   cmd_vel.twist.linear.y() = linear_y;
   cmd_vel.twist.angular.z() = angular_w;
 
-  auto result = ControllerResultT::success(ControllerCommand{cmd_vel});
+  cmd = cmd_vel;
+  auto result = ResultT<void>::success();
   result.message = "PID controller generated velocity command";
   return result;
 }
@@ -338,7 +341,7 @@ void CostmapPidController::resetTrackingState() {
 double CostmapPidController::limitAcceleration(double last_vel, double cmd_vel,
                                                double max_acc, double max_decel,
                                                double dt) const {
-  // 加速用 max_acc, 减速用 max_decel 分开限幅。
+  // Acceleration uses max_acc; deceleration uses max_decel, limited separately.
   const double limit =
       cmd_vel >= last_vel ? std::max(0.0, max_acc) : std::max(0.0, max_decel);
   const double max_change = limit * std::max(dt, 0.0);

@@ -1,4 +1,4 @@
-// goal_align.cpp — 迁移自 dwb_critics/src/goal_align.cpp。
+// goal_align.cpp -- ported from dwb_critics/src/goal_align.cpp.
 #include "goal_align.hpp"
 
 #include <string>

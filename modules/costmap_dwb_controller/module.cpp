@@ -1,4 +1,4 @@
-// module.cpp — costmap_dwb_controller 插件工厂入口。
+// module.cpp -- costmap_dwb_controller plugin factory entry point.
 #include "costmap_dwb_controller.hpp"
 #include <ayanami/utility/extension_module.hpp>
 

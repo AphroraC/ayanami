@@ -1,6 +1,6 @@
-// 测试控制器插件: CostmapController 族, 永不主动判到达 (到达判定由
-// goal_checker 负责) 让 FollowPath 持续 RUNNING 并每周期 emit cmd_vel
-// (验证宿主 BT 旁路 cmd_vel)。经公共工厂 create_extension_module 导出。
+// Test controller plugin: CostmapController family, never declares arrival itself (arrival is decided
+// by the goal_checker), keeps FollowPath RUNNING and emits cmd_vel every cycle
+// (verifies the host BT cmd_vel bypass). Exported via the common create_extension_module factory.
 
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -17,21 +17,18 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::Twist;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-
+using ayanami::ResultT;
 class NavigationTestController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
 
-  ControllerResultT computeVelocityCommand(const PoseStamped& /*pose*/,
-                                           const TwistStamped& /*velocity*/) override {
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};  // 清零纪律
-    cmd.velocity.twist = Twist{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+  ResultT<void> computeVelocityCommand(const PoseStamped& /*pose*/,
+                                           const TwistStamped& /*velocity*/, ayanami::geometry_msgs::TwistStamped& cmd) override {
+    cmd = TwistStamped{};  // Zeroing discipline
+    cmd.twist = Twist{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
 
   bool setPlan(const Path& /*plan*/) override { return true; }

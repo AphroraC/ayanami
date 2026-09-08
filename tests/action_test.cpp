@@ -31,19 +31,15 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
-using ayanami::SmootherResultT;
 
-// 阻塞直到被 cancel: 验证取消/抢占中断 RUNNING 的 planner
+/// Blocks until cancelled: verifies cancel/preemption interrupts a RUNNING planner
 class BlockingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped& start, const PoseStamped& goal,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped& start, const PoseStamped& goal,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
     {
       std::unique_lock<std::mutex> lock(mutex);
@@ -51,12 +47,13 @@ public:
       release.wait_for(lock, std::chrono::milliseconds(2000),
                         [this] { return canceled.load(); });
     }
-    // 被取消也返回成功路径: execution 检测 cancel_requested 判 CANCELED。
+    // The cancelled path also returns a success path: the execution detects cancel_requested and yields CANCELED.
     (void)canceled.exchange(false);
     ayanami::nav_msgs::Path plan;
     plan.poses.push_back(start);
     plan.poses.push_back(goal);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override {
     canceled = true;
@@ -70,38 +67,38 @@ public:
   std::atomic<bool> canceled{false};
 };
 
-// 即时成功的 planner: 填 path, 验 SUCCEEDED + path 非空
+/// Instant-success planner: fills the path; verifies SUCCEEDED + non-empty path
 class FillingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
     ayanami::nav_msgs::Path plan;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
 };
 
-// controller: 到达判定交给 goal_checker (完成后 N 帧 compute 触发到达)。
+/// Controller: the arrival decision is delegated to the goal_checker (reached after N compute frames).
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
   bool setPlan(const Path&) override { return true; }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
 };
 
-// ---- checker 测试桩 ----
+// ---- checker test stubs ----
 
 class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
@@ -127,8 +124,8 @@ class AlwaysTrueProgressChecker
   bool check(const PoseStamped&) override { return true; }
 };
 
-// ControllerAction 派生: createExecution 内注入 checker (server 由
-// NavigationServerBase 注入, 直连 action 测试用此子类)。
+/// ControllerAction derivative: injects the checker inside createExecution (the server is
+/// injected by NavigationServerBase; direct action tests use this subclass).
 class TestControllerAction : public ayanami::components::ControllerAction {
  public:
   using ControllerAction::ControllerAction;
@@ -153,19 +150,20 @@ class TestControllerAction : public ayanami::components::ControllerAction {
 
 class FillingSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  SmootherResultT smoothPath(Path& path, double, bool) override {
+  ResultT<void> smoothPath(Path& path, double) override {
     path.header.frame_id = "map";
-    return SmootherResultT::success(std::move(path));
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };
@@ -184,7 +182,7 @@ using Server = ayanami::components::ActionServer<
 
 }  // namespace
 
-// ---- ActionServer 协议 (复刻 legacy action_protocol_test, 按 ACTIVE 通态) ----
+// ---- ActionServer protocol (re-creates legacy action_protocol_test, all in the ACTIVE state) ----
 
 TEST(ActionProtocol, completionCarriesResultAndCleansGoal) {
   Server server;
@@ -203,7 +201,7 @@ TEST(ActionProtocol, completionCarriesResultAndCleansGoal) {
   EXPECT_EQ(task.result().error, ErrorCode::NONE);
   EXPECT_FALSE(task.result().path.poses.empty());
   EXPECT_EQ(server.activeGoalCount(), 0U);
-  // 已完成的 goal 已清理, 不能再次 finish
+  // The completed goal has been cleaned up and cannot finish again
   EXPECT_FALSE(server.publishResult(
       task.goal_id(), ayanami::actions::GoalStatus::SUCCEEDED, result));
 }
@@ -273,7 +271,7 @@ TEST(PlannerAction, cancelSlotInterruptsRunningExecution) {
         [&] { return planner->calls.load() >= 1; }));
   }
 
-  action.cancel(0);
+  action.cancel();
   ASSERT_TRUE(waitReady(task));
   EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::CANCELED);
 }
@@ -312,12 +310,12 @@ TEST(PlannerAction, preemptSameSlotJoinsOldGoalBeforeNewStarts) {
   auto second = action.acceptGoal({});
   ASSERT_TRUE(second.valid());
 
-  // 旧 goal 被 preempt → CANCELED; 新 goal 跑完 → SUCCEEDED
+  // Old goal preempted -> CANCELED; new goal runs to completion -> SUCCEEDED
   ASSERT_TRUE(waitReady(first));
   EXPECT_EQ(first.status(), ayanami::actions::GoalStatus::CANCELED);
   ASSERT_TRUE(waitReady(second));
   EXPECT_EQ(second.status(), ayanami::actions::GoalStatus::SUCCEEDED);
-  // 串行: 第二个在第一个 join 后启动 (插件从不并发)
+  // Serial: the second starts only after the first is joined (plugins never run concurrently)
   EXPECT_EQ(planner->calls.load(), 2);
 }
 
@@ -340,10 +338,10 @@ TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
   EXPECT_GE(bypass_hits.load(), 1);
   EXPECT_EQ(bypass_status, ayanami::actions::GoalStatus::SUCCEEDED);
 
-  // cb 析构自动退订
+  // cb destructor unsubscribes automatically
 }
 
-// ---- 其余 3 个 action 最小验收 ----
+// ---- Minimal acceptance for the remaining 3 actions ----
 
 TEST(ControllerAction, runsOneCycleAndSucceeds) {
   auto& robot_state = ayanami::components::RobotStateController::instance();

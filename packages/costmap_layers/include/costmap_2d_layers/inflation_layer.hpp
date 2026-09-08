@@ -12,9 +12,9 @@
 
 namespace costmap_2d_layers {
 
-// 膨胀层: 从 lethal 障碍 cell 出发, 用优先级队列 BFS (Dijkstra 式波前)
-// 向四周传播, 代价按欧氏距离指数衰减 (nav2/legacy 风格)。
-// 每次 updateCosts 只重建窗口内最近源的膨胀带, 复杂度 O(k log k) 非 O(N^2)。
+/// Inflation layer: starting from lethal obstacle cells, propagates outward with a
+/// priority-queue BFS (Dijkstra-style wavefront); cost decays exponentially with Euclidean
+/// distance (nav2/legacy style). Each updateCosts rebuilds only the inflation band of the nearest
 class InflationLayer : public costmap_2d::Layer {
  public:
   void setInflationRadius(double radius) {
@@ -38,8 +38,8 @@ class InflationLayer : public costmap_2d::Layer {
     current = false;
   }
 
-  // 距离 (cells) -> cost: 0 -> LETHAL, 距障碍 <= inscribed -> 253,
-  // 否则 (253-1) * exp(-weight * (euclid - inscribed)) 衰减取整。
+  /// Distance (cells) -> cost: 0 -> LETHAL, within inscribed radius of an obstacle -> 253,
+  // otherwise (253-1) * exp(-weight * (euclid - inscribed)), rounded.
   costmap_2d::CostValue computeCost(double distance_cells,
                                     double resolution) const {
     if (distance_cells == 0.0) {

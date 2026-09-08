@@ -11,11 +11,11 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 简单进展检查模块 (对标 MBF SimpleProgressChecker)。
+ * @brief Simple progress checker module (modeled on MBF SimpleProgressChecker).
  *
- * 纯 C++ (零 ROS): 跟踪基线位姿与时戳。time_period 内若移动距离 >=
- * required_movement 或转角 >= movement_angle_required 则更新基线并判有进展;
- * 时间窗内未移动则判无进展 (卡住)。
+ * Pure C++ (zero ROS): tracks a baseline pose and timestamp. Within time_period, if the moved distance >=
+ * required_movement or the rotated angle >= movement_angle_required, the baseline is updated and progress is declared;
+ * no movement within the time window is judged as no progress (stuck).
  */
 class SimpleProgressChecker final : public ayanami::abstract::AbstractProgressChecker {
  public:

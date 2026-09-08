@@ -5,20 +5,23 @@
 namespace ayanami {
 
 /**
- * @brief 恢复行为按次覆盖参数 (spec: RecoveryGoal 常用字段)。
+ * @brief Recovery behavior per-run override params (spec: common
+ * RecoveryGoal fields).
  *
- * BT 恢复节点可按次覆盖常用行为参数 (如 <Recovery recovery="{spin_id}"
- * target_yaw="3.14"/>); 未提供 (nullopt) 的字段表示使用插件 configure 期
- * 默认值。字段为 nullopt 时必须保持配置默认, 禁止把 nullopt 解释为 0。
+ * BT recovery nodes may override common behavior params per run (e.g.
+ * <Recovery recovery="{spin_id}" target_yaw="3.14"/>); a field left unset
+ * (nullopt) means use the plugin's configure-time defaults. A nullopt field
+ * must keep the configured default; interpreting nullopt as 0 is
+ * forbidden.
  */
 struct RecoveryBehaviorParams {
-  /// @brief 原地旋转目标角 (rad), 对应 spin 恢复的 spin_dist。
+  /// @brief In-place rotation target angle (rad), corresponding to spin recovery's spin_dist.
   std::optional<double> target_yaw;
-  /// @brief 后退距离 (m), 对应 back_up 恢复的 backup_dist。
+  /// @brief Backup distance (m), corresponding to back_up recovery's backup_dist.
   std::optional<double> backup_distance;
-  /// @brief 后退线速度 (m/s), 对应 back_up 恢复的 max_v。
+  /// @brief Backup linear speed (m/s), corresponding to back_up recovery's max_v.
   std::optional<double> backup_speed;
-  /// @brief 等待时长 (s), 对应 wait 恢复的 wait_duration。
+  /// @brief Wait duration (s), corresponding to wait recovery's wait_duration.
   std::optional<double> wait_duration;
 
   bool empty() const {

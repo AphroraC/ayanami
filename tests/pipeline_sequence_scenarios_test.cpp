@@ -1,16 +1,16 @@
-// pipeline_sequence_scenarios_test: PipelineSequence / RecoveryNode 关键场景
-// 专项测试 (对照 nav2 语义), 以及 RateController reset_token 语义测试。
+// pipeline_sequence_scenarios_test: dedicated tests for key PipelineSequence / RecoveryNode scenarios
+// (checked against nav2 semantics), plus RateController reset_token semantics tests.
 //
-// 覆盖场景:
-// S1 planner RUNNING + controller RUNNING -> 两者都被 tick, 整体 RUNNING
-// S2 planner SUCCESS + controller RUNNING -> 两者都被 tick, 整体 RUNNING
-// S3 planner FAILURE -> 整体 FAILURE, controller 不被 tick
-// S4 controller FAILURE -> 整体 FAILURE
-// S5 planner 在 controller 运行中重规划 -> controller 每 tick 仍被 tick
-// (跟踪不中断, in-place 跟随)
-// S6 goal 更新触发 planner 重入 -> controller 持续被 tick
-// R1 RateController reset_token 变化 -> 在飞 child 被 halt 后重新 onStart
-// R2 RecoveryNode: child0 FAILURE -> recovery SUCCESS -> 主任务重试 RUNNING
+// Covered scenarios:
+// S1 planner RUNNING + controller RUNNING -> both are ticked, overall RUNNING
+// S2 planner SUCCESS + controller RUNNING -> both are ticked, overall RUNNING
+// S3 planner FAILURE -> overall FAILURE, controller never ticked
+// S4 controller FAILURE -> overall FAILURE
+// S5 planner replans while the controller runs -> the controller is still ticked every tick
+// (tracking uninterrupted, in-place following)
+// S6 goal update triggers planner reentry -> the controller keeps being ticked
+// R1 RateController reset_token change -> the in-flight child is halted and restarts via onStart
+// R2 RecoveryNode: child0 FAILURE -> recovery SUCCESS -> main task retried as RUNNING
 
 #include <gtest/gtest.h>
 
@@ -33,9 +33,9 @@ using ayanami::behavior_tree::PipelineSequence;
 using ayanami::behavior_tree::RateController;
 using ayanami::behavior_tree::RecoveryNode;
 
-// 可编程 mock child: 状态函数可切换 (模拟 planner 在 controller 运行中重新
-// 进入 RUNNING 等), 记录 tick / halt 次数。需 RUNNING 能力, 继承
-// ActionNodeBase 而非 SyncActionNode (BT.CPP 禁止 Sync 节点返回 RUNNING)。
+/// Programmable mock child: its status function is switchable (simulating e.g. the planner reentering RUNNING
+/// while the controller runs) and records tick / halt counts. Needs RUNNING capability, so it derives from
+/// ActionNodeBase rather than SyncActionNode (BehaviorTree.CPP forbids Sync nodes returning RUNNING).
 class MockChild : public BT::ActionNodeBase {
  public:
   MockChild(const std::string& name, const BT::NodeConfig& config)
@@ -86,7 +86,7 @@ const char* k_two_child_xml = R"(
   </BehaviorTree>
 </root>)";
 
-// S1: planner RUNNING + controller RUNNING -> 两者都被 tick, 整体 RUNNING。
+// S1: planner RUNNING + controller RUNNING -> both are ticked, overall RUNNING.
 TEST(PipelineSequenceScenarios, plannerRunningAndControllerRunningTickBoth) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -96,7 +96,7 @@ TEST(PipelineSequenceScenarios, plannerRunningAndControllerRunningTickBoth) {
   mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // controller 尚未被推进到 (前序未成功): 只 tick planner。
+  // The controller has not been advanced to yet (the predecessor has not succeeded): only the planner is ticked.
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 0);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
@@ -104,7 +104,7 @@ TEST(PipelineSequenceScenarios, plannerRunningAndControllerRunningTickBoth) {
   EXPECT_EQ(mocks[1]->tick_count, 0);
 }
 
-// S2: planner SUCCESS + controller RUNNING -> 整体 RUNNING。
+// S2: planner SUCCESS + controller RUNNING -> overall RUNNING.
 TEST(PipelineSequenceScenarios, plannerSuccessAndControllerRunning) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -121,7 +121,7 @@ TEST(PipelineSequenceScenarios, plannerSuccessAndControllerRunning) {
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
-// S3: planner FAILURE -> 整体 FAILURE, controller 从未被 tick。
+// S3: planner FAILURE -> overall FAILURE, controller never ticked.
 TEST(PipelineSequenceScenarios, plannerFailureFailsWithoutTickingController) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -135,7 +135,7 @@ TEST(PipelineSequenceScenarios, plannerFailureFailsWithoutTickingController) {
   EXPECT_EQ(mocks[1]->tick_count, 0);
 }
 
-// S4: controller FAILURE -> 整体 FAILURE (planner 已 SUCCESS 仍被重 tick 一次)。
+// S4: controller FAILURE -> overall FAILURE (the planner, already SUCCESS, is re-ticked once more).
 TEST(PipelineSequenceScenarios, controllerFailureFailsPipeline) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -149,8 +149,8 @@ TEST(PipelineSequenceScenarios, controllerFailureFailsPipeline) {
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
-// S5: planner 在 controller 运行中产生新路径 (planner 重入 RUNNING) ->
-// controller 每 tick 仍被 tick (跟踪不中断, 新路径经 in-place 更新跟随)。
+/// S5: the planner produces a new path while the controller runs (planner reenters RUNNING) ->
+/// the controller is still ticked every tick (tracking uninterrupted; the new path is followed via the in-place update).
 TEST(PipelineSequenceScenarios,
      plannerReentryKeepsControllerTickingDuringReplan) {
   auto factory = makeFactory();
@@ -159,23 +159,23 @@ TEST(PipelineSequenceScenarios,
   ASSERT_EQ(mocks.size(), 2u);
   mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
 
-  // 周期1-2: 初次规划; 周期3: 新路径完成; 周期4: goal 更新后 planner 重入。
+  // Cycles 1-2: initial planning; cycle 3: new path done; cycle 4: planner reenters after the goal update.
   mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  EXPECT_EQ(mocks[1]->tick_count, 1);  // controller 已在跟随
+  EXPECT_EQ(mocks[1]->tick_count, 1);  // The controller is already following
   mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  // controller 在 planner 重规划期间持续被 tick (不因 replan 停摆)。
+  // The controller keeps being ticked during the replan (it does not stall because of the replan).
   EXPECT_EQ(mocks[1]->tick_count, 3);
 }
 
-// S6: goal 更新时 planner 重入 RUNNING 而 controller 保持 RUNNING ->
-// PipelineSequence 对两个分支都保持 tick (BT 不中断任何一侧)。
+/// S6: on goal update the planner reenters RUNNING while the controller stays RUNNING ->
+/// PipelineSequence keeps ticking both branches (the BT does not interrupt either side).
 TEST(PipelineSequenceScenarios, goalUpdateReticksPlannerAndController) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(k_two_child_xml);
@@ -185,15 +185,15 @@ TEST(PipelineSequenceScenarios, goalUpdateReticksPlannerAndController) {
   mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // goal 更新: planner 重新 RUNNING; controller 继续跟旧路径。
+  // Goal update: the planner is RUNNING again; the controller keeps following the old path.
   mocks[0]->status_fn = [] { return BT::NodeStatus::RUNNING; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 2);
 }
 
-// R1: RateController reset_token 变化 -> 在飞 RUNNING child 被 halt (onHalted),
-// 同一 tick 重新 onStart (全新输入重新开始, 而非继续消费旧输入)。
+/// R1: a RateController reset_token change -> the in-flight RUNNING child is halted (onHalted) and
+/// restarts via onStart in the same tick (fresh input restart, not continued consumption of the old input).
 class HaltObserverAction : public BT::StatefulActionNode {
  public:
   HaltObserverAction(const std::string& name, const BT::NodeConfig& config)
@@ -232,27 +232,27 @@ TEST(RateControllerResetTest, tokenChangeHaltsInFlightChildAndRestarts) {
   std::shared_ptr<HaltObserverAction> observer;
   tree.applyVisitor([&observer](BT::TreeNode* node) {
     if (auto* found = dynamic_cast<HaltObserverAction*>(node)) {
-      // 独占持有顺序与树析构一致 (shared_ptr 视图), 测试生命周期内安全。
+      // The exclusive ownership order matches tree destruction (shared_ptr view); safe for the test lifetime.
       observer.reset(found, [](HaltObserverAction*) {});
     }
   });
   ASSERT_NE(observer, nullptr);
 
-  // 首 tick: onStart, RUNNING; 再 tick: onRunning 轮询。
+  // First tick: onStart, RUNNING; next tick: onRunning polling.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(observer->start_count, 1);
   EXPECT_EQ(observer->halt_count, 0);
 
-  // 令牌变化 (新路径落地语义): 在飞 child 被 halt, 同 tick 重新 onStart。
+  // Token change (new path landed semantics): the in-flight child is halted and restarts via onStart in the same tick.
   bb->set<uint64_t>("reset_token", 2u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(observer->halt_count, 1);
   EXPECT_EQ(observer->start_count, 2);
 }
 
-// R2: RecoveryNode child0 FAILURE -> recovery child SUCCESS -> 返回 RUNNING
-// 让主任务重试 (nav2 RecoveryNode 语义)。
+/// R2: RecoveryNode child0 FAILURE -> recovery child SUCCESS -> returns RUNNING
+/// so the main task retries (nav2 RecoveryNode semantics).
 TEST(RecoveryNodeSemantics, recoverySuccessRetriesMainTaskAsRunning) {
   auto factory = makeFactory();
   auto tree = factory.createTreeFromText(R"(
@@ -273,25 +273,25 @@ TEST(RecoveryNodeSemantics, recoverySuccessRetriesMainTaskAsRunning) {
   };
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
 
-  // tick1: main FAILURE -> recovery SUCCESS -> 整体 RUNNING (重试入口)。
+  // tick1: main FAILURE -> recovery SUCCESS -> overall RUNNING (retry entry).
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
-  // tick2: 主任务重试 SUCCESS -> 整体 SUCCESS。
+  // tick2: the main task retry SUCCEEDS -> overall SUCCESS.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
 
-// R3: RateController hz>0 —— RUNNING child 立即轮询 (nav2 语义), 速率只限制
-// 新一轮; 计时器仅在 child SUCCESS 时复位。
+/// R3: RateController hz>0 -- a RUNNING child is polled immediately (nav2 semantics); the rate only gates
+/// a new round; the timer resets only when the child SUCCEEDS.
 TEST(RateControllerPollingTest, runningChildIsPolledEveryTickAndTimerResetsOnSuccess) {
   BT::BehaviorTreeFactory factory;
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<MockChild>("MockChild");
 
-  using Clock = std::chrono::system_clock;  // BT::TimePoint 基于 system_clock
+  using Clock = std::chrono::system_clock;  // BT::TimePoint is based on system_clock
   Clock::time_point now = Clock::now();
   auto clock_fn = [&now] { return now; };
 
@@ -300,8 +300,8 @@ TEST(RateControllerPollingTest, runningChildIsPolledEveryTickAndTimerResetsOnSuc
   RateController::ClockFn clock = clock_fn;
   RateController rc("rc", config, clock);
 
- // 手工挂 child (DecoratorNode::setChild 接管裸指针, 生命周期由树外
- // shared_ptr 持有即可 —— 与树析构同序)。
+ // Attach the child manually (DecoratorNode::setChild takes over the raw pointer; holding it via a shared_ptr outside
+ // the tree is enough -- same order as tree destruction).
   auto child_owned = std::make_shared<MockChild>("child", BT::NodeConfig());
   rc.setChild(child_owned.get());
   MockChild* mock = child_owned.get();
@@ -312,29 +312,79 @@ TEST(RateControllerPollingTest, runningChildIsPolledEveryTickAndTimerResetsOnSuc
   };
 
   mock->status_fn = [] { return BT::NodeStatus::RUNNING; };
-  EXPECT_EQ(tick(0), BT::NodeStatus::RUNNING);      // 首 tick (started)
+  EXPECT_EQ(tick(0), BT::NodeStatus::RUNNING);      // First tick (started)
   EXPECT_EQ(mock->tick_count, 1);
-  EXPECT_EQ(tick(10), BT::NodeStatus::RUNNING);     // 周期未到但 RUNNING -> 立即轮询
+  EXPECT_EQ(tick(10), BT::NodeStatus::RUNNING);     // Period not reached but RUNNING -> polled immediately
   EXPECT_EQ(mock->tick_count, 2);
   EXPECT_EQ(tick(10), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mock->tick_count, 3);
 
- // 完成 (SUCCESS): 计时器复位
+ // Completed (SUCCESS): the timer resets
   mock->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tick(10), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mock->tick_count, 4);
 
- // SUCCESS 后周期未到 (累计 20ms < 100ms): 不再 tick
+ // After SUCCESS with the period not reached (20ms accumulated < 100ms): no more ticks
   mock->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tick(20), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mock->tick_count, 4);
 
- // 周期到达: 新一轮
+ // Period reached: a new round
   EXPECT_EQ(tick(90), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mock->tick_count, 5);
 }
 
-// ---- H3 常驻树复位协议: RoundRobin / RecoverySequence reset_token ----
+// ---- RecoveryNode budget_reset_token: goal updates never consume budget ----
+
+TEST(RecoveryNodeBudgetTest, tokenChangeResetsBudget) {
+  BT::BehaviorTreeFactory factory;
+  factory.registerNodeType<RecoveryNode>("RecoveryNode");
+  factory.registerNodeType<MockChild>("MockChild");
+  auto bb = BT::Blackboard::create();
+  bb->set<uint64_t>("tok", 0u);
+  auto tree = factory.createTreeFromText(R"(
+<root BTCPP_format="4">
+  <BehaviorTree ID="main">
+    <RecoveryNode name="rn" number_of_retries="1" budget_reset_token="{tok}">
+      <MockChild name="main_task"/>
+      <MockChild name="recovery"/>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>)", bb);
+  auto mocks = collectMocks(tree);
+  ASSERT_EQ(mocks.size(), 2u);
+  MockChild* main_task = mocks[0];
+  MockChild* recovery = mocks[1];
+
+  // main always fails, recovery always succeeds: with retries=1 the second
+  // cycle must fail without a budget reset.
+  main_task->status_fn = [] { return BT::NodeStatus::FAILURE; };
+  recovery->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+
+  // Cycle 1: main FAILURE -> recovery SUCCESS -> retry_count=1, RUNNING.
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(main_task->tick_count, 1);
+  EXPECT_EQ(recovery->tick_count, 1);
+
+  // Cycle 2 (no token change): retry_count(1) >= max_retries(1) -> FAILURE,
+  // recovery is not ticked again.
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(recovery->tick_count, 1);
+  tree.haltTree();
+
+  // New tree life + token change (new goal): budget reset, the same
+  // sequence runs through a full cycle again.
+  bb->set<uint64_t>("tok", 1u);
+  main_task->status_fn = [main_task] {
+    return main_task->tick_count <= 3 ? BT::NodeStatus::FAILURE
+                                      : BT::NodeStatus::SUCCESS;
+  };
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_EQ(recovery->tick_count, 2);  // budget was reset, recovery allowed
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+}
+
+// ---- H3 resident-tree reset protocol: RoundRobin / RecoverySequence reset_token ----
 
 TEST(RoundRobinResetTest, tokenChangeRestartsCursorAndHaltsInFlightChild) {
   BT::BehaviorTreeFactory factory;
@@ -356,13 +406,13 @@ TEST(RoundRobinResetTest, tokenChangeRestartsCursorAndHaltsInFlightChild) {
   mocks[0]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
 
-  // tick1: first SUCCESS -> 游标 1; tick2: second RUNNING -> 游标停住。
+  // tick1: first SUCCESS -> cursor 1; tick2: second RUNNING -> the cursor holds.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
 
-  // 新导航轮 (goal_revision 推进): 游标复位回 first, 在飞 second 被 halt。
+  // New navigation round (goal_revision advanced): the cursor resets to first and the in-flight second is halted.
   bb->set<uint64_t>("goal_revision", 1u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);
@@ -394,12 +444,12 @@ TEST(RecoverySequenceResetTest, tokenChangeRestartsFromFirstRecovery) {
   };
   mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
 
-  // tick1: first FAILURE -> second RUNNING (游标 1, 恢复进行中)。
+  // tick1: first FAILURE -> second RUNNING (cursor 1, recovery in progress).
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
   EXPECT_EQ(mocks[0]->tick_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
 
-  // 新导航轮: 复位游标, 从 first 重新开始 (本轮 first 已可用)。
+  // New navigation round: the cursor resets and restarts from first (first is available again this round).
   bb->set<uint64_t>("goal_revision", 1u);
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(mocks[0]->tick_count, 2);

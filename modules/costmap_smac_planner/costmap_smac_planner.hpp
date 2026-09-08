@@ -10,29 +10,30 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief A* 全局路径规划模块 (CostmapPlanner 族)。
+ * @brief A* global path planning module (CostmapPlanner family).
  *
- * 在 costmap 全局图 (shared 锁零拷贝读视图) 上做标准 4/8 连通 A*
- * - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE ( 253 起 lethal)
- * - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
- * - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
+ * Runs standard 4/8-connected A* on the costmap global grid (shared-lock zero-copy read view).
+ * - Blocking: cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
+ * - Traversal cost: step * (neutral_cost + cost_factor * cell_cost)
+ * - Goal inside an obstacle: nearestValidGoal searches for the nearest valid cell within tolerance (approximate path)
  *
- * 地图访问纪律: configure(context, map) 注入自身配置 + 地图模块 const 智能
- * 指针; makePlan 内部经 map->lockGlobal() 持 shared 锁零拷贝直读 master grid,
- * 单次规划 (<10ms) 持锁, 地图写者等锁写入。
+ * Map access discipline: configure(context, map) injects the own configuration + a const smart pointer to the map module;
+ * makePlan internally takes a shared lock via map->lockGlobal() and reads the master grid directly with zero copy,
+ * holding the lock for a single plan (<10 ms); the map writer waits for the lock to write.
  */
 class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
  public:
   CostmapSmacPlanner() = default;
-  // 派生虚构补 override (基类 AbstractPlanner 已虚)
+  // Derived class adds the virtual destructor with override (base AbstractPlanner is already virtual)
   ~CostmapSmacPlanner() override = default;
 
   void configure(const PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
-  PlannerResultT makePlan(const geometry_msgs::PoseStamped& start,
+  ResultT<void> makePlan(const geometry_msgs::PoseStamped& start,
                           const geometry_msgs::PoseStamped& goal,
-                          double tolerance) override;
+                          double tolerance,
+                          nav_msgs::Path& plan) override;
 
   bool cancel() override;
   bool setNewGoal(const geometry_msgs::PoseStamped& start,

@@ -1,5 +1,5 @@
-// standard_traj_generator.cpp — 迁移自 dwb_plugins/src/
-// standard_traj_generator.cpp (rclcpp 参数换 Config; Duration 换 double)。
+// standard_traj_generator.cpp -- ported from dwb_plugins/src/
+// standard_traj_generator.cpp (rclcpp parameters become Config; Duration becomes double).
 #include "standard_traj_generator.hpp"
 
 #include <algorithm>

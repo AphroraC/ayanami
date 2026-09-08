@@ -1,5 +1,5 @@
-// oscillation.cpp — 迁移自 dwb_critics/src/oscillation.cpp (rclcpp::Clock 换
-// std::chrono::steady_clock, 语义一致)。
+// oscillation.cpp -- ported from dwb_critics/src/oscillation.cpp (rclcpp::Clock becomes
+// std::chrono::steady_clock, identical semantics).
 #include "oscillation.hpp"
 
 #include <chrono>
@@ -60,7 +60,7 @@ void OscillationCritic::onInit() {
   /**
    * Historical Parameter Loading
    * If x_only_threshold is set, use that.
-   * (min_speed_xy / min_trans_vel 历史兼容分支在 json 配置模型下无对应, 省略)
+   * (the min_speed_xy / min_trans_vel legacy-compatibility branch has no counterpart in the json config model; omitted)
    */
   x_only_threshold =
       config().param<double>(dwb_plugin_name,

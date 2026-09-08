@@ -1,14 +1,14 @@
-// (M1 终止): headless E2E 全链路测试。
+// (M1 finale): headless E2E full-pipeline test.
 //
-// 不连真底盘/ROS, 用 dlopen libayanami_costmap_navigation.so 宿主插件组装整条
-// 链: initialize → start → setGoal → BT (smac planner → savitzky smoother →
-// controller) → on_velocity_command 旁路发出 cmd_vel; 周期性虚拟 pointcloud
-// (空间外障碍不影响规划); 并验证 on_costmap_visualization 可视化旁路被触发。
-// 最后 stop/析构必须不崩 。
+// No real chassis/ROS: assembles the whole chain via the dlopen libayanami_costmap_navigation.so host plugin:
+// initialize -> start -> setGoal -> BT (smac planner -> savitzky smoother ->
+// controller) -> cmd_vel emitted via the on_velocity_command bypass; periodic virtual pointclouds
+// (out-of-map obstacles do not affect planning); also verifies the on_costmap_visualization bypass fires.
+// Finally stop/destruction must not crash.
 //
 // argv: 1=host.so, 2=smac.so, 3=savitzky.so, 4=test_controller.so,
 // 5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
-// 8=assets_dir (tests/assets, 含 headless_map.pgm)
+// 8=assets_dir (tests/assets, contains headless_map.pgm)
 
 #include <gtest/gtest.h>
 
@@ -52,7 +52,7 @@ std::string g_goal_checker_so;
 std::string g_progress_checker_so;
 std::string g_assets_dir;
 
-// ---- 采集器 ----
+// ---- Collectors ----
 std::mutex g_cmd_mutex;
 TwistStamped g_last_cmd;
 int g_cmd_count = 0;
@@ -61,7 +61,7 @@ int g_cmd_cb_id = -1;
 std::mutex g_map_mutex;
 int g_map_count = 0;
 
-// ---- 测试工具 ----
+// ---- Test utilities ----
 
 PoseStamped makePose(double x, double y) {
   auto p = PoseStamped::fromIsometry("map", Eigen::Isometry3d::Identity());
@@ -72,7 +72,7 @@ PoseStamped makePose(double x, double y) {
 bool isZeroTwist(const TwistStamped& t) {
   return t.twist.linear.norm() < 1e-9 && t.twist.angular.norm() < 1e-9;
 }
-// 造单点 PointCloud2 (x/y/z FLOAT32, 12B/point), 障碍在空间外不影响规划。
+/// Builds a single-point PointCloud2 (x/y/z FLOAT32, 12B/point); the obstacle lies outside the map and does not affect planning.
 ayanami::sensor_msgs::PointCloud2 makeFarPointCloud() {
   ayanami::sensor_msgs::PointCloud2 cloud;
   cloud.header.frame_id = "lidar";
@@ -86,7 +86,7 @@ ayanami::sensor_msgs::PointCloud2 makeFarPointCloud() {
       {"y", 4, ayanami::sensor_msgs::PointField::FLOAT32, 1},
       {"z", 8, ayanami::sensor_msgs::PointField::FLOAT32, 1},
   };
-  const float x = 50.0f;  // 20x20 @0.5 = 10m 地图之外 → worldToMap 失败不落图
+  const float x = 50.0f;  // Outside the 20x20 @0.5 = 10m map -> worldToMap fails, nothing lands on the map
   const float y = 50.0f;
   const float z = 0.0f;
   cloud.data.resize(12);
@@ -118,8 +118,8 @@ std::string pluginJson(const std::string& module, const std::string& name,
          "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
-// 完整配置套件 (对标 全套)。static_map 指向 tests/assets 的
-// headless_map.pgm (20x20 @0.5 = 10m x 10m, 全 FREE, A* 从 (0,0) 到 (2,0) 可寻路)。
+/// Full config suite (mirrors the complete set). static_map points to tests/assets
+/// headless_map.pgm (20x20 @0.5 = 10m x 10m, all FREE; A* can plan from (0,0) to (2,0)).
 std::filesystem::path makeConfigDir() {
   const auto dir = std::filesystem::temp_directory_path() /
                    "ayanami_headless_e2e";
@@ -167,10 +167,10 @@ std::filesystem::path makeConfigDir() {
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
              "\"\n  }\n}\n");
-  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判
-  // InternalError)。参数并入同一 json (模块经 config_goal_checker /
-  // config_progress_checker 显式读取; progress 的 required_movement 设小:
-  // 模拟 robot 需持续判有进展, 避免 5s 静止窗口误触发 NoProgress)。
+  // goal/progress checker plugins (the execution needs injected checkers; missing ones are judged
+  // InternalError). Parameters merged into the same json (modules read them explicitly via config_goal_checker /
+  // config_progress_checker; the progress required_movement is set small to
+  // simulate a robot that must keep judging progress, avoiding a false NoProgress from the 5s stationary window).
   write_file(dir / "goal_checker.json",
              "{\n  \"goal_checker\": {\n"
              "    \"name\": \"simple_goal_checker\",\n"
@@ -189,9 +189,9 @@ std::filesystem::path makeConfigDir() {
              "    \"time_period\": 5.0\n"
              "  }\n}\n");
 
-  // static_map 指向 committed asset (tests/assets/headless_map.pgm)。
+  // static_map points to the committed asset (tests/assets/headless_map.pgm).
   {
-    // costmap 参数并入 costmap_navigation.json (原 costmap.json 移除)。
+    // Costmap parameters are merged into costmap_navigation.json (the old costmap.json was removed).
     std::ofstream nav(dir / "costmap_navigation.json", std::ios::app);
     nav << ",\n  \"costmap\": {\n"
         << "    \"global_frame\": \"map\",\n"
@@ -298,7 +298,7 @@ int cmdCount() {
 }
 
 bool nonZeroCmdCountAtLeast(int n) {
-  // 控制器持续周期发 0.5 线性速度, 非零命令占绝大多数; 用总计数近似触发阈值。
+  // The controller keeps emitting 0.5 linear velocity each cycle, so non-zero commands dominate; the total count approximates the trigger threshold.
   std::lock_guard<std::mutex> lock(g_cmd_mutex);
   return g_cmd_count >= n;
 }
@@ -318,27 +318,27 @@ bool waitUntil(const Fn& fn, int timeout_ms = 5000) {
 
 }  // namespace
 
-// ---------------- Headless E2E: 全导航链路 ----------------
+// ---------------- Headless E2E: full navigation pipeline ----------------
 
 TEST(HeadlessE2E, fullNavigationPipeline) {
   // 1. GlobalConfig::instance(tmp config / full suite)
   const auto dir = makeConfigDir();
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
 
-  // 2. NavigationCallbacks 清理 (防 prior 测试泄漏污染)
+  // 2. NavigationCallbacks cleanup (protects against pollution leaked by prior tests)
   detachCollectors();
 
-  // 3. 公共工厂装载 host → AbstractNavigation::Ptr (类型化 cast, 4)
+  // 3. Load the host via the common factory -> AbstractNavigation::Ptr (typed cast, 4)
   auto host_ext = ayanami::ExtensionModule::load_module(g_host_so);
   ASSERT_NE(host_ext, nullptr) << "load_module failed: " << g_host_so;
   AbstractNavigation::Ptr nav =
       std::dynamic_pointer_cast<AbstractNavigation>(std::move(host_ext));
   ASSERT_NE(nav, nullptr);
 
-  // 4. 收集 cmd_vel
+  // 4. Collect cmd_vel
   attachCollectors();
 
-  // 5. 收集 map visualization (验证 start/限频触发 on_costmap_visualization 旁路)
+  // 5. Collect map visualization (verifies the start/rate-limited on_costmap_visualization bypass)
   std::atomic<int> map_count{0};
   ayanami::CallbackSubscription map_cb =
       NavigationCallbacks::on_costmap_visualization.subscribe(
@@ -346,15 +346,15 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
             ++map_count;
           });
 
-  // 6. 启动
+  // 6. Start
   nav->initialize(dir.string());
   nav->start();
 
-  // 7. 障碍观测: setGoal 之前喂 3 帧虚拟 pointcloud (空间外, 不影响规划),
-  // 验证宿主直递落图管线 (AbstractNavigation::setPointcloud, 不走全局输入槽;
-  // 输入/输出分层纪律) 不崩。注意: 不在控制器线程启动后并发喂 (plan 规定
-  // Costmap*Execution::run 整循环持 local wrapper 锁, 并发点云回调会死锁 ——
-  // 发现, 见 report, 待 reviewer 裁决)。
+  // 7. Obstacle observation: feed 3 virtual pointcloud frames before setGoal (outside the map, no planning impact),
+  // verifying the host-delivered map pipeline (AbstractNavigation::setPointcloud, not the global input slot;
+  // input/output layering discipline) does not crash. Note: do not feed concurrently after the controller thread starts (the plan states
+  // Costmap*Execution::run holds the local wrapper lock for the whole loop, so concurrent pointcloud callbacks would deadlock --
+  // discovered, see report, pending reviewer ruling).
   setupTransforms();
   for (int i = 0; i < 3; ++i) {
     nav->setPointcloud(makeFarPointCloud());
@@ -364,22 +364,22 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
   // 8. setGoal (map frame, x=2, y=0, yaw=0)
   nav->setGoal(makePose(2.0, 0.0));
 
-  // 9. 等待 cmd_count 达到预期
+  // 9. Wait for cmd_count to reach the expectation
   EXPECT_TRUE(waitUntil([] { return nonZeroCmdCountAtLeast(3); }, 10000))
       << "cmd_count did not reach threshold: " << cmdCount();
 
-  // 10. 断言: cmd_count > 阈值, cmd_vel 已初始化 (非脏内存/非 NaN)
+  // 10. Assert: cmd_count > threshold, cmd_vel initialized (not dirty memory / not NaN)
   EXPECT_GT(cmdCount(), 1);
   TwistStamped last = g_last_cmd;
   EXPECT_TRUE(std::isfinite(last.twist.linear.x()));
   EXPECT_FALSE(std::isnan(last.twist.angular.z()));
-  // 可视化旁路被触发 (start 首帧 + 限频重复)
+  // The visualization bypass fired (start first frame + rate-limited repeats)
   EXPECT_GT(map_count.load(), 0);
 
-  // 11. nav->stop + cleanup; 析构不崩
+  // 11. nav->stop + cleanup; destruction does not crash
   nav->stop();
   detachCollectors();
-  nav.reset();  // ~CostmapNavigation → stop (幂等) + join, 不得崩
+  nav.reset();  // ~CostmapNavigation -> stop (idempotent) + join, must not crash
 }
 
 int main(int argc, char** argv) {

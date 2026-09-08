@@ -1,15 +1,15 @@
-// 并发回归: controller 每 cycle 经 lockLocal 取 local 读视图 (RAII shared
-// 锁, 零拷贝直读 master grid), 与并发 obstacle 写者 (落障碍 + updateMapUnlocked
-// 重算) 交错, 互不饿死。
+// Concurrency regression: the controller takes a local read view via lockLocal each cycle (RAII shared
+// lock, zero-copy direct read of the master grid), interleaved with a concurrent obstacle writer (drops obstacles +
+// updateMapUnlocked recompute); neither side starves.
 //
-// 旧架构 (BLOCK #1): CostmapControllerExecution::run 整 control loop 持
-// local wrapper recursive_mutex, 会饿死 obstacle feed。新架构单写者 + 多读者:
-// - controller 每 cycle 经 lockLocal 取 local shared 锁视图, 周期结束即释放;
-// - obstacle 写者 (唯一写者) unique 锁内落障碍 + updateMapUnlocked 重算 master;
-// - 读者短持锁, 写者等读者释放后写入, 双方均能推进 (无饿死 / 无死锁)。
+// Old architecture (BLOCK #1): CostmapControllerExecution::run held the local wrapper recursive_mutex for the
+// whole control loop, starving the obstacle feed. New architecture: single writer + multiple readers:
+// - the controller takes a local shared-lock view via lockLocal each cycle and releases it at cycle end;
+// - the obstacle writer (the only writer) drops obstacles and recomputes the master under a unique lock;
+// - readers hold the lock briefly, the writer waits for readers to release, and both sides make progress (no starvation / no deadlock).
 //
-// 断言: 双方都完成足够轮次 (无饿死 / 无死锁), 且 controller 每次 compute 都能
-// 拿到有效锁视图 (无 MapUnavailable)。
+// Asserts: both sides complete enough rounds (no starvation / no deadlock) and the controller obtains a valid lock view
+// on every compute (no MapUnavailable).
 
 #include <gtest/gtest.h>
 
@@ -38,32 +38,30 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
+using ayanami::ResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 
-// 加锁读视图 FakeController: 记录周期数 (写者不被读者饿死的并发验证)。
+/// Lock-read-view fake controller: records the cycle count (concurrency check that the writer is not starved by readers).
 class SnapshotController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::PluginContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_context = std::move(map);
   }
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     ++cycles;
     auto view = map_context->lockLocal();
     if (!view.valid()) {
       ++snapshot_missing;
-      return ControllerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
+      return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
                                         "no local view");
     }
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.5;
-    return ControllerResultT::success(std::move(cmd));
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.5;
+    return ResultT<void>::success();
   }
 
   std::atomic<int> cycles{0};
@@ -75,7 +73,7 @@ class SnapshotController : public ayanami::costmap::CostmapController {
   bool cancel() override { return true; }
 };
 
-// checker 测试桩: 永不到达 + 恒有进展。
+/// Checker test stubs: never reached + always progressing.
 class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
   void reset() override {}
@@ -130,9 +128,9 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
 
   exec.start();
 
-  // obstacle 写者线程: 唯一写者 —— 写锁内 markObservable 落障碍 + updateMap
-  // 发布新 epoch。若 controller 曾持写锁整循环, 这里会被饿死 (feeds 长期不
-  // 增长) / 与旧实现整循环持锁冲突。
+  // Obstacle writer thread: the only writer -- drops obstacles via markObservable under the write lock + updateMap
+  // publishes a new epoch. If the controller held the write lock for a whole cycle, this would starve (feeds would stop
+  // growing) / conflict with the old implementation that held the lock for the whole loop.
   std::thread feeder([&] {
     while (feeding.load()) {
       {
@@ -146,7 +144,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
     ++wrapped;
   });
 
-  // 跑 ~1.2s: @20Hz → ~22 controller cycle; 每 5ms → ~240 次 feed。
+  // Run for ~1.2s: at 20Hz -> ~22 controller cycles; every 5ms -> ~240 feeds.
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
   feeding.store(false);
@@ -155,11 +153,11 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   exec.cancel();
   exec.join();
 
-  // 防饿死: controller 完成 ≥15 cycle 且每次都拿到有效视图 (无 MapUnavailable)。
+  // Anti-starvation: the controller completes >= 15 cycles and got a valid view every time (no MapUnavailable).
   EXPECT_GE(controller->cycles.load(), 15);
   EXPECT_EQ(controller->snapshot_missing.load(), 0)
       << "controller 每 cycle 都应拿到有效视图";
-  // obstacle 写者同样完成 ≥15 次 (读者 shared 锁不阻塞写者以外的读者;
-  // 写者等读者释放, 双方都能推进)。
+  // The obstacle writer also completes >= 15 times (the reader shared lock does not block readers other than the writer;
+  // the writer waits for readers to release, both sides progress).
   EXPECT_GE(obstacle_feeds.load(), 15);
 }

@@ -12,17 +12,17 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 等待恢复模块 (costmap_wait_recovery)。
+ * @brief Wait recovery module (costmap_wait_recovery).
  *
- * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回 RUNNING
- * (不携带速度), 直到 wait_duration 届满返回 SUCCESS; 无运动占用。插件不
- * 自行 sleep, 由 RecoveryExecution 按周期驱动。不读图,
- * 按 CostmapRecovery 契约接收快照但忽略之。
+ * Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Returns RUNNING each cycle
+ * (carrying no velocity) until wait_duration elapses, then returns SUCCESS; no motion is occupied. The plugin does
+ * not sleep on its own; RecoveryExecution drives it per cycle. It does not read the map and,
+ * per the CostmapRecovery contract, receives the snapshot but ignores it.
  */
 class CostmapWaitRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapWaitRecovery() = default;
-  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // The derived layer adds a bare virtual ~ so that shared_ptr deletion goes through the virtual destructor.
   virtual ~CostmapWaitRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
@@ -31,7 +31,7 @@ class CostmapWaitRecovery final : public ayanami::costmap::CostmapRecovery {
   void start() override;
   void setBehaviorParams(
       const ayanami::RecoveryBehaviorParams& params) override;
-  RecoveryResultT tick() override;
+  ResultT<void> tick(RecoveryCycleData& cycle) override;
   void finish() override {}
 
   bool cancel() override;

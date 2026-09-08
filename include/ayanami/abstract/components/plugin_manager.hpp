@@ -13,11 +13,12 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 插件装载描述 。
+ * @brief Plugin loading descriptor.
  *
- * name 为逻辑名 (getPlugin/hasPlugin 用), so_name 为 dlopen 目标 .so。
- * 工厂符号统一为 `create_extension_module` (ExtensionModule 派生类型);
- * 不再有任意 create_symbol 字段。
+ * name is the logical name (used by getPlugin/hasPlugin); so_name is the
+ * .so to dlopen. The factory symbol is uniformly
+ * `create_extension_module` (an ExtensionModule-derived type); there is no
+ * longer an arbitrary create_symbol field.
  */
 struct PluginSpec {
   std::string name;
@@ -25,17 +26,21 @@ struct PluginSpec {
 };
 
 /**
- * @brief 类型化插件管理器 (对标 MBF AbstractPluginManager)。
+ * @brief Typed plugin manager (modeled after MBF AbstractPluginManager).
  *
- * loadPlugin 走 ExtensionModule::load_module (dlopen + dlsym
- * `create_extension_module` 公共工厂) 拿到 ExtensionModule::Ptr, 经类型化
- * std::dynamic_pointer_cast<PluginType> 获得 PluginType::Ptr 并保留所有权
- * (与 ExtensionModule::Ptr 共享引用计数), 再回调 init_fn (调用方注入地图对象);
- * init_fn 返回 false 时不入表。clearPlugins() 在 dlopen 句柄仍存活时释放全部
- * 插件 (析构纪律)。
+ * loadPlugin goes through ExtensionModule::load_module (dlopen + dlsym of
+ * the common `create_extension_module` factory) to obtain an
+ * ExtensionModule::Ptr, gets a PluginType::Ptr via the typed
+ * std::dynamic_pointer_cast<PluginType> while keeping ownership (sharing
+ * the reference count with ExtensionModule::Ptr), then invokes the init_fn
+ * callback (the caller injects map objects); when init_fn returns false the
+ * plugin is not registered. clearPlugins() releases all plugins while the
+ * dlopen handle is still alive (destructor discipline).
  *
- * 模板方法在头文件内联实现; impl/plugin_manager.cpp 为 4 个导航插件抽象做
- * 显式实例化, 把 dlopen 加载路径预编译进 libayanami (全部使用点)。
+ * Template methods are implemented inline in the header;
+ * impl/plugin_manager.cpp performs explicit instantiations for the 4
+ * navigation plugin abstractions, precompiling the dlopen loading path into
+ * libayanami (all use sites).
  */
 template <typename PluginType>
 class PluginManager {
@@ -43,8 +48,9 @@ public:
   using InitFn = std::function<bool(const std::string&,
                                     std::shared_ptr<PluginType>)>;
 
-  /// @brief 装载一个插件。公共工厂 create_extension_module → 类型化 cast →
-  /// 调 init_fn → 入表。失败 (so 打不开 / 类型不符合 / init_fn 拒绝) 返回 false。
+  /// @brief Load one plugin. Common factory create_extension_module ->
+  /// typed cast -> invoke init_fn -> register. Returns false on failure
+  /// (.so cannot be opened / type mismatch / init_fn rejects).
   bool loadPlugin(const PluginSpec& spec, InitFn init_fn) {
     if (spec.name.empty() || spec.so_name.empty()) {
       return false;
@@ -53,8 +59,9 @@ public:
     if (!module) {
       return false;
     }
-    // 类型化转换: 只有真正派生于 PluginType 负载才接受; 转换后与
-    // ExtensionModule::Ptr 共享同一引用计数 (所有权保留)。
+    // Typed conversion: only payloads truly derived from PluginType are
+    // accepted; after conversion the reference count is shared with
+    // ExtensionModule::Ptr (ownership retained).
     std::shared_ptr<PluginType> plugin =
         std::dynamic_pointer_cast<PluginType>(std::move(module));
     if (!plugin) {
@@ -68,10 +75,11 @@ public:
     return true;
   }
 
-  /// @brief 从子配置 json 读 name/so_name 后 loadPlugin。
-  /// @note 不做配置注入: 插件自身的参数由插件在构造/initialize 时经
-  /// GlobalConfig::getConfigPath 显式读取 (glim 式, 无 thread_local)。
-  /// @param default_name 配置缺 name 时的回退逻辑名。
+  /// @brief Read name/so_name from a sub-config json and then loadPlugin.
+  /// @note No config injection: the plugin's own parameters are read
+  /// explicitly by the plugin at construct/initialize time via
+  /// GlobalConfig::getConfigPath (glim-style, no thread_local).
+  /// @param default_name Fallback logical name when the config lacks name.
   bool loadSingleFromConfig(const Config& cfg, const std::string& module_name,
                              const std::string& default_name, InitFn init_fn) {
     PluginSpec spec;
@@ -80,7 +88,7 @@ public:
     return loadPlugin(spec, std::move(init_fn));
   }
 
-  /// @brief 取插件; 未装载返回 nullptr。
+  /// @brief Get a plugin; returns nullptr if not loaded.
   std::shared_ptr<PluginType> getPlugin(const std::string& name) const {
     auto iter = plugins.find(name);
     return iter == plugins.end() ? nullptr : iter->second;
@@ -90,7 +98,7 @@ public:
     return plugins.find(name) != plugins.end();
   }
 
-  /// @brief 已装载插件名列表 (map 序遍历, 按名有序)。
+  /// @brief List of loaded plugin names (map-order traversal, sorted by name).
   std::vector<std::string> getLoadedNames() const {
     std::vector<std::string> names;
     names.reserve(plugins.size());
@@ -100,13 +108,13 @@ public:
     return names;
   }
 
-  /// @brief 释放全部插件对象 (dlopen 句柄不 dlclose, /§4.5)。
+  /// @brief Release all plugin objects (dlopen handles are never dlclosed, /§4.5).
   void clearPlugins() {
     plugins.clear();
     so_names.clear();
   }
 
-  /// @brief 返回某插件来源 .so; 未装载返回空串。
+  /// @brief Return a plugin's source .so; empty string if not loaded.
   std::string getSoName(const std::string& name) const {
     auto iter = so_names.find(name);
     return iter == so_names.end() ? std::string() : iter->second;

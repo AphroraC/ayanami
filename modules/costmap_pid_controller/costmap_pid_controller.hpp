@@ -14,21 +14,21 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 3 轴 PID 局部控制器模块 (controller costmap 族)。
+ * @brief 3-axis PID local controller module (controller costmap family).
  *
- * 纯 path tracker: 只读 robot pose + path, 算法本身不读图; 但按 costmap 族
- * 严格约束继承 costmap::CostmapController 并实现 configure(context, map) +
- * computeVelocityCommand (costmap 宿主只接受 Costmap* 类型)。参考 _legacy
- * pid_controller 重写。
+ * Pure path tracker: it only reads the robot pose + path; the algorithm itself does not read the map. Still, per the strict
+ * costmap family constraint it derives from costmap::CostmapController and implements configure(context, map) +
+ * computeVelocityCommand (the costmap host only accepts Costmap* types). Rewritten with reference to the
+ * _legacy pid_controller.
  *
- * 历史五项控制修复收尾:
- * - computeVelocityCommand 入口 cmd_vel 强制清零 (脏内存 bug)
- * - 差速模式仅 yaw 控制直接朝向 target (不取负号); 全向选最近车体方向角
- * - 同 goal 重复 setPlan 不重置 PID 状态 (plan_signature 比较)
- * - linear 按 max_acc_x/max_decel_x 分开限幅; angular 受 max_acc_theta 限幅
- * - distanceDecay 临近 goal 减速; 位置进入 param.goal_tolerance 的 XY 容差后
- *   线速度置零, 仅 angular PID 对齐 goal 朝向; 到达判定完全交给 execution 层
- *   goal_checker (控制器自身不再宣布到达, 不接收 goal_checker 参数)。
+ * Wrap-up of the five historical control fixes:
+ * - computeVelocityCommand forcibly zeroes cmd_vel at entry (dirty memory bug)
+ * - diff mode: yaw control aims straight at the target (no sign flip); omni mode picks the nearest body-frame direction angle
+ * - repeated setPlan with the same goal does not reset PID state (plan_signature comparison)
+ * - linear is rate-limited separately by max_acc_x/max_decel_x; angular is limited by max_acc_theta
+ * - distanceDecay decelerates near the goal; once the position enters the param.goal_tolerance XY tolerance,
+ *   linear velocity is zeroed and only the angular PID aligns to the goal heading; arrival is fully decided by the execution
+ *   layer goal_checker (the controller no longer declares arrival itself and takes no goal_checker parameter).
  */
 class CostmapPidController final : public ayanami::costmap::CostmapController {
  public:
@@ -38,14 +38,15 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
 
   virtual ~CostmapPidController() = default;
 
-  /// @brief costmap 族注入契约。算法不读图, 仅持有地图模块指针; 参数经
-  /// PluginContext 注入的自身配置读取。
+  /// @brief costmap family injection contract. The algorithm does not read the map and only holds the map module pointer;
+  /// parameters are read from the PluginContext-injected own configuration.
   void configure(const PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
-  ControllerResultT computeVelocityCommand(
+  ResultT<void> computeVelocityCommand(
       const geometry_msgs::PoseStamped& pose,
-      const geometry_msgs::TwistStamped& velocity) override;
+      const geometry_msgs::TwistStamped& velocity,
+      geometry_msgs::TwistStamped& cmd) override;
 
   bool setPlan(const nav_msgs::Path& plan) override;
 
@@ -73,7 +74,7 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
     std::string mode = "diff";  // "omni" | "diff"
   };
 
-  // 单轴 PID: 持 integral/last_error (reset 由 resetTrackingState 统一触发)。
+  // Single-axis PID: holds integral/last_error (reset is triggered uniformly by resetTrackingState).
   struct PidAxis {
     double kp = 1.0;
     double ki = 0.0;

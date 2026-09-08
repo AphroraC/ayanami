@@ -13,12 +13,15 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 恢复行为的 costmap 版 Action ( 生产路径)。
+ * @brief The costmap variant of the recovery Action (production path).
  *
- * 复用 RecoveryAction 全部协议, 只覆写 createExecution 工厂:
- * 返回 CostmapRecoveryExecution (激活/停用 global+local + 加锁读图; 改图
- * 类恢复经 CommandPort 提交命令, 不再持锁直写 master)。执行配置器
- * (server 装配: 速度上限) 经 configure 注入, 默认无操作。
+ * Reuses the entire RecoveryAction protocol and only overrides the
+ * createExecution factory:
+ * returns a CostmapRecoveryExecution (activate/deactivate global+local +
+ * locked map reads; map-modifying recoveries submit commands via
+ * CommandPort instead of writing the master grid under a lock directly).
+ * The execution configurator (server assembly: velocity limits) is
+ * injected via configure; a no-op by default.
  */
 class CostmapRecoveryAction : public ayanami::components::RecoveryAction {
  public:

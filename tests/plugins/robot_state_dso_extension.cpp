@@ -1,12 +1,12 @@
-// robot_state_dso_extension.cpp — 跨 DSO RobotStateController 单例验证插件。
+// robot_state_dso_extension.cpp -- cross-DSO RobotStateController singleton verification plugin.
 //
-// 链接 libayanami (SHARED), 经 dlopen + 公共工厂装载。导出 3 个纯函数:
-// - robotStateDsoInstance: 经本 .so 解析到的 instance 地址 (uintptr_t)。
+// Linked against libayanami (SHARED), loaded via dlopen + the common factory. Exports 3 plain functions:
+// - robotStateDsoInstance: the instance address (uintptr_t) as resolved by this .so.
 // - robotStateDsoReadVelocityX / robotStateDsoSetVelocity:
-// 经本 .so 的符号解析读写同一单例。
-// 测试断言主二进制 (writer, 对标 ayanami_ros odomCallback) 与 dlopen 的插件
-// (reader, 对标核心 controller execution) 解析到同一 instance 且共享状态 ——
-// 证明 instance 定义只在 libayanami 内一份, 而非每个 .so header-inline 一份。
+// Reads/writes the same singleton through this .so symbol resolution.
+// The test asserts that the main binary (writer, standing in for the ayanami_ros odomCallback) and the dlopen plugin
+// (reader, standing in for the core controller execution) resolve to the same instance and share state --
+// proving the instance definition lives only once inside libayanami, not header-inlined per .so.
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/utility/extension_module.hpp>

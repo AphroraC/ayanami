@@ -1,4 +1,4 @@
-// twirling.hpp — 迁移自 dwb_critics/twirling.hpp。
+// twirling.hpp -- ported from dwb_critics/twirling.hpp.
 #pragma once
 
 #include <string>

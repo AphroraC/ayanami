@@ -1,11 +1,14 @@
-// NavigationServerBase 主实现 。
+// NavigationServerBase main implementation.
 //
-// 生命周期纪律 : 析构先 stop 停全部 action (取消 + join 槽线程),
-// 再 reset 各 action map, 再 clearPlugins 释放插件对象 (dlopen 句柄仍存活时析构)。
-// 零 ROS include (红线 §5.7)。
+// Lifecycle discipline: the destructor first stops all actions (cancel +
+// join slot threads), then resets the action maps, then clearPlugins
+// releases the plugin objects (destructed while the dlopen handles are
+// still alive).
+// Zero ROS includes (red line §5.7).
 //
-// 分派纪律: planner/smoother/controller 支持 multiple loaded plugin configs
-// (main config.json 的 global 段里 config_* string-or-list 已是 array-capable),
+// Dispatch discipline: planner/smoother/controller support multiple loaded
+// plugin configs (in the main config.json's global section the config_*
+// string-or-list is already array-capable),
 // Planner, smoother and controller each use one configured plugin/action.
 // Recovery remains an ordered set of independently addressable actions.
 
@@ -42,9 +45,11 @@ std::string loadedNames(const ActionMap& actions) {
   return out;
 }
 
-// 插件文件族枚举: config_navigation 的 navigation 段里 navigation[family_key]
-// 为单字符串或字符串数组 (数组即多插件文件族, 目前只有 config_recovery 用)。
-// 返回相对 config_path 解析后的完整路径 (绝对路径原样保留)。
+// Plugin file family enumeration: in config_navigation's navigation
+// section, navigation[family_key] is a single string or a string array (an
+// array means a multi-plugin file family; currently only config_recovery
+// uses it). Returns full paths resolved relative to config_path (absolute
+// paths kept as-is).
 std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
                                            const std::string& family_key) {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
@@ -54,7 +59,7 @@ std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
       entries = navigation.param<std::vector<std::string>>(
           "navigation", family_key, {});
     } catch (const std::exception&) {
-      // navigation[family_key] 是单字符串。
+      // navigation[family_key] is a single string.
     }
     if (entries.empty()) {
       const std::string single =
@@ -106,8 +111,10 @@ NavigationServerBase::~NavigationServerBase() {
 void NavigationServerBase::loadPlugins(const std::string& config_path) {
   ayanami::GlobalConfig::instance(config_path, /*override_path=*/true);
 
-  // 模块 id 单一来源 = 各模块 json 自身的 name 字段: 前三个族各只装载一个
-  // 插件, 无独立 *_id 配置键; recovery 是有序文件族 (config_recovery vector)。
+  // Module id single source of truth = each module json's own name field:
+  // the first three families each load exactly one plugin, with no separate
+  // *_id config keys; recovery is an ordered file family (config_recovery
+  // vector).
   ayanami::Config nav_cfg(
       ayanami::GlobalConfig::getConfigPath("config_navigation"));
   default_planner.clear();
@@ -117,13 +124,21 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   default_goal_checker.clear();
   default_progress_checker.clear();
 
-  // 速度上限单一来源 = navigation.{max_vel_x,max_vel_y,max_vel_theta}:
-  // 缓存为成员, createActions controller execution factory 注入
-  // ControllerExecution::setMaximumVelocity。参数非负 (max_vel_y=0 禁止横移)。
+  // Velocity limit single source of truth =
+  // navigation.{max_vel_x,max_vel_y,max_vel_theta}:
+  // cached as members and injected by the createActions controller execution
+  // factory via ControllerExecution::setMaximumVelocity. Parameters are
+  // non-negative (max_vel_y=0 forbids lateral motion).
   max_vel_x = nav_cfg.param<double>("navigation", "max_vel_x", max_vel_x);
   max_vel_y = nav_cfg.param<double>("navigation", "max_vel_y", max_vel_y);
   max_vel_theta =
       nav_cfg.param<double>("navigation", "max_vel_theta", max_vel_theta);
+  // Patience (nav2 failure_tolerance / recovery patience analogues;
+  // <=0 disables).
+  controller_patience =
+      nav_cfg.param<double>("navigation", "controller_patience", 0.0);
+  recovery_patience =
+      nav_cfg.param<double>("navigation", "recovery_patience", 0.0);
 
   // planner/smoother/controller each have exactly one configured plugin.
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
@@ -173,7 +188,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeControllerPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
-  // recovery (config_recovery 有序文件族; 顺序即 RecoverySequence 声明序)
+  // recovery (ordered config_recovery file family; the order is the RecoverySequence declaration order)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_recovery")) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
@@ -184,7 +199,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeRecoveryPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
-  // goal checker (单插件; 参数从 PluginContext 注入)
+  // goal checker (single plugin; params injected via PluginContext)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_goal_checker")) {
     ayanami::Config cfg(path);
     const std::string name =
@@ -202,7 +217,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
           return initializeGoalCheckerPlugin(loaded_name, cfg, std::move(plugin));
         });
   }
-  // progress checker (单插件; 参数从 PluginContext 注入)
+  // progress checker (single plugin; params injected via PluginContext)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_progress_checker")) {
     ayanami::Config cfg(path);
     const std::string name =
@@ -313,7 +328,7 @@ void NavigationServerBase::createActions() {
                   default_controller);
   }
 
-  // recovery: 为所有已装载 recovery 插件建 action (requestRecovery 按 id 分派)
+  // recovery: build an action for every loaded recovery plugin (requestRecovery dispatches by id)
   for (const auto& name : recovery_plugins.getLoadedNames()) {
     auto recovery = recovery_plugins.getPlugin(name);
     if (!recovery) {
@@ -335,7 +350,7 @@ void NavigationServerBase::createActions() {
 
 void NavigationServerBase::configureControllerExecution(
     std::shared_ptr<ControllerExecution> exec) const {
-  // 目标/进展检查插件注入 (execution 运行时消费)。
+  // Goal/progress checker plugin injection (consumed by the execution at runtime).
   if (auto checker = goal_checker_plugins.getPlugin(default_goal_checker)) {
     exec->setGoalChecker(std::move(checker));
   } else if (!default_goal_checker.empty()) {
@@ -349,16 +364,28 @@ void NavigationServerBase::configureControllerExecution(
     spdlog::warn("NavigationServerBase: progress checker '{}' not loaded",
                  default_progress_checker);
   }
-  // 速度上限注入 (navigation.max_vel_{x,y,theta} 缓存; validVelocityCommand
-  // 在 execution 层拒绝超限命令, max_vel_y=0 同时禁止横移)。
+  // Velocity limit injection (navigation.max_vel_{x,y,theta} cache;
+  // validVelocityCommand rejects over-limit commands at the execution layer,
+  // and max_vel_y=0 also forbids lateral motion).
   exec->setMaximumVelocity(max_vel_x, max_vel_y, max_vel_theta);
+  // Failure patience (navigation.controller_patience, nav2
+  // failure_tolerance analogue): only after no valid command persists for
+  // this long does the execution report a terminal state; retry decisions
+  // still belong to the BT.
+  exec->setPatience(controller_patience);
 }
 
 void NavigationServerBase::configureRecoveryExecution(
     std::shared_ptr<RecoveryExecution> exec) const {
-  // 速度上限注入 (与 controller 同一来源 navigation.max_vel_*);
-  // RecoveryExecution 在唯一发布前校验 finite + max_vel 并清零非法命令。
+  // Velocity limit injection (same source as the controller:
+  // navigation.max_vel_*);
+  // RecoveryExecution validates finite + max_vel before its sole publish and
+  // zeroes invalid commands.
   exec->setMaximumVelocity(max_vel_x, max_vel_y, max_vel_theta);
+  // Recovery patience (navigation.recovery_patience): framework-level
+  // per-run timeout so a recovery plugin without self-limiting cannot stay
+  // RUNNING forever.
+  exec->setRecoveryPatience(recovery_patience);
 }
 
 PlannerAction* NavigationServerBase::plannerAction(
@@ -469,12 +496,13 @@ NavigationServerBase::requestRecovery(
   g.plan_version = currentPlanVersion();
   try {
     auto task = iter->second->acceptGoal(g);
-    // 资源协议: recovery 结束 (含异常兜底路径的 publishResult) 后才允许
-    // controller 恢复接受请求。
+    // Resource protocol: the controller may resume accepting requests only
+    // after the recovery finishes (including the exception-fallback path's
+    // publishResult).
     task.onComplete([this] { recovery_exclusive.store(false); });
     return task;
   } catch (...) {
-    // acceptGoal 异常: 无 TaskHandle 可挂释放回调, 立即归还互斥再抛出。
+    // acceptGoal exception: no TaskHandle exists to attach the release callback, so return the mutex immediately and rethrow.
     recovery_exclusive.store(false);
     throw;
   }
@@ -494,9 +522,10 @@ bool NavigationServerBase::requestPlanUpdate(
 
 void NavigationServerBase::cancelAllControllers() {
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
-  // 抢占/新会话/halt 纪律: 取消所有装载 controller 的 action map, 而不只是
-  // 默认 id 的那一个 —— multiple controller configs 下默认 id 之外的控制器
-  // 任务同样必须停止, 否则抢占后残留速度输出。
+  // Preemption/new-session/halt discipline: cancel the entire loaded
+  // controller action map, not just the default id's entry -- with multiple
+  // controller configs, controller tasks beyond the default id must stop
+  // too, otherwise stale velocity output remains after preemption.
   if (controller_action) controller_action->cancelAll();
 }
 
@@ -547,7 +576,7 @@ std::shared_ptr<NavigationSessionState> NavigationServerBase::sessionState()
   return session_state;
 }
 
-// ---- 语义: 无效插件 id 的结构化失败 TaskHandle ----
+// ---- Semantics: a structured-failure TaskHandle for an invalid plugin id ----
 
 template <typename Result>
 TaskHandle<Result> NavigationServerBase::rejectedHandle(
@@ -566,7 +595,7 @@ TaskHandle<Result> NavigationServerBase::rejectedHandle(
                             []() { return false; });
 }
 
-// ---- 虚钩子默认实现 ----
+// ---- Virtual hook default implementations ----
 
 bool NavigationServerBase::initializePlannerPlugin(
     const std::string& name, const ayanami::Config&, AbstractPlanner::Ptr) {
@@ -595,7 +624,7 @@ bool NavigationServerBase::initializeRecoveryPlugin(
 bool NavigationServerBase::initializeGoalCheckerPlugin(
     const std::string& name, const ayanami::Config& module_config,
     AbstractGoalChecker::Ptr ptr) {
-  // checker 无地图依赖: 默认钩子直接注入 PluginContext (派生可覆写)。
+  // checkers have no map dependency: the default hook injects the PluginContext directly (derived servers may override).
   if (ptr) {
     ptr->configure(ayanami::PluginContext{name, module_config});
   }

@@ -1,16 +1,16 @@
-// 并发回归: 读者持 shared 锁 (lockGlobal 读视图) 期间写者被阻塞, 释放后写者
-// 完成写入且无数据竞争 (加锁直读模型)。
+// Concurrency regression: while a reader holds the shared lock (the lockGlobal read view) the writer is blocked;
+// after release the writer completes its write with no data race (locked direct-read model).
 //
-// 旧架构 (BLOCK #1): CostmapPlannerExecution::run 整次规划持 global wrapper
-// recursive_mutex, 规划长达数百毫秒 (大宗 A*) 期间 obstacle feed 被饿死。
-// 新架构: 单写者 + 多读者, 读者经 CostmapMapContext::lockGlobal 取 RAII shared
-// 锁视图 (零拷贝直读 master grid, 单次规划 <10ms 短持), 写者 (唯一) 等读者
-// 释放后 unique 锁写入。
+// Old architecture (BLOCK #1): CostmapPlannerExecution::run held the global wrapper recursive_mutex for the entire
+// plan, starving the obstacle feed during multi-hundred-millisecond plans (large A*).
+// New architecture: single writer + multiple readers; a reader takes an RAII shared-lock view via CostmapMapContext::lockGlobal
+// (zero-copy direct read of the master grid, held briefly for a <10ms plan), and the writer (the only one) waits for readers
+// to release before writing under the unique lock.
 //
-// 断言:
-// - 读窗口内写者的 unique 锁尝试被阻塞 (try_lock 失败);
-// - 读窗口内另一读者可并发读且多次读值一致 (shared 锁共享, 无 torn 读);
-// - 读窗口释放后写者完成写入, 后续读者看到新值 (无丢失 / 无数据竞争)。
+// Assertions:
+// - during the read window the writer unique-lock attempt is blocked (try_lock fails);
+// - during the read window another reader can read concurrently with consistent values across reads (shared lock shared, no torn reads);
+// - after the read window is released the writer completes its write and later readers see the new value (no loss / no data race).
 
 #include <gtest/gtest.h>
 
@@ -37,26 +37,26 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// 慢速规划插件: 持有 map ConstPtr, makePlan 内经 lockGlobal 取读视图 (shared
-// 锁) 并阻塞到 release 才返回 (模拟长时搜索)。视图 RAII 存活 = 读窗口持锁,
-// 读窗口内写者被阻塞; 记录读到的 (2,2) 值证明读窗口内地图稳定。
+/// Slow planning plugin: holds the map ConstPtr; inside makePlan it takes a read view via lockGlobal (shared
+/// lock) and blocks until release (simulating a long search). The view RAII lifetime = the read window holding the lock;
+/// the writer is blocked during the read window; the recorded (2,2) value proves the map stayed stable within the read window.
 class SlowPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_context = std::move(map);
   }
-  PlannerResultT makePlan(
+  ResultT<void> makePlan(
       const ayanami::geometry_msgs::PoseStamped&,
-      const ayanami::geometry_msgs::PoseStamped&, double) override {
+      const ayanami::geometry_msgs::PoseStamped&, double, ayanami::nav_msgs::Path& plan_out) override {
     ++calls;
     auto view = map_context->lockGlobal();
     if (!view.valid()) {
-      return PlannerResultT::failure(ErrorCode::MAP_UNAVAILABLE,
+      return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
                                      "no global view");
     }
     saw_cell.store(view.grid()->getCost(2, 2));
@@ -70,7 +70,8 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
         return released.load();
       });
     }
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 
@@ -106,7 +107,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setGlobalCostmap(global);
 
-  // 写者先行落一个障碍 (2,2): 读窗口内的稳定读必须看到它且不被改写。
+  // The writer first drops an obstacle at (2,2): the stable reads within the read window must see it and it must not be rewritten.
   {
     std::unique_lock<std::shared_mutex> lock(global->mutex());
     global->get().getCostmap()->setCost(2, 2, costmap_2d::LETHAL_OBSTACLE);
@@ -119,7 +120,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
 
   exec.start(PoseStamped{}, PoseStamped{}, 0.1);
 
-  // 等 planner 取到读视图并阻塞 (此刻读窗口打开, 持有 shared 锁)。
+  // Wait for the planner to take its read view and block (the read window is open and holding the shared lock).
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->entered.wait_for(
@@ -127,21 +128,21 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
         [&] { return planner->calls.load() >= 1; }));
   }
 
-  // 读窗口内另一读者可并发读, 且与 planner 读到的值一致 (无 torn 读)。
+  // Another reader can read concurrently within the read window, matching the planner value (no torn reads).
   {
     auto view = ctx->lockGlobal();
     ASSERT_TRUE(view.valid());
     EXPECT_EQ(view.grid()->getCost(2, 2), planner->saw_cell.load());
   }
 
-  // 读窗口内写者尝试 unique 锁失败 → 被读者阻塞。
+  // Within the read window the writer unique-lock attempt fails -> blocked by the reader.
   {
     std::unique_lock<std::shared_mutex> lock_writer(global->mutex(),
                                                     std::try_to_lock);
     EXPECT_FALSE(lock_writer.owns_lock());
   }
 
-  // 放行 planner: 读视图析构释放 shared 锁 → 写者取到 unique 锁完成写入。
+  // Release the planner: the read view destructor frees the shared lock -> the writer takes the unique lock and completes its write.
   planner->releasePlanner();
   exec.join();
   EXPECT_EQ(planner->calls.load(), 1);
@@ -152,7 +153,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
     global->updateMapUnlocked(0.0, 0.0, 0.0);
   }
 
-  // 写者完成后读者读到新值 (无丢失 / 无数据竞争)。
+  // After the writer finishes, readers read the new value (no loss / no data race).
   ctx->readGlobal([&](const costmap_2d::Costmap2D& grid) {
     EXPECT_EQ(grid.getCost(2, 2), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   });

@@ -1,14 +1,14 @@
-// modules/costmap_savitzky_smoother (CostmapSmoother 族 7 点
-// Savitzky-Golay 平滑)。
+// modules/costmap_savitzky_smoother (CostmapSmoother-family 7-point
+// Savitzky-Golay smoothing).
 //
-// 覆盖:
-// - L 形 zigzag input (10 poses) → smoothPath 后更平滑 (一阶差分长度和减小),
-// path size 不减小, 两端点固定不动
-// - max_duration=0.001s 立即 SUCCESS (允许放过部分或全部)
-// - 空 path / 点数 < 7 → SUCCESS, out=in
-// - check_for_collision=true: 平滑后路径经过障碍 cell → 回滚到 original path,
-// msg 含 "collision"
-// - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
+// Coverage:
+// - an L-shaped zigzag input (10 poses) becomes smoother after smoothPath (the sum of first-difference lengths decreases),
+// the path size does not shrink, and both endpoints stay fixed
+// - max_duration=0.001s succeeds immediately (may skip some or all points)
+// - empty path / fewer than 7 points -> SUCCESS, out=in
+// - collision check (always on): if the smoothed path crosses an obstacle cell -> roll back to the original path,
+// msg contains "collision"
+// - module.cpp exports the unified create_extension_module factory (verified via dlopen)
 
 #include <gtest/gtest.h>
 
@@ -37,14 +37,14 @@
 
 namespace {
 
-using ayanami::SmootherResultT;
+using ayanami::ResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::modules::CostmapSavitzkySmoother;
 using ayanami::nav_msgs::Path;
 
 std::string g_module_so;
 
-// ---------------- 测试工具 ----------------
+// ---------------- Test utilities ----------------
 
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
     unsigned int size, double res,
@@ -68,7 +68,10 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
 std::shared_ptr<CostmapMapContext> makeContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto ctx = std::make_shared<CostmapMapContext>();
+  // Family read contract: the smoother reads the LOCAL map -- the test grid
+  // is installed as the local map (a global copy keeps the context complete).
   ctx->setGlobalCostmap(wrapper);
+  ctx->setLocalCostmap(wrapper);
   return ctx;
 }
 
@@ -88,7 +91,7 @@ ayanami::geometry_msgs::PoseStamped makePose(double x, double y) {
   return p;
 }
 
-// L 形 zigzag path (10 poses): 5 沿 +x 再 5 沿 +y。
+/// L-shaped zigzag path (10 poses): 5 along +x then 5 along +y.
 Path makeLPath() {
   Path p;
   p.header.frame_id = "map";
@@ -101,7 +104,7 @@ Path makeLPath() {
   return p;
 }
 
-// 一阶差分 (欧氏步长) 绝对值之和: 越小越平滑。
+/// Sum of absolute first differences (Euclidean steps): the smaller, the smoother.
 double pathLengthSum(const Path& p) {
   double sum = 0.0;
   for (std::size_t i = 1; i < p.poses.size(); ++i) {
@@ -126,7 +129,7 @@ bool posesEqual(const Path& a, const Path& b) {
 
 }  // namespace
 
-// ---------- 平滑有效性 ----------
+// ---------- Smoothing effectiveness ----------
 
 TEST(CostmapSavitzkySmootherTest, smoothsLShapedPath) {
   auto wrapper = makeWrapper(20, 0.5);
@@ -134,12 +137,12 @@ TEST(CostmapSavitzkySmootherTest, smoothsLShapedPath) {
 
   const Path in = makeLPath();
   Path out = in;
-  const SmootherResultT result = smoother->smoothPath(out, 10.0, false);
+  const ResultT<void> result = smoother->smoothPath(out, 10.0);
 
   ASSERT_TRUE(result.ok) << result.message;
   EXPECT_EQ(out.poses.size(), in.poses.size());
   EXPECT_LT(pathLengthSum(out), pathLengthSum(in));
-  // 两端点固定不动。
+  // Both endpoints stay fixed.
   EXPECT_NEAR(out.poses.front().pose.position.x(),
               in.poses.front().pose.position.x(), 1e-9);
   EXPECT_NEAR(out.poses.front().pose.position.y(),
@@ -156,44 +159,44 @@ TEST(CostmapSavitzkySmootherTest, tinyMaxDurationReturnsSuccess) {
 
   const Path in = makeLPath();
   Path out = in;
-  const SmootherResultT result = smoother->smoothPath(out, 0.001, false);
+  const ResultT<void> result = smoother->smoothPath(out, 0.001);
 
   ASSERT_TRUE(result.ok) << result.message;
   EXPECT_GE(out.poses.size(), in.poses.size());
   EXPECT_FALSE(out.poses.empty());
 }
 
-// ---------- 空 / 短 path ----------
+// ---------- Empty / short path ----------
 
 TEST(CostmapSavitzkySmootherTest, emptyPathReturnsSuccessWithEmptyOut) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
-  Path in;  // 空 path: 无可平滑窗口
-  const SmootherResultT result = smoother->smoothPath(in, 10.0, false);
+  Path in;  // Empty path: no window to smooth
+  const ResultT<void> result = smoother->smoothPath(in, 10.0);
 
   ASSERT_TRUE(result.ok) << result.message;
-  // in-place: 空 path 保持为空, 不发明新点。
+  // In-place: an empty path stays empty; no invented points.
   EXPECT_TRUE(in.poses.empty());
-  EXPECT_TRUE(result.data.poses.empty());
+  EXPECT_TRUE(in.poses.empty());
 }
 
 TEST(CostmapSavitzkySmootherTest, shortPathReturnsSuccessWithSamePath) {
   auto wrapper = makeWrapper(20, 0.5);
   auto smoother = makeSmoother(wrapper);
 
-  Path in;  // 3 < 7 个点
+  Path in;  // 3 < 7 points
   for (int i = 0; i < 3; ++i) {
     in.poses.push_back(makePose(static_cast<double>(i), 0.0));
   }
   const Path original = in;
-  const SmootherResultT result = smoother->smoothPath(in, 10.0, false);
+  const ResultT<void> result = smoother->smoothPath(in, 10.0);
 
   ASSERT_TRUE(result.ok) << result.message;
   EXPECT_TRUE(posesEqual(in, original));
 }
 
-// ---------- 碰撞检查回滚 ----------
+// ---------- Collision-check rollback ----------
 
 TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
   auto wrapper = makeWrapper(20, 0.5);
@@ -203,10 +206,10 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
 
   const Path in = makeLPath();
   Path smoothed = in;
-  ASSERT_TRUE(smoother->smoothPath(smoothed, 10.0, false).ok);
-  ASSERT_FALSE(posesEqual(smoothed, in));  // 平滑确实移动了内部点
+  ASSERT_TRUE(smoother->smoothPath(smoothed, 10.0).ok);
+  ASSERT_FALSE(posesEqual(smoothed, in));  // Smoothing did move the interior points
 
-  // 找平滑后经过、但 original path 未经过的自由 cell, 置为 lethal。
+  // Find a free cell that the smoothed path crosses but the original path does not, and set it lethal.
   std::set<std::pair<unsigned int, unsigned int>> orig_cells;
   for (const auto& p : in.poses) {
     unsigned int mx = 0;
@@ -237,24 +240,24 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
     }
   }
   ASSERT_TRUE(found) << "expected a smoothed corner-cut cell to place obstacle";
-  // 唯一写者路径: unique 锁内直接在 master grid 落障碍 (测试只改栅格不下发
-  // 层), 后续 smoothPath 经 shared 锁直读即见。
+  // Single-writer path: drop the obstacle directly onto the master grid under a unique lock (the test only edits the grid,
+  // not the layers); the later smoothPath sees it via the shared-lock direct read.
   {
     std::unique_lock<std::shared_mutex> lock(wrapper->mutex());
     wrapper->get().getCostmap()->setCost(cell_x, cell_y,
                                          costmap_2d::LETHAL_OBSTACLE);
   }
 
-  // 重平滑 + 碰撞检查 → in-place 回滚到 original path (加锁直读含障碍)。
+  // Re-smooth + collision check -> in-place rollback to the original path (the locked direct read includes the obstacle).
   Path out = in;
-  const SmootherResultT result = smoother->smoothPath(out, 10.0, true);
+  const ResultT<void> result = smoother->smoothPath(out, 10.0);
 
   ASSERT_TRUE(result.ok) << result.message;
-  EXPECT_TRUE(posesEqual(out, in));  // 回滚到 original
+  EXPECT_TRUE(posesEqual(out, in));  // Rolled back to the original
   EXPECT_NE(result.message.find("collision"), std::string::npos);
 }
 
-// ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------
+// ---------- module.cpp factory symbols (common factory + typed cast) ----------
 
 TEST(CostmapSavitzkySmootherTest, moduleFactoryCreatesSmoother) {
   ASSERT_FALSE(g_module_so.empty());

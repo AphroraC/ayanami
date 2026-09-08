@@ -1,11 +1,11 @@
-// modules/costmap_smac_planner (CostmapPlanner 族 A* 全局路径规划)。
+// modules/costmap_smac_planner (CostmapPlanner-family A* global path planning).
 //
-// 覆盖:
-// - makePlan 全 free 地图 start/goal → ok, path 非空, 起点≈start, 终点≈goal
-// - goal 在 obstacle → nearestValidGoal → ok (tolerance 覆盖) / GOAL_INVALID (无 tolerance)
-// - start 在 obstacle / 越界 → ErrorCode::START_INVALID
-// - cancel 中途打断 → ErrorCode::CANCELED
-// - module.cpp 导出统一 create_extension_module 工厂 (dlopen 验证)
+// Coverage:
+// - makePlan with start/goal on an all-free map -> ok, non-empty path, start ~ start, end ~ goal
+// - goal inside an obstacle -> nearestValidGoal -> ok (with tolerance) / GOAL_INVALID (without tolerance)
+// - start inside an obstacle / out of bounds -> ErrorCode::START_INVALID
+// - cancel mid-planning -> ErrorCode::CANCELED
+// - module.cpp exports the unified create_extension_module factory (verified via dlopen)
 
 #include <gtest/gtest.h>
 
@@ -24,6 +24,7 @@
 #include <costmap_2d_layers/static_layer.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -34,16 +35,16 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::modules::CostmapSmacPlanner;
 
 std::string g_module_so;
 
-// ---------------- 测试工具 ----------------
+// ---------------- Test utilities ----------------
 
-// 建一个 NxN @ res, origin=(0,0) 的 LayeredCostmap + StaticLayer 小地图。
-// obstacle_fn 回调可标记障碍 (默认全 free)。
+// Builds a small NxN @ res LayeredCostmap + StaticLayer with origin=(0,0).
+// The obstacle_fn callback can mark obstacles (all free by default).
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
     unsigned int size, double res,
     const std::function<void(costmap_2d::Costmap2D&)>& obstacle_fn = {}) {
@@ -70,6 +71,22 @@ std::shared_ptr<CostmapMapContext> makeContext(
   return ctx;
 }
 
+// Planning overlay test context: identity map<-odom so the local grid
+// coordinates coincide with the global ones (isolated frames per test).
+std::shared_ptr<CostmapMapContext> makeOverlayContext(
+    const std::shared_ptr<costmap_2d::CostmapWrapper>& global_wrapper,
+    const std::shared_ptr<costmap_2d::CostmapWrapper>& local_wrapper) {
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map_o", "odom_o", "base_o", 0.25);
+  rsc.setTransform("odom_o", "map_o", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  auto ctx = std::make_shared<CostmapMapContext>();
+  ctx->setFrames("map_o", "odom_o", "base_o");
+  ctx->setGlobalCostmap(global_wrapper);
+  ctx->setLocalCostmap(local_wrapper);
+  return ctx;
+}
+
 std::shared_ptr<CostmapSmacPlanner> makePlanner(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto planner = std::make_shared<CostmapSmacPlanner>();
@@ -85,7 +102,7 @@ ayanami::geometry_msgs::PoseStamped makePose(double x, double y) {
   return p;
 }
 
-// cell (mx,my) 中心的世界坐标 (res=0.5, origin=0)。
+/// World coordinates of the center of cell (mx,my) (res=0.5, origin=0).
 ayanami::geometry_msgs::PoseStamped cellCenter(unsigned int mx, unsigned int my,
                                                double res = 0.5) {
   return makePose((static_cast<double>(mx) + 0.5) * res,
@@ -94,19 +111,19 @@ ayanami::geometry_msgs::PoseStamped cellCenter(unsigned int mx, unsigned int my,
 
 }  // namespace
 
-// ---------- makePlan 成功路径 ----------
+// ---------- makePlan success path ----------
 
 TEST(CostmapSmacPlannerTest, makePlanSuccessOnFreeMap) {
-  auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5m = 10m x 10m, 全 free
+  auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5m = 10m x 10m, all free
   auto planner = makePlanner(wrapper);
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(17, 17);
-  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
 
   ASSERT_TRUE(result.ok) << result.message;
-  ASSERT_FALSE(result.data.poses.empty());
-  const ayanami::nav_msgs::Path& plan = result.data;
+  ASSERT_FALSE(plan.poses.empty());
   EXPECT_NEAR(plan.poses.front().pose.position.x(), start.pose.position.x(), 1e-6);
   EXPECT_NEAR(plan.poses.front().pose.position.y(), start.pose.position.y(), 1e-6);
   EXPECT_NEAR(plan.poses.back().pose.position.x(), goal.pose.position.x(), 1e-6);
@@ -114,7 +131,7 @@ TEST(CostmapSmacPlannerTest, makePlanSuccessOnFreeMap) {
 }
 
 TEST(CostmapSmacPlannerTest, makePlanRoutesAroundObstacle) {
-  // 中央 4x4 障碍块 (cells 8..11), start/goal 在两侧。
+  // A central 4x4 obstacle block (cells 8..11) with start/goal on either side.
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -126,16 +143,94 @@ TEST(CostmapSmacPlannerTest, makePlanRoutesAroundObstacle) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(17, 17);
-  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
 
   ASSERT_TRUE(result.ok) << result.message;
-  ASSERT_FALSE(result.data.poses.empty());
+  ASSERT_FALSE(plan.poses.empty());
 }
 
-// ---------- goal 在 obstacle (nearestValidGoal) ----------
+// ---------- Goal inside an obstacle (nearestValidGoal) ----------
+
+// ---------- Family read contract: the overlay includes local-only obstacles ----------
+
+TEST(CostmapSmacPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
+  // Global: fully free corridor. Local: a wall across the straight line
+  // (column x=9..10, full height). With the overlay the straight path is
+  // blocked; A* must detour around the wall (path leaves the corridor
+  // column band).
+  auto global_wrapper = makeWrapper(20, 0.5);
+  auto local_wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
+    // Wall across the corridor with gaps at the top/bottom rows (y<4 or
+    // y>15) so a detour exists.
+    for (unsigned int y = 4; y <= 15; ++y) {
+      m.setCost(9, y, costmap_2d::LETHAL_OBSTACLE);
+      m.setCost(10, y, costmap_2d::LETHAL_OBSTACLE);
+    }
+  });
+  auto planner = std::make_shared<CostmapSmacPlanner>();
+  planner->configure(
+      ayanami::PluginContext{"test_smac", ayanami::Config("")},
+      makeOverlayContext(global_wrapper, local_wrapper)->getSharedConstPtr());
+
+  auto start = cellCenter(2, 9);
+  auto goal = cellCenter(17, 9);
+  ayanami::nav_msgs::Path plan;
+  const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
+
+  ASSERT_TRUE(result.ok) << result.message;
+  ASSERT_FALSE(plan.poses.empty());
+  // Detour proof: some interior pose must leave the blocked column band
+  // (cells 9..10 = x in [4.25, 5.75)).
+  bool left_band = false;
+  for (const auto& pose : plan.poses) {
+    const double x = pose.pose.position.x();
+    if (x < 4.25 || x >= 5.75) {
+      left_band = true;
+    }
+  }
+  EXPECT_TRUE(left_band) << "plan should detour around the local-only wall";
+}
+
+// A control: without the local map the same straight corridor plans straight.
+TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
+  auto global_wrapper = makeWrapper(20, 0.5);
+  auto local_wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
+    for (unsigned int y = 0; y < m.getSizeInCellsY(); ++y) {
+      m.setCost(9, y, costmap_2d::LETHAL_OBSTACLE);
+      m.setCost(10, y, costmap_2d::LETHAL_OBSTACLE);
+    }
+  });
+  // Context carries ONLY the global map (no local wrapper): the overlay
+  // degrades to global, and the straight corridor stays straight.
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map_o2", "odom_o2", "base_o2", 0.25);
+  rsc.setTransform("odom_o2", "map_o2", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  auto ctx = std::make_shared<CostmapMapContext>();
+  ctx->setFrames("map_o2", "odom_o2", "base_o2");
+  ctx->setGlobalCostmap(global_wrapper);
+  auto planner = std::make_shared<CostmapSmacPlanner>();
+  planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
+                     ctx->getSharedConstPtr());
+
+  auto start = cellCenter(2, 9);
+  auto goal = cellCenter(17, 9);
+  ayanami::nav_msgs::Path plan;
+  const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
+
+  ASSERT_TRUE(result.ok) << result.message;
+  for (const auto& pose : plan.poses) {
+    const double x = pose.pose.position.x();
+    if (x >= 4.25 && x < 5.75) {
+      EXPECT_NEAR(pose.pose.position.y(), start.pose.position.y(), 1e-6);
+      break;  // straight segment inside the band
+    }
+  }
+}
 
 TEST(CostmapSmacPlannerTest, goalInObstacleWithToleranceFindsNearest) {
-  // 中央 4x4 障碍块 (cells 8..11), goal 在块中心 (10,10)。
+  // A central 4x4 obstacle block (cells 8..11) with the goal at the block center (10,10).
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -147,10 +242,11 @@ TEST(CostmapSmacPlannerTest, goalInObstacleWithToleranceFindsNearest) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(10, 10);
-  const PlannerResultT result = planner->makePlan(start, goal, 1.0);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 1.0, plan);
 
   ASSERT_TRUE(result.ok) << result.message;
-  ASSERT_FALSE(result.data.poses.empty());
+  ASSERT_FALSE(plan.poses.empty());
 }
 
 TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
@@ -165,13 +261,14 @@ TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(10, 10);
-  const PlannerResultT result = planner->makePlan(start, goal, 0.0);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 0.0, plan);
 
   ASSERT_FALSE(result.ok);
   EXPECT_EQ(result.error, ErrorCode::GOAL_INVALID);
 }
 
-// ---------- start 异常 ----------
+// ---------- start errors ----------
 
 TEST(CostmapSmacPlannerTest, startInObstacleReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
@@ -183,39 +280,35 @@ TEST(CostmapSmacPlannerTest, startInObstacleReturnsErrorSegment) {
   });
   auto planner = makePlanner(wrapper);
 
-  auto start = cellCenter(10, 10);  // 障碍内
+  auto start = cellCenter(10, 10);  // Inside an obstacle
   auto goal = cellCenter(2, 2);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
 
   ASSERT_FALSE(result.ok);
   EXPECT_EQ(result.error, ErrorCode::START_INVALID);
-  EXPECT_TRUE(result.data.poses.empty());
+  EXPECT_TRUE(plan.poses.empty());
 }
 
 TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5);
   auto planner = makePlanner(wrapper);
 
-  auto start = makePose(-1.0, -1.0);  // 越界 (origin 0)
+  auto start = makePose(-1.0, -1.0);  // Out of bounds (origin 0)
   auto goal = cellCenter(5, 5);
-  ayanami::nav_msgs::Path plan;
-  double cost = 0.0;
-  std::string message;
-  const PlannerResultT result = planner->makePlan(start, goal, 0.1);
+ayanami::nav_msgs::Path plan;
+    const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
 
   ASSERT_FALSE(result.ok);
   EXPECT_EQ(result.error, ErrorCode::START_INVALID);
-  EXPECT_TRUE(result.data.poses.empty());
+  EXPECT_TRUE(plan.poses.empty());
 }
 
-// ---------- cancel 中途打断 ----------
+// ---------- Cancel mid-planning ----------
 
 TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
-  // 800x800 @ 0.05 = 40m x 40m。goal 位于 lethal 环内 (ring 1 cell 厚):
-  // A* 必须扩展整个可达区域才能判 NO_PATH (约 100ms), 给 cancel 留足窗口。
+  // 800x800 @ 0.05 = 40m x 40m. The goal sits inside a lethal ring (1 cell thick):
+  // A* must expand the whole reachable area before reporting NO_PATH (~100ms), leaving plenty of window for cancel.
   auto wrapper = makeWrapper(800, 0.05, [](costmap_2d::Costmap2D& m) {
     const unsigned int c = 400;
     for (int dy = -1; dy <= 1; ++dy) {
@@ -235,12 +328,13 @@ TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
   std::atomic<bool> done{false};
   std::atomic<ErrorCode> error{ErrorCode::NONE};
   std::thread worker([&] {
-    const PlannerResultT result = planner->makePlan(start, goal, 0.0);
+ayanami::nav_msgs::Path plan;
+        const ResultT<void> result = planner->makePlan(start, goal, 0.0, plan);
     error.store(result.error);
     done.store(true);
   });
 
-  // 让搜索跑一小段时间再 cancel
+  // Let the search run briefly, then cancel
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
   EXPECT_TRUE(planner->cancel());
   worker.join();
@@ -248,7 +342,7 @@ TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
   EXPECT_EQ(error.load(), ErrorCode::CANCELED);
 }
 
-// ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast) ----------
+// ---------- module.cpp factory symbols (common factory + typed cast) ----------
 
 TEST(CostmapSmacPlannerTest, moduleFactoryCreatesPlanner) {
   ASSERT_FALSE(g_module_so.empty());

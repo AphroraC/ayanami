@@ -1,4 +1,4 @@
-// 测试插件: costmap 族 planner (SoCostmapPlanner), 公共工厂导出。
+// Test plugin: costmap-family planner (SoCostmapPlanner), common factory export.
 
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -9,18 +9,18 @@ namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
-using ayanami::PlannerResultT;
-
+using ayanami::ResultT;
 class SoCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
   void configure(const ayanami::PluginContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
-  PlannerResultT makePlan(const PoseStamped& /*start*/, const PoseStamped& /*goal*/,
-                          double /*tolerance*/) override {
+  ResultT<void> makePlan(const PoseStamped& /*start*/, const PoseStamped& /*goal*/,
+                          double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
     Path plan;
     plan.header.frame_id = "map";
     plan.poses.resize(2);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

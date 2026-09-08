@@ -1,11 +1,13 @@
-// modules/costmap_smac_planner — A* 全局路径规划模块。
+// modules/costmap_smac_planner -- A* global path planning module.
 //
-// 纯 C++ (零 ROS): 在 CostmapView 加锁零拷贝读图 (global master grid) 上做
-// 标准 4/8 连通 A*。参考 _legacy SmacPlannerAStar 语义但重写:
-// - 阻断: cell cost >= INSCRIBED_INFLATED_OBSTACLE (253 起 lethal)
-// - 行走代价: step * (neutral_cost + cost_factor * cell_cost)
-// - goal 在障碍内: nearestValidGoal 在 tolerance 内搜索最近可行格 (近似路径)
-// - cancel: 搜索循环逐节点检查, 打断后返回 ErrorCode::CANCELED
+// Pure C++ (zero ROS): runs on a lock-held zero-copy overlay read via
+// CostmapPlanningView (family read contract: planner = global+local
+// superposition, per-cell conservative max; NO_INFORMATION dominates),
+// standard 4/8-connected A*. Rewritten with reference to _legacy SmacPlannerAStar semantics:
+// - Blocking: cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
+// - Traversal cost: step * (neutral_cost + cost_factor * cell_cost)
+// - Goal inside an obstacle: nearestValidGoal searches for the nearest valid cell within tolerance (approximate path)
+// - cancel: checked node by node in the search loop; once interrupted, returns ErrorCode::CANCELED
 
 #include "costmap_smac_planner.hpp"
 
@@ -30,27 +32,33 @@ struct Cell {
   unsigned int y{0};
 };
 
-// A* 搜索参数 (从私有 Param 提取, 匿名命名空间无需访问私有类型)。
+// A* search parameters (extracted from the private Param; the anonymous namespace cannot access private types).
 struct SearchParams {
   bool use_diagonal{true};
   double cost_factor{0.5};
   double neutral_cost{1.0};
 };
 
-bool isBlocked(const costmap_2d::Costmap2D* cm, unsigned int x, unsigned int y) {
-  return cm->getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
-}
+// Overlay cost accessor: cost of a global-grid cell under the family read
+// contract (planner = global+local superposition). Provided by the caller
+// (CostmapPlanningView::costAtGlobalCell); kept as a template parameter so
+// A* stays allocation-free on the hot path.
 
-// 标准 A*。返回 {found, cost, cells(start→goal)}。canceled 逐节点检查。
+// Standard A*. Returns {found, cost, cells(start->goal)}. canceled is checked node by node.
 struct AStarResult {
   bool found{false};
   double cost{0.0};
   std::vector<Cell> cells;
 };
 
+template <typename CostAt>
 AStarResult runAStar(const costmap_2d::Costmap2D* cm, const SearchParams& params,
-                     unsigned int sx, unsigned int sy, unsigned int gx,
-                     unsigned int gy, const std::atomic<bool>& canceled) {
+                     CostAt&& cost_at, unsigned int sx, unsigned int sy,
+                     unsigned int gx, unsigned int gy,
+                     const std::atomic<bool>& canceled) {
+  const auto blocked = [&cost_at](unsigned int x, unsigned int y) {
+    return cost_at(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  };
   const unsigned int width = cm->getSizeInCellsX();
   const unsigned int height = cm->getSizeInCellsY();
   const std::size_t size =
@@ -124,13 +132,13 @@ AStarResult runAStar(const costmap_2d::Costmap2D* cm, const SearchParams& params
       }
       const unsigned int ux = static_cast<unsigned int>(nx);
       const unsigned int uy = static_cast<unsigned int>(ny);
-      if (isBlocked(cm, ux, uy)) {
+      if (blocked(ux, uy)) {
         continue;
       }
-      // 8 连通禁止穿角: 两个正交邻域也须可行。
+      // 8-connected forbids cutting corners: both orthogonal neighbors must also be valid.
       if (off.first != 0 && off.second != 0) {
-        if (isBlocked(cm, cur.x + static_cast<unsigned int>(off.first), cur.y) ||
-            isBlocked(cm, cur.x, cur.y + static_cast<unsigned int>(off.second))) {
+        if (blocked(cur.x + static_cast<unsigned int>(off.first), cur.y) ||
+            blocked(cur.x, cur.y + static_cast<unsigned int>(off.second))) {
           continue;
         }
       }
@@ -142,7 +150,7 @@ AStarResult runAStar(const costmap_2d::Costmap2D* cm, const SearchParams& params
       const double step = diagonal ? k_diagonal_step : 1.0;
       const double move_cost =
           step * (params.neutral_cost +
-                  params.cost_factor * static_cast<double>(cm->getCost(ux, uy)));
+                  params.cost_factor * static_cast<double>(cost_at(ux, uy)));
       const double tentative = g_score[cur_idx] + move_cost;
       if (tentative < g_score[nidx]) {
         parent[nidx] = static_cast<int>(cur_idx);
@@ -154,10 +162,15 @@ AStarResult runAStar(const costmap_2d::Costmap2D* cm, const SearchParams& params
   return AStarResult{};
 }
 
-// 在 (gx,gy) 周围 radius=tolerance_cells 内找最近可行格 (含自身)。
-bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
-                      unsigned int gy, double tolerance_cells,
-                      unsigned int& ox, unsigned int& oy) {
+// Finds the nearest valid cell within radius=tolerance_cells around (gx,gy) (including itself).
+template <typename CostAt>
+bool nearestValidGoal(const costmap_2d::Costmap2D* cm, CostAt&& cost_at,
+                      unsigned int gx, unsigned int gy,
+                      double tolerance_cells, unsigned int& ox,
+                      unsigned int& oy) {
+  const auto blocked = [&cost_at](unsigned int x, unsigned int y) {
+    return cost_at(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  };
   const int radius = static_cast<int>(std::ceil(std::max(0.0, tolerance_cells)));
   for (int r = 0; r <= radius; ++r) {
     for (int dy = -r; dy <= r; ++dy) {
@@ -175,7 +188,7 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
         if (ux >= cm->getSizeInCellsX() || uy >= cm->getSizeInCellsY()) {
           continue;
         }
-        if (isBlocked(cm, ux, uy)) {
+        if (blocked(ux, uy)) {
           continue;
         }
         ox = ux;
@@ -193,8 +206,8 @@ bool nearestValidGoal(const costmap_2d::Costmap2D* cm, unsigned int gx,
 void CostmapSmacPlanner::configure(
     const PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局);
-  // 配置键缺失时保持默认值。
+  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout);
+  // missing config keys keep the default values.
   const Config& file = context.config;
   param.use_diagonal = file.param<bool>("costmap_smac_planner", "use_diagonal",
                                         param.use_diagonal);
@@ -227,35 +240,41 @@ bool CostmapSmacPlanner::setNewGoal(
   return true;
 }
 
-PlannerResultT CostmapSmacPlanner::makePlan(
+ResultT<void> CostmapSmacPlanner::makePlan(
     const geometry_msgs::PoseStamped& start,
-    const geometry_msgs::PoseStamped& goal, double tolerance) {
+    const geometry_msgs::PoseStamped& goal, double tolerance,
+    nav_msgs::Path& plan_out) {
   canceled.store(false);
 
   if (!map_context) {
-    return PlannerResultT::failure(
+    return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no costmap module");
   }
-  // 持 shared 锁读图 (整个规划持有, <10ms), 零拷贝; 地图写者等锁写入。
-  auto costmap = map_context->lockGlobal();
+  // Family read contract: the planner reads the global+local overlay.
+  // Hold both shared locks for the whole plan (<10 ms), zero copy; the map
+  // writer waits for the locks to write.
+  auto costmap = map_context->lockPlanning();
 
-  const costmap_2d::Costmap2D* cm = costmap.grid();
+  const costmap_2d::Costmap2D* cm = costmap.globalGrid();
+  const auto cost_at = [&costmap](unsigned int mx, unsigned int my) {
+    return costmap.costAtGlobalCell(mx, my);
+  };
   if (!cm) {
-    return PlannerResultT::failure(
+    return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no global costmap");
   }
 
-  // start pose 留空 (默认构造: 平移全零 + frame 空) 时回退到
-  // 读视图解析的机器人位姿 (视图构建时经 TransformStore 解析)。
+  // When the start pose is empty (default-constructed: all-zero translation + empty frame), fall back to
+  // the robot pose resolved by the read view (resolved via TransformStore when the view was built).
   geometry_msgs::PoseStamped start_pose = start;
   if (start_pose.pose.position.norm() == 0.0 &&
-      start_pose.header.frame_id.empty() && costmap.has_robot_pose()) {
-    start_pose = costmap.robot_pose();
+      start_pose.header.frame_id.empty() && costmap.hasRobotPose()) {
+    start_pose = costmap.robotPose();
   }
 
   if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&
       start_pose.header.frame_id != goal.header.frame_id) {
-    return PlannerResultT::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
+    return ResultT<void>::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
                                    "Start and goal frames do not match");
   }
 
@@ -265,17 +284,17 @@ PlannerResultT CostmapSmacPlanner::makePlan(
   unsigned int gy = 0;
   if (!cm->worldToMap(start_pose.pose.position.x(),
                       start_pose.pose.position.y(), sx, sy)) {
-    return PlannerResultT::failure(ErrorCode::START_INVALID,
+    return ResultT<void>::failure(ErrorCode::START_INVALID,
                                    "Start pose is outside the global costmap");
   }
   if (!cm->worldToMap(goal.pose.position.x(), goal.pose.position.y(),
                       gx, gy)) {
-    return PlannerResultT::failure(ErrorCode::GOAL_INVALID,
+    return ResultT<void>::failure(ErrorCode::GOAL_INVALID,
                                    "Goal pose is outside the global costmap");
   }
 
-  if (isBlocked(cm, sx, sy)) {
-    return PlannerResultT::failure(ErrorCode::START_INVALID,
+  if (costmap.blockedAtGlobalCell(sx, sy)) {
+    return ResultT<void>::failure(ErrorCode::START_INVALID,
                                    "Start pose is blocked");
   }
 
@@ -283,13 +302,14 @@ PlannerResultT CostmapSmacPlanner::makePlan(
   const double tolerance_cells =
       tolerance_m / std::max(cm->getResolution(), 1e-9);
 
-  // goal 在障碍内: nearestValidGoal 在 tolerance 内找最近可行格。
+  // Goal inside an obstacle: nearestValidGoal finds the nearest valid cell within tolerance.
   unsigned int target_x = gx;
   unsigned int target_y = gy;
   bool approximate = false;
-  if (isBlocked(cm, gx, gy)) {
-    if (!nearestValidGoal(cm, gx, gy, tolerance_cells, target_x, target_y)) {
-      return PlannerResultT::failure(
+  if (costmap.blockedAtGlobalCell(gx, gy)) {
+    if (!nearestValidGoal(cm, cost_at, gx, gy, tolerance_cells, target_x,
+                          target_y)) {
+      return ResultT<void>::failure(
           ErrorCode::GOAL_INVALID,
           "Goal pose is blocked and no valid cell within tolerance");
     }
@@ -302,16 +322,16 @@ PlannerResultT CostmapSmacPlanner::makePlan(
   params.neutral_cost = param.neutral_cost;
 
   const AStarResult result =
-      runAStar(cm, params, sx, sy, target_x, target_y, canceled);
+      runAStar(cm, params, cost_at, sx, sy, target_x, target_y, canceled);
   if (canceled.load()) {
-    return PlannerResultT::failure(ErrorCode::CANCELED, "Planning canceled");
+    return ResultT<void>::failure(ErrorCode::CANCELED, "Planning canceled");
   }
   if (!result.found || result.cells.empty()) {
-    return PlannerResultT::failure(ErrorCode::PATH_NOT_FOUND,
+    return ResultT<void>::failure(ErrorCode::PATH_NOT_FOUND,
                                    "No path found");
   }
 
-  // 构建 plan: cell → world pose。
+  // Build the plan: cell -> world pose.
   nav_msgs::Path plan;
   plan.header.frame_id =
       start_pose.header.frame_id.empty() ? "map" : start_pose.header.frame_id;
@@ -329,7 +349,7 @@ PlannerResultT CostmapSmacPlanner::makePlan(
   if (!plan.poses.empty()) {
     plan.poses.front().pose = start_pose.pose;
     if (approximate) {
-      // 近似 goal: 保持最近可行格位置, 只对齐朝向。
+      // Approximate goal: keep the nearest valid cell position and align only the heading.
       plan.poses.back().pose.orientation = goal.pose.orientation;
     } else {
       plan.poses.back().pose = goal.pose;
@@ -344,7 +364,8 @@ PlannerResultT CostmapSmacPlanner::makePlan(
     }
   }
 
-  auto out = PlannerResultT::success(std::move(plan));
+  plan_out = std::move(plan);
+  auto out = ResultT<void>::success();
   out.message = approximate ? "Smac planner found an approximate path"
                             : "Smac planner found a path";
   return out;

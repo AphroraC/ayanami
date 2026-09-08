@@ -101,3 +101,13 @@ map_server 加载 `nav_demo/map/ayanami.yaml` → 指向
 纯函数转换：fromRosPose / fromRosTwist / fromRosPointCloud2 / fromRosLaserScan
 / toRosPath / toRosOccupancyGrid；`ros::Time(0) ↔ Timestamp::latest()`。
 scan/pointcloud 的 frame_id 原样保留，落图时由核心经 TransformStore 解析。
+
+## 输出边界（rviz_viewer / cmd_chassis_publisher）
+
+- `rviz_viewer`：纯旁路可视化扩展——订阅全局回调槽发布路径/costmap/
+  goal/feedback/status/**navigation_status**；不发布任何速度命令，
+  不引入 rm_msgs。话题参数在 `config_extensions.json::rviz_viewer`。
+- `cmd_chassis_publisher`：底盘命令唯一 ROS 输出——订阅
+  `on_velocity_command` 发布 `rm_msgs/ChassisCmd`（mode/accel/power_limit，
+  语义同 cmd_vel_bridge）；参数在 `config_extensions.json::cmd_chassis_publisher`。
+- ayanami_ros 本体只做 ROS 输入（订阅 + TF 同步 + goal 邮箱）。

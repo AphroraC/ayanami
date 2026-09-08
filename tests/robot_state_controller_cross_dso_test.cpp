@@ -1,14 +1,14 @@
-// RobotStateController 跨 DSO 单例集成测试。
+// RobotStateController cross-DSO singleton integration test.
 //
-// 背景 (关键纪律同类): RobotStateController::instance 若在 header
-// 内 inline 定义, 每个 .so 各持一份静态局部实例 —— ayanami_ros odomCallback
-// 写者 (libayanami_ros.so) 直写的速度, 核心 controller execution 读者
-// (libayanami_costmap_navigation.so, 经 ServerControllerAction factory) 读不到。
-// 定义下沉到 libayanami 的 .cpp 后, 所有链接 libayanami 的 DSO 解析到同一实例。
+// Background (same class of key discipline): if RobotStateController::instance were defined inline in the
+// header, every .so would hold its own static local instance -- velocities written directly by the ayanami_ros odomCallback
+// writer (libayanami_ros.so) would be invisible to the core controller execution reader
+// (libayanami_costmap_navigation.so, via the ServerControllerAction factory).
+// With the definition sunk into a libayanami .cpp, every DSO linking libayanami resolves to the same instance.
 //
-// 本测试用 dlopen 的测试插件 (robot_state_dso_extension.so, 链接 libayanami)
-// 模拟"另一个 DSO": 主二进制写速度 → 插件读到同一值 (共享可变状态); 主二进制
-// 与插件解析到的 instance 地址一致 (单个实例)。
+// This test uses a dlopen test plugin (robot_state_dso_extension.so, linked against libayanami) to play
+// "another DSO": the main binary writes a velocity and the plugin reads the same value (shared mutable state); the instance
+// addresses resolved by the main binary and the plugin are identical (a single instance).
 //
 // argv: 1=robot_state_dso_extension.so
 
@@ -51,12 +51,12 @@ TEST(RobotStateControllerCrossDSO, coreAndPluginResolveSameInstance) {
   ASSERT_NE(dso_read, nullptr);
   ASSERT_NE(dsoWrite, nullptr);
 
-  // 同一地址: 插件解析到的 instance == 主二进制解析到的 instance。
+  // Same address: the instance resolved by the plugin == the instance resolved by the main binary.
   EXPECT_EQ(dso_instance(),
             reinterpret_cast<uintptr_t>(&RobotStateController::instance()));
 
-  // 写者 (本二进制, 对标 ayanami_ros odomCallback) 直写 → 读者 (插件 DSO,
-  // 对标核心 controller execution) 读到同一值。证明跨 DSO 共享可变状态。
+  // The writer (this binary, standing in for the ayanami_ros odomCallback) writes directly -> the reader (the plugin DSO,
+  // standing in for the core controller execution) reads the same value. Proves cross-DSO shared mutable state.
   RobotStateController& rsc = RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 0.25);
   rsc.resetVelocity();
@@ -69,7 +69,7 @@ TEST(RobotStateControllerCrossDSO, coreAndPluginResolveSameInstance) {
   EXPECT_TRUE(rsc.hasFreshVelocity());
   EXPECT_DOUBLE_EQ(dso_read(), 0.75);
 
-  // 反向: 插件 DSO 写入 → 主二进制 (对标核心读者) 读到同一值。
+  // Reverse: the plugin DSO writes -> the main binary (standing in for the core reader) reads the same value.
   dsoWrite(1.25);
   EXPECT_DOUBLE_EQ(rsc.getRobotVelocity().twist.linear.x(), 1.25);
 }

@@ -10,12 +10,12 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 简单目标检查模块 (对标 MBF SimpleGoalChecker)。
+ * @brief Simple goal checker module (modeled on MBF SimpleGoalChecker).
  *
- * 纯 C++ (零 ROS): xy 距离 < pose.position 且相对转角 < pose.angle,
- * 且线速度 < velocity.linear 且角速度 < velocity.angular → 到达。
- * 容差经 simple_goal_checker.json 的 simple_goal_checker 段配置
- * (configure 期从 PluginContext 注入)。
+ * Pure C++ (zero ROS): xy distance of pose.position and relative rotation angle of pose.angle within tolerance,
+ * and linear velocity < velocity.linear and angular velocity < velocity.angular -> arrived.
+ * Tolerances are configured via the simple_goal_checker section of simple_goal_checker.json
+ * (injected from PluginContext at configure time).
  */
 class SimpleGoalChecker final : public ayanami::abstract::AbstractGoalChecker {
  public:

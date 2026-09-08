@@ -1,11 +1,11 @@
 // Requirement 2/3 focused tests:
-// A. 所有生产模块 .so 都经公共工厂 create_extension_module 装载, 且类型化
-// dynamic_pointer_cast 到正确插件族类型 (不再有任意 create* 符号)。
-// B. 默认树扩展模块 (navigation_behavior_tree) 可独立装载: load_module →
-// BehaviorTreeExtension cast → registerNodes + registerTrees → createTree →
-// tick (执行树)。
+// A. All production module .so files load through the common create_extension_module factory and are
+// typed dynamic_pointer_cast to the correct plugin family type (no arbitrary create* symbols anymore).
+// B. The default-tree extension module (navigation_behavior_tree) loads standalone: load_module ->
+// BehaviorTreeExtension cast -> registerNodes + registerTrees -> createTree ->
+// tick (execute the tree).
 //
-// argv (一律为生产模块 .so 的绝对路径):
+// argv (always absolute paths of production module .so files):
 // 1=host(costmap_navigation) 2=dwb 3=smac 4=savitzky 5=pid
 // 6=spin 7=backup 8=wait 9=clear 10=goal_checker 11=progress_checker
 // 12=navigation_behavior_tree
@@ -46,7 +46,7 @@ std::string g_host_so, g_dwb_so, g_smac_so, g_savitzky_so, g_pid_so;
 std::string g_spin_so, g_backup_so, g_wait_so, g_clear_so;
 std::string g_goal_checker_so, g_progress_checker_so, g_bt_ext_so;
 
-// 类型化装载断言: ExtensionModule::load_module → dynamic_pointer_cast<T> 非空。
+/// Typed-load assertion: ExtensionModule::load_module -> dynamic_pointer_cast<T> is non-null.
 template <typename T>
 void expectLoadsAs(const std::string& so, const char* what = nullptr) {
   auto ext = ayanami::ExtensionModule::load_module(so);
@@ -61,7 +61,7 @@ void expectLoadsAs(const std::string& so, const char* what = nullptr) {
 
 }  // namespace
 
-// ========== A. 所有生产模块经公共工厂 + 类型化 cast 装载 ==========
+// ========== A. All production modules load via the common factory + typed cast ==========
 
 TEST(ExtensionModuleFactoryTest, allProductionModulesLoadViaCommonFactory) {
   expectLoadsAs<ayanami::abstract::AbstractNavigation>(g_host_so, "host");
@@ -82,18 +82,18 @@ TEST(ExtensionModuleFactoryTest, allProductionModulesLoadViaCommonFactory) {
 }
 
 TEST(ExtensionModuleFactoryTest, nonNavigationModuleIsNotNavigation) {
-  // 反例: goal_checker .so 不得被 cast 成 AbstractNavigation。
+  // Counter-example: the goal_checker .so must not be castable to AbstractNavigation.
   auto ext = ayanami::ExtensionModule::load_module(g_goal_checker_so);
   ASSERT_NE(ext, nullptr);
   EXPECT_EQ(std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(ext),
             nullptr);
 }
 
-// ========== B. 默认树扩展独立装载 + 注册 + 建树 + 执行 ==========
+// ========== B. Default-tree extension loads standalone + registers + builds the tree + executes ==========
 
 namespace {
 
-// 最小同步 NavigationServer 桩: 每个 request 立即返回成功结果。
+/// Minimal synchronous NavigationServer stub: every request immediately returns a success result.
 class StubNavServer : public ayanami::components::NavigationServerBase {
  public:
   using PathServer = ayanami::components::ActionServer<
@@ -190,7 +190,7 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   EXPECT_EQ(ext->name(), "navigation");
   EXPECT_EQ(ext->defaultTreeId(), "NavigateWithReplanningAndSmoothing");
 
-  // 独立注册 (不依赖 pilot): 节点 + 默认树 XML 全来自扩展。
+  // Standalone registration (no pilot): nodes + default tree XML all come from the extension.
   BT::BehaviorTreeFactory factory;
   EXPECT_NO_THROW(ext->registerNodes(factory));
   std::vector<std::string> tree_ids;
@@ -221,7 +221,7 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));
 
   auto tree = factory.createTree(ext->defaultTreeId(), bb);
-  // 执行树: mock path/smooth/exe 同步成功 → 数次 tick 后整树 SUCCESS。
+  // Executing the tree: mock path/smooth/exe succeed synchronously -> the whole tree is SUCCESS after a few ticks.
   const int deadline_ms = 2000;
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
   const auto deadline =

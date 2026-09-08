@@ -25,15 +25,15 @@ void writeJson(const std::filesystem::path& path,
 } // namespace
 
 TEST(ConfigTest, emptyFileGracefulReturn) {
-  // 文件打不开 -> spdlog::error + 空 json，param 回退 default
+  // File cannot be opened -> spdlog::error + empty json, param falls back to default
   auto dir = makeTempConfigDir();
   ayanami::Config cfg((dir / "nonexistent.json").string());
   EXPECT_EQ(cfg.param<int>("any", "any", 42), 42);
 }
 
 TEST(ConfigTest, emptyOrInvalidJsonGracefulReturn) {
-  // 文件存在但内容非法 JSON -> nlohmann parse_error 被捕获 -> spdlog::error +
-  // 空 json，param 回退 default（不 abort）
+  // File exists but contains invalid JSON -> the nlohmann parse_error is caught -> spdlog::error +
+  // empty json, param falls back to default (no abort)
   auto dir = makeTempConfigDir();
   writeJson(dir / "invalid_config.json", R"({ "unclosed": )");
   ayanami::Config cfg((dir / "invalid_config.json").string());
@@ -42,7 +42,7 @@ TEST(ConfigTest, emptyOrInvalidJsonGracefulReturn) {
 }
 
 TEST(ConfigTest, eigenIsometry3dVector) {
-  // TUM 7 元 x2: [x,y,z,qx,qy,qz,qw] * 2
+  // Two TUM 7-element entries: [x,y,z,qx,qy,qz,qw] * 2
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json",
              R"({ "p": { "vec": [1,2,3,0,0,0,1, 4,5,6,0,0,0,1] } })");
@@ -65,7 +65,7 @@ TEST(ConfigTest, loadAndParamScalar) {
 }
 
 TEST(ConfigTest, vectorStringParam) {
-  // extension_modules 等字符串数组经 Config API 读取。
+  // String arrays such as extension_modules are read via the Config API.
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json",
              R"({ "m": { "ext": ["libayanami_rviz_viewer.so", "libecho.so"] } })");
@@ -78,7 +78,7 @@ TEST(ConfigTest, vectorStringParam) {
 }
 
 TEST(ConfigTest, nestedVectorStringParam) {
-  // tf_sync_edges 所需 [[target, source], ...] (std::vector<std::vector<std::string>>)。
+  // tf_sync_edges expects [[target, source], ...] (std::vector<std::vector<std::string>>).
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json",
              R"({ "m": { "edges": [["map", "odom"], ["odom", "base_link"]] } })");
@@ -107,7 +107,7 @@ TEST(ConfigTest, vector2dFootprintParam) {
 }
 
 TEST(ConfigTest, eigenTrait) {
-  // TUM 7 元 [x,y,z,qx,qy,qz,qw]; JSON 带注释验证 ignore_comments=true
+  // TUM 7-element [x,y,z,qx,qy,qz,qw]; JSON with comments verifies ignore_comments=true
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json",
              R"({ "p": { "t": [1,2,3,0,0,0,1] } }  // TUM 7 元
@@ -121,7 +121,7 @@ TEST(ConfigTest, eigenTrait) {
 }
 
 TEST(GlobalConfigTest, configsSubdirFallback) {
-  // §2.2 branch ④: 目录下无 config.json 但 configs/config.json 存在 -> 切到 configs/
+  // §2.2 branch (4): no config.json in the directory but configs/config.json exists -> switch to configs/
   auto dir = makeTempConfigDir();
   std::filesystem::create_directories(dir / "configs");
   writeJson(dir / "configs" / "config.json", R"({ "global": {} })");
@@ -141,7 +141,7 @@ TEST(GlobalConfigTest, instanceOnce) {
 }
 
 TEST(GlobalConfigTest, pathResolution) {
-  // config_path 是文件 -> 取父目录; override 重建 + config_path 写回
+  // config_path is a file -> take the parent directory; the override rebuilds + writes config_path back
   auto dir = makeTempConfigDir();
   writeJson(dir / "config.json", R"({ "global": { "config_path": "" } })");
   ayanami::GlobalConfig* g =

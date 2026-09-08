@@ -11,7 +11,7 @@ namespace costmap_2d {
 
 class LayeredCostmap;
 
-// 成本图层的纯虚基类。插件实现 updateBounds/updateCosts 读写主 grid。
+/// Pure virtual base class of costmap layers. Plugins implement updateBounds/updateCosts to read and write the master grid.
 class Layer {
  public:
   using Ptr = std::shared_ptr<Layer>;

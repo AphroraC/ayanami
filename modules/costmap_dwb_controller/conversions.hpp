@@ -1,5 +1,5 @@
-// conversions.hpp — nav_2d_utils/conversions.hpp 的 ayanami 化 (Eigen 类型
-// ↔ 2D 类型)。tf2::getYaw / orientationAroundZAxis 换数学实现, 语义一致。
+// conversions.hpp -- ayanami-ized nav_2d_utils/conversions.hpp (Eigen types
+// <-> 2D types). tf2::getYaw / orientationAroundZAxis are replaced with math implementations with identical semantics.
 #pragma once
 
 #include <Eigen/Geometry>
@@ -11,19 +11,19 @@
 namespace dwb_core {
 namespace conversions {
 
-/// @brief 等价 tf2::getYaw (四元数 → 偏航)。
+/// @brief Equivalent of tf2::getYaw (quaternion -> yaw).
 inline double getYaw(const Eigen::Quaterniond& q) {
-  // tf2::getYaw 语义: atan2(2(wz + xy), 1 - 2(y^2 + z^2))
+  // tf2::getYaw semantics: atan2(2(wz + xy), 1 - 2(y^2 + z^2))
   return std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
                     1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
 }
 
-/// @brief 等价 nav2_util::geometry_utils::orientationAroundZAxis。
+/// @brief Equivalent of nav2_util::geometry_utils::orientationAroundZAxis.
 inline Eigen::Quaterniond orientationAroundZAxis(double angle) {
   return Eigen::Quaterniond(Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ()));
 }
 
-/// @brief 等价 nav_2d_utils::twist2Dto3D。
+/// @brief Equivalent of nav_2d_utils::twist2Dto3D.
 inline ayanami::geometry_msgs::Twist twist2Dto3D(
     const nav_2d_msgs::Twist2D& cmd_vel_2d) {
   ayanami::geometry_msgs::Twist cmd_vel;
@@ -33,7 +33,7 @@ inline ayanami::geometry_msgs::Twist twist2Dto3D(
   return cmd_vel;
 }
 
-/// @brief 等价 nav_2d_utils::twist3Dto2D。
+/// @brief Equivalent of nav_2d_utils::twist3Dto2D.
 inline nav_2d_msgs::Twist2D twist3Dto2D(
     const ayanami::geometry_msgs::Twist& cmd_vel) {
   nav_2d_msgs::Twist2D cmd_vel_2d;
@@ -43,7 +43,7 @@ inline nav_2d_msgs::Twist2D twist3Dto2D(
   return cmd_vel_2d;
 }
 
-/// @brief 等价 nav_2d_utils::poseStampedToPose2D。
+/// @brief Equivalent of nav_2d_utils::poseStampedToPose2D.
 inline nav_2d_msgs::Pose2DStamped poseStampedToPose2D(
     const ayanami::geometry_msgs::PoseStamped& pose) {
   nav_2d_msgs::Pose2DStamped pose2d;
@@ -55,7 +55,7 @@ inline nav_2d_msgs::Pose2DStamped poseStampedToPose2D(
   return pose2d;
 }
 
-/// @brief 等价 nav_2d_utils::poseToPose2D (Isometry3d 版)。
+/// @brief Equivalent of nav_2d_utils::poseToPose2D (Isometry3d version).
 inline geometry_msgs::Pose2D poseToPose2D(
     const Eigen::Isometry3d& pose) {
   geometry_msgs::Pose2D pose2d;
@@ -66,7 +66,7 @@ inline geometry_msgs::Pose2D poseToPose2D(
   return pose2d;
 }
 
-/// @brief 等价 nav_2d_utils::pose2DToPose (返回 Isometry3d)。
+/// @brief Equivalent of nav_2d_utils::pose2DToPose (returns Isometry3d).
 inline Eigen::Isometry3d pose2DToPose(const geometry_msgs::Pose2D& pose2d) {
   Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
   pose.translation() = Eigen::Vector3d(pose2d.x, pose2d.y, 0.0);
@@ -74,7 +74,7 @@ inline Eigen::Isometry3d pose2DToPose(const geometry_msgs::Pose2D& pose2d) {
   return pose;
 }
 
-/// @brief 等价 nav_2d_utils::pose2DToPoseStamped。
+/// @brief Equivalent of nav_2d_utils::pose2DToPoseStamped.
 inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
     const nav_2d_msgs::Pose2DStamped& pose2d) {
   ayanami::geometry_msgs::PoseStamped pose;
@@ -85,7 +85,7 @@ inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
   return pose;
 }
 
-/// @brief 等价 nav_2d_utils::pose2DToPoseStamped (显式 frame/stamp 版)。
+/// @brief Equivalent of nav_2d_utils::pose2DToPoseStamped (explicit frame/stamp version).
 inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
     const geometry_msgs::Pose2D& pose2d, const std::string& frame,
     const ayanami::Timestamp& stamp) {
@@ -97,7 +97,7 @@ inline ayanami::geometry_msgs::PoseStamped pose2DToPoseStamped(
   return pose;
 }
 
-/// @brief 等价 nav_2d_utils::pathToPath2D。
+/// @brief Equivalent of nav_2d_utils::pathToPath2D.
 inline nav_2d_msgs::Path2D pathToPath2D(
     const ayanami::nav_msgs::Path& path) {
   nav_2d_msgs::Path2D path2d;
@@ -109,7 +109,7 @@ inline nav_2d_msgs::Path2D pathToPath2D(
   return path2d;
 }
 
-/// @brief 等价 nav_2d_utils::pathToPath。
+/// @brief Equivalent of nav_2d_utils::pathToPath.
 inline ayanami::nav_msgs::Path pathToPath(const nav_2d_msgs::Path2D& path2d) {
   ayanami::nav_msgs::Path path;
   path.header.frame_id = path2d.frame_id;

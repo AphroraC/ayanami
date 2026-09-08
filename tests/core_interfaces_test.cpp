@@ -20,51 +20,50 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-using ayanami::PlannerResultT;
+using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
-using ayanami::RecoveryResultT;
 using ayanami::RecoveryStatus;
-using ayanami::SmootherResultT;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::OccupancyGrid;
 using ayanami::nav_msgs::Path;
 
-// ---- 测试派生类: 只实现纯虚, 继承默认实现 (cancel/setMapCallback/isCurrent) ----
+// ---- Test-derived classes: implement only the pure virtuals, inherit the default implementations (cancel/setMapCallback/isCurrent) ----
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped&, const PoseStamped&,
-                          double) override {
-    return PlannerResultT::success(Path{});
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
+    plan_out = Path{};
+    return ResultT<void>::success();
   }
 };
 
 class TestController : public ayanami::abstract::AbstractController {
 public:
-  ControllerResultT computeVelocityCommand(const PoseStamped&,
-                                           const TwistStamped&) override {
-    return ControllerResultT::success(ControllerCommand{});
+  ResultT<void> computeVelocityCommand(const PoseStamped&,
+                                           const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
+    cmd = TwistStamped{};
+    return ResultT<void>::success();
   }
   bool setPlan(const Path&) override { return true; }
 };
 
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  SmootherResultT smoothPath(Path&, double, bool) override {
-    return SmootherResultT::success(Path{});
+  ResultT<void> smoothPath(Path&, double) override {
+    return ResultT<void>::success();
   }
 };
 
 class TestRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ResultT<void>::success();
   }
 };
 
@@ -82,7 +81,8 @@ public:
 TEST(CoreAbstractPlanner, makePlanCallableAndCancelDefaultsFalse) {
   TestPlanner p;
   PoseStamped start, goal;
-  auto result = p.makePlan(start, goal, 0.1);
+  Path plan;
+  auto result = p.makePlan(start, goal, 0.1, plan);
   EXPECT_TRUE(result.ok);
   EXPECT_FALSE(p.cancel());
 }
@@ -91,7 +91,8 @@ TEST(CoreAbstractController, computeGoalAndSetPlan) {
   TestController c;
   PoseStamped pose;
   TwistStamped vel;
-  auto result = c.computeVelocityCommand(pose, vel);
+  TwistStamped cmd;
+  auto result = c.computeVelocityCommand(pose, vel, cmd);
   EXPECT_TRUE(result.ok);
   Path plan;
   EXPECT_TRUE(c.setPlan(plan));
@@ -101,16 +102,17 @@ TEST(CoreAbstractController, computeGoalAndSetPlan) {
 TEST(CoreAbstractSmoother, smoothPathCallableAndCancelDefaultsFalse) {
   TestSmoother s;
   Path path;
-  auto result = s.smoothPath(path, 2.0, true);
+  auto result = s.smoothPath(path, 2.0);
   EXPECT_TRUE(result.ok);
   EXPECT_FALSE(s.cancel());
 }
 
 TEST(CoreAbstractRecovery, runRecoveryCallableAndCancelDefaultsFalse) {
   TestRecovery r;
-  auto result = r.tick();
+  RecoveryCycleData cycle;
+  auto result = r.tick(cycle);
   EXPECT_TRUE(result.ok);
-  EXPECT_EQ(result.data.status, RecoveryStatus::SUCCESS);
+  EXPECT_EQ(cycle.status, RecoveryStatus::SUCCESS);
   EXPECT_FALSE(r.cancel());
 }
 
@@ -137,8 +139,10 @@ TEST(CoreCostmapMapContext, framesAndRobotPose) {
       Eigen::Isometry3d::Identity());
   EXPECT_EQ(ctx.getGlobalFrame(), "map");
   EXPECT_EQ(ctx.getRobotFrame(), "base_link");
-  PoseStamped pose;
-  ASSERT_TRUE(ctx.getRobotPose(pose));
+  // Robot state query single facade: RobotStateController (map context no
+  // longer exposes pose queries).
+  const auto pose =
+      ayanami::components::RobotStateController::instance().getRobotPose();
   EXPECT_EQ(pose.header.frame_id, "map");
   EXPECT_TRUE(pose.pose.toIsometry().matrix().isIdentity());
 }

@@ -1,15 +1,15 @@
-// 恢复 vs 障碍并发 (地图变更经唯一写者命令端口)。
+// Recovery vs obstacle concurrency (map changes go through the single-writer command port).
 //
-// 新架构 (加锁直读 CostmapView, 无快照/epoch): 恢复插件不接触可变
-// wrapper/layer; clear recovery 只构造类型化 ClearCostmapCommand 并经
-// CostmapCommandPort 提交, 唯一写者 (这里模拟等价 writer) 持 wrapper 的
-// unique 锁清层 + updateMapUnlocked 发布。读者经 shared 锁直读 master grid。
+// New architecture (locked direct-read CostmapView, no snapshots/epochs): recovery plugins never touch the mutable
+// wrapper/layers; the clear recovery only constructs a typed ClearCostmapCommand and submits it via
+// CostmapCommandPort; the single writer (an equivalent writer simulated here) holds the wrapper
+// unique lock to clear layers + publish via updateMapUnlocked. Readers read the master grid directly under a shared lock.
 //
-// 断言:
-// - clear-command-port 路径真实生效: 提交后 master grid 机器人附近 → FREE,
-// 远处保持 LETHAL;
-// - 与 obstacle 写者交替多轮, 读写方各持锁 (unique/shared), 每步锁内读回
-// 确定性值 (无撕裂 / 无死锁); 命令提交计数随轮次严格递增 (计数代数)。
+// Assertions:
+// - the clear-command-port path truly works: after submission the master grid near the robot -> FREE,
+// distant cells stay LETHAL;
+// - alternating multiple rounds with the obstacle writer, readers/writers each hold their lock (unique/shared), and every step reads back
+// deterministic values under the lock (no tearing / no deadlock); the command submission count strictly increases per round (count algebra).
 
 #include <gtest/gtest.h>
 
@@ -40,18 +40,18 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::RecoveryResultT;
+using ayanami::ResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::modules::CostmapClearCostmapRecovery;
 
-// 20x20 @0.5m, origin (0,0): cell (4,4) 中心 = 世界 (2.25, 2.25)。
+// 20x20 @0.5m, origin (0,0): the center of cell (4,4) = world (2.25, 2.25).
 constexpr double k_robot_x = 2.25;
 constexpr double k_robot_y = 2.25;
 
-// 等价写者命令端口: submit 即执行 writer 级清图 (clearCostmapArea 在写锁内
-// 清层 + updateMapUnlocked 发布)。恢复插件只持有该接口, 不接触 wrapper。
+/// Equivalent writer command port: submit immediately performs the writer-level map clear (clearCostmapArea clears
+/// layers + publishes via updateMapUnlocked under the write lock). Recovery plugins only hold this interface and never touch the wrapper.
 class TestWriterPort : public CostmapCommandPort {
  public:
   TestWriterPort(const std::shared_ptr<costmap_2d::CostmapWrapper>& global,
@@ -92,7 +92,7 @@ class TestWriterPort : public CostmapCommandPort {
     return ok;
   }
 
-  // 写锁 (writer submit) 完成时递增的计数: 表达"版本/epoch"单调"语义。
+  // A counter incremented when the write (writer submit) completes: expresses monotone "version/epoch" semantics.
   std::atomic<int> submissions{0};
 
  private:
@@ -102,7 +102,7 @@ class TestWriterPort : public CostmapCommandPort {
   std::string robot_frame;
 };
 
-// 同步门 (仅测试): set 唤醒全部等待者。
+/// Test-only sync gate: set wakes all waiters.
 class Gate {
  public:
   void set() {
@@ -139,7 +139,7 @@ void setRobot(double wx, double wy) {
       Eigen::Translation3d(wx, wy, 0.0) * Eigen::Quaterniond::Identity());
 }
 
-// 唯一写者路径: unique 锁内 mark 动态障碍层 + updateMapUnlocked 重算发布。
+/// Single-writer path: mark the dynamic obstacle layer + recompute/publish via updateMapUnlocked under the unique lock.
 void feedObstacles(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper,
     const std::shared_ptr<costmap_2d_layers::SimpleObstacleLayer>& layer) {
@@ -149,7 +149,7 @@ void feedObstacles(
   wrapper->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
 }
 
-// 读者路径: shared 锁内直读 master grid 单个 cell。
+/// Reader path: directly read a single master-grid cell under the shared lock.
 unsigned char cellCost(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper, unsigned int x,
     unsigned int y) {
@@ -159,8 +159,8 @@ unsigned char cellCost(
 
 }  // namespace
 
-// command port 真实生效: 提交 clear 命令后, 机器人附近清回 FREE, 远处保持
-// LETHAL; 且只允许 writer 触发变更 (恢复插件无任何可变访问权)。
+// The command port truly works: after submitting the clear command the area near the robot is cleared back to FREE while distant
+// cells stay LETHAL; and only the writer may trigger changes (recovery plugins have no mutable access at all).
 TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   auto global_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
   auto local_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
@@ -176,27 +176,28 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
+  // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
 
-  // 先经写者落障碍 (feed): 近处与远处都 LETHAL。
+  // First feed obstacles via the writer: both near and far cells LETHAL.
   feedObstacles(local, local_layer);
   feedObstacles(global, global_layer);
   EXPECT_EQ(cellCost(local, 4, 4), costmap_2d::LETHAL_OBSTACLE);
   EXPECT_EQ(cellCost(local, 15, 15), costmap_2d::LETHAL_OBSTACLE);
 
-  // 恢复: 经命令端口提交 typed clear 命令 (仅经命令端口), 不清除远处障碍。
+  // Recovery: submit the typed clear command via the command port (only via the command port); distant obstacles are not cleared.
   rec->start();
-  const RecoveryResultT outcome = rec->tick();
+  ayanami::RecoveryCycleData cycle;
+  const ResultT<void> outcome = rec->tick(cycle);
   ASSERT_TRUE(outcome.ok) << outcome.message;
   EXPECT_EQ(port->submissions.load(), 1)
       << "clear 必须经命令端口提交给唯一写者执行";
 
-  // 本地 + 全局: 机器人附近 → FREE, 远处保持 LETHAL。
+  // Local + global: near the robot -> FREE, distant cells stay LETHAL.
   EXPECT_EQ(cellCost(local, 4, 4), costmap_2d::FREE_SPACE);
   EXPECT_EQ(cellCost(local, 5, 5), costmap_2d::FREE_SPACE);
   EXPECT_EQ(cellCost(local, 15, 15), costmap_2d::LETHAL_OBSTACLE);
@@ -204,9 +205,9 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   EXPECT_EQ(cellCost(global, 15, 15), costmap_2d::LETHAL_OBSTACLE);
 }
 
-// 干净的确定性交替 (clear 命令 vs obstacle feed) 多轮: 每轮 feed 完成后读回
-// LETHAL, clear 后读回 FREE —— 写全经唯一写者 (unique 锁), 读写方各持锁,
-// 无撕裂/无死锁; 命令提交计数随轮次递增。
+// Clean deterministic alternation (clear command vs obstacle feed) over multiple rounds: after each feed reads return
+// LETHAL and after each clear reads return FREE -- all writes go through the single writer (unique lock), readers/writers each hold
+// their own lock, no tearing/no deadlock; the command submission count increases per round.
 TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
   auto global_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
   auto local_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
@@ -222,7 +223,7 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
 
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
+  // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
@@ -237,7 +238,7 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
   std::vector<Gate> go_feed(k_rounds);
   std::vector<Gate> feed_done(k_rounds);
 
-  // obstacle 写者线程: 每轮经写者 (unique 锁) 落障碍 + 发布, 完成后回报。
+  // Obstacle writer thread: each round drops obstacles + publishes via the writer (unique lock) and reports completion.
   std::thread feeder([&] {
     for (int i = 0; i < k_rounds; ++i) {
       go_feed[i].waitFor(std::chrono::seconds(5));
@@ -245,7 +246,7 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
         std::unique_lock<std::shared_mutex> lock(local->mutex());
         local_layer->markObstacles(k_robot_x, k_robot_y);
         local->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
-        // 锁内读回必须看到自己的写入 (writer 串行, 无撕裂)。
+        // The read-back under the lock must see its own write (writer serialization, no tearing).
         if (local->get().getCostmap()->getCost(4, 4) !=
             costmap_2d::LETHAL_OBSTACLE) {
           ++bad_reads;
@@ -261,10 +262,11 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
     if (cellCost(local, 4, 4) != costmap_2d::LETHAL_OBSTACLE) {
       ++bad_reads;
     }
-    // 恢复: 经命令端口提交 typed clear → 唯一写者清回 FREE (start 复位
-    // submitted, 每轮重新提交一次命令)。
+    // Recovery: submit the typed clear via the command port -> the single writer clears back to FREE (start resets
+    // submitted; one command is resubmitted each round).
     rec->start();
-    const RecoveryResultT outcome = rec->tick();
+    ayanami::RecoveryCycleData cycle;
+  const ResultT<void> outcome = rec->tick(cycle);
     ASSERT_TRUE(outcome.ok) << outcome.message;
     if (cellCost(local, 4, 4) != costmap_2d::FREE_SPACE) {
       ++bad_after_clear;
@@ -279,5 +281,5 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
   EXPECT_EQ(bad_reads.load(), 0)
       << "feed 写者锁内读回被并发 clear 撕裂 (writer 串行化被破坏)";
   EXPECT_EQ(bad_after_clear.load(), 0) << "clear 后 cell 未被写回 LETHAL";
-  // 无死锁: 双线程均完成 (写者线程 join 返回 + 主线程 k_rounds 轮全部完成)。
+  // No deadlock: both threads finished (the writer thread join returned + the main thread completed all k_rounds rounds).
 }

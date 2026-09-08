@@ -7,28 +7,32 @@
 namespace ayanami {
 
 /**
- * @brief 解析日志级别字符串 (大小写不敏感)。
+ * @brief Parse a log level string (case-insensitive).
  *
- * 支持: trace / debug / info / warn|warning / error / critical / off。
- * 未知字符串回退 info。
+ * Supports: trace / debug / info / warn|warning / error / critical / off.
+ * Unknown strings fall back to info.
  */
 spdlog::level::level_enum logLevelFromString(const std::string& level);
 
 /**
- * @brief 从根 config.json 的 logging 段配置 spdlog 默认 logger。
+ * @brief Configure the spdlog default logger from the root config.json's
+ * logging section.
  *
- * 参数 (学习 asuka):
- *   - logging_level    (string, 默认 "info"): 文件/全局级别 (logger 总闸)
- *   - console_level    (string, 默认 "info"): 控制台独立级别
- *   - console_output   (bool,   默认 true)  : 是否输出控制台
- *   - file_output      (bool,   默认 true)  : 是否输出文件
- *   - logging_dir      (string, 默认 "logs"): 日志目录 (相对 cwd)
- *   - rotate_logs      (bool,   默认 true)  : 文件轮转
- *   - max_file_size_kb (int,    默认 8192)  : 轮转单文件上限 (KB)
- *   - max_files        (int,    默认 10)    : 轮转保留文件数
+ * Parameters (modeled after asuka):
+ *   - logging_level    (string, default "info"): file/global level (the
+ *     logger master switch)
+ *   - console_level    (string, default "info"): independent console level
+ *   - console_output   (bool,   default true)  : whether to log to console
+ *   - file_output      (bool,   default true)  : whether to log to file
+ *   - logging_dir      (string, default "logs"): log directory (relative to
+ *     cwd)
+ *   - rotate_logs      (bool,   default true)  : file rotation
+ *   - max_file_size_kb (int,    default 8192)  : per-file rotation limit (KB)
+ *   - max_files        (int,    default 10)    : rotated files retained
  *
- * 文件名为 <logging_dir>/ayanami.log。幂等且可重配: 每次调用重建
- * console/file sink (保留其他 sink), 全局级别同步到所有已注册 logger。
+ * The file name is <logging_dir>/ayanami.log. Idempotent and reconfigurable:
+ * each call rebuilds the console/file sinks (other sinks are kept) and syncs
+ * the global level to all registered loggers.
  */
 void configureLogging();
 

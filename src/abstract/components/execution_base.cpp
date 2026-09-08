@@ -4,13 +4,13 @@ namespace ayanami {
 namespace components {
 
 ExecutionBase::~ExecutionBase() {
-  // 若用户忘了 stop, 强制停止并等待 run 任务结束 (等价旧 join 线程)。
+  // If the user forgot to stop, force stop and wait for the run task to finish (equivalent to the old join thread).
   stop();
   join();
 }
 
 void ExecutionBase::start() {
-  // 与旧行为等价: 若上一次 run 任务仍在跑, 先等其结束再重启。
+  // Equivalent to the old behavior: if the previous run task is still running, wait for it to finish before restarting.
   join();
 
   should_exit = false;
@@ -27,9 +27,12 @@ void ExecutionBase::runTask() {
   try {
     run();
   } catch (...) {
-    // run/preRun/postRun 逃逸异常的最后防线: 置统一兜底终态 + 安全
-    // 停止。若停在中间态, action 驱动任务将永远轮询不到终态 —— 槽占用、
-    // recovery 互斥 (recovery_exclusive) 等资源协议随之死锁, 整条导航挂死。
+    // Last line of defense for exceptions escaping run/preRun/postRun: set
+    // the unified fallback terminal state + safe stop. If left in an
+    // intermediate state, the action driver task would never observe a
+    // terminal state -- slot occupancy, the recovery mutex
+    // (recovery_exclusive) and other resource protocols would deadlock,
+    // hanging the entire navigation.
     error = ErrorCode::INTERNAL_ERROR;
     message = "Execution aborted by uncaught exception";
     publishStopCommand();
@@ -40,7 +43,7 @@ void ExecutionBase::runTask() {
     std::lock_guard<std::mutex> lock(mutex);
     running = false;
   }
-  // 唤醒 join/waitForStateUpdate 等控制线程 (事件驱动收尾)。
+  // Wake control threads waiting in join/waitForStateUpdate (event-driven teardown).
   condition.notify_all();
 }
 

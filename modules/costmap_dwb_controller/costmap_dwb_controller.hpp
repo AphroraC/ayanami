@@ -1,23 +1,23 @@
-// costmap_dwb_controller.hpp — nav2 dwb_core::DWBLocalPlanner 的 ayanami 迁移。
+// costmap_dwb_controller.hpp -- ayanami port of nav2 dwb_core::DWBLocalPlanner.
 //
-// 算法逻辑与 nav2_dwb_controller (dwb_core) 逐函数对应:
-// configure → configure(PluginContext, map)
-// setPlan → setPlan (Path → Path2D, reset critics + generator)
-// computeVelocityCommands → computeVelocityCommand (abstract 签名;
-// 插件经持有的地图模块加锁读 local grid)
+// Algorithm logic maps function-by-function to nav2_dwb_controller (dwb_core):
+// configure -> configure(PluginContext, map)
+// setPlan -> setPlan (Path -> Path2D, resets critics + generator)
+// computeVelocityCommands -> computeVelocityCommand (abstract signature;
+// the plugin reads the local grid under lock via its held map module)
 // prepareGlobalPlan / coreScoringAlgorithm / scoreTrajectory /
-// transformGlobalPlan / loadCritics 保留原名与语义
+// transformGlobalPlan / loadCritics keep their original names and semantics
 //
-// 锁纪律: 每个控制周期经地图模块 lockLocal 持 shared 锁直读 local grid。控制器在周期内持有视图,
-// 快照 (shared_ptr) 使 grid 存活整个打分周期, 并在 prepare 前把当前 grid /
-// footprint 绑定到各 critic (critic::setCostmap)。不持任何 map 写锁 ——
-// 移除旧实现的 ctx->local_costmap->mutex 内部锁。
+// Lock discipline: each control cycle takes a shared lock via the map module's lockLocal and reads the local grid directly. The controller holds the view within the cycle;
+// the snapshot (shared_ptr) keeps the grid alive for the whole scoring cycle, and before prepare the current grid /
+// footprint is bound to each critic (critic::setCostmap). It holds no map write lock --
+// the old implementation's ctx->local_costmap->mutex internal lock was removed.
 //
-// 替换点 (零 ROS):
-// - pluginlib::ClassLoader → 静态注册表 (registration.hpp)
-// - tf2_ros::Buffer + nav_2d_utils::tf_help → TransformStore 单例
-// - rclcpp 参数 → ayanami::Config (json 段 dwb_plugin_name, 键为点分全名)
-// - DWBPublisher (ROS 发布) → 删除 (调试可视化改 callback 槽可选, 先省略)
+// Replacement points (zero ROS):
+// - pluginlib::ClassLoader -> static registry (registration.hpp)
+// - tf2_ros::Buffer + nav_2d_utils::tf_help -> TransformStore singleton
+// - rclcpp parameters -> ayanami::Config (json section dwb_plugin_name, keys are dotted full names)
+// - DWBPublisher (ROS publishing) -> removed (debug visualization via an optional callback slot, omitted for now)
 #pragma once
 
 #include <memory>
@@ -45,24 +45,25 @@ public:
   using Ptr = std::shared_ptr<CostmapDwBLocalPlanner>;
 
   /**
-   * @brief Constructor. 注册全部内置 critic / generator 到注册表。
+   * @brief Constructor. Registers all built-in critics / generators into the registries.
    */
   CostmapDwBLocalPlanner();
 
   virtual ~CostmapDwBLocalPlanner() = default;
 
-  /// @brief costmap 族注入契约 (等价 nav2 configure): 经 PluginContext 读
-  /// 自身配置、创建 trajectory generator 并 initialize、loadCritics。
+  /// @brief costmap family injection contract (equivalent to nav2 configure): reads its own
+  /// configuration via PluginContext, creates and initializes the trajectory generator, and runs loadCritics.
   void configure(const PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
-  /// @brief nav2 setPlan 等价。
+  /// @brief Equivalent of nav2 setPlan.
   bool setPlan(const ayanami::nav_msgs::Path& plan) override;
 
-  /// @brief nav2 computeVelocityCommands 等价 (abstract 签名; 内部加锁读图)。
-  ControllerResultT computeVelocityCommand(
+  /// @brief Equivalent of nav2 computeVelocityCommands (abstract signature; locks and reads the map internally).
+  ResultT<void> computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped& pose,
-      const ayanami::geometry_msgs::TwistStamped& velocity) override;
+      const ayanami::geometry_msgs::TwistStamped& velocity,
+      ayanami::geometry_msgs::TwistStamped& cmd) override;
 
   bool cancel() override { return false; }
 
@@ -78,7 +79,7 @@ public:
   }
 
 protected:
-  /// @brief 2D 核心 (nav2 computeVelocityCommands 2D 版)。
+  /// @brief 2D core (the 2D version of nav2 computeVelocityCommands).
   virtual nav_2d_msgs::Twist2DStamped computeVelocityCommands(
       const nav_2d_msgs::Pose2DStamped& pose,
       const nav_2d_msgs::Twist2D& velocity,
@@ -96,13 +97,13 @@ protected:
   virtual nav_2d_msgs::Path2D transformGlobalPlan(
       const nav_2d_msgs::Pose2DStamped& pose);
 
-  /// @brief 等价 nav2 resolveCriticClassName (保留 suffix/命名空间补全逻辑)。
+  /// @brief Equivalent of nav2 resolveCriticClassName (keeps the suffix/namespace completion logic).
   std::string resolveCriticClassName(std::string base_name);
 
   virtual void loadCritics();
 
-  /// @brief 模块参数 (json 段 = controller.name; configure 时经
-  /// PluginContext 注入的自身配置读取并拷贝进成员)。
+  /// @brief Module parameters (json section = controller.name; read at configure time via
+  /// the PluginContext-injected own configuration and copied into members).
   struct CostmapDwBLocalPlannerParam {
     double transform_tolerance{0.1};
     bool prune_plan{true};
@@ -120,18 +121,18 @@ protected:
   nav_2d_msgs::Path2D global_plan;  ///< Saved Global Plan
   CostmapDwBLocalPlannerParam param;
 
-  /// @brief 本插件配置 (configure 时由 PluginContext 移入; loadCritics
-  /// 复用同一实例, 无 thread_local 注入)。
+  /// @brief This plugin's configuration (moved in from PluginContext at configure time; loadCritics
+  /// reuses the same instance; no thread_local injection).
   std::unique_ptr<ayanami::Config> module_config;
 
   std::vector<TrajectoryCritic::Ptr> critics;
 
-  // Plugin handling (静态注册表)
+  // Plugin handling (static registry)
   TrajectoryGenerator::Ptr traj_generator;
 
   std::string dwb_plugin_name;
 
-  // ayanami 注入 (地图模块 const 指针 + 当前周期持锁读视图)
+  // ayanami injections (const pointer to the map module + lock-held read view for the current cycle)
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
   const costmap_2d::Costmap2D* local_grid{nullptr};
   std::string local_frame;

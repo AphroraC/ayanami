@@ -1,9 +1,9 @@
-<!-- 测试资产树: 与生产内嵌默认树 (navigation_behavior_tree.hpp) 同构
-     (RoundRobin 变体已弃用, 节点语义由 pipeline_sequence_scenarios_test
-     的 RoundRobinResetTest 单独覆盖)。 -->
+<!-- Test asset tree: isomorphic to the production embedded default tree (navigation_behavior_tree.hpp);
+     the RoundRobin variant is deprecated, and its node semantics are covered separately by the
+     RoundRobinResetTest in pipeline_sequence_scenarios_test. -->
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
-    <RecoveryNode name="NavigateRecovery" number_of_retries="6">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="6" budget_reset_token="{goal_revision}">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
@@ -19,7 +19,7 @@
         <RateController hz="{smoother_frequency}" reset_token="{path_id}">
           <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
         </RateController>
-        <RecoveryNode name="FollowPath" number_of_retries="1">
+        <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">
           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
             <Recovery recovery="{clear_costmap_id}"/>

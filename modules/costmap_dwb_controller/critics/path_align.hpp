@@ -1,4 +1,4 @@
-// path_align.hpp — 迁移自 dwb_critics/path_align.hpp。
+// path_align.hpp -- ported from dwb_critics/path_align.hpp.
 #pragma once
 
 #include <string>

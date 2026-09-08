@@ -1,16 +1,20 @@
-// CostmapNavigationServer 主实现 。
+// CostmapNavigationServer main implementation.
 //
-// 生命周期纪律 (/): 基类 NavigationServerBase 析构先
-// stop → reset actions → clearPlugins。
+// Lifecycle discipline (/): the base NavigationServerBase destructor first
+// stops -> resets actions -> clearPlugins.
 //
-// 障碍观测纪律: 不再注册全局 NavigationCallbacks 输入槽 (输出/观测分层);
-// 宿主 (CostmapNavigation::setPointcloud/setLaserScan) 直递 handleObstacle*。
+// Obstacle observation discipline: no global NavigationCallbacks input slot
+// is registered anymore (output/observation layering); the host
+// (CostmapNavigation::setPointcloud/setLaserScan) hands observations
+// straight to handleObstacle*.
 //
-// InflationLayer::updateCosts 只做 `cost > old_cost`
-// 覆盖, 障碍消失后不会自动 de-inflate。handleObstacle* 每次动态更新前先
-// clearArea 上一帧 + 本帧观察窗口 (外扩 inflation radius), 把旧障碍标记与旧
-// 膨胀带在 master grid 中清为 FREE, 再 markObstacles + updateMap 让
-// InflationLayer 在 recompute window 内全量重算, 无 stale 带残留。
+// InflationLayer::updateCosts only applies `cost > old_cost` overwrites, so
+// it never de-inflates automatically once an obstacle disappears. Before
+// each dynamic update, handleObstacle* first clearAreas the previous frame
+// + current frame observation window (expanded by the inflation radius),
+// clearing old obstacle marks and old inflation bands to FREE in the master
+// grid, then markObstacles + updateMap lets the InflationLayer fully
+// recompute within its recompute window, leaving no stale bands.
 
 #include "ayanami/costmap/components/costmap_map_family_factory.hpp"
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
@@ -48,19 +52,29 @@ constexpr int k_default_size_x = 0;
 constexpr int k_default_size_y = 0;
 
 // Dynamic transforms are sampled into TransformStore at tf_sync_rate
-// (50 Hz)。障碍落图的传感器变换优先用 scan 自身时间戳查询 (零容差, 不等待):
-// 把点云摆放到"采集时刻"的位姿 —— 机器人旋转时 latest 查询会把
-// ω×(now-T_scan) 的时序歪斜烙进代价地图 (实测 1.2rad/s 旋转时 map 系点云
-// 相邻帧漂移 0.13~0.28m, scan-stamp 查询仅 0.01~0.04m)。fast_tf 无外推:
-// scan 戳超前于已同步样本 (快于实时的仿真) 或滞后出剪枝窗时查询失败, 此时
-// 回退 latest (历史行为) 并计数, 由节流日志暴露回退率。机器人位姿 (滚动
-// 居中/清图中心) 仍用 latest —— 窗口居中应跟随当前位姿。
-constexpr double k_local_tf_tolerance_s = 0.2;
-constexpr double k_global_tf_tolerance_s = 0.5;
+// (50 Hz). Obstacle stamping prefers querying the sensor transform with the
+// scan's own timestamp (zero tolerance, no waiting):
+// it places the point cloud at the "capture instant" pose -- when the robot
+// rotates, a latest query would bake the omega x (now - T_scan) timing skew
+// into the costmap (measured: at 1.2rad/s rotation, map-frame point clouds
+// drifted 0.13-0.28m between adjacent frames, while scan-stamp queries only
+// 0.01-0.04m). fast_tf does not extrapolate:
+// when the scan stamp is ahead of synchronized samples (faster-than-realtime
+// simulation) or outside the pruning window, the query fails; then it falls
+// back to latest (historical behavior) and counts the fallback, exposing the
+// fallback rate via throttled logs. The robot pose (rolling centering /
+// clear center) still uses latest -- window centering should follow the
+// current pose.
+// Query timeout policy: fast_tf's timeout parameter is a blocking wait
+// budget (cv wait until a new sample or timeout, starving other TF readers/
+// writers on the same global lock meanwhile) -- all core-side queries use
+// timeout=0 (non-blocking) and take their own fallback paths when missing
+// (latest fallback / last pose).
+constexpr double k_tf_lookup_timeout_s = 0.0;
 
-// TF 链路缺失告警节流: 同一链路 (local/global) 的 "no transform" 每
-// k_tf_warn_interval_s 最多输出一条, 避免 5.5Hz 激光每帧刷屏。返回 true 表示
-// 本次应输出。
+// TF chain missing warn throttling: for the same chain (local/global), at
+// most one "no transform" per k_tf_warn_interval_s, avoiding flooding at
+// 5.5Hz laser per frame. Returns true when this call should warn.
 constexpr double k_tf_warn_interval_s = 5.0;
 constexpr double k_robot_diag_interval_s = 60.0;
 bool tfWarnDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
@@ -72,7 +86,7 @@ bool tfWarnDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
   return last.compare_exchange_strong(prev, now);
 }
 
-// 机器人位姿/滚动诊断节流 (60s 一条, 供排障; 失败时提示 TF 链缺失)。
+// Robot pose/rolling diagnostics throttling (one per 60s, for debugging; hints at a missing TF chain on failure).
 bool robotDiagDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
   const auto now = std::chrono::steady_clock::now();
   auto prev = last.load();
@@ -82,8 +96,9 @@ bool robotDiagDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
   return last.compare_exchange_strong(prev, now);
 }
 
-// 命令端口实现: 把类型化写命令转交唯一写者 (本 server) 执行。恢复插件只
-// 持 CostmapCommandPort 接口, 不接触可变 wrapper/layer。
+// Command port implementation: hands typed write commands to the sole
+// writer (this server) for execution. Recovery plugins only hold the
+// CostmapCommandPort interface and never touch the mutable wrapper/layer.
 class CommandPortImpl : public CostmapCommandPort {
  public:
   explicit CommandPortImpl(
@@ -109,13 +124,17 @@ CostmapNavigationServer::~CostmapNavigationServer() = default;
 
 void CostmapNavigationServer::configureCoreMaps(
     const std::string& config_path, ayanami::map::MapFamilyFactory::Ptr factory) {
-  // context 唯一创建点 = 地图族工厂 (缺省回退 costmap 工厂; 核心与宿主只认
-  // MapFamilyFactory 抽象面, CostmapMapContext 族面仅存在于本 server 内)。
+  // The context's sole creation point = the map-family factory (falls back
+  // to the costmap factory by default; core and host only know the
+  // MapFamilyFactory abstract surface, the CostmapMapContext family surface
+  // exists only inside this server).
   map_family_factory = factory ? std::move(factory)
                                : std::make_shared<CostmapMapFamilyFactory>();
-  // 二次 configureCoreMaps 守护。已有已构 context 时忽略重入:
-  // 重建会替换 costmap_context, 使已注入插件的 wrapper 引用悬挂 (旧 context 被
-  // 新对象替换后, 插件仍指向旧 wrapper)。
+  // Double configureCoreMaps guard. When a built context already exists,
+  // re-entry is ignored: rebuilding would replace costmap_context and leave
+  // the wrapper references of already-injected plugins dangling (after the
+  // old context is replaced by the new object, plugins still point at the
+  // old wrapper).
   if (costmap_context &&
       (costmap_context->globalCostmap() || costmap_context->localCostmap())) {
     spdlog::warn(
@@ -125,7 +144,7 @@ void CostmapNavigationServer::configureCoreMaps(
   }
 
   GlobalConfig::instance(config_path, /*override_path=*/true);
-  // costmap 参数已并入 config_navigation 文件 (原 costmap.json 移除)。
+  // The costmap params were merged into the config_navigation file (the original costmap.json was removed).
   Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
   const Config& cfg = nav_cfg;
 
@@ -133,15 +152,16 @@ void CostmapNavigationServer::configureCoreMaps(
       cfg.param<std::string>("costmap", "global_frame", "map");
   const std::string local_frame =
       cfg.param<std::string>("costmap", "local_frame", "odom");
-  // robot_frame 单一来源 = costmap_navigation.json
-  // 的 navigation::robot_frame。
+  // robot_frame single source of truth = config_navigation's
+  // navigation::robot_frame.
   const std::string robot_frame =
       nav_cfg.param<std::string>("navigation", "robot_frame", "base_link");
   const double resolution =
       cfg.param<double>("costmap", "resolution", k_default_resolution);
 
-  // 3.2 : 与 config_ros.json::robot_frame 一致性
-  // 校验。config_ros 未载 (GlobalConfig 无 config_ros 映射) 时跳过。
+  // §3.2: consistency validation against config_ros.json::robot_frame.
+  // Skipped when config_ros was not loaded (GlobalConfig has no config_ros
+  // mapping).
   const std::string ros_config =
       GlobalConfig::getConfigPath("config_ros");
   Config ros_cfg(ros_config);
@@ -154,8 +174,10 @@ void CostmapNavigationServer::configureCoreMaps(
     }
     assert(robot_frame == ros_frame);
   }
-  // local frame 单一来源 = costmap.local_frame; config_ros.odom_frame 只是
-  // ROS TF 同步边配置, 二者语义应一致 (不一致时告警, 不静默分叉)。
+  // local frame single source of truth = costmap.local_frame;
+  // config_ros.odom_frame is only the ROS TF sync-edge configuration; the
+  // two must agree semantically (warn on mismatch instead of silently
+  // diverging).
   const std::string ros_odom_frame =
       ros_cfg.param<std::string>("ayanami_ros", "odom_frame", std::string{});
   if (!ros_odom_frame.empty() && local_frame != ros_odom_frame) {
@@ -177,8 +199,9 @@ void CostmapNavigationServer::configureCoreMaps(
       cfg.param<std::string>("costmap_global", "static_map", "");
   if (!static_map.empty()) {
     try {
-      // 相对 static_map (assets/nav.pgm) 相对 package root
-      // (config/ 的上一级) 解析, 不再依赖节点 cwd (roslaunch 下是 ~/.ros)。
+      // A relative static_map (assets/nav.pgm) resolves relative to the
+      // package root (the parent of config/), no longer depending on the
+      // node cwd (~/.ros under roslaunch).
       std::string map_path = static_map;
       if (map_path.front() != '/' && map_path.find("://") == std::string::npos) {
         map_path = std::filesystem::path(config_path).parent_path().string() +
@@ -279,10 +302,12 @@ void CostmapNavigationServer::configureCoreMaps(
   auto local_wrapper =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
 
-  // 车体 footprint 来源 (nav_demo 参数语义):
-  // - costmap::footprint 多边形 (nav2 语义, 优先级最高)
-  // - costmap::robot_radius > 0 → 生成 16 边形近似圆 (ROS1 robot_radius 语义)
-  // - 两者都缺 → 不设置 (inscribed_radius 参数作为膨胀层 fallback)
+  // Robot footprint sources (nav_demo parameter semantics):
+  // - costmap::footprint polygon (nav2 semantics, highest priority)
+  // - costmap::robot_radius > 0 -> generate a 16-gon circle approximation
+  //   (ROS1 robot_radius semantics)
+  // - both absent -> not set (the inscribed_radius parameter serves as the
+  //   inflation layer fallback)
   costmap_2d::Footprint footprint;
   const auto footprint_values = cfg.param<std::vector<Eigen::Vector2d>>(
       "costmap", "footprint", {});
@@ -327,7 +352,7 @@ void CostmapNavigationServer::configureCoreMaps(
   local_resolution = resolution;
   local_raytrace_range = cfg.param<double>(
       "costmap_local", "raytrace_range", local_raytrace_range);
- // 滚动窗口解耦更新频率 (spinOnce 周期滚动, 与传感器流无关)
+ // Decoupled rolling-window update frequency (periodic rolling in spinOnce, independent of the sensor stream)
   const double local_update_hz =
       cfg.param<double>("costmap_local", "update_frequency", 10.0);
   const double global_update_hz =
@@ -346,19 +371,22 @@ void CostmapNavigationServer::configureCoreMaps(
         "map family factory '" + map_family_factory->familyName() +
         "' did not create a CostmapMapContext");
   }
-  costmap_context->bumpVersion();
   costmap_context->setGlobalCostmap(global_wrapper);
   costmap_context->setLocalCostmap(local_wrapper);
   costmap_context->setFrames(global_frame, local_frame, robot_frame);
-  // footprint 缓存为不可变副本: 快照构建只读此缓存 (写锁外绝不读 live
-  // LayeredCostmap 的 footprint)。
+  // The footprint is cached as an immutable copy: snapshot building reads
+  // only this cache (never read the live LayeredCostmap's footprint outside
+  // the write lock).
   costmap_context->setFootprint(footprint);
-  // 地图写命令端口经 context 暴露 (AbstractMapContext::commandPort):
-  // recovery 等族插件在 configure 时从地图上下文获取, 不走旁路注入。
+  // The map write command port is exposed via the context
+  // (AbstractMapContext::commandPort):
+  // family plugins such as recovery fetch it from the map context at
+  // configure time instead of side-path injection.
   costmap_context->setCommandPort(command_port);
 
-  // 全局 RobotStateController 一次性配置: 帧名 + 速度超时只在此缓存,
-  // hot getRobotState 永不读 Config (扩展)。
+  // One-time configuration of the global RobotStateController: frame names
+  // + velocity timeout are cached only here; the hot getRobotState never
+  // reads Config (extension).
   const double velocity_timeout =
       nav_cfg.param<double>("navigation", "velocity_timeout", 0.25);
   ayanami::components::RobotStateController::instance().initialize(
@@ -370,7 +398,7 @@ void CostmapNavigationServer::configureCoreMaps(
   has_prev_obstacles = false;
 }
 
-// ---- 虚 initialize*Plugin: costmap 族注入 ----
+// ---- Virtual initialize*Plugin hooks: costmap family injection ----
 
 bool CostmapNavigationServer::initializePlannerPlugin(
     const std::string& name, const ayanami::Config& module_config,
@@ -428,8 +456,9 @@ bool CostmapNavigationServer::initializeControllerPlugin(
         name);
     return false;
   }
-  // 严格 costmap 族约束: 只接受 CostmapController, 不再放行普通
-  // AbstractController (costmap_pid 已改继承 CostmapController)。
+  // Strict costmap family constraint: only CostmapController is accepted;
+  // plain AbstractControllers are no longer allowed (costmap_pid now derives
+  // from CostmapController).
   auto cast = std::dynamic_pointer_cast<CostmapController>(ptr);
   if (!cast) {
     spdlog::error(
@@ -463,12 +492,13 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
   }
   cast->configure(ayanami::PluginContext{name, module_config},
                   costmap_context->getSharedConstPtr());
-  // 地图写命令端口: recovery 在 configure 内经 map->commandPort 获取
-  // (CostmapCommandPort), 由本 server (唯一写者) 执行。
+  // Map write command port: recovery fetches it via map->commandPort
+  // inside configure (CostmapCommandPort), executed by this server (the
+  // sole writer).
   return true;
 }
 
-// ---- createActions: 生产路径 = Costmap*Action ----
+// ---- createActions: production path = Costmap*Action ----
 
 void CostmapNavigationServer::createActions() {
   planner_action.reset();
@@ -476,7 +506,7 @@ void CostmapNavigationServer::createActions() {
   controller_action.reset();
   recovery_actions.clear();
 
-  // planner/smoother: Costmap*Action (带 ctx 的 Costmap*Execution)。
+  // planner/smoother: Costmap*Action (Costmap*Execution carrying the ctx).
   if (auto planner = planner_plugins.getPlugin(default_planner)) {
     planner_action = std::make_unique<CostmapPlannerAction>(
         planner, costmap_context);
@@ -497,7 +527,7 @@ void CostmapNavigationServer::createActions() {
                   default_smoother);
   }
 
-  // controller: CostmapControllerExecution + checker/速度上限/真实位姿源装配。
+  // controller: CostmapControllerExecution + checker/velocity-limit/real pose-source assembly.
   if (auto controller = controller_plugins.getPlugin(default_controller)) {
     auto action = std::make_unique<CostmapControllerAction>(
         controller, costmap_context,
@@ -512,7 +542,7 @@ void CostmapNavigationServer::createActions() {
                   default_controller);
   }
 
-  // recovery: CostmapRecoveryExecution + 速度上限装配。
+  // recovery: CostmapRecoveryExecution + velocity-limit assembly.
   for (const auto& name : recovery_plugins.getLoadedNames()) {
     auto recovery = recovery_plugins.getPlugin(name);
     if (!recovery) {
@@ -527,7 +557,7 @@ void CostmapNavigationServer::createActions() {
   }
 }
 
-// ---- 障碍观测落图 ----
+// ---- Obstacle observation map stamping ----
 
 void CostmapNavigationServer::handleObstaclePointCloud(
     const ayanami::sensor_msgs::PointCloud2& cloud) {
@@ -627,8 +657,10 @@ void CostmapNavigationServer::markObstaclesInFrame(
       costmap_context->localCostmap()->getGlobalFrame();
 
   Eigen::Isometry3d T_local = Eigen::Isometry3d::Identity();
- // 传感器变换优先按 scan 采集时刻查询 (零容差: 查询失败立即回退, 不阻塞
- // 回调线程); 失败 (scan 戳超前同步样本/滞后出剪枝窗) 时回退 latest。
+ // The sensor transform is preferably queried at the scan capture instant
+ // (zero tolerance: fall back immediately on query failure, never blocking
+ // the callback thread); on failure (scan stamp ahead of synchronized
+ // samples / outside the pruning window), fall back to latest.
   const bool have_stamp = !stamp.isLatest();
   bool local_stamp_ok = false;
   if (have_stamp &&
@@ -640,7 +672,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
   if ((!points.empty() || !clearing_points.empty()) && !local_stamp_ok &&
       !robot_state_controller.lookupTransform(
           local_frame, frame_id, ayanami::Timestamp::latest(), T_local,
-          k_local_tf_tolerance_s)) {
+          k_tf_lookup_timeout_s)) {
     if (have_stamp) {
       ++stamp_query_fallback;
     }
@@ -672,15 +704,17 @@ void CostmapNavigationServer::markObstaclesInFrame(
 
   // Resolve robot poses before taking either map lock. Each map update below
   // owns only its own mutex, so obstacle ingestion never nests local->global.
-  // 查询失败 (TF 短暂缺失) 时使用最后一次成功位姿滚动窗口 —— 绝不回退
-  // (0,0,0), 否则滚动窗口被锚回世界原点, 机器人走出窗口后 dwb 无路可走。
+  // On query failure (transient TF loss) roll the window with the last
+  // successful pose -- never fall back to (0,0,0), otherwise the rolling
+  // window gets anchored back to the world origin and, once the robot walks
+  // out of the window, dwb has no path.
   double robot_x = 0.0;
   double robot_y = 0.0;
   double robot_yaw = 0.0;
   Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
   if (robot_state_controller.lookupTransform(
           local_frame, costmap_context->getRobotFrame(),
-          ayanami::Timestamp::latest(), T_robot, k_local_tf_tolerance_s)) {
+          ayanami::Timestamp::latest(), T_robot, k_tf_lookup_timeout_s)) {
     robot_x = T_robot.translation().x();
     robot_y = T_robot.translation().y();
     robot_yaw = std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
@@ -724,12 +758,15 @@ void CostmapNavigationServer::markObstaclesInFrame(
       }
     }
 
-    // 清上一帧 + 本帧观察窗口, 移除旧障碍标记并把旧膨胀带写回
-    // FREE。外扩 margin 取 inflation radius + 一个 cell: 膨胀带最远可达
-    // ceil(radius/res) 个 cell, 世界→cell 取整会把正好压在 radius 边界的
-    // cell 排除, 故多扩一个 cell 保证边界带 cell 一并清掉。之后
-    // InflationLayer 在 recompute window 内从 lethal 源全量重算, 障碍移走后
-    // 无 stale 带。
+    // Clear the previous + current frame observation window, removing old
+    // obstacle marks and writing old inflation bands back to FREE. The
+    // expansion margin is the inflation radius + one cell: the band can
+    // reach up to ceil(radius/res) cells, and world->cell rounding would
+    // exclude cells lying exactly on the radius boundary, so one extra cell
+    // is added to guarantee boundary-band cells are cleared too. Afterwards
+    // the InflationLayer fully recomputes from lethal sources within its
+    // recompute window, leaving no stale band once an obstacle moves
+    // away.
     if (has_prev_obstacles && clearing_points.empty()) {
       double clear_min_x = min_x;
       double clear_min_y = min_y;
@@ -771,10 +808,11 @@ void CostmapNavigationServer::markObstaclesInFrame(
     }
   }
 
-  // (M2): global rolling costmap 也要周期性
-  // updateMap 驱动滚动窗口跟随机器人 (此前只有 local 更新, global 窗口永不
-  // 平移, 导致 start pose 落在窗口外 worldToMap 失败)。窗口中心用 global
-  // frame (map) 下的机器人位姿。
+  // (M2): the global rolling costmap also needs periodic updateMap to drive
+  // its rolling window to follow the robot (previously only local was
+  // updated, so the global window never translated and the start pose could
+  // fall outside the window, failing worldToMap). The window center uses the
+  // robot pose in the global frame (map).
   if (costmap_context->globalCostmap() && global_obstacle_layer) {
     Eigen::Isometry3d T_global_sensor = Eigen::Isometry3d::Identity();
     Eigen::Isometry3d T_global_robot = Eigen::Isometry3d::Identity();
@@ -791,7 +829,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
         robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), frame_id,
             ayanami::Timestamp::latest(), T_global_sensor,
-            k_global_tf_tolerance_s);
+            k_tf_lookup_timeout_s);
     if (!global_stamp_ok && have_stamp && have_sensor_transform &&
         !(points.empty() && clearing_points.empty())) {
       ++stamp_query_fallback;
@@ -800,7 +838,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
         !robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(), costmap_context->getRobotFrame(),
             ayanami::Timestamp::latest(), T_global_robot,
-            k_global_tf_tolerance_s)) {
+            k_tf_lookup_timeout_s)) {
       if (tfWarnDue(global_tf_warn_at)) {
         spdlog::warn(
             "CostmapNavigationServer::markObstaclesInFrame: no global "
@@ -869,9 +907,11 @@ void CostmapNavigationServer::markObstaclesInFrame(
     costmap_context->globalCostmap()->updateMapUnlocked(gx, gy, gyaw);
   }
 
- // scan-stamp 查询回退率观测 (回退 = 该帧传感器变换退回 latest 时序语义,
- // 旋转时存在 ω×Δt 落图歪斜): 持续高回退率说明 scan 戳与同步链偏差超出
- // fast_tf 剪枝窗 (检查 RTF / TF 同步健康)。
+ // Scan-stamp query fallback rate observation (a fallback means that
+ // frame's sensor transform degraded to latest time semantics, which carries
+ // an omega x dt stamping skew when rotating): a persistently high fallback
+ // rate indicates the scan stamp deviates from the sync chain beyond the
+ // fast_tf pruning window (check RTF / TF sync health).
   if (stamp_query_fallback.load() > 0) {
     const auto diag_now = std::chrono::steady_clock::now();
     if (diag_now - last_stamp_diag_at >= std::chrono::seconds(10)) {
@@ -885,7 +925,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
   }
 }
 
-// ---- 地图变更命令执行 (唯一写者) ----
+// ---- Map change command execution (sole writer) ----
 
 void CostmapNavigationServer::updateRollingWindows() {
   if (!costmap_context) {
@@ -895,8 +935,9 @@ void CostmapNavigationServer::updateRollingWindows() {
       ayanami::components::RobotStateController::instance();
   const auto now = std::chrono::steady_clock::now();
 
- // 局部图: rolling 时以最新位姿居中窗口。位姿解析在拿锁之前; 查询失败时
- // 复用 markObstacles 的最后成功位姿 (绝不回退原点)。
+ // Local map: when rolling, center the window on the latest pose. Pose
+ // resolution happens before taking the lock; on query failure, reuse the
+ // last successful pose from markObstacles (never fall back to the origin).
   if (local_roll_period.count() > 0.0 && costmap_context->localCostmap() &&
       costmap_context->localCostmap()->isRollingWindow() &&
       now - last_local_roll >= local_roll_period) {
@@ -906,7 +947,7 @@ void CostmapNavigationServer::updateRollingWindows() {
     Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
     if (robot_state_controller.lookupTransform(
             local_frame, costmap_context->getRobotFrame(),
-            ayanami::Timestamp::latest(), t_robot, k_local_tf_tolerance_s)) {
+            ayanami::Timestamp::latest(), t_robot, k_tf_lookup_timeout_s)) {
       has_last_local_robot = true;
       last_local_robot_x = t_robot.translation().x();
       last_local_robot_y = t_robot.translation().y();
@@ -921,7 +962,7 @@ void CostmapNavigationServer::updateRollingWindows() {
     }
   }
 
- // 全局图: 仅 rolling 配置需要 (生产为静态图, 跳过)。
+ // Global map: only needed for rolling configs (production uses a static map, skipped).
   if (global_roll_period.count() > 0.0 && costmap_context->globalCostmap() &&
       costmap_context->globalCostmap()->isRollingWindow() &&
       now - last_global_roll >= global_roll_period) {
@@ -930,7 +971,7 @@ void CostmapNavigationServer::updateRollingWindows() {
     if (robot_state_controller.lookupTransform(
             costmap_context->getGlobalFrame(),
             costmap_context->getRobotFrame(), ayanami::Timestamp::latest(),
-            t_robot, k_global_tf_tolerance_s)) {
+            t_robot, k_tf_lookup_timeout_s)) {
       const double gx = t_robot.translation().x();
       const double gy = t_robot.translation().y();
       const double gyaw =
@@ -973,8 +1014,8 @@ bool CostmapNavigationServer::executeClearCommand(
             ayanami::Timestamp::latest(), robot_pose)) {
       return false;
     }
-    // 唯一写者: 清空动态层 + 重算 + updateMap。任何时刻不把
-    // 可变的层/主网格暴露给恢复插件。
+    // Sole writer: clear the dynamic layer + recompute + updateMap. The
+    // mutable layers/master grid are never exposed to recovery plugins.
     return clearCostmapArea(wrapper, robot_pose, radius);
   };
 

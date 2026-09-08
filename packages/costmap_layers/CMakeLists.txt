@@ -1,6 +1,6 @@
-# packages/costmap_layers — 纯 C++ 具体 costmap layer 子类, namespace costmap_2d_layers
-# 三个 layer: StaticLayer / InflationLayer / SimpleObstacleLayer
-# 消费 costmap_2d 抽象 (Costmap2D/Layer/LayeredCostmap), 无 ROS 依赖。
+# packages/costmap_layers -- pure C++ concrete costmap layer subclasses, namespace costmap_2d_layers
+# Three layers: StaticLayer / InflationLayer / SimpleObstacleLayer
+# Consumes the costmap_2d abstractions (Costmap2D/Layer/LayeredCostmap); no ROS dependency.
 add_library(costmap_2d_layers STATIC
   src/static_layer.cpp
   src/inflation_layer.cpp

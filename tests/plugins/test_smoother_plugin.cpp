@@ -1,4 +1,4 @@
-// 测试插件: 成功 smoother (SuccessSmoother), 经公共工厂 create_extension_module 导出。
+// Test plugin: success smoother (SuccessSmoother), exported via the common create_extension_module factory.
 
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -8,14 +8,12 @@
 namespace {
 
 using ayanami::nav_msgs::Path;
-using ayanami::SmootherResultT;
-
+using ayanami::ResultT;
 class SuccessSmoother : public ayanami::abstract::AbstractSmoother {
 public:
-  SmootherResultT smoothPath(Path& path, double /*max_duration*/,
-                             bool /*check_for_collision*/) override {
+  ResultT<void> smoothPath(Path& path, double /*max_duration*/) override {
     path.header.frame_id = "map";
-    return SmootherResultT::success(std::move(path));
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

@@ -11,20 +11,24 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 恢复行为插件抽象 (统一执行协议: start / tick / cancel / finish)。
+ * @brief Recovery behavior plugin abstraction (unified execution protocol:
+ * start / tick / cancel / finish).
  *
- * 注意: 恢复类命名一律 recovery。MBF 语义: 恢复是插件化、可取消的动作。
+ * Note: recovery-like things are always named recovery. MBF semantics:
+ * recovery is a pluggable, cancellable action.
  *
- * RecoveryExecution 按 fixed cycle 驱动: start() 一次 → tick() 反复 →
- * finish() 一次, 并作为唯一 velocity command 发布者。插件不自行 sleep
- * 循环、不直接调 NavigationCallbacks::on_velocity_command; spin/back_up 等
- * 需要持续输出的恢复在 tick() 内返回本周期期望速度 (optional); 清图等
- * 非运动恢复不携带速度。
+ * RecoveryExecution drives a fixed cycle: start() once -> tick() repeatedly
+ * -> finish() once, and acts as the sole velocity command publisher.
+ * Plugins do not run their own sleep loops nor call
+ * NavigationCallbacks::on_velocity_command directly; recoveries needing
+ * continuous output such as spin/back_up return the desired velocity for
+ * the cycle (optional) from tick(); non-motion recoveries such as map
+ * clearing carry no velocity.
  *
- * tick() 返回约定:
- * - ok=true + status=RUNNING [+ velocity]: 恢复进行中;
- * - ok=true + status=SUCCESS: 恢复完成;
- * - ok=false + ErrorCode: 恢复失败/被取消 (CANCELED)。
+ * tick() return contract:
+ * - ok=true + status=RUNNING [+ velocity]: recovery in progress;
+ * - ok=true + status=SUCCESS: recovery complete;
+ * - ok=false + ErrorCode: recovery failed/canceled (CANCELED).
  */
 class AbstractRecovery : public virtual ExtensionModule {
  public:
@@ -32,18 +36,24 @@ class AbstractRecovery : public virtual ExtensionModule {
 
   virtual ~AbstractRecovery() = default;
 
-  /// @brief 每次执行开始时调用 (复位运行态; 框架在执行前调用一次)。
+  /// @brief Called at the start of each run (reset run state; the framework calls it once before execution).
   virtual void start() {}
 
-  /// @brief 单个周期 (纯虚)。框架按固定周期重复调用, 驱动到终态。
-  virtual RecoveryResultT tick() = 0;
+  /// @brief A single cycle (pure virtual). The framework calls it
+  /// repeatedly at a fixed period, driving toward a terminal state.
+  /// @param cycle Output parameter: this cycle's status
+  ///        (RUNNING/SUCCESS/FAILED/CANCELED) and the suggested velocity
+  ///        (optional; non-motion recoveries keep nullopt).
+  virtual ResultT<void> tick(RecoveryCycleData& cycle) = 0;
 
-  /// @brief 每次执行结束时调用 (成功/失败/取消/异常后), 用于清理。
+  /// @brief Called at the end of each run (after success/failure/cancel/exception) for cleanup.
   virtual void finish() {}
 
-  /// @brief 执行前注入按次覆盖参数 (RecoveryExecution 每次 run 开始前调用)。
-  /// 默认忽略; 需要按次覆盖的恢复 (spin/back_up/wait) 覆写: nullopt 字段
-  /// 表示保留 configure 期默认值, 禁止把 nullopt 解释为 0。
+  /// @brief Inject per-run override params before execution (called by
+  /// RecoveryExecution before each run).
+  /// Ignored by default; recoveries needing per-run overrides
+  /// (spin/back_up/wait) override it: nullopt fields mean keep the
+  /// configure-time defaults; interpreting nullopt as 0 is forbidden.
   virtual void setBehaviorParams(const ayanami::RecoveryBehaviorParams& params) {
     (void)params;
   }
@@ -52,7 +62,7 @@ class AbstractRecovery : public virtual ExtensionModule {
   virtual void deactivate() {}
   virtual void cleanup() {}
 
-  /// @brief 协作式取消进行中的恢复 (阻塞型插件用以打断; 默认不支持)。
+  /// @brief Cooperatively cancel the in-progress recovery (used by blocking plugins to interrupt; unsupported by default).
   virtual bool cancel() { return false; }
 };
 

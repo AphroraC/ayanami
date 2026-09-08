@@ -177,7 +177,7 @@ void InflationLayer::updateCosts(costmap_2d::Costmap2D& master_grid,
     std::fill(seen.begin(), seen.end(), false);
   }
 
-  // 以 lethal 障碍 cell 为波前源
+  // Use lethal obstacle cells as the wavefront sources
   for (int y = start_y; y < end_y; ++y) {
     for (int x = start_x; x < end_x; ++x) {
       const auto index = master_grid.getIndex(static_cast<unsigned int>(x),

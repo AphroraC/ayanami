@@ -1,9 +1,9 @@
-// modules/costmap_clear_costmap_recovery — 清代价地图恢复模块。
+// modules/costmap_clear_costmap_recovery -- clear costmap recovery module.
 //
-// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。首周期构造类型化
-// ClearCostmapCommand 并经 CostmapCommandPort 提交给唯一写者
-// (CostmapNavigationServer) 执行清除, 随后 SUCCESS (无运动, 零速度)。
-// 插件不自行 sleep、不直接触碰可变 wrapper / layer。
+// Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). On the first cycle it builds a typed
+// ClearCostmapCommand and submits it via CostmapCommandPort to the single writer
+// (CostmapNavigationServer) to execute the clear, followed by SUCCESS (no motion, zero velocity).
+// The plugin does not sleep on its own and never directly touches mutable wrappers / layers.
 
 #include "costmap_clear_costmap_recovery.hpp"
 
@@ -16,13 +16,13 @@ using ayanami::costmap::CostmapCommandPort;
 void CostmapClearCostmapRecovery::configure(
     const ayanami::PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.clear_radius =
       context.config.param<double>("recovery", "clear_radius", param.clear_radius);
   param.affected_maps = context.config.param<std::string>(
       "recovery", "affected_maps", param.affected_maps);
   name = context.name;
-  // 地图写命令端口经地图上下文获取 (AbstractMapContext::commandPort)。
+  // The map write-command port is obtained via the map context (AbstractMapContext::commandPort).
   command_port =
       std::dynamic_pointer_cast<CostmapCommandPort>(
           map ? map->commandPort() : nullptr);
@@ -33,32 +33,31 @@ void CostmapClearCostmapRecovery::start() {
   submitted = false;
 }
 
-RecoveryResultT CostmapClearCostmapRecovery::tick() {
+ResultT<void> CostmapClearCostmapRecovery::tick(RecoveryCycleData& cycle) {
   if (canceled.load()) {
-    return RecoveryResultT::failure(ErrorCode::CANCELED,
+    return ResultT<void>::failure(ErrorCode::CANCELED,
                                     "clear costmap recovery canceled");
   }
   if (!command_port) {
-    return RecoveryResultT::failure(
+    return ResultT<void>::failure(
         ErrorCode::INTERNAL_ERROR, "clear costmap recovery has no command port");
   }
 
   if (!submitted) {
-    // 构造类型化清图命令 (地图变更只能经写者命令端口提交)。
+    // Build the typed clear command (map changes may only be submitted via the writer command port).
     ClearCostmapCommand command;
     command.affected_maps = param.affected_maps;
     command.clear_radius = param.clear_radius;
     if (!command_port->submit(command)) {
-      return RecoveryResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
           "clear costmap recovery command rejected by writer");
     }
     submitted = true;
   }
 
-  RecoveryCycleData data;
-  data.status = RecoveryStatus::SUCCESS;
-  return RecoveryResultT::success(std::move(data));
+  cycle.status = RecoveryStatus::SUCCESS;
+  return ResultT<void>::success();
 }
 
 bool CostmapClearCostmapRecovery::cancel() {

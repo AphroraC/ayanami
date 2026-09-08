@@ -1,5 +1,5 @@
-// oscillation.hpp — 迁移自 dwb_critics/oscillation.hpp (rclcpp::Duration/
-// Clock 换 double 秒 + std::chrono steady_clock)。
+// oscillation.hpp -- ported from dwb_critics/oscillation.hpp (rclcpp::Duration/
+// Clock become double seconds + std::chrono steady_clock).
 #pragma once
 
 #include <chrono>
@@ -83,7 +83,7 @@ private:
 
   // Saved positions
   geometry_msgs::Pose2D pose, prev_stationary_pose;
-  // Saved timestamp (steady_clock 等价 rclcpp::Clock)
+  // Saved timestamp (steady_clock equivalent of rclcpp::Clock)
   std::chrono::steady_clock::time_point prev_reset_time;
 };
 

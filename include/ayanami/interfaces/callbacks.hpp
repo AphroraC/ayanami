@@ -10,23 +10,28 @@ namespace ayanami {
 namespace interfaces {
 
 /**
- * @brief 全局旁路回调槽聚合 。
+ * @brief Aggregate of global side-path callback slots.
  *
- * 槽对象静态成员只在 libayanami 的 src/interfaces/callbacks.cpp 内定义一份
- * (不 inline, 关键纪律): 否则每个 .so 各持一份实例, 插件 add 的
- * 回调与核心 emit 的回调落在不同对象上, 静默失效。
+ * The slot objects' static members are defined exactly once in libayanami's
+ * src/interfaces/callbacks.cpp (not inline, key discipline): otherwise each
+ * .so would hold its own instance, and callbacks added by plugins and
+ * emitted by the core would land on different objects, silently failing.
  *
- * 分工 : 主流控制流走 BT 节点直接调 NavigationServerBase 的
- * TaskHandle 直连, 不走这里; 本组槽供旁路 (ROS 扩展 / 可视化 / 回退 /
- * 外部监控) 订阅。
+ * Division of labor: the mainline control flow goes through BT nodes
+ * calling NavigationServerBase's TaskHandle directly and does not pass
+ * here; this group of slots serves side paths (ROS extension /
+ * visualization / fallback / external monitoring) subscriptions.
  *
- * 输入/输出的纪律: 本组全局槽只承载**输出/观测** (goal/feedback/result,
- * velocity command, costmap 可视化)。障碍观测 (pointcloud/laserscan) 这类
- * **输入**不走全局槽 —— 由 ROS 侧直接调 AbstractNavigation::setPointcloud /
- * setLaserScan → CostmapNavigationServer::handleObstacle* 落图 (宿主直递)。
+ * Input/output discipline: these global slots carry only **output/
+ * observation** traffic (goal/feedback/result, velocity command, costmap
+ * visualization). Inputs such as obstacle observations (pointcloud/
+ * laserscan) do not go through global slots -- the ROS side calls
+ * AbstractNavigation::setPointcloud / setLaserScan directly ->
+ * CostmapNavigationServer::handleObstacle* to stamp the map (handed
+ * straight to the host).
  */
 struct NavigationCallbacks {
-  // ---- 四组件 action 流 (goal / feedback / result) ----
+  // ---- Four-component action streams (goal / feedback / result) ----
   static CallbackSlot<void(const ayanami::actions::GetPathGoal&)> on_get_path_goal;
   static CallbackSlot<void(const ayanami::actions::GetPathFeedback&)> on_get_path_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::GetPathResult>&)> on_get_path_result;
@@ -39,10 +44,12 @@ struct NavigationCallbacks {
   static CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> on_recovery_goal;
   static CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> on_recovery_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> on_recovery_result;
-  // ---- 状态 / 输出 / 观测 (其余 4 个; on_robot_state_updated 无
-  // 生产发射点, 已删除) ----
+  // ---- State / output / observation (the remaining slots;
+  // on_robot_state_updated had no production emit point and was removed) ----
   static CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> on_velocity_command;
   static CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> on_costmap_visualization;
+  // ---- session-level navigation terminal outcome (once per tree life) ----
+  static CallbackSlot<void(const ayanami::actions::NavigationResult&)> on_navigation_result;
 };
 
 } // namespace interfaces

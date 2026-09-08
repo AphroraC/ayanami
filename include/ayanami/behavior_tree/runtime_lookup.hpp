@@ -10,12 +10,14 @@
 namespace ayanami {
 namespace behavior_tree {
 
-// 黑板注入键: BT 节点构造期从 blackboard 取 NavigationRuntime (spec
-// §6.2 "构造期注入"; registerNodeType 无参 + createTree 时黑板已就绪)。
-// 不属于必需板项 (requiredBlackboardEntries 由 pilot/测试显式 set)。
+// Blackboard injection key: BT nodes fetch the NavigationRuntime from the
+// blackboard at construction time (spec §6.2 "construction-time injection";
+// parameterless registerNodeType + the blackboard already populated when
+// createTree runs). Not one of the required blackboard entries
+// (requiredBlackboardEntries is set explicitly by the pilot/tests).
 inline constexpr const char* k_navigation_runtime = "navigation_runtime";
 
-/// @brief 同上, 以 NodeConfig 重载 (构造期成员初始化列表用)。
+/// @brief Same as above, NodeConfig overload (for construction-time member initializer lists).
 inline components::NavigationRuntime::Ptr lookupNavigationRuntime(
     const BT::NodeConfig& config) {
   if (!config.blackboard) {
@@ -27,8 +29,9 @@ inline components::NavigationRuntime::Ptr lookupNavigationRuntime(
   return nav_server;
 }
 
-/// @brief 构造期从 blackboard 注入 NavigationRuntime; 缺失返回 nullptr
-/// (节点 tick 时判空走退化路径, 不 abort)。
+/// @brief Inject the NavigationRuntime from the blackboard at construction
+/// time; returns nullptr when missing (nodes null-check at tick time and
+/// take the degraded path, no abort).
 inline components::NavigationRuntime::Ptr lookupNavigationRuntime(
     const BT::TreeNode& node) {
   return lookupNavigationRuntime(node.config());

@@ -1,4 +1,4 @@
-// prefer_forward.cpp — 迁移自 dwb_critics/src/prefer_forward.cpp。
+// prefer_forward.cpp -- ported from dwb_critics/src/prefer_forward.cpp.
 #include "prefer_forward.hpp"
 
 #include <math.h>

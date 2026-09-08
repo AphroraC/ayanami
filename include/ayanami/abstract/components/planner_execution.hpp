@@ -12,18 +12,23 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局路径规划执行 (单次执行, 对标 MBF AbstractPlannerExecution)。
+ * @brief Global path planning execution (single run, modeled after MBF
+ * AbstractPlannerExecution).
  *
- * 职责表: 插件只做路径搜索; 失败立即映射为 ErrorCode 终态, 重试由 BT
- * (RecoveryNode) 决定 —— execution 层不做重试/耐心循环。
+ * Responsibility table: the plugin only performs path search; a failure is
+ * mapped immediately to an ErrorCode terminal state, and retries are
+ * decided by the BT (RecoveryNode) -- the execution layer does no retry/
+ * patience loop.
  *
- * latest-wins 目标 seam: setNewGoal 把最新 start/goal/tolerance 存入 pending
- * 槽; run() 在每次插件调用前采纳最新 pending 目标, 插件调用返回后若
- * revision 已推进则以最新目标重新开始 (不 cancel / 不 join / 不新建线程)。
+ * latest-wins goal seam: setNewGoal stores the latest start/goal/tolerance
+ * into a pending slot; run() adopts the latest pending goal before each
+ * plugin call, and after a plugin call returns, if the revision has
+ * advanced it restarts with the latest goal (no cancel / no join / no new
+ * thread).
  *
- * 内部状态机独立于 actions::GoalStatus :
- * INITIALIZED→STARTED→PLANNING→(FOUND_PLAN | NO_PLAN_FOUND | CANCELED |
- * STOPPED | INTERNAL_ERROR)。
+ * The internal state machine is independent of actions::GoalStatus:
+ * INITIALIZED->STARTED->PLANNING->(FOUND_PLAN | NO_PLAN_FOUND | CANCELED |
+ * STOPPED | INTERNAL_ERROR).
  */
 class PlannerExecution : public ExecutionBase {
 public:
@@ -43,7 +48,7 @@ public:
   explicit PlannerExecution(ayanami::abstract::AbstractPlanner::Ptr planner)
       : planner(std::move(planner)) {}
 
-  /// @brief 记录 start/goal/tolerance 并启动规划线程。
+  /// @brief Record start/goal/tolerance and start the planning thread.
   using ExecutionBase::start;
   void start(const geometry_msgs::PoseStamped& start,
              const geometry_msgs::PoseStamped& goal, double tolerance) {
@@ -53,16 +58,17 @@ public:
     ExecutionBase::start();
   }
 
-  /// @brief 取消: 置 cancel_requested 并透传到 planner 插件 (协作式)。
+  /// @brief Cancel: set cancel_requested and forward to the planner plugin (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (planner) planner->cancel();
     condition.notify_all();
   }
 
-  /// @brief 运行中 in-place 更新目标 (latest-wins update seam)。
-  /// @return false 表示 execution 已到终态或插件不支持, 调用方应回退到
-  /// 新建 execution。
+  /// @brief In-place goal update while running (latest-wins update seam).
+  /// @return false means the execution has reached a terminal state or the
+  /// plugin does not support it; the caller should fall back to creating a
+  /// new execution.
   virtual bool setNewGoal(const geometry_msgs::PoseStamped& start,
                           const geometry_msgs::PoseStamped& goal,
                           double tolerance) {
@@ -81,28 +87,35 @@ public:
     return true;
   }
 
-  /// @brief 当前 pending 目标 revision (用于 latest-wins 观察/测试)。
+  /// @brief Current pending goal revision (for latest-wins observation/testing).
   uint64_t pendingRevision() const { return goal_revision.load(); }
 
   PlanningState getState() const {
     return static_cast<PlanningState>(state.load());
   }
 
-  /// @brief 最近一次算出的路径。
+  /// @brief The most recently computed path.
   const nav_msgs::Path& getPlan() const { return plan; }
 
+  /// @brief Move-out: the action layer takes the path once the execution is
+  /// terminal, avoiding a full path copy. Single-shot execution (the member is
+  /// not reused afterwards).
+  nav_msgs::Path takePlan() { return std::move(plan); }
+
 protected:
-  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
-  /// typed 调用 (执行层完成地图访问, 插件不接触地图模块)。
-  virtual PlannerResultT callPlanner(
+  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// map-family executions override it with a typed call (the execution
+  /// layer performs map access; plugins never touch map modules).
+  virtual ResultT<void> callPlanner(
       const geometry_msgs::PoseStamped& start,
-      const geometry_msgs::PoseStamped& goal, double tolerance) {
-    return planner->makePlan(start, goal, tolerance);
+      const geometry_msgs::PoseStamped& goal, double tolerance,
+      nav_msgs::Path& plan) {
+    return planner->makePlan(start, goal, tolerance, plan);
   }
 
   void run() override {
     setState(STARTED, false);
-    // 当前已采纳的 goal revision (latest-wins): 每次循环采纳最新 pending 目标。
+    // Currently adopted goal revision (latest-wins): each loop round adopts the latest pending goal.
     uint64_t adopted_revision = 0;
     ayanami::geometry_msgs::PoseStamped cur_start = this->start_pose;
     ayanami::geometry_msgs::PoseStamped cur_goal = this->goal_pose;
@@ -119,7 +132,7 @@ protected:
           setState(STOPPED, true);
           return;
         }
-        // latest-wins: 若 setNewGoal 已推入新 revision, 采纳最新 pending 目标。
+        // latest-wins: if setNewGoal has pushed a new revision, adopt the latest pending goal.
         {
           std::lock_guard<std::mutex> lock(goal_mutex);
           if (goal_revision.load() != adopted_revision) {
@@ -131,11 +144,16 @@ protected:
         }
         setState(PLANNING, false);
 
-        const PlannerResultT result =
-            callPlanner(cur_start, cur_goal, cur_tolerance);
+        // in-place: the plugin writes the result member directly (single-shot
+        // execution; the FOUND_PLAN terminal state makes the write visible to
+        // the action reader via the state machine's happens-before edge), so
+        // no buffer + move round-trip is needed.
+        const ResultT<void> result =
+            callPlanner(cur_start, cur_goal, cur_tolerance, plan);
 
-        // 插件调用期间来了新目标 (revision 推进): 不提交本结果, 以同一
-        // execution 线程重新规划最新目标 (latest-wins, 无 cancel/新线程)。
+        // A new goal arrived during the plugin call (revision advanced): do
+        // not commit this result; replan for the latest goal on the same
+        // execution thread (latest-wins, no cancel/new thread).
         {
           std::lock_guard<std::mutex> lock(goal_mutex);
           if (goal_revision.load() != adopted_revision) {
@@ -149,13 +167,13 @@ protected:
           return;
         }
         if (result.ok) {
-          plan = result.data;
+          // plan was written in place by the plugin (see callPlanner arg).
           error = ErrorCode::NONE;
           message = result.message;
           setState(FOUND_PLAN, true);
           return;
         }
-        // 失败立即返回错误码 (重试由 BT 决定)。
+        // Return the error code immediately on failure (retries are decided by the BT).
         error = result.error;
         message = result.message;
         setState(NO_PLAN_FOUND, true);
@@ -168,7 +186,7 @@ protected:
     }
   }
 
-  /// @brief 当前状态是否已到终态 (run 已退出 / 不再消费新目标)。
+  /// @brief Whether the current state is terminal (run has exited / no longer consumes new goals).
   bool isTerminalState() const {
     const auto s = static_cast<PlanningState>(state.load());
     return s == FOUND_PLAN || s == NO_PLAN_FOUND || s == CANCELED ||
@@ -182,7 +200,7 @@ protected:
   double goal_tolerance{0.0};
   nav_msgs::Path plan;
 
-  // ---- latest-wins update seam 状态 (线程安全) ----
+  // ---- latest-wins update seam state (thread-safe) ----
   mutable std::mutex goal_mutex;
   geometry_msgs::PoseStamped pending_start;
   geometry_msgs::PoseStamped pending_goal;

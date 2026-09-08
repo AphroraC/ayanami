@@ -1,4 +1,4 @@
-// prefer_forward.hpp — 迁移自 dwb_critics/prefer_forward.hpp。
+// prefer_forward.hpp -- ported from dwb_critics/prefer_forward.hpp.
 #pragma once
 
 #include <string>

@@ -1,4 +1,4 @@
-// goal_dist.hpp — 迁移自 dwb_critics/goal_dist.hpp。
+// goal_dist.hpp -- ported from dwb_critics/goal_dist.hpp.
 #pragma once
 
 #include <vector>

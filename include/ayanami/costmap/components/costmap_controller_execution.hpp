@@ -12,15 +12,16 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 局部控制的 costmap 版执行。
+ * @brief The costmap variant of the local control execution.
  *
- * 在 ControllerExecution 之上绑定 costmap 上下文:
- * - preRun: checkActivate() 幂等激活 local costmap;
- * - postRun: checkDeactivate() 幂等停用 local costmap;
- * - safetyCheck: local wrapper isCurrent(); 非 current 时基类循环发布清零
- *   停止命令 (不发速度);
- * - callController: 每 cycle typed 调用 CostmapController; 插件内部加锁读
- *   local master grid (shared 锁, 周期结束释放)。
+ * Binds a costmap context on top of ControllerExecution:
+ * - preRun: checkActivate() idempotently activates the local costmap;
+ * - postRun: checkDeactivate() idempotently deactivates the local costmap;
+ * - safetyCheck: local wrapper isCurrent(); when not current the base loop
+ *   publishes zeroed stop commands (no velocity);
+ * - callController: per-cycle typed call into CostmapController; the plugin
+ *   reads the local master grid under a lock internally (shared lock,
+ *   released at cycle end).
  */
 class CostmapControllerExecution : public ayanami::components::ControllerExecution {
  public:
@@ -52,21 +53,22 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
   }
 
  protected:
-  ControllerResultT callController(
+  ResultT<void> callController(
       const ayanami::geometry_msgs::PoseStamped& pose,
-      const ayanami::geometry_msgs::TwistStamped& velocity) override {
+      const ayanami::geometry_msgs::TwistStamped& velocity,
+      ayanami::geometry_msgs::TwistStamped& cmd) override {
     auto* typed = dynamic_cast<CostmapController*>(controller.get());
     if (!typed) {
-      return ControllerResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
           "CostmapControllerExecution: plugin is not a CostmapController");
     }
     if (!ctx) {
-      return ControllerResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::MAP_UNAVAILABLE,
           "CostmapControllerExecution: no costmap module");
     }
-    return typed->computeVelocityCommand(pose, velocity);
+    return typed->computeVelocityCommand(pose, velocity, cmd);
   }
 
  private:

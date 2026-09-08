@@ -1,4 +1,4 @@
-// alignment_util.hpp — 迁移自 dwb_critics/alignment_util.hpp。
+// alignment_util.hpp -- ported from dwb_critics/alignment_util.hpp.
 #pragma once
 
 #include "../dwb_types.hpp"

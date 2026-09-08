@@ -1,4 +1,4 @@
-// base_obstacle.hpp — 迁移自 dwb_critics/base_obstacle.hpp。
+// base_obstacle.hpp -- ported from dwb_critics/base_obstacle.hpp.
 #pragma once
 
 #include <string>

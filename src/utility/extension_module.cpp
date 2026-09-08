@@ -9,7 +9,7 @@ ExtensionModule::Ptr ExtensionModule::load_module(const std::string& so_name) {
   if (create == nullptr) {
     return nullptr;
   }
-  // 不带自定义 deleter：dlopen 句柄不 dlclose，对象与进程同寿命 。
+  // No custom deleter: the dlopen handle is never dlclosed; the object lives as long as the process.
   return Ptr(create());
 }
 

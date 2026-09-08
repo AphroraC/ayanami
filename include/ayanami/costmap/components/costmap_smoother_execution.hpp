@@ -12,12 +12,12 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 路径平滑的 costmap 版执行。
+ * @brief The costmap variant of the path smoothing execution.
  *
- * 在 SmootherExecution 之上绑定 costmap 上下文:
+ * Binds a costmap context on top of SmootherExecution:
  * - preRun/postRun: checkActivate/checkDeactivate (global costmap);
  * - safetyCheck: global wrapper isCurrent();
- * - callSmoother: typed in-place 调用 CostmapSmoother; 插件内部按需加锁读图。
+ * - callSmoother: typed in-place call into CostmapSmoother; the plugin reads the map under a lock internally as needed.
  */
 class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
  public:
@@ -49,21 +49,20 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
   }
 
  protected:
-  SmootherResultT callSmoother(ayanami::nav_msgs::Path& path,
-                               double max_duration,
-                               bool check_for_collision) override {
+  ResultT<void> callSmoother(ayanami::nav_msgs::Path& path,
+                             double max_duration) override {
     auto* typed = dynamic_cast<CostmapSmoother*>(smoother.get());
     if (!typed) {
-      return SmootherResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
           "CostmapSmootherExecution: plugin is not a CostmapSmoother");
     }
     if (!ctx) {
-      return SmootherResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::MAP_UNAVAILABLE,
           "CostmapSmootherExecution: no costmap module");
     }
-    return typed->smoothPath(path, max_duration, check_for_collision);
+    return typed->smoothPath(path, max_duration);
   }
 
  private:

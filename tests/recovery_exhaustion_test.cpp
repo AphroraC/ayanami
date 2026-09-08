@@ -1,16 +1,16 @@
-// 复刻 legacy recovery_exhaustion_test.cpp 契约 (新接口等价改写)。
+// Re-creates the legacy recovery_exhaustion_test.cpp contract (equivalent rewrite on the new interface).
 //
-// 契约 (参考 MBF actionRecoveryResult §2.7; ayanami 对应 BT 外层 RecoveryNode
-// retries 耗尽): 恢复行为列表全部耗尽 (planner 恒失败 + 所有 recovery 恒失败)
-// 时, 整次导航必须以 FAILURE 终结, 绝不无限重试。
+// Contract (cf. MBF actionRecoveryResult §2.7; the ayanami counterpart is the BT outer RecoveryNode
+// retries being exhausted): when the recovery behavior list is fully exhausted (planner always fails + every recovery always fails),
+// the whole navigation must terminate with FAILURE and never retry endlessly.
 //
-// 两层验证:
-// 1. 组件层: RecoveryAction 对恒失败 recovery → 结果 failure=InternalError
-// (统一失败码), 多次尝试逐次失败 (复刻 legacy 单/多次尝试断言)。
-// 2. BT 层: 以实际导航树同构结构 (PipelineSequence + ReactiveFallback 恢复链,
-// 外层 RecoveryNode retries=2) + MockNavigationServer (requestPath /
-// requestRecovery 恒 ABORTED) 驱动树, 断言 root 在有界 tick 内 FAILURE,
-// 且恢复链每个 id 都被请求 (列表全耗尽), 不无限重试。
+// Two layers of verification:
+// 1. Component layer: RecoveryAction against an always-failing recovery -> result failure=InternalError
+// (unified failure code); multiple attempts fail one by one (re-creates the legacy single/multi-attempt assertions).
+// 2. BT layer: drive a tree isomorphic to the real navigation tree (PipelineSequence + ReactiveFallback recovery chain,
+// outer RecoveryNode retries=2) + a MockNavigationServer (requestPath /
+// requestRecovery always ABORTED); assert the root reaches FAILURE within bounded ticks,
+// every id in the recovery chain was requested (the list fully exhausted), and retries are not endless.
 
 #include <gtest/gtest.h>
 
@@ -40,7 +40,8 @@
 
 using namespace ayanami::behavior_tree;
 using ayanami::ErrorCode;
-using ayanami::RecoveryResultT;
+using ayanami::RecoveryCycleData;
+using ayanami::ResultT;
 using ayanami::actions::ExePathGoal;
 using ayanami::actions::ExePathResult;
 using ayanami::actions::GetPathGoal;
@@ -72,23 +73,23 @@ Path makePath(std::size_t n) {
   return p;
 }
 
-// 恒失败 recovery: tick 返回 INTERNAL_ERROR 失败终态。
+/// Always-failing recovery: tick returns the INTERNAL_ERROR failure terminal state.
 class FailingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
-  RecoveryResultT tick() override {
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
     ++calls;
-    return RecoveryResultT::failure(ErrorCode::INTERNAL_ERROR,
+    return ResultT<void>::failure(ErrorCode::INTERNAL_ERROR,
                                     "Recovery failed");
   }
   bool cancel() override { return true; }
   std::atomic<int> calls{0};
 };
 
-// ---- BT 层: 恒失败 Mock NavigationServer ----
+// ---- BT layer: always-failing mock NavigationServer ----
 //
-// requestPath/requestSmoothing/requestExecution/requestRecovery 全部同步发布
-// ABORTED (error 非 NONE), 模拟 planner 永远失败 + recovery 永远失败。
-// 记录每个 recovery id 的请求次数, 验证恢复链列表被完全遍历。
+/// requestPath/requestSmoothing/requestExecution/requestRecovery all synchronously publish
+/// ABORTED (error non-NONE), simulating a planner that always fails + recoveries that always fail.
+/// Records the request count per recovery id to verify the recovery chain list was fully traversed.
 class FailingNavServer : public ayanami::components::NavigationServerBase {
 public:
   using PathServer = ayanami::components::ActionServer<
@@ -186,9 +187,9 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
 
-// 以实际导航树同构结构 (生产内嵌默认树) 建树, 外层 RecoveryNode
-// retries=2。去掉 RateController (其 tick 门控会缓存 RUNNING, 不适合本测试
-// 紧循环 tick); 恢复链结构 (PipelineSequence + ReactiveFallback) 保持原样。
+// Build a tree isomorphic to the real navigation tree (the embedded production default tree) with the outer RecoveryNode
+// retries=2. The RateController is removed (its tick gating caches RUNNING, unsuitable for this test tight tick loop);
+// the recovery chain structure (PipelineSequence + ReactiveFallback) is kept as-is.
 constexpr const char* k_exhaustion_tree_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
@@ -228,7 +229,7 @@ constexpr const char* k_exhaustion_tree_xml = R"(
 
 }  // namespace
 
-// ---- 组件层: RecoveryAction 对恒失败 recovery 报告失败 (复刻 legacy) ----
+// ---- Component layer: RecoveryAction reports failure against an always-failing recovery (re-creates legacy) ----
 
 TEST(RecoveryExhaustion, recoveryActionReportsFailure) {
   auto recovery = std::make_shared<FailingRecovery>();
@@ -243,7 +244,7 @@ TEST(RecoveryExhaustion, recoveryActionReportsFailure) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   ASSERT_TRUE(task.ready());
-  // 失败经 error 传达 (统一失败码 INTERNAL_ERROR)
+  // The failure is conveyed via error (unified failure code INTERNAL_ERROR)
   EXPECT_EQ(task.result().error, ErrorCode::INTERNAL_ERROR);
   EXPECT_EQ(recovery->calls.load(), 1);
 }
@@ -266,7 +267,7 @@ TEST(RecoveryExhaustion, multipleRecoveryAttemptsAllFail) {
   EXPECT_EQ(recovery->calls.load(), 3);
 }
 
-// ---- BT 层: 恢复链全部耗尽 → 整树 FAILURE, 不无限重试 ----
+// ---- BT layer: the recovery chain fully exhausted -> whole tree FAILURE, no endless retries ----
 
 TEST(RecoveryExhaustion, recoveryListExhaustedFailsNavigationWithinBounds) {
   auto server = std::make_shared<FailingNavServer>();
@@ -279,7 +280,7 @@ TEST(RecoveryExhaustion, recoveryListExhaustedFailsNavigationWithinBounds) {
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_exhaustion_tree_xml, bb);
 
-  // 有界 tick 直到 root FAILURE: 若无限重试则永远 RUNNING, 超限断言失败。
+  // Bounded ticking until root FAILURE: endless retries would stay RUNNING forever and trip this assertion.
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
   const int k_max_ticks = 60;
   int ticks = 0;
@@ -289,11 +290,11 @@ TEST(RecoveryExhaustion, recoveryListExhaustedFailsNavigationWithinBounds) {
   ASSERT_EQ(status, BT::NodeStatus::FAILURE) << "恢复链耗尽后树必须 FAILURE";
   EXPECT_LE(ticks, k_max_ticks);
 
-  // planner 被调用且失败
+  // The planner was called and failed
   EXPECT_GE(server->path_calls.load(), 1);
 
-  // 恢复链列表被完全遍历: clear_costmap (内层) + spin/wait/back_up (外层
-  // ReactiveFallback) 每个都被请求
+  // The recovery chain list was fully traversed: clear_costmap (inner) + spin/wait/back_up (outer
+  // ReactiveFallback) were each requested
   EXPECT_GE(server->recoveryRequests("clear_costmap"), 1);
   EXPECT_GE(server->recoveryRequests("spin"), 1);
   EXPECT_GE(server->recoveryRequests("wait"), 1);

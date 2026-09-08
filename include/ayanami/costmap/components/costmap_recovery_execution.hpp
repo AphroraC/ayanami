@@ -12,15 +12,19 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 恢复行为的 costmap 版执行。
+ * @brief The costmap variant of the recovery execution.
  *
- * 在 RecoveryExecution 之上绑定 costmap 上下文:
- * - preRun: global+local 两者 checkActivate(); postRun: 两者 checkDeactivate();
- * - safetyCheck: 两个 wrapper 都 current 才返回 true (保留钩子; recovery
- *   周期循环不以之为门, 恢复必须始终推进到终态并补零);
- * - callRecoveryTick: typed 调用 CostmapRecovery; 碰撞类恢复插件内部经
- *   持有的地图模块加锁读图; 需要改图的恢复 (clear) 经 CostmapCommandPort
- *   提交命令, 由唯一写者 (CostmapNavigationServer) 执行。
+ * Binds a costmap context on top of RecoveryExecution:
+ * - preRun: checkActivate() on both global+local; postRun:
+ *   checkDeactivate() on both;
+ * - safetyCheck: returns true only when both wrappers are current (hook
+ *   retained; the recovery cycle loop does not gate on it -- recovery must
+ *   always advance to a terminal state and publish zeros);
+ * - callRecoveryTick: typed call into CostmapRecovery; collision-type
+ *   recovery plugins read the map under a lock internally via their held
+ *   map module; map-modifying recoveries (clear) submit commands via
+ *   CostmapCommandPort, executed by the sole writer
+ *   (CostmapNavigationServer).
  */
 class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
  public:
@@ -61,19 +65,19 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
   }
 
  protected:
-  RecoveryResultT callRecoveryTick() override {
+  ResultT<void> callRecoveryTick(RecoveryCycleData& cycle) override {
     auto* typed = dynamic_cast<CostmapRecovery*>(recovery.get());
     if (!typed) {
-      return RecoveryResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
           "CostmapRecoveryExecution: plugin is not a CostmapRecovery");
     }
     if (!ctx) {
-      return RecoveryResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::MAP_UNAVAILABLE,
           "CostmapRecoveryExecution: no costmap module");
     }
-    return typed->tick();
+    return typed->tick(cycle);
   }
 
  private:

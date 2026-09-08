@@ -12,9 +12,10 @@
 namespace ayanami {
 namespace actions {
 
-// 统一失败码: 四类 Result 都用 `error` (ErrorCode) 传达成败 (NONE=成功),
-// message 仅诊断 (BT 不解析)。每个 Goal/Result 带 session_id / plan_version
-// 用于 BT 节点 onRunning 竞态校验。
+// Unified failure codes: all four Result types use `error` (ErrorCode) to
+// convey success/failure (NONE=success); message is diagnostic only (the BT
+// does not parse it). Every Goal/Result carries session_id / plan_version
+// for BT nodes' onRunning race checks.
 
 struct GetPathGoal {
   ayanami::geometry_msgs::PoseStamped start;
@@ -46,7 +47,6 @@ struct GetPathFeedback {
 struct SmoothPathGoal {
   ayanami::nav_msgs::Path path;
   double max_duration = 2.0;
-  bool check_for_collision = false;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<SmoothPathGoal>;
@@ -95,9 +95,9 @@ struct ExePathFeedback {
 
 struct RecoveryGoal {
   std::string recovery_id;
-  /// @brief 触发本次恢复动作的失败上下文 (BT Recovery 节点从黑板注入)。
+  /// @brief The failure context that triggered this recovery action (injected from the blackboard by the BT Recovery node).
   ayanami::FailureContext cause;
-  /// @brief 按次覆盖参数 (nullopt 字段 = 插件 configure 期默认值)。
+  /// @brief Per-run override params (nullopt field = the plugin's configure-time default).
   ayanami::RecoveryBehaviorParams behavior;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
@@ -120,7 +120,7 @@ struct RecoveryFeedback {
   using ConstPtr = std::shared_ptr<const RecoveryFeedback>;
 };
 
-// 目标状态 (用 GoalStatus::SUCCEEDED 做 BT 结果校验)。
+// goal status (GoalStatus::SUCCEEDED is used for BT result validation).
 enum class GoalStatus : uint8_t {
   PENDING = 0,
   ACTIVE = 1,
@@ -130,10 +130,11 @@ enum class GoalStatus : uint8_t {
 };
 
 /**
- * @brief 带状态的 action 结果聚合 (槽签名用)。
+ * @brief Action result aggregate with status (used by slot signatures).
  *
- * TaskHandle 完成时用 GoalResult<Result> 交付: status 描述整体目标状态,
- * result 携带各 action 族的 Result (含 failure/session_id/plan_version)。
+ * On TaskHandle completion, GoalResult<Result> is delivered: status
+ * describes the overall goal state, and result carries each action family's
+ * Result (including failure/session_id/plan_version).
  */
 template <typename Result>
 struct GoalResult {
@@ -141,6 +142,18 @@ struct GoalResult {
   Result result;
   using Ptr = std::shared_ptr<GoalResult>;
   using ConstPtr = std::shared_ptr<const GoalResult>;
+};
+
+/// @brief Session-level navigation terminal outcome (observability exit).
+/// Emitted exactly once per tree life by the pilot: SUCCEEDED / ABORTED
+/// (tree FAILURE, context carries the structured failure) / CANCELED
+/// (halt while a navigation was in flight). status never takes the
+/// transient values (PENDING/ACTIVE).
+struct NavigationResult {
+  GoalStatus status = GoalStatus::ABORTED;
+  FailureContext context;
+  using Ptr = std::shared_ptr<NavigationResult>;
+  using ConstPtr = std::shared_ptr<const NavigationResult>;
 };
 
 } // namespace actions

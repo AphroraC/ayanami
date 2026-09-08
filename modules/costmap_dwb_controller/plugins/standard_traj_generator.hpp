@@ -1,4 +1,4 @@
-// standard_traj_generator.hpp — 迁移自 dwb_plugins/standard_traj_generator.hpp。
+// standard_traj_generator.hpp -- ported from dwb_plugins/standard_traj_generator.hpp.
 #pragma once
 
 #include <memory>

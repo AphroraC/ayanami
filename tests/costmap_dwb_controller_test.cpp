@@ -1,18 +1,18 @@
-// costmap_dwb_controller_test.cpp — DWB 模块测试。
+// costmap_dwb_controller_test.cpp -- DWB module tests.
 //
-// 验证策略 (迁移自 nav2_dwb_controller, 算法逻辑完全相同):
-// A. 上游单元测试断言移植:
-// - MapBasedQueue 优先级/动态排序 (costmap_queue/test/mbq_test.cpp)
+// Verification strategy (migrated from nav2_dwb_controller, algorithm logic identical):
+// A. Ported upstream unit-test assertions:
+// - MapBasedQueue priority/dynamic ordering (costmap_queue/test/mbq_test.cpp)
 // - getClosestPose / projectPose (dwb_core/test/utils_test.cpp)
-// B. 数值快照 (手工推导关键公式期望值):
+// B. Numeric snapshots (hand-derived expected values for key formulas):
 // - projectVelocity / OneDVelocityIterator
 // - StandardTrajectoryGenerator::computeNewPosition / getTimeSteps
 // - adjustPlanResolution
 // - critics: BaseObstacle / PreferForward / Twirling / Oscillation
-// (构造输入 → 精确分数断言)
-// C. headless 集成: CostmapMapContext + 主控制器全链路打分
+// (construct inputs -> exact score assertions)
+// C. Headless integration: CostmapMapContext + full-chain scoring through the main controller
 //
-// argv: 1=模块 config json (build tree 下 config/modules/costmap_dwb_controller.json)
+// argv: 1 = module config json (config/modules/costmap_dwb_controller.json in the build tree)
 
 #include <gtest/gtest.h>
 
@@ -56,7 +56,7 @@ using nav_2d_msgs::Twist2D;
 
 std::string g_config_json;
 
-// ---------- A. 上游断言移植 ----------
+// ---------- A. Ported upstream assertions ----------
 
 void letterTest(MapBasedQueue<char>& q, const char test_letter) {
   ASSERT_FALSE(q.isEmpty());
@@ -165,13 +165,13 @@ TEST(DwbTrajectoryUtils, projectPose) {
   EXPECT_DOUBLE_EQ(projectPose(traj, 3.5).theta, 0.42);
 }
 
-// ---------- B. 数值快照 ----------
+// ---------- B. Numeric snapshots ----------
 
 TEST(DwbOneDVelocity, projectVelocity) {
-  // 加速: v0 < target → min(target, v0 + accel*dt)
+  // Accelerate: v0 < target -> min(target, v0 + accel*dt)
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(0.0, 1.0, -1.0, 1.0, 2.0), 1.0);
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(1.5, 1.0, -1.0, 1.0, 2.0), 2.0);
-  // 减速: v0 >= target → max(target, v0 + decel*dt) (decel 为负)
+  // Decelerate: v0 >= target -> max(target, v0 + decel*dt) (decel is negative)
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(2.0, 1.0, -1.0, 1.0, 0.5), 1.0);
   EXPECT_DOUBLE_EQ(dwb_plugins::projectVelocity(0.5, 1.0, -1.0, 1.0, 0.0),
                    0.0);
@@ -179,7 +179,7 @@ TEST(DwbOneDVelocity, projectVelocity) {
 
 TEST(DwbOneDVelocity, iteratorSamples) {
   // current=2, min=0, max=3, acc=1, decel=-1, dt=1, samples=5
-  // max_vel = project(2 → 3) = 3; min_vel = project(2 → 0) = 1
+  // max_vel = project(2 -> 3) = 3; min_vel = project(2 -> 0) = 1
   dwb_plugins::OneDVelocityIterator it(2.0, 0.0, 3.0, 1.0, -1.0, 1.0, 5);
   std::vector<double> samples;
   while (!it.isFinished()) {
@@ -196,14 +196,14 @@ TEST(DwbOneDVelocity, iteratorSamples) {
 
 TEST(DwbOneDVelocity, iteratorInsertsZeroOnCross) {
   // current=-0.5, min=-1, max=1, acc=1, decel=-1, dt=1, samples=2
-  // max_vel = project(-0.5 → 1) = 0.5; min_vel = project(-0.5 → -1) = -1
+  // max_vel = project(-0.5 -> 1) = 0.5; min_vel = project(-0.5 -> -1) = -1
   dwb_plugins::OneDVelocityIterator it(-0.5, -1.0, 1.0, 1.0, -1.0, 1.0, 2);
   std::vector<double> samples;
   while (!it.isFinished()) {
     samples.push_back(it.getVelocity());
     ++it;
   }
-  // -1 → 0 (跨零插入) → 0.5
+  // -1 -> 0 (cross-zero insertion) -> 0.5
   ASSERT_EQ(samples.size(), 3u);
   EXPECT_DOUBLE_EQ(samples[0], -1.0);
   EXPECT_DOUBLE_EQ(samples[1], 0.0);
@@ -213,9 +213,9 @@ TEST(DwbOneDVelocity, iteratorInsertsZeroOnCross) {
 TEST(DwbKinematics, speedLimitPercentage) {
   dwb_plugins::KinematicsHandler handler;
   ayanami::Config cfg("");
-  // 空配置下初始化 (默认 0), 再手工注参走 setSpeedLimit 纯逻辑:
-  // 直接构造 KinematicParameters 不可行 (protected), 经 handler 初始化 + 限速。
-  // 以 json 文件驱动 (见 headless 集成), 这里仅验证 NO_SPEED_LIMIT 语义路径。
+  // Initialize with an empty config (defaults 0), then inject parameters manually to exercise the setSpeedLimit pure logic:
+  // constructing KinematicParameters directly is not possible (protected), so initialize + limit through the handler.
+  // The json-file path is covered by the headless integration; here only the NO_SPEED_LIMIT semantic path is verified.
   handler.initialize(cfg, "dwb_local");
   handler.setSpeedLimit(0.0 /*NO_SPEED_LIMIT*/, false);
   EXPECT_DOUBLE_EQ(handler.getKinematics().getMaxSpeedXY(), 0.0);
@@ -226,16 +226,16 @@ TEST(DwbPathOps, adjustPlanResolution) {
   plan.poses.push_back(Pose2D{0.0, 0.0, 0.0});
   plan.poses.push_back(Pose2D{1.0, 0.0, 0.0});
   nav_2d_msgs::Path2D adjusted = dwb_core::adjustPlanResolution(plan, 0.1);
-  // 间距 1.0 > 2*0.1 → diff=1.0-0.2=0.8 → steps=int(0.8/0.1)-1=7
-  // → j=1..6 共 6 个中间点 + 2 端点 = 8 点
+  // Spacing 1.0 > 2*0.1 -> diff=1.0-0.2=0.8 -> steps=int(0.8/0.1)-1=7
+  // -> j=1..6 gives 6 intermediate points + 2 endpoints = 8 points
   EXPECT_EQ(adjusted.poses.size(), 8u);
   EXPECT_DOUBLE_EQ(adjusted.poses.front().x, 0.0);
   EXPECT_DOUBLE_EQ(adjusted.poses.back().x, 1.0);
-  // 中间点等分 7 段: 第 2 个点 x=1/7
+  // Intermediate points split into 7 equal segments: the 2nd point has x=1/7
   EXPECT_NEAR(adjusted.poses[1].x, 1.0 / 7.0, 1e-9);
 }
 
-// critic 数值快照: 用临时 json 配置驱动 (避免 Config 空文件全默认)。
+/// Critic numeric snapshots: driven by a temp json config (avoids an empty Config falling back to all defaults).
 const std::string makeCriticConfigJson() {
   return std::string("{\n  \"dwb_local\": {\n") +
          "    \"critics\": [\"BaseObstacle\", \"PreferForward\", \"Twirling\", "
@@ -268,16 +268,16 @@ TEST(DwbCritic, preferForwardScores) {
   critic.initialize(cfg, "PreferForward", "dwb_local", &costmap, nullptr);
 
   dwb_msgs::Trajectory2D traj;
-  // backward → penalty (1.0)
+  // backward -> penalty (1.0)
   traj.velocity = Twist2D{-0.5, 0.0, 0.0};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 1.0);
-  // strafing (vx < 0.1 && |theta| < 0.2) → penalty
+  // strafing (vx < 0.1 && |theta| < 0.2) -> penalty
   traj.velocity = Twist2D{0.05, 0.0, 0.1};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 1.0);
-  // forward with rotation → |theta| * 10
+  // forward with rotation -> |theta| * 10
   traj.velocity = Twist2D{0.5, 0.0, 0.3};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 3.0);
-  // pure forward → 0
+  // pure forward -> 0
   traj.velocity = Twist2D{0.5, 0.0, 0.0};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 0.0);
 }
@@ -299,7 +299,7 @@ TEST(DwbCritic, twirlingScores) {
 TEST(DwbCritic, baseObstacleScoresAndThrows) {
   writeTempConfig(makeCriticConfigJson());
   ayanami::Config cfg("/tmp/opencode/dwb_critic_test.json");
-  // 20x20 @ 0.05: (10,10) 放 lethal
+  // 20x20 @ 0.05: put a lethal cell at (10,10)
   costmap_2d::Costmap2D costmap(20, 20, 0.05, 0.0, 0.0,
                                 costmap_2d::FREE_SPACE);
   costmap.setCost(10, 10, costmap_2d::LETHAL_OBSTACLE);
@@ -307,7 +307,7 @@ TEST(DwbCritic, baseObstacleScoresAndThrows) {
   dwb_critics::BaseObstacleCritic critic;
   critic.initialize(cfg, "BaseObstacle", "dwb_local", &costmap, nullptr);
 
-  // 合法轨迹: 经过 free 区 (0,0)→(0.1,0) 两个点, sum_scores=false → 取最后点
+  // Valid trajectory: two points through free space (0,0)->(0.1,0); with sum_scores=false the last point is taken
   // cost=0
   dwb_msgs::Trajectory2D traj;
   traj.velocity = Twist2D{0.5, 0.0, 0.0};
@@ -315,14 +315,14 @@ TEST(DwbCritic, baseObstacleScoresAndThrows) {
   traj.poses.push_back(Pose2D{0.1, 0.0, 0.0});
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 0.0);
 
-  // 撞 lethal: (0.5, 0.5) 世界坐标 → cell (10, 10) → IllegalTrajectoryException
+  // Hits lethal: world (0.5, 0.5) -> cell (10, 10) -> IllegalTrajectoryException
   dwb_msgs::Trajectory2D bad;
   bad.velocity = Twist2D{0.5, 0.0, 0.0};
   bad.poses.push_back(Pose2D{0.5, 0.5, 0.0});
   EXPECT_THROW(critic.scoreTrajectory(bad),
                dwb_core::IllegalTrajectoryException);
 
-  // 出界: 世界坐标 1.0 → cell 20 越界 (20x20 @0.05 → 1.0m) → 异常
+  // Off grid: world 1.0 -> cell 20 out of bounds (20x20 @0.05 -> 1.0m) -> exception
   dwb_msgs::Trajectory2D off_grid;
   off_grid.velocity = Twist2D{0.5, 0.0, 0.0};
   off_grid.poses.push_back(Pose2D{1.0, 0.0, 0.0});
@@ -340,27 +340,27 @@ TEST(DwbCritic, oscillationDetectsSignFlips) {
   critic.initialize(cfg, "Oscillation", "dwb_local", &costmap, nullptr);
 
   dwb_msgs::Trajectory2D traj;
-  // 初始 debrief 正速度 → 无振荡 → 合法 (0.0)
+  // Initial debrief with positive velocity -> no oscillation -> valid (0.0)
   critic.prepare(Pose2D{0.0, 0.0, 0.0}, Twist2D{0.0, 0.0, 0.0},
                  Pose2D{1.0, 0.0, 0.0}, nav_2d_msgs::Path2D{});
   critic.debrief(Twist2D{1.0, 0.0, 0.0});
   traj.velocity = Twist2D{-0.5, 0.0, 0.0};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 0.0);
-  // debrief 负速度 → 符号翻转 → 正向轨迹振荡 → 异常
+  // debrief with negative velocity -> sign flip -> forward trajectory oscillates -> exception
   critic.debrief(Twist2D{-0.5, 0.0, 0.0});
   traj.velocity = Twist2D{0.5, 0.0, 0.0};
   EXPECT_THROW(critic.scoreTrajectory(traj),
                dwb_core::IllegalTrajectoryException);
-  // 负向仍合法
+  // Negative direction stays valid
   traj.velocity = Twist2D{-0.3, 0.0, 0.0};
   EXPECT_DOUBLE_EQ(critic.scoreTrajectory(traj), 0.0);
 }
 
-// ---------- C. headless 集成 ----------
+// ---------- C. Headless integration ----------
 
-// 构造 headless 配置目录 (config.json global 单层索引 → dwb.json),
-// 使模块构造时经 GlobalConfig::getConfigPath("config_dwb_controller") 命中
-// dwb 配置 (glim 式显式读取, 无 thread_local 注入)。
+// Build the headless config dir (config.json with a single-level global index -> dwb.json) so the module
+// constructor hits the dwb config via GlobalConfig::getConfigPath("config_dwb_controller")
+// (glim-style explicit read, no thread_local injection).
 std::string setupHeadlessConfigDir() {
   if (g_config_json.empty()) {
     throw std::runtime_error("setupHeadlessConfigDir: missing config argv[1]");
@@ -381,10 +381,10 @@ std::string setupHeadlessConfigDir() {
   return dir;
 }
 
-// 回归 : setPlan 可能先于首次快照绑定 (执行路径:
-// ControllerExecution::run 先 controller->setPlan 再 computeVelocityCommands,
-// 首次 compute 前 critic 的 costmap/queue 均未绑定)。MapGridCritic::reset 在
-// null map/queue 下必须安全, 之后 binding + 打分不崩。
+// Regression: setPlan can happen before the first snapshot binding (execution path:
+// ControllerExecution::run calls controller->setPlan before computeVelocityCommands;
+// before the first compute the critic costmap/queue are unbound). MapGridCritic::reset must be
+// safe with null map/queue, and the later binding + scoring must not crash.
 TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   const std::string dir = setupHeadlessConfigDir();
   ayanami::Config cfg(g_config_json);
@@ -402,7 +402,7 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
       ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
       ctx->getSharedConstPtr()));
 
-  // 高保真执行路径: 首次 compute 之前先 setPlan (critics 尚未绑定 costmap)。
+  // High-fidelity execution path: setPlan before the first compute (critics not yet bound to the costmap).
   ayanami::nav_msgs::Path path;
   path.header.frame_id = "map";
   for (int i = 0; i < 5; ++i) {
@@ -412,13 +412,14 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   }
   ASSERT_NO_THROW(planner.setPlan(path));
 
-  // 之后 computeVelocityCommands: 周期内 lockLocal 读图 → 打分路径 (受控失败而非崩)。
+  // Then computeVelocityCommands: reads the map via lockLocal within the cycle -> scoring path (controlled failure, not a crash).
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "odom", Eigen::Isometry3d::Identity());
   ayanami::geometry_msgs::TwistStamped vel;
-  const auto result = planner.computeVelocityCommand(pose, vel);
-  // pose 帧 (odom) ≠ local 帧 (map) 且无 TF → 受控 TransformUnavailable, 不是内部错误/崩。
+  ayanami::geometry_msgs::TwistStamped cmd;
+  const auto result = planner.computeVelocityCommand(pose, vel, cmd);
+  // pose frame (odom) != local frame (map) and no TF -> controlled TransformUnavailable, not an internal error/crash.
   EXPECT_FALSE(result.ok);
   EXPECT_EQ(result.error, ayanami::ErrorCode::TRANSFORM_UNAVAILABLE);
 }
@@ -427,7 +428,7 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
   const std::string dir = setupHeadlessConfigDir();
   ayanami::Config cfg(g_config_json);
 
-  // 20x20 @ 0.05 costmap 注入 → 本地图。
+  // 20x20 @ 0.05 costmap injected -> the local map.
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>("odom", true,
                                                                false);
   local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
@@ -442,13 +443,14 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
       ayanami::PluginContext{"dwb_local", ayanami::Config(g_config_json)},
       ctx->getSharedConstPtr()));
 
-  // compute 经 lockLocal 绑定当前 grid → 打分路径 (受控失败而非崩)。
+  // compute binds the current grid via lockLocal -> scoring path (controlled failure, not a crash).
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "map", Eigen::Isometry3d::Identity());
   ayanami::geometry_msgs::TwistStamped vel;
-  const auto result = planner.computeVelocityCommand(pose, vel);
-  // 无 plan → transformGlobalPlan 抛 PlannerException → NoValidCommand (受控)。
+  ayanami::geometry_msgs::TwistStamped cmd;
+  const auto result = planner.computeVelocityCommand(pose, vel, cmd);
+  // No plan -> transformGlobalPlan throws PlannerException -> NoValidCommand (controlled).
   EXPECT_FALSE(result.ok);
   EXPECT_EQ(result.error, ayanami::ErrorCode::NO_VALID_COMMAND);
 }

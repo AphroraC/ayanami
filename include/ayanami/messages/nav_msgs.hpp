@@ -12,8 +12,8 @@ namespace ayanami {
 namespace nav_msgs {
 
 /**
- * @brief 地图元数据 (等价 nav_msgs/MapMetaData, 布局对齐 ROS2:
- *        map_load_time / resolution / width / height / origin)。
+ * @brief Map metadata (equivalent to nav_msgs/MapMetaData, layout aligned
+ *        with ROS2: map_load_time / resolution / width / height / origin).
  */
 struct MapMetaData {
   ayanami::Timestamp map_load_time;
@@ -26,7 +26,7 @@ struct MapMetaData {
 };
 
 /**
- * @brief 占据栅格 (等价 nav_msgs/OccupancyGrid)，data 是 row-major 的 int8 概率值。
+ * @brief Occupancy grid (equivalent to nav_msgs/OccupancyGrid); data is row-major int8 probability values.
  */
 struct OccupancyGrid {
   ayanami::geometry_msgs::Header header;
@@ -37,7 +37,7 @@ struct OccupancyGrid {
 };
 
 /**
- * @brief 路径 (等价 nav_msgs/Path)，poses 是带 frame 的位姿序列。
+ * @brief Path (equivalent to nav_msgs/Path); poses is a sequence of framed poses.
  */
 struct Path {
   using poses_type = std::vector<ayanami::geometry_msgs::PoseStamped>;
@@ -48,7 +48,7 @@ struct Path {
 };
 
 /**
- * @brief 位姿 + 6x6 协方差 (等价 geometry_msgs/PoseWithCovariance, row-major)。
+ * @brief Pose + 6x6 covariance (equivalent to geometry_msgs/PoseWithCovariance, row-major).
  */
 struct PoseWithCovariance {
   ayanami::geometry_msgs::Pose pose;
@@ -58,7 +58,7 @@ struct PoseWithCovariance {
 };
 
 /**
- * @brief 速度 + 6x6 协方差 (等价 geometry_msgs/TwistWithCovariance, row-major)。
+ * @brief Twist + 6x6 covariance (equivalent to geometry_msgs/TwistWithCovariance, row-major).
  */
 struct TwistWithCovariance {
   ayanami::geometry_msgs::Twist twist;
@@ -68,8 +68,9 @@ struct TwistWithCovariance {
 };
 
 /**
- * @brief 里程计 (等价 nav_msgs/Odometry, 布局对齐 ROS2:
- *        header / child_frame_id / PoseWithCovariance pose / TwistWithCovariance twist)。
+ * @brief Odometry (equivalent to nav_msgs/Odometry, layout aligned with
+ *        ROS2: header / child_frame_id / PoseWithCovariance pose /
+ *        TwistWithCovariance twist).
  */
 struct Odometry {
   ayanami::geometry_msgs::Header header;

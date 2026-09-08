@@ -1,19 +1,24 @@
-// BehaviorTreePilot 实现 (常驻树 + pending_goal 黑板覆盖 + 抢占归 tick
-// 线程)。
+// BehaviorTreePilot implementation (resident tree + pending_goal blackboard
+// overwrite + preemption owned by the tick thread).
 //
-// 抢占纪律: beginNavigation 只做 latest-wins 邮箱投递 (覆写 pending_goal +
-// 唤醒), **绝不跨线程 halt BT 树**。实际抢占全部落在 run 线程:
-// applyPendingGoal: 本地 haltTree (tick 线程) → controllerAction->cancelAll
-// → 发一条零速度 (Global Constraint P9) → startNewSession (session+1 /
-// plan_version 归零, 与 NavigationServerBase 共享同一对象) → 重写黑板。
-// halt 只是请求位 (halt_requested), run 线程 consumeHaltRequest 本地消费
-// (供停止/析构前停树; join 之后不再有并发 tick)。树常驻不重建 。
+// Preemption discipline: beginNavigation only performs latest-wins mailbox
+// delivery (overwrite pending_goal + wake), **never halts the BT tree
+// cross-thread**. All actual preemption lands on the run thread:
+// applyPendingGoal: local haltTree (tick thread) ->
+// controllerAction->cancelAll -> publish one zero velocity (Global
+// Constraint P9) -> startNewSession (session+1 / plan_version reset to
+// zero, sharing the same object with NavigationServerBase) -> rewrite the
+// blackboard. halt is only a request flag (halt_requested), consumed
+// locally by the run thread's consumeHaltRequest (for stopping the tree on
+// stop/destruction; after join there are no concurrent ticks). The tree is
+// resident and never rebuilt.
 
 #include "ayanami/behavior_tree/pilot.hpp"
 
 #include "ayanami/behavior_tree/action_nodes.hpp"
 #include "ayanami/behavior_tree/navigation.hpp"
 #include "ayanami/interfaces/callbacks.hpp"
+#include "ayanami/messages/actions.hpp"
 #include "ayanami/utility/config.hpp"
 #include "ayanami/utility/extension_module.hpp"
 
@@ -28,8 +33,9 @@
 namespace ayanami {
 namespace behavior_tree {
 
-// 泛型树缺省扩展 .so : navigation.behavior_tree_extension 缺省
-// 时回退到本名字 (生产配置始终显式给出)。
+// Generic tree default extension .so: fallback name when
+// navigation.behavior_tree_extension is absent (production configs always
+// give it explicitly).
 namespace {
 constexpr const char* k_default_tree_extension_so =
     "libayanami_navigation_behavior_tree.so";
@@ -52,15 +58,16 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
       cfg.param<double>(k_sec, "controller_frequency", 20.0);
   tick_frequency = cfg.param<double>(k_sec, "tick_frequency", 100.0);
 
-// 泛型树扩展 : 配置指定扩展 .so 名(列表), configure 期缓存,
-  // buildTree 期经 ExtensionModule::load_module 装载。navigation 段的值可为
-  // 单字符串或字符串数组。
+// Generic tree extensions: the config names extension .so(s), cached at
+  // configure time and loaded during buildTree via
+  // ExtensionModule::load_module. The navigation section's value may be a
+  // single string or a string array.
   tree_extension_so_names.clear();
   try {
     tree_extension_so_names = cfg.param<std::vector<std::string>>(
         k_sec, "behavior_tree_extension", {});
   } catch (const std::exception&) {
-    // behavior_tree_extension 是单字符串。
+    // behavior_tree_extension is a single string.
   }
   if (tree_extension_so_names.empty()) {
     const std::string single =
@@ -73,49 +80,20 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
     tree_extension_so_names.push_back(k_default_tree_extension_so);
   }
 
-  // 模块 id 单一来源 = 各模块 json 的 name 字段 (无独立 *_id 配置键)。
-  // recovery 角色映射 (clear_costmap/spin/wait/backup) 由 config_recovery
-  // 有序文件族内每个文件的 recovery.role 字段决定, 供默认树按角色引用。
-
-  clear_costmap_id.clear();
-  spin_id.clear();
-  wait_id.clear();
-  backup_id.clear();
-  std::vector<std::string> recovery_files;
-  try {
-    recovery_files = cfg.param<std::vector<std::string>>(
-        k_sec, "config_recovery", {});
-  } catch (const std::exception&) {
-  }
-  if (recovery_files.empty()) {
-    recovery_files.push_back(cfg.param<std::string>(k_sec, "config_recovery", ""));
-  }
-  const std::string directory =
-      GlobalConfig::instance()->param<std::string>("global", "config_path", ".");
-  for (const auto& file : recovery_files) {
-    if (file.empty()) {
-      continue;
-    }
-    Config recovery_cfg(std::filesystem::path(file).is_absolute()
-                            ? file
-                            : (directory + "/" + file));
-    const std::string name =
-        recovery_cfg.param<std::string>("recovery", "name", "");
-    const std::string role =
-        recovery_cfg.param<std::string>("recovery", "role", "");
-    if (role == "clear_costmap") clear_costmap_id = name;
-    if (role == "spin") spin_id = name;
-    if (role == "wait") wait_id = name;
-    if (role == "backup") backup_id = name;
-  }
+  // Module id single source = each module json's name field (no separate
+  // *_id config keys).
+  // Recovery role mapping lives in the BT extension (see
+  // BehaviorTreeExtension::provideBlackboardEntries): the core pilot stays
+  // agnostic of recovery roles -- BT only orchestrates.
 }
 
 void BehaviorTreePilot::setNavigationRuntime(
     components::NavigationRuntime::Ptr runtime) {
   navigation_runtime = std::move(runtime);
   if (navigation_runtime) {
-    // 共享会话/版本单一来源: pilot 与 server 用同一 NavigationSessionState,
-    // 黑板 session 与实际 goal session 不再发散。
+    // Shared session/version single source of truth: pilot and server use
+    // the same NavigationSessionState, so the blackboard session and the
+    // actual goal session no longer diverge.
     navigation_runtime->setSessionState(session_state);
   }
   if (bt_blackboard) {
@@ -154,10 +132,10 @@ void BehaviorTreePilot::beginNavigation(
   }
   {
     std::lock_guard<std::mutex> lk(goal_mutex);
-    // latest wins: 覆写 pending_goal (新 goal 覆盖旧 goal, 不排队)。
+    // latest wins: overwrite pending_goal (a new goal replaces the old one, no queuing).
     pending_goal = goal;
   }
-  bt_tree.emitWakeUpSignal();  // 唤醒 run 循环 (可能在 bt_tree.sleep)
+  bt_tree.emitWakeUpSignal();  // wake the run loop (it may be in bt_tree.sleep)
 }
 
 void BehaviorTreePilot::run() {
@@ -170,37 +148,47 @@ void BehaviorTreePilot::run() {
   const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::duration<double>(1.0 / hz));
   const auto safe_period = std::max(period, std::chrono::milliseconds(1));
- // 导航完成空闲状态 (nav2 navigator 语义): 树返回 SUCCESS/FAILURE 表示本次
- // 导航尝试结束 —— 不再空转重跑已完成的树 (实测到达后以 ~100Hz 重规划+平滑
- // 空转, plan_version 以 60/s 膨胀), 等待新 goal (beginNavigation 邮箱) 唤醒
- // 下一轮树生命。
+ // Navigation-finished idle state (nav2 navigator semantics): the tree
+ // returning SUCCESS/FAILURE means this navigation attempt is over -- no
+ // more idly re-running the finished tree (measured: after arrival it
+ // idled at ~100Hz replanning+smoothing, inflating plan_version at 60/s);
+ // wait for a new goal (beginNavigation mailbox) to wake the next tree
+ // life.
   bool navigation_finished = false;
   while (true) {
-    // 抢占归 tick 线程: halt 请求 / pending goal 都在本地消费 (绝不跨线程
-    // haltTree)。
+    // Preemption belongs to the tick thread: halt requests / pending goals
+    // are consumed locally (never cross-thread haltTree).
     consumeHaltRequest();
     if (kill_switch.load()) break;
     if (applyPendingGoal()) {
-      navigation_finished = false;  // 新 goal / 目标修订: 恢复 tick
+      navigation_finished = false;  // new goal / goal revision: resume ticking
     }
     if (navigation_finished && !hasPendingGoal()) {
       bt_tree.sleep(safe_period);
       continue;
     }
     const BT::NodeStatus tick_status = bt_tree.tickOnce();
-    // 树生命终端复位 (v4 halt 语义适配): BT.CPP v4 的 halt 只传播到 RUNNING
-    // 子节点, 终态缓存的子树 (RateController 单次缓存 / RecoveryNode 重试计数
-    // / RecoverySequence 游标) 不会被重置 —— 不复位则 planner 永不重规划、恢
-    // 复风暴跨树生命持续 (rviz 恢复风暴 bug 根因, 见
-    // production_tree_recovery_test)。SUCCESS/FAILURE 后等价 nav2 v3
-    // haltAllActions: 进入空闲等待新 goal。
+    // Tree-life terminal reset (v4 halt semantics adaptation): BT.CPP v4's
+    // halt only propagates to RUNNING children; subtrees cached in a
+    // terminal state (RateController single-shot cache / RecoveryNode retry
+    // count / RecoverySequence cursor) are not reset -- without the reset
+    // the planner never replans and the recovery storm persists across tree
+    // lives (root cause of the rviz recovery storm bug, see
+    // production_tree_recovery_test). After SUCCESS/FAILURE this is
+    // equivalent to nav2 v3 haltAllActions: enter idle awaiting a new
+    // goal.
     if (tick_status != BT::NodeStatus::RUNNING) {
+      emitNavigationResult(tick_status == BT::NodeStatus::SUCCESS
+                               ? actions::GoalStatus::SUCCEEDED
+                               : actions::GoalStatus::ABORTED);
       resetNavigationTreeState(bt_tree);
       navigation_finished = true;
     }
-    // 唤醒竞态修复: tickOnce 内层可能把 beginNavigation 的唤醒信号用旧黑板
-    // 消费掉, 使随后 sleep 睡满一个周期。若 tick 期间又有新 goal 投递, 立即
-    // 消费并补一次 tick, 保证新 goal 至迟一个 tick 周期内生效。
+    // Wake race fix: tickOnce's inner layer may consume beginNavigation's
+    // wake signal against a stale blackboard, making the subsequent sleep
+    // last a full period. If a new goal was delivered during the tick,
+    // consume it immediately and add one extra tick, guaranteeing a new goal
+    // takes effect within at most one tick period.
     if (applyPendingGoal()) {
       navigation_finished = false;
       bt_tree.tickOnce();
@@ -214,29 +202,67 @@ void BehaviorTreePilot::halt() {
   if (!tree_built) {
     return;
   }
-  // 请求位: 实际 haltTree 在 run 线程 consumeHaltRequest 内执行 (不跨线程)。
+  // Request flag: the actual haltTree runs in the run thread's consumeHaltRequest (never cross-thread).
   halt_requested.store(true);
-  bt_tree.emitWakeUpSignal();  // 若 run 在 sleep, 唤醒让其尽快进入下一 tick
+  bt_tree.emitWakeUpSignal();  // if run is sleeping, wake it so it enters the next tick soon
 }
 
 void BehaviorTreePilot::consumeHaltRequest() {
   if (!halt_requested.exchange(false)) {
     return;
   }
-  // 本线程 (tick 线程) 持有 bt_tree 访问权, halt 安全。
+  // This thread (the tick thread) owns bt_tree access, so halt is safe.
   bt_tree.haltTree();
+  // Session-level terminal outcome for an in-flight navigation: CANCELED
+  // (never emitted twice for the same tree life; no goal -> no emission).
+  if (navigation_started && !navigation_result_emitted) {
+    emitNavigationResult(actions::GoalStatus::CANCELED);
+  }
   if (navigation_runtime) {
-    // 抢占纪律 : 取消全部 controller action map (多 controller
-    // 配置下不止默认 id), 防止非默认控制器的残留速度输出。
+    // Preemption discipline: cancel the entire controller action map (with
+    // multiple controllers configured, not just the default id), preventing
+    // residual velocity output from non-default controllers.
     navigation_runtime->cancelAllControllers();
   }
+}
+
+void BehaviorTreePilot::emitNavigationResult(
+    actions::GoalStatus status) {
+  navigation_result_emitted = true;
+  actions::NavigationResult result;
+  result.status = status;
+  result.context.stage = FailureStage::Navigation;
+  result.context.session_id = session_state->currentSessionId();
+  result.context.plan_version = session_state->currentPlanVersion();
+  if (status == actions::GoalStatus::SUCCEEDED) {
+    result.context.code = ErrorCode::NONE;
+  } else if (status == actions::GoalStatus::CANCELED) {
+    result.context.code = ErrorCode::CANCELED;
+    result.context.message = "navigation canceled";
+  } else {
+    // Tree FAILURE: take the structured failure context the failing node
+    // wrote; fall back to a Navigation-stage entry when absent.
+    FailureContext ctx;
+    if (bt_blackboard) {
+      (void)bt_blackboard->get<FailureContext>(k_failure_context, ctx);
+    }
+    result.context = ctx;
+    result.context.session_id = session_state->currentSessionId();
+    result.context.plan_version = session_state->currentPlanVersion();
+    if (result.context.code == ErrorCode::NONE) {
+      result.context.stage = FailureStage::Navigation;
+      result.context.code = ErrorCode::INTERNAL_ERROR;
+      result.context.message = "navigation failed without failure context";
+    }
+  }
+  interfaces::NavigationCallbacks::on_navigation_result(result);
 }
 
 void BehaviorTreePilot::stop() {
   halt_requested.store(true);
   kill_switch.store(true);
   if (tree_built) {
-    bt_tree.emitWakeUpSignal();  // 唤醒 sleep, 使 run 尽快退出
+    bt_tree.emitWakeUpSignal();  // wake from sleep so run exits soon
   }
   if (tick_thread.joinable()) {
     tick_thread.join();
@@ -261,6 +287,7 @@ bool BehaviorTreePilot::applyPendingGoal() {
   // The first goal starts a session. Later goals revise the active task: the
   // controller keeps following its current path until the revised path is
   // available, while the planner updates in place.
+  navigation_result_emitted = false;  // new tree life: fresh emission
   if (!navigation_started) {
     session_state->startNewSession();
     navigation_started = true;
@@ -270,14 +297,14 @@ bool BehaviorTreePilot::applyPendingGoal() {
   }
 
   bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal, *goal);
-  // 每轮导航: plan_version 清零 (新 goal 从 version 0 起算)
+  // Per navigation round: plan_version reset (a new goal starts from version 0)
   bt_blackboard->set<uint64_t>(k_plan_version, session_state->currentPlanVersion());
-  // 黑板 session 反映共享会话
+  // Blackboard session reflects the shared session
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
-  // reset_stuck_token 令牌随会话变化 -> IsRobotStuck 静态状态每轮复位
+  // reset_stuck_token changes with the session -> IsRobotStuck state resets each round
   bt_blackboard->set<uint64_t>(k_reset_stuck_token, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_goal_revision, goal_revision);
-  // failure_context 每轮导航清零 (失败上下文只对本会话有效)。
+  // failure_context cleared each navigation round (failure context is only valid for this session).
   bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});  return true;
 }
 
@@ -292,8 +319,9 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
 
   BT::BehaviorTreeFactory factory;
   std::string fallback_tree_id;
-  // 泛型树 : 装载并持有配置的 BehaviorTreeExtension(s), 由扩展
-  // 负责注册全部自定义节点与默认树 XML; 核心不再内嵌任何导航 XML/策略。
+  // Generic tree: load and hold the configured BehaviorTreeExtension(s);
+  // the extensions are responsible for registering all custom nodes and the
+  // default tree XML; the core no longer embeds any navigation XML/policy.
   for (const auto& so_name : tree_extension_so_names) {
     auto ext_module = ExtensionModule::load_module(so_name);
     if (!ext_module) {
@@ -308,13 +336,14 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
     }
     ext->registerNodes(factory);
     ext->registerTrees(factory);
+    ext->provideBlackboardEntries(bt_blackboard);
     if (fallback_tree_id.empty()) {
       fallback_tree_id = ext->defaultTreeId();
     }
     tree_extensions.push_back(std::move(ext));
   }
   if (xml_path.empty()) {
-    // 默认树由扩展注册 。
+    // The default tree was registered by the extension.
   } else {
     factory.registerBehaviorTreeFromFile(xml_path);
   }
@@ -327,6 +356,16 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
   }
   bt_tree = factory.createTree(resolved_tree_id, bt_blackboard);
   validateRequiredBlackboardEntries(bt_blackboard);
+  // Extension-declared entries (e.g. recovery role ids) are validated per
+  // extension -- the core list stays family/tree agnostic.
+  for (const auto& ext : tree_extensions) {
+    for (const char* key : ext->requiredBlackboardEntries()) {
+      if (!bt_blackboard->getEntry(key)) {
+        throw std::runtime_error(std::string("blackboard entry '") + key +
+                                 "' required by BT extension is missing");
+      }
+    }
+  }
   tree_built = true;
 }
 
@@ -339,10 +378,6 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<double>(k_planner_frequency, planner_frequency);
   bt_blackboard->set<double>(k_smoother_frequency, smoother_frequency);
   bt_blackboard->set<double>(k_controller_frequency, controller_frequency);
-  bt_blackboard->set<std::string>(k_clear_costmap_id, clear_costmap_id);
-  bt_blackboard->set<std::string>(k_spin_id, spin_id);
-  bt_blackboard->set<std::string>(k_wait_id, wait_id);
-  bt_blackboard->set<std::string>(k_backup_id, backup_id);
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_plan_version, 0u);
   bt_blackboard->set<uint64_t>(k_reset_stuck_token,

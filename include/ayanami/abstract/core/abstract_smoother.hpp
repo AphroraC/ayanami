@@ -12,10 +12,11 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 路径平滑插件抽象 (MBF 式分层)。
+ * @brief Path smoother plugin abstraction (MBF-style layering).
  *
- * 零地图类型: 接口不包含任何地图参数。in-place 语义: 直接平滑传入路径,
- * 成功时路径已被修改, 结果只携带状态与诊断。
+ * Zero map types: the interface contains no map parameters. In-place
+ * semantics: smooth the given path directly; on success the path has been
+ * modified and the result carries only status and diagnostics.
  */
 class AbstractSmoother : public virtual ExtensionModule {
  public:
@@ -23,18 +24,18 @@ class AbstractSmoother : public virtual ExtensionModule {
 
   virtual ~AbstractSmoother() = default;
 
-  /// @brief 就地平滑给定路径 (纯虚)。
-  /// @param[in,out] path 待平滑路径; 成功时已被就地更新。
-  /// @return SmootherResultT: ok=true 时 path 有效; 失败携带 ErrorCode。
-  virtual SmootherResultT smoothPath(ayanami::nav_msgs::Path& path,
-                                     double max_duration,
-                                     bool check_for_collision) = 0;
+  /// @brief Smooth the given path in place (pure virtual).
+  /// @param[in,out] path The path to smooth; updated in place on success.
+  /// @return ResultT<void>: path is valid when ok=true; failures carry
+  ///         ErrorCode.
+  virtual ResultT<void> smoothPath(ayanami::nav_msgs::Path& path,
+                                   double max_duration) = 0;
 
   virtual void activate() {}
   virtual void deactivate() {}
   virtual void cleanup() {}
 
-  /// @brief 取消进行中的平滑 (协作式中断; 默认不支持)。
+  /// @brief Cancel in-progress smoothing (cooperative interrupt; unsupported by default).
   virtual bool cancel() { return false; }
 };
 

@@ -1,5 +1,5 @@
-// map_grid.cpp — 迁移自 dwb_critics/src/map_grid.cpp (RCLCPP 换 spdlog,
-// node 参数换 Config)。
+// map_grid.cpp -- ported from dwb_critics/src/map_grid.cpp (RCLCPP becomes spdlog,
+// node parameters become Config).
 #include "map_grid.hpp"
 
 #include <algorithm>
@@ -27,8 +27,8 @@ bool MapGridCritic::MapGridQueue::validCellToQueue(
 }
 
 void MapGridCritic::onInit() {
-  // 快照架构: initialize 阶段可能还没有 grid (每周期才绑定)。queue 在首次
-  // setCostmap 绑定真实 grid 时再创建 (见 setCostmap)。
+  // Snapshot architecture: at initialize time there may be no grid yet (it is bound once per cycle). The queue is
+  // created when setCostmap first binds a real grid (see setCostmap).
   if (costmap) {
     queue = std::make_shared<MapGridQueue>(*costmap, *this);
   }
@@ -54,8 +54,8 @@ void MapGridCritic::onInit() {
   }
 }
 
-// 快照纪律: 每 cycle 由控制器在刷新 local 快照后调用。新 epoch 是全新
-// 不可变对象, MapGridQueue 持有对 grid 的引用 —— 指针变化时重建 queue。
+// Snapshot discipline: called by the controller every cycle after refreshing the local snapshot. The new epoch is a
+// brand-new immutable object; MapGridQueue holds a reference to the grid -- the queue is rebuilt when the pointer changes.
 void MapGridCritic::setCostmap(const costmap_2d::Costmap2D* costmap) {
   if (this->costmap == costmap) {
     return;
@@ -69,10 +69,10 @@ void MapGridCritic::setAsObstacle(unsigned int index) {
 }
 
 void MapGridCritic::reset() {
-  // 快照纪律: setPlan 可能先于首次 setCostmap 快照绑定 (执行路径:
-  // ControllerExecution 先 setPlan 再 computeVelocityCommands)。此时
-  // costmap/queue 均未绑定 —— reset 必须安全跳过, 待绑定后首周期再补齐
-  // cell_values (computeVelocityCommands 内 setCostmap 已重建 queue)。
+  // Snapshot discipline: setPlan may run before the first setCostmap snapshot binding (execution path:
+  // ControllerExecution calls setPlan first, then computeVelocityCommands). At that point
+  // neither costmap nor queue is bound -- reset must safely skip, and cell_values are filled in
+  // on the first cycle after binding (setCostmap inside computeVelocityCommands has already rebuilt the queue).
   if (!costmap) {
     cell_values.clear();
     obstacle_score = 0.0;

@@ -18,15 +18,18 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 恢复行为执行 (统一协议: start → tick 循环 → finish)。
+ * @brief Recovery behavior execution (unified protocol: start -> tick loop
+ * -> finish).
  *
- * 状态机: INITIALIZED→STARTED→RECOVERING→RECOVERY_DONE (或 RECOVERY_FAILED/
- * CANCELED/STOPPED/INTERNAL_ERROR/PAT_EXCEEDED)。
+ * State machine: INITIALIZED->STARTED->RECOVERING->RECOVERY_DONE (or
+ * RECOVERY_FAILED/CANCELED/STOPPED/INTERNAL_ERROR/PAT_EXCEEDED).
  *
- * 本执行是恢复期间的唯一 velocity command 发布者: 插件 tick() 只返回本周期
- * 期望速度 (optional), 执行层校验 finite + max_vel 后发布; 非运动恢复
- * (velocity=nullopt) 不发布。成功/失败/取消/超时/异常等所有终态路径一律先
- * 发布零速度。
+ * This execution is the sole velocity command publisher during recovery:
+ * the plugin tick() only returns the desired velocity for this cycle
+ * (optional), and the execution layer validates finite + max_vel before
+ * publishing; non-motion recoveries (velocity=nullopt) publish nothing.
+ * All terminal paths -- success/failure/cancel/timeout/exception --
+ * publish zero velocity first.
  */
 class RecoveryExecution : public ExecutionBase {
 public:
@@ -47,7 +50,7 @@ public:
   explicit RecoveryExecution(ayanami::abstract::AbstractRecovery::Ptr recovery)
       : recovery(std::move(recovery)) {}
 
-  /// @brief 注入按次覆盖参数 (RecoveryAction::acceptGoal 从 RecoveryGoal 提取)。
+  /// @brief Inject per-run override params (extracted from RecoveryGoal by RecoveryAction::acceptGoal).
   void setBehaviorParams(const ayanami::RecoveryBehaviorParams& params) {
     behavior_params = params;
   }
@@ -56,7 +59,7 @@ public:
     return static_cast<RecoveryState>(state.load());
   }
 
-  /// @brief 取消: 置 cancel_requested 并透传到 recovery 插件 (协作式)。
+  /// @brief Cancel: set cancel_requested and forward to the recovery plugin (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (recovery) recovery->cancel();
@@ -64,9 +67,13 @@ public:
     condition.notify_all();
   }
 
-  /// @brief 恢复耐心 (秒); <=0 关闭。
+  /// @brief Recovery patience (seconds); <=0 disables.
   void setRecoveryPatience(double seconds) {
     recovery_patience = std::chrono::duration<double>(seconds);
+  }
+
+  double getRecoveryPatience() const {
+    return recovery_patience.count();
   }
 
   bool isPatienceExceeded() const {
@@ -74,12 +81,12 @@ public:
     return std::chrono::steady_clock::now() - start_time > recovery_patience;
   }
 
-  /// @brief 周期时长 (默认 10ms, 与插件 sim_cycle_dt 对齐)。>0 才生效。
+  /// @brief Cycle period (default 10ms, aligned with the plugin sim_cycle_dt). Only >0 takes effect.
   void setCyclePeriod(std::chrono::microseconds period) {
     if (period.count() > 0) cycle_period = period;
   }
 
-  /// @brief 速度上限注入 (navigation.max_vel_{x,y,theta} 单一来源)。
+  /// @brief Velocity limit injection (navigation.max_vel_{x,y,theta} single source of truth).
   void setMaximumVelocity(double linear_x, double linear_y,
                           double angular_z) {
     max_linear_x = linear_x;
@@ -87,25 +94,32 @@ public:
     max_angular_z = angular_z;
   }
 
-  /// @brief 覆写: 清零后发布零速度 (唯一发布者的安全停止路径)。
+  /// @brief Override: publish zero velocity after clearing (the sole publisher's safe stop path).
   void publishStopCommand() override {
-    ayanami::geometry_msgs::TwistStamped cmd = {};  // 全字段清零
+    ayanami::geometry_msgs::TwistStamped cmd = {};  // all fields zeroed
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd);
   }
 
 protected:
-  /// @brief 插件调用钩子: 默认调 abstract 签名; 地图族 execution 覆写为
-  /// typed 调用 (执行层完成地图访问, 插件不接触地图模块)。
-  virtual RecoveryResultT callRecoveryTick() { return recovery->tick(); }
+  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// map-family executions override it with a typed call (the execution
+  /// layer performs map access; plugins never touch map modules).
+  virtual ResultT<void> callRecoveryTick(RecoveryCycleData& cycle) {
+    return recovery->tick(cycle);
+  }
 
   void run() override {
-    // 注意: 不在 run 内 reset cancel_requested。start 期已复位, 这里只读;
-    // 若在 run 开头复位会把 start 后刚发生的 cancel 丢掉 (TOCTOU)。
+    // Note: do not reset cancel_requested inside run. It was reset during
+    // start and is only read here; resetting it at the beginning of run
+    // would drop a cancel that just happened after start (TOCTOU).
     setState(STARTED, false);
     start_time = std::chrono::steady_clock::now();
-    // 插件 start/setBehaviorParams 与 tick 同受异常兜底保护: start 抛
-    // 异常若逃逸 run, 状态机将停在 STARTED 中间态, action 驱动任务永远
-    // 轮询不到终态 → recovery 互斥死锁 (runTask 兜底是最后防线, 不作依赖)。
+    // Plugin start/setBehaviorParams get the same exception-fallback
+    // protection as tick: if a start exception escapes run, the state
+    // machine would stop in the intermediate STARTED state and the action
+    // driver task would never observe a terminal state -> recovery mutex
+    // deadlock (the runTask fallback is the last line of defense, not a
+    // dependency).
     try {
       if (recovery) {
         recovery->setBehaviorParams(behavior_params);
@@ -132,8 +146,9 @@ protected:
           break;
         }
 
-        const RecoveryResultT outcome = callRecoveryTick();
-        // 若周期调用期间发生取消, 以取消为准 (阻塞恢复/透传取消的插件)。
+        RecoveryCycleData cycle;
+        const ResultT<void> outcome = callRecoveryTick(cycle);
+        // If a cancel happens during the cycle call, cancellation wins (for blocking recoveries / plugins that forward cancels).
         if (cancel_requested) {
           error = ErrorCode::CANCELED;
           publishStopCommand();
@@ -142,7 +157,7 @@ protected:
         }
 
         if (!outcome.ok) {
-          // 恢复失败/被取消: error=CANCELED → CANCELED 状态, 其余 RECOVERY_FAILED。
+          // Recovery failed/canceled: error=CANCELED -> CANCELED state, otherwise RECOVERY_FAILED.
           error = outcome.error;
           message = outcome.message;
           publishStopCommand();
@@ -152,13 +167,14 @@ protected:
           break;
         }
 
-        // 唯一发布: 校验 (finite + max_vel) 后发布本周期建议速度;
-        // 非运动恢复 (nullopt) 不发布。
-        if (outcome.data.velocity) {
-          publishRecoveryVelocity(*outcome.data.velocity);
+        // Sole publish: after validation (finite + max_vel), publish this
+        // cycle's suggested velocity; non-motion recoveries (nullopt)
+        // publish nothing.
+        if (cycle.velocity) {
+          publishRecoveryVelocity(*cycle.velocity);
         }
 
-        switch (outcome.data.status) {
+        switch (cycle.status) {
           case RecoveryStatus::RUNNING:
             sleepInterruptibly(cycle_period);
             continue;
@@ -182,7 +198,7 @@ protected:
             setState(RECOVERY_FAILED, true);
             break;
         }
-        break;  // 终态退出循环
+        break;  // terminal state, exit the loop
       }
     } catch (...) {
       error = ErrorCode::INTERNAL_ERROR;
@@ -191,8 +207,10 @@ protected:
       setState(INTERNAL_ERROR, true);
     }
     if (recovery) {
-      // 清理异常就地吞掉 (记日志): 终态已结算, 清理失败不得改写结果, 也不得
-      // 逃逸 run 触发 k_aborted 覆盖 (首个终态优先纪律)。
+      // Swallow cleanup exceptions in place (log them): the terminal state
+      // is already settled; a cleanup failure must not rewrite the result
+      // nor escape run to trigger the k_aborted override (first-terminal-
+      // state-wins discipline).
       try {
         recovery->finish();
       } catch (const std::exception& e) {
@@ -203,12 +221,12 @@ protected:
     }
   }
 
-  /// @brief 校验 (finite + max_vel 上限) 后发布建议速度; 非法命令清零。
+  /// @brief Publish the suggested velocity after validation (finite + max_vel limits); invalid commands are zeroed.
   void publishRecoveryVelocity(
       const ayanami::geometry_msgs::TwistStamped& suggestion) {
     ayanami::geometry_msgs::TwistStamped cmd = suggestion;
     if (!validVelocityCommand(cmd)) {
-      // 保留 frame, 其余字段清零 (非法输入不落机器人)。
+      // Keep the frame, zero the remaining fields (invalid input never reaches the robot).
       cmd.twist = ayanami::geometry_msgs::Twist{};
     }
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd);
@@ -226,7 +244,7 @@ protected:
            std::abs(angular.z()) <= max_angular_z;
   }
 
-  /// @brief 周期等待; cancel/stop 立即打断 (不等满周期)。
+  /// @brief Periodic wait; cancel/stop interrupts immediately (does not wait out the full period).
   void sleepInterruptibly(std::chrono::microseconds period) {
     std::unique_lock<std::mutex> lock(mutex);
     condition.wait_for(lock, period, [this] {

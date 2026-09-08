@@ -14,8 +14,10 @@
       "modules/costmap_back_up_recovery.json"
     ],
     "planner_frequency": 1.0,
-    "smoother_frequency": -1.0,
+    "smoother_frequency": 10.0,
     "controller_frequency": 20.0,
+    "controller_patience": 0.0,
+    "recovery_patience": 0.0,
     "max_vel_x": 0.5,
     "max_vel_y": 0.0,
     "max_vel_theta": 1.5,

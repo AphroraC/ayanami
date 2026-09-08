@@ -1,7 +1,7 @@
-// 测试插件: 非 costmap 族 recovery (PlainRecovery), 验证 costmap 宿主拒绝路径。
+// Test plugin: non-costmap-family recovery (PlainRecovery), verifies the costmap host reject path.
 //
-// 旧 API runRecovery 一次性返回 Canceled; 新协议下 tick 首个周期即返回
-// 取消终态 (保持原一次性语义)。
+// The old API runRecovery returned Canceled in one shot; under the new protocol the first tick cycle returns
+// the cancelled terminal state (the original one-shot semantics preserved).
 
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -10,12 +10,12 @@
 
 namespace {
 
-using ayanami::RecoveryResultT;
-
+using ayanami::RecoveryCycleData;
+using ayanami::ResultT;
 class PlainRecovery : public ayanami::abstract::AbstractRecovery {
  public:
-  RecoveryResultT tick() override {
-    return RecoveryResultT::failure(ayanami::ErrorCode::CANCELED, "canceled");
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
+    return ResultT<void>::failure(ayanami::ErrorCode::CANCELED, "canceled");
   }
   bool cancel() override { return true; }
 };

@@ -10,9 +10,11 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 位姿容差 (对标 geometry_msgs/PoseWithCovariance 等价语义)。
+ * @brief Pose tolerance (semantics equivalent to geometry_msgs/
+ * PoseWithCovariance).
  *
- * position: xy 平面位置容差 (m); angle: 偏航角容差 (rad)。
+ * position: xy planar position tolerance (m); angle: yaw angle tolerance
+ * (rad).
  */
 struct PoseTolerance {
   double position = 0.10;
@@ -20,9 +22,10 @@ struct PoseTolerance {
 };
 
 /**
- * @brief 速度容差 (体坐标, 判停边界)。
+ * @brief Velocity tolerance (body frame, stop-decision boundary).
  *
- * linear: 线速度容差 (m/s); angular: 角速度容差 (rad/s)。
+ * linear: linear velocity tolerance (m/s); angular: angular velocity
+ * tolerance (rad/s).
  */
 struct TwistTolerance {
   double linear = 0.10;
@@ -30,7 +33,7 @@ struct TwistTolerance {
 };
 
 /**
- * @brief 目标检查总容差组合 (getTolerances 返回值)。
+ * @brief Combined goal-check tolerances (getTolerances return value).
  */
 struct GoalCheckerTolerances {
   PoseTolerance pose;
@@ -38,10 +41,12 @@ struct GoalCheckerTolerances {
 };
 
 /**
- * @brief 目标检查插件抽象 (对标 MBF AbstractGoalChecker)。
+ * @brief Goal checker plugin abstraction (modeled after MBF
+ * AbstractGoalChecker).
  *
- * 判断 current_pose 是否已到达 goal_pose: 位置/转角差在容差内且速度低于静止
- * 阈值。有状态: reset() 应在收到新 goal / 重规划时调用。
+ * Decides whether current_pose has reached goal_pose: position/heading
+ * differences within tolerance and velocity below the at-rest threshold.
+ * Stateful: reset() should be called when a new goal / replan arrives.
  */
 class AbstractGoalChecker : public virtual ExtensionModule {
  public:
@@ -49,22 +54,23 @@ class AbstractGoalChecker : public virtual ExtensionModule {
 
   virtual ~AbstractGoalChecker() = default;
 
-  /// @brief 注入插件逻辑名 + 自身配置 (config_{goal_checker} 指向的模块
-  /// json)。参数统一从这里读取, 插件不读全局配置索引。
+  /// @brief Inject the plugin logical name + its own config (the module
+  /// json pointed to by config_{goal_checker}). Parameters are read
+  /// uniformly from here; plugins do not read the global config index.
   virtual void configure(const ayanami::PluginContext& context) {
     (void)context;
   }
 
-  /// @brief 重置内部状态 (新 goal / 重规划)。
+  /// @brief Reset internal state (new goal / replan).
   virtual void reset() = 0;
 
-  /// @brief 判断是否到达目标位姿。
+  /// @brief Decide whether the goal pose has been reached.
   virtual bool isGoalReached(
       const ayanami::geometry_msgs::PoseStamped& current_pose,
       const ayanami::geometry_msgs::PoseStamped& goal_pose,
       const ayanami::geometry_msgs::TwistStamped& current_velocity) = 0;
 
-  /// @brief 当前生效的位姿/速度容差。
+  /// @brief Currently effective pose/velocity tolerances.
   virtual GoalCheckerTolerances getTolerances() const = 0;
 };
 

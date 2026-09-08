@@ -1,4 +1,4 @@
-// path_ops.hpp — 迁移自 nav_2d_utils/path_ops.hpp (纯算法)。
+// path_ops.hpp -- ported from nav_2d_utils/path_ops.hpp (pure algorithms).
 #pragma once
 
 #include "dwb_types.hpp"

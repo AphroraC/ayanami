@@ -10,16 +10,20 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief costmap 地图族工厂: CostmapMapContext 的唯一创建点 (spec 地图族
- * 抽象: "核心服务器不知道 CostmapContext, 只知道地图族工厂")。
+ * @brief The costmap map-family factory: the sole creation point of
+ * CostmapMapContext (spec map-family abstraction: "the core server does not
+ * know CostmapContext, only the map-family factory").
  *
- * - 宿主 (CostmapNavigation) 构造本工厂并传入
- *   CostmapNavigationServer::configureCoreMaps; 族 server 经 createContext()
- *   取得空上下文后装配 wrapper/frames/footprint/commandPort。
- * - 未来地图族 (mesh/voxel, 见 map/map_family_factory.hpp 登记) 以平行的
- *   {Family}MapFamilyFactory 接入, 族间互不感知。
- * - 工厂返回 AbstractMapContext::Ptr (抽象面); 族 server 持有
- *   CostmapMapContext::Ptr (族面), 二者经 dynamic_pointer_cast 收敛。
+ * - The host (CostmapNavigation) constructs this factory and passes it to
+ *   CostmapNavigationServer::configureCoreMaps; the family server assembles
+ *   wrapper/frames/footprint/commandPort after obtaining an empty context
+ *   via createContext().
+ * - Future map families (mesh/voxel, registered in
+ *   map/map_family_factory.hpp) plug in as parallel
+ *   {Family}MapFamilyFactory implementations, unaware of each other.
+ * - The factory returns AbstractMapContext::Ptr (the abstract surface); the
+ *   family server holds CostmapMapContext::Ptr (the family surface); the
+ *   two converge via dynamic_pointer_cast.
  */
 class CostmapMapFamilyFactory final : public map::MapFamilyFactory {
  public:
@@ -27,7 +31,7 @@ class CostmapMapFamilyFactory final : public map::MapFamilyFactory {
 
   std::string familyName() const override { return "costmap"; }
 
-  /// @brief 创建空的 costmap 族上下文 (内容由 configureCoreMaps 装配)。
+  /// @brief Create an empty costmap family context (content assembled by configureCoreMaps).
   map::AbstractMapContext::Ptr createContext() override {
     return std::make_shared<CostmapMapContext>();
   }

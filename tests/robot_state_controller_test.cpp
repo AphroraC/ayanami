@@ -1,9 +1,9 @@
-// RobotStateController 单测 (扩展):
-// - getRobotState = 最新 TF 位姿 (TransformStore latest) + 最新速度
-// - 速度超过 velocity_timeout (或无速度) → 零速度但位姿仍有效
-// - latest-wins: setVelocity 覆写
-// - 帧名/超时只在 initialize 缓存, hot getRobotState 不读 Config
-// - 并发读写线程安全
+// RobotStateController unit tests (extended):
+// - getRobotState = latest TF pose (TransformStore latest) + latest velocity
+// - velocity older than velocity_timeout (or no velocity) -> zero velocity but the pose stays valid
+// - latest-wins: setVelocity overwrites
+// - frame names/timeout are cached only at initialize; the hot getRobotState path does not read Config
+// - concurrent reads/writes are thread safe
 
 #include <gtest/gtest.h>
 
@@ -86,13 +86,13 @@ TEST(RobotStateControllerTest, staleVelocityYieldsZeroButPoseStaysValid) {
 
   PoseStamped pose;
   TwistStamped velocity;
-  // 未过期: 速度返回真实值
+  // Not expired: the real velocity is returned
   ASSERT_TRUE(RobotStateController::instance().getRobotState(pose, velocity));
   EXPECT_DOUBLE_EQ(velocity.twist.linear.x(), 2.0);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
-  // 超时后: 零速度, 但位姿仍有效
+  // After timeout: zero velocity, but the pose is still valid
   ASSERT_TRUE(RobotStateController::instance().getRobotState(pose, velocity));
   EXPECT_TRUE(isZero(velocity));
   EXPECT_TRUE(pose.pose.position.isZero(1e-9));
@@ -100,8 +100,8 @@ TEST(RobotStateControllerTest, staleVelocityYieldsZeroButPoseStaysValid) {
 }
 
 TEST(RobotStateControllerTest, noPoseReturnsFalse) {
-  // 用独立帧名 (不与其他测试共享 TransformStore), 且不设任何 TF:
-  // getRobotState 必须返回 false (无可用位姿)。
+  // Use independent frame names (not sharing the TransformStore with other tests) and set no TF at all:
+  // getRobotState must return false (no pose available).
   RobotStateController::instance().initialize(
       "no_pose_map", "no_pose_odom", "no_pose_base",
       /*velocity_timeout=*/0.25);
@@ -111,7 +111,7 @@ TEST(RobotStateControllerTest, noPoseReturnsFalse) {
   TwistStamped velocity;
   EXPECT_FALSE(RobotStateController::instance().getRobotState(pose, velocity));
 
-  // 恢复主帧配置 (保持进程内后续测试独立)。
+  // Restore the main frame config (keeps later tests in this process independent).
   initController();
 }
 
@@ -120,8 +120,8 @@ TEST(RobotStateControllerTest, hotPathNeverReadsConfig) {
   initController();
   RobotStateController::instance().setVelocity(makeTwist(0.7));
 
-  // 把 GlobalConfig 指向不存在的目录 (空配置): 已缓存的帧名/超时不受影响,
-  // getRobotState 不读 Config。
+  // Point GlobalConfig at a nonexistent directory (empty config): the cached frame names/timeout are unaffected and
+  // getRobotState does not read Config.
   ayanami::GlobalConfig::instance("/nonexistent_away_from_tests",
                                   /*override_path=*/true);
   RobotStateController& rsc = RobotStateController::instance();

@@ -9,7 +9,7 @@
 
 namespace {
 
-// 自定义测试层：记录 updateBounds/updateCosts 调用，并在主 grid 上写一个 lethal cell。
+/// Custom test layer: records updateBounds/updateCosts calls and writes one lethal cell onto the master grid.
 class TestLayer : public costmap_2d::Layer {
  public:
   int bounds_calls{0};
@@ -58,7 +58,7 @@ TEST(Costmap2DTest, resizeMapPopulatesMembers) {
 }
 
 TEST(Costmap2DTest, resizeMapOverwritesPreviousMembers) {
-  // resizeMap 参数不得遮蔽成员（size_x = size_x 自赋值 bug）
+  // resizeMap parameters must not shadow the members (the size_x = size_x self-assignment bug)
   costmap_2d::Costmap2D map;
   map.resizeMap(10, 20, 0.05, 0, 0);
   map.resizeMap(30, 40, 0.1, 1.0, 2.0);
@@ -151,8 +151,8 @@ TEST(Costmap2DTest, costValuesMatchSpec) {
 }
 
 TEST(Costmap2DTest, isLethalIncludes253) {
-  // isLethal 必须把 253 (inscribed inflated) 判为 lethal,
-  // 否则膨胀带被误判为非致命。
+  // isLethal must classify 253 (inscribed inflated) as lethal,
+  // otherwise the inflation band is misclassified as non-lethal.
   EXPECT_TRUE(costmap_2d::isLethal(253));
   EXPECT_TRUE(costmap_2d::isLethal(254));
   EXPECT_FALSE(costmap_2d::isLethal(100));

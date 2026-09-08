@@ -1,4 +1,4 @@
-// rotate_to_goal.hpp — 迁移自 dwb_critics/rotate_to_goal.hpp。
+// rotate_to_goal.hpp -- ported from dwb_critics/rotate_to_goal.hpp.
 #pragma once
 
 #include <string>

@@ -11,16 +11,16 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::RecoveryResultT;
-
+using ayanami::RecoveryCycleData;
+using ayanami::ResultT;
 class FakeRecovery : public ayanami::abstract::AbstractRecovery {
 public:
   static std::atomic<int> dtor_count;
   std::string non_pod_member{"some state longer than SSO"};
 
   ~FakeRecovery() override { ++dtor_count; }
-  RecoveryResultT tick() override {
-    return RecoveryResultT::failure(ErrorCode::RECOVERY_FAILED, "noop");
+  ResultT<void> tick(RecoveryCycleData& cycle) override {
+    return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED, "noop");
   }
   bool cancel() override { return true; }
 };
@@ -37,8 +37,8 @@ TEST(PluginTeardownNoUB, derivedDestructorCalledOnClearPlugins) {
   auto* ptr = createFakeRecovery();
   ASSERT_NE(ptr, nullptr);
   {
-    // PluginManager 无内存注入 registerPlugin 接口 (plan bug, 见 report Concerns),
-    // 此处释放 shared_ptr 语义与 clearPlugins 释放 std::shared_ptr 完全一致。
+    // PluginManager has no in-memory injection registerPlugin interface (plan bug, see report Concerns);
+    // releasing the shared_ptr here is semantically identical to clearPlugins releasing std::shared_ptr.
     auto shr = std::shared_ptr<ayanami::abstract::AbstractRecovery>(ptr);
     (void)shr;
   }

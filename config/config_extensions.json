@@ -1,0 +1,36 @@
+{
+  "extensions": {
+    "loading_extension_modules": [
+      // "libayanami_tf_sync_probe.so",
+      "libayanami_rviz_viewer.so",
+      "libayanami_cmd_chassis_publisher.so"
+    ]
+  },
+  "rviz_viewer": {
+    "planner_path_topic": "/ayanami/planner/path",
+    "smoother_path_topic": "/ayanami/smoother/path",
+    "smoother_input_path_topic": "/ayanami/smoother/input_path",
+    "controller_path_topic": "/ayanami/controller/path",
+    "global_costmap_topic": "/ayanami/global_costmap",
+    "local_costmap_topic": "/ayanami/local_costmap",
+    "planner_goal_topic": "/ayanami/planner/goal",
+    "planner_feedback_topic": "/ayanami/planner/feedback",
+    "smoother_feedback_topic": "/ayanami/smoother/feedback",
+    "controller_feedback_topic": "/ayanami/controller/feedback",
+    "controller_status_topic": "/ayanami/controller/status",
+    "recovery_goal_topic": "/ayanami/recovery/goal",
+    "recovery_feedback_topic": "/ayanami/recovery/feedback",
+    "recovery_status_topic": "/ayanami/recovery/status",
+    "navigation_status_topic": "/ayanami/navigation_status"
+  },
+  "cmd_chassis_publisher": {
+    // 底盘命令唯一 ROS 输出: 核心速度命令经全局回调槽转发为
+    // rm_msgs/ChassisCmd (rviz_viewer 不再承担任何速度发布)。
+    "cmd_chassis_topic": "/cmd_chassis",
+    "mode": 0,
+    "accel_linear_x": 3.0,
+    "accel_linear_y": 3.0,
+    "accel_angular_z": 6.0,
+    "power_limit": 100.0
+  }
+}

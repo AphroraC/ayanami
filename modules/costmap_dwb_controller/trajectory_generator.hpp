@@ -1,5 +1,5 @@
-// trajectory_generator.hpp — 迁移自 dwb_core/trajectory_generator.hpp
-// (LifecycleNode 参数读取换 ayanami::Config)。
+// trajectory_generator.hpp -- ported from dwb_core/trajectory_generator.hpp
+// (LifecycleNode parameter reading becomes ayanami::Config).
 #pragma once
 
 #include <memory>
@@ -25,7 +25,7 @@ public:
 
   /**
    * @brief Initialize parameters as needed
-   * @param cfg Config to read parameters from (json 段: plugin_name)
+   * @param cfg Config to read parameters from (json section: plugin_name)
    * @param plugin_name The parameter namespace of this plugin
    */
   virtual void initialize(const ayanami::Config& cfg,

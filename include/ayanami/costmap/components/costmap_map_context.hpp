@@ -15,6 +15,7 @@
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/map/abstract_map_context.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
+#include "ayanami/costmap/core/costmap_planning_view.hpp"
 #include "ayanami/costmap/core/costmap_view.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 
@@ -22,21 +23,26 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief costmap 族"地图模块" 。
+ * @brief The costmap family's "map module".
  *
- * 聚合 global/local 两个 CostmapWrapper (global: StaticLayer+InflationLayer;
- * local: rolling SimpleObstacleLayer+InflationLayer)。
+ * Aggregates the global/local CostmapWrapper pair (global:
+ * StaticLayer+InflationLayer; local: rolling
+ * SimpleObstacleLayer+InflationLayer).
  *
- * 所有权与持有纪律:
- * - 所有权: 由宿主 (CostmapNavigation / CostmapNavigationServer) 持有
- *   CostmapMapContext::Ptr; 各族插件 (planner/smoother/controller/recovery) 经
- *   initialize(name, ConstPtr) 按需持有 ConstPtr (const 智能指针), 绝不改图。
- * - 读图: 插件经 lockGlobal()/lockLocal() 取 CostmapView (RAII shared 锁 +
- *   零拷贝 master grid 直读), 单次算法调用 (<10ms) 持锁; 地图写者等锁写入。
- * - 可变的 wrapper/layer 访问 (globalCostmap()/localCostmap()) 只提供给
- *   地图写者 (CostmapNavigationServer) 与 execution lifecycle
- *   (checkActivate/checkDeactivate/isCurrent); 规则插件绝不使用。
- * - 字段私有, 只暴露窄 accessor。
+ * Ownership and holding discipline:
+ * - Ownership: the host (CostmapNavigation / CostmapNavigationServer) holds
+ *   CostmapMapContext::Ptr; family plugins (planner/smoother/controller/
+ *   recovery) hold a ConstPtr (const smart pointer) on demand via
+ *   initialize(name, ConstPtr) and never modify the map.
+ * - Map reads: plugins take a CostmapView via lockGlobal()/lockLocal()
+ *   (RAII shared lock + zero-copy direct master grid reads) and hold the
+ *   lock for a single algorithm call (<10ms); the map writer waits for the
+ *   lock to write.
+ * - Mutable wrapper/layer access (globalCostmap()/localCostmap()) is
+ *   provided only to the map writer (CostmapNavigationServer) and the
+ *   execution lifecycle (checkActivate/checkDeactivate/isCurrent); rule
+ *   plugins never use it.
+ * - Fields are private; only narrow accessors are exposed.
  */
 class CostmapMapContext : public map::AbstractMapContext,
                        public std::enable_shared_from_this<CostmapMapContext> {
@@ -51,29 +57,25 @@ class CostmapMapContext : public map::AbstractMapContext,
   std::string localFrame() const override { return local_frame; }
   std::string robotFrame() const override { return robot_frame; }
   bool isCurrent() const override { return mapsAreCurrent(); }
-  std::uint64_t version() const override { return map_version; }
-  void bumpVersion() { ++map_version; }
   std::uint32_t capabilities() const override {
     using Capability = map::MapCapability;
     return static_cast<std::uint32_t>(Capability::CollisionQuery) |
-           static_cast<std::uint32_t>(Capability::GlobalPlanning) |
-           static_cast<std::uint32_t>(Capability::LocalPlanning) |
            static_cast<std::uint32_t>(Capability::DynamicObstacleUpdate) |
            static_cast<std::uint32_t>(Capability::ClearRegion);
   }
   map::MapCommandPort::Ptr commandPort() const override { return command_port; }
-  bool getRobotState(geometry_msgs::PoseStamped& pose,
-                     geometry_msgs::TwistStamped& velocity) const override {
-    return components::RobotStateController::instance().getRobotState(
-        pose, velocity);
-  }
 
-  /// @brief 路径有效性 (nav2 planner_server::isPathValid 语义对齐):
-  /// 从距机器人最近的路径点开始检查 —— 已走过路段可能被新障碍占据, 属误判
-  /// 源, 显式跳过; 每点须在界内 (出界对标 nav2 按 lethal 处理) 且代价既非
-  /// NO_INFORMATION 也非 lethal (isLethal >= 253 含 inscribed, 对标 nav2
-  /// use_radius 模式)。持 shared 锁零拷贝校验; 无 global wrapper 时退化为
-  /// 非空检查; 机器人位姿不可用时退化为全路径检查 (保守)。
+  /// @brief Path validity (semantics aligned with nav2
+  /// planner_server::isPathValid):
+  /// checking starts from the path point nearest the robot -- segments
+  /// already traversed may be occupied by new obstacles and are a source of
+  /// false negatives, so they are skipped explicitly; every point must be
+  /// in bounds (out of bounds treated as lethal, mirroring nav2) and its
+  /// cost must be neither NO_INFORMATION nor lethal (isLethal >= 253
+  /// includes inscribed, mirroring nav2's use_radius mode). Zero-copy
+  /// validation under a shared lock; degrades to a non-empty check when no
+  /// global wrapper exists; degrades to a full-path check (conservative)
+  /// when the robot pose is unavailable.
   bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
     if (path.poses.empty()) {
       return false;
@@ -81,10 +83,11 @@ class CostmapMapContext : public map::AbstractMapContext,
     if (!global_costmap) {
       return true;
     }
- // 最近点起点 (位姿解析在地图锁外)
+ // Start from the nearest point (pose resolution outside the map lock;
+    // robot state single facade = RobotStateController)
     std::size_t start_index = 0;
     ayanami::geometry_msgs::PoseStamped robot_pose;
-    if (getRobotPose(robot_pose)) {
+    if (robotPoseInFrame(robot_pose, global_frame)) {
       double best = std::numeric_limits<double>::max();
       for (std::size_t i = 0; i < path.poses.size(); ++i) {
         const double d = (path.poses[i].pose.position -
@@ -102,7 +105,7 @@ class CostmapMapContext : public map::AbstractMapContext,
         unsigned int my = 0;
         if (!grid.worldToMap(path.poses[i].pose.position.x(),
                              path.poses[i].pose.position.y(), mx, my)) {
-          return false;  // 出界: 对标 nav2 按 lethal 处理
+          return false;  // out of bounds: treated as lethal, mirroring nav2
         }
         const auto cost = grid.getCost(mx, my);
         if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
@@ -113,7 +116,7 @@ class CostmapMapContext : public map::AbstractMapContext,
     });
   }
 
-  // ---- 配置 (写者 / 测试注入) ----
+  // ---- Configuration (writer / test injection) ----
   void setGlobalCostmap(costmap_2d::CostmapWrapper::Ptr wrapper) {
     global_costmap = std::move(wrapper);
   }
@@ -127,14 +130,18 @@ class CostmapMapContext : public map::AbstractMapContext,
     this->robot_frame = std::move(robot_frame);
   }
 
-  /// @brief setup 期缓存不可变 footprint (configureCoreMaps 注入)。读者只从
-  /// 此缓存取 footprint, 绝不读 live LayeredCostmap (写锁外读可变状态)。
+  /// @brief Cache the immutable footprint during setup (injected by
+  /// configureCoreMaps). Readers take the footprint only from this cache
+  /// and never read the live LayeredCostmap (reading mutable state outside
+  /// the write lock).
   void setFootprint(costmap_2d::Footprint footprint) {
     cached_footprint = std::move(footprint);
   }
 
-  /// @brief 注入地图写命令端口 (configureCoreMaps 期, 唯一写者创建后立即)。
-  /// recovery 等地图族插件经 commandPort 获取, 不再走旁路注入。
+  /// @brief Inject the map write-command port (during configureCoreMaps,
+  /// right after the sole writer is created).
+  /// Map-family plugins such as recovery fetch it via commandPort instead
+  /// of side-path injection.
   void setCommandPort(map::MapCommandPort::Ptr port) {
     command_port = std::move(port);
   }
@@ -143,33 +150,16 @@ class CostmapMapContext : public map::AbstractMapContext,
   const std::string& getGlobalFrame() const { return global_frame; }
   const std::string& getRobotFrame() const { return robot_frame; }
 
-  /// @brief 任一 wrapper 非 current 则 false; 无 wrapper 视为 current。
+  /// @brief False if any wrapper is not current; no wrapper counts as current.
   bool mapsAreCurrent() const {
     return (!global_costmap || global_costmap->isCurrent()) &&
            (!local_costmap || local_costmap->isCurrent());
   }
 
-  /// @brief 获取机器人在指定 frame 的位姿 (默认 global_frame; local 视图
-  /// 传 local_frame, 保证 view.frame 与 robot_pose 帧一致)。
-  /// TransformStore, 无锁查询。
-  bool getRobotPose(
-      ayanami::geometry_msgs::PoseStamped& pose,
-      const std::string& target_frame = "") const {
-    const std::string& frame =
-        target_frame.empty() ? global_frame : target_frame;
-    Eigen::Isometry3d T;
-    if (!ayanami::components::RobotStateController::instance().lookupTransform(
-            frame, robot_frame, ayanami::Timestamp::latest(), T)) {
-      return false;
-    }
-    pose = ayanami::geometry_msgs::PoseStamped::fromIsometry(frame, T);
-    return true;
-  }
-
-  /// @brief configure 期缓存的不可变 footprint。
+  /// @brief The immutable footprint cached at configure time.
   const costmap_2d::Footprint& footprint() const { return cached_footprint; }
 
-  // ---- 写者/execution lifecycle accessor (可变 map 仅写者触碰) ----
+  // ---- Writer/execution lifecycle accessors (mutable map touched by the writer only) ----
   costmap_2d::CostmapWrapper::Ptr globalCostmap() {
     return global_costmap;
   }
@@ -188,23 +178,35 @@ class CostmapMapContext : public map::AbstractMapContext,
     return shared_from_this();
   }
 
-  // ---- 读者接口 (shared 锁 + 零拷贝) ----
+  // ---- Reader interface (shared lock + zero copy) ----
 
-  /// @brief 持 shared 锁的 global 读视图 (整次算法调用持有; 无 wrapper →
-  /// invalid view)。
+  /// @brief Global read view under a shared lock (held for the whole
+  /// algorithm call; no wrapper -> invalid view).
   CostmapView lockGlobal() const { return buildView(global_costmap, global_frame); }
 
-  /// @brief 持 shared 锁的 local 读视图 (使用 local frame)。
+  /// @brief Local read view under a shared lock (uses the local frame).
   CostmapView lockLocal() const { return buildView(local_costmap, local_frame); }
 
-  /// @brief Hold the selected map's read lock without copying the map. The
-  /// returned guard must not outlive the plugin call that requested it.
-  CostmapView lockGlobalForRead() const { return lockGlobal(); }
-
-  CostmapView lockLocalForRead() const { return lockLocal(); }
+  /// @brief Planning overlay view (family read contract: planner = global +
+  /// local superposition). Holds both shared locks at once (acquisition
+  /// order local -> global; the writer takes them sequentially without
+  /// nesting, so no lock-ordering cycle). Zero copy. The local<-global
+  /// transform resolves once via RobotStateController; on a transient TF
+  /// miss the view degrades to global-only.
+  CostmapPlanningView lockPlanning() const {
+    CostmapView local = buildView(local_costmap, local_frame);
+    CostmapView global = buildView(global_costmap, global_frame);
+    Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
+    bool ready = false;
+    if (local.valid() && global.valid()) {
+      ready = components::RobotStateController::instance().lookupTransform(
+          local_frame, global_frame, ayanami::Timestamp::latest(), t);
+    }
+    return CostmapPlanningView(std::move(global), std::move(local), t, ready);
+  }
 
   /// @brief Run a callback while the global master grid is protected
-  /// (shared lock)。
+  /// (shared lock).
   template <typename Fn>
   auto readGlobal(Fn&& fn) const
       -> decltype(std::forward<Fn>(fn)(
@@ -225,7 +227,7 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
   /// @brief Run a callback while the local master grid is protected
-  /// (shared lock)。
+  /// (shared lock).
   template <typename Fn>
   auto readLocal(Fn&& fn) const
       -> decltype(std::forward<Fn>(fn)(
@@ -246,10 +248,24 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
 
  private:
-  /// @brief 持 shared 锁构建读视图: grid/frame 取自 wrapper; footprint 取
-  /// configure 期不可变缓存; robot_pose 在视图自身 frame 解析 (local 视图
-  /// = local_frame, global 视图 = global_frame), 经 RobotStateController
-  /// 无锁解析。
+  /// @brief Resolve the robot pose in the requested frame via
+  /// RobotStateController (single robot-state query facade; lock-free).
+  bool robotPoseInFrame(ayanami::geometry_msgs::PoseStamped& pose,
+                        const std::string& frame) const {
+    Eigen::Isometry3d T;
+    if (!components::RobotStateController::instance().lookupTransform(
+            frame, robot_frame, ayanami::Timestamp::latest(), T)) {
+      return false;
+    }
+    pose = geometry_msgs::PoseStamped::fromIsometry(frame, T);
+    return true;
+  }
+
+  /// @brief Build a read view under a shared lock: grid/frame come from the
+  /// wrapper; the footprint comes from the immutable configure-time cache;
+  /// robot_pose is resolved in the view's own frame (local view =
+  /// local_frame, global view = global_frame) via the lock-free
+  /// RobotStateController.
   CostmapView buildView(
       const costmap_2d::CostmapWrapper::Ptr& wrapper,
       const std::string& frame) const {
@@ -259,7 +275,7 @@ class CostmapMapContext : public map::AbstractMapContext,
     std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
     const auto* grid = wrapper->get().getCostmap();
     ayanami::geometry_msgs::PoseStamped robot_pose;
-    const bool has_robot_pose = getRobotPose(robot_pose, frame);
+    const bool has_robot_pose = robotPoseInFrame(robot_pose, frame);
     return CostmapView(std::move(lock), grid, frame, &cached_footprint,
                        std::move(robot_pose), has_robot_pose,
                        wrapper->isCurrent());
@@ -270,7 +286,6 @@ class CostmapMapContext : public map::AbstractMapContext,
   std::string global_frame{"map"};
   std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};
-  std::uint64_t map_version{0};
   costmap_2d::Footprint cached_footprint;
   map::MapCommandPort::Ptr command_port;
 };

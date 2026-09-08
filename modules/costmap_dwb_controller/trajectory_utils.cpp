@@ -1,4 +1,4 @@
-// trajectory_utils.cpp — 迁移自 dwb_core/src/trajectory_utils.cpp。
+// trajectory_utils.cpp -- ported from dwb_core/src/trajectory_utils.cpp.
 #include "trajectory_utils.hpp"
 
 #include <cmath>

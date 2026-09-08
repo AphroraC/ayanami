@@ -13,11 +13,12 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 宿主导航插件入口 。
+ * @brief Host navigation plugin entry point.
  *
- * ROS 侧 dlopen 宿主插件 (如 CostmapNavigation), 只通过本接口
- * initialize/start/stop/spinOnce/setGoal + setPointcloud/setLaserScan 转发
- * 输入; 内部持有 NavigationServerBase + BehaviorTreePilot 全套。
+ * The ROS-side dlopen host plugin (e.g. CostmapNavigation) forwards inputs
+ * only through this interface: initialize/start/stop/spinOnce/setGoal +
+ * setPointcloud/setLaserScan; internally it holds the full
+ * NavigationServerBase + BehaviorTreePilot stack.
  */
 class AbstractNavigation : public virtual ExtensionModule {
 public:
@@ -25,37 +26,43 @@ public:
 
   virtual ~AbstractNavigation() = default;
 
-  /// @brief 用 config_path 加载配置并初始化全部组件/插件。
+  /// @brief Load configuration from config_path and initialize all components/plugins.
   virtual void initialize(const std::string& config_path) = 0;
 
-  /// @brief 启动内部循环 (BT 常驻树 / 订阅)。
+  /// @brief Start the internal loops (resident BT tree / subscriptions).
   virtual void start() = 0;
 
-  /// @brief 停止内部循环。
+  /// @brief Stop the internal loops.
   virtual void stop() = 0;
 
-  /// @brief 非阻塞轮询一次 (集成进外部线程/定时器时用)。
+  /// @brief Poll once without blocking (for integration into external threads/timers).
   virtual void spinOnce() = 0;
 
-  /// @brief 设置导航目标。
+  /// @brief Set the navigation goal.
   virtual void setGoal(const ayanami::geometry_msgs::PoseStamped& goal) = 0;
 
-  /// @brief 障碍观测输入: 点云 (ROS 回调同步 TF + 转换后直递宿主)。
-  /// 默认 no-op (测试 stub 可不管); 具体宿主覆写转发到障碍落图管线。
+  /// @brief Sensor observation input (point cloud). Semantics are defined
+  /// by the map family's host (costmap: obstacle-to-map pipeline; mesh:
+  /// reconstruction input; ...). The ROS adapter syncs TF and hands the
+  /// converted result straight here. Default no-op (hosts without a use for
+  /// clouds may ignore).
   virtual void setPointcloud(const ayanami::sensor_msgs::PointCloud2& cloud) {
     (void)cloud;
   }
-  /// @brief 障碍观测输入: 激光扫描 (同上)。
+  /// @brief Sensor observation input (laser scan), same contract as above.
   virtual void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) {
     (void)scan;
   }
 
-  /// @brief 定位修正跳变通知 (中间件适配层检测到 map<-odom 修正相对上一
-  /// 发布值突变 —— 典型为重定位/大角度原地旋转后 AMCL 重新收敛)。
+  /// @brief Localization correction jump notification (the middleware
+  /// adapter detects that the map<-odom correction changed abruptly relative
+  /// to the previous value -- typically AMCL reconverging after
+  /// relocalization / a large in-place rotation).
   ///
-  /// 跳变意味着跳变前按旧修正落图的动态标记 (全局代价图) 已不可信; 具体宿主
-  /// 应清空全局代价图动态层 (静态层不受影响), 由后续扫描按新修正重建。默认
-  /// no-op (测试 stub 可不管)。
+  /// Semantics are defined by the map family's host: anything stamped into
+  /// its map under the old correction may be stale and should be
+  /// invalidated/rebuilt per family policy (costmap: clear the global
+  /// dynamic layer and let subsequent scans rebuild it). Default no-op.
   virtual void onLocalizationJump() {}
 };
 

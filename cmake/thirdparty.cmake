@@ -1,4 +1,4 @@
-# thirdparty.cmake — vendored third-party interface libraries.
+# thirdparty.cmake -- vendored third-party interface libraries.
 # Included from the top-level CMakeLists.txt.
 #
 # Provides:

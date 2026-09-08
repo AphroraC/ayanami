@@ -62,7 +62,7 @@ spdlog::level::level_enum logLevelFromString(const std::string& level) {
 }
 
 void configureLogging() {
-  // logging 段单一来源: 根 config.json (无独立 config_logging 文件)。
+  // The logging section's single source of truth: the root config.json (no separate config_logging file).
   const Config* config = GlobalConfig::instance();
 
   const auto logging_level = logLevelFromString(
@@ -75,7 +75,7 @@ void configureLogging() {
 
   auto logger = spdlog::default_logger();
   if (logger) {
-    // 重建 sink 集: console (按需) + file (按需) + 保留其他 sink (ringbuffer 等)。
+    // Rebuild the sink set: console (as needed) + file (as needed) + keep other sinks (ringbuffer etc.).
     std::vector<spdlog::sink_ptr> new_sinks;
 
     if (console_output) {
@@ -119,8 +119,9 @@ void configureLogging() {
     logger->sinks() = std::move(new_sinks);
   }
 
-  // 全局级别: 所有已注册 logger 取 logging_level; default_logger 最后提升到
-  // min(logging_level, console_level) (console 更详细时不被总闸截断)。
+  // Global level: all registered loggers take logging_level; default_logger
+  // is finally raised to min(logging_level, console_level) (not truncated by
+  // the master switch when the console is more verbose).
   spdlog::set_level(logging_level);
   spdlog::apply_all([logging_level](const std::shared_ptr<spdlog::logger>& l) {
     l->set_level(logging_level);

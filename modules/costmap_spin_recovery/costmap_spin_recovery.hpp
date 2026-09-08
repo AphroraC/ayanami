@@ -15,19 +15,19 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief 原地旋转恢复模块 (costmap_spin_recovery)。
+ * @brief Rotate-in-place recovery module (costmap_spin_recovery).
  *
- * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回纯角速度
- * 建议 (angular.z = max_w), 由 RecoveryExecution 作为唯一发布者按周期发布并
- * 在终态补零; 插件不自行 sleep、不直接调 NavigationCallbacks。
- * 碰撞检测用时持有的地图模块加锁读的 global grid 机器人附近 cell >= 253
- * → FAILED(RecoveryFailed)。不持有 context / wrapper / 可变 grid。
- * 参数统一从 PluginContext.config (config_recovery 指向的本模块 json) 读取。
+ * Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Each cycle returns a pure angular velocity
+ * suggestion (angular.z = max_w); RecoveryExecution acts as the sole publisher, publishing per cycle and
+ * zeroing on the final state; the plugin neither sleeps on its own nor calls NavigationCallbacks directly.
+ * Collision detection uses the lock-held read view of the map module: if any global grid cell near the robot is >= 253
+ * -> FAILED(RecoveryFailed). Holds no context / wrapper / mutable grid.
+ * Parameters are uniformly read from PluginContext.config (the module json that config_recovery points to).
  */
 class CostmapSpinRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapSpinRecovery() = default;
-  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // The derived layer adds a bare virtual ~ so that shared_ptr deletion goes through the virtual destructor.
   virtual ~CostmapSpinRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
@@ -36,7 +36,7 @@ class CostmapSpinRecovery final : public ayanami::costmap::CostmapRecovery {
   void start() override;
   void setBehaviorParams(
       const ayanami::RecoveryBehaviorParams& params) override;
-  RecoveryResultT tick() override;
+  ResultT<void> tick(RecoveryCycleData& cycle) override;
   void finish() override {}
 
   bool cancel() override;

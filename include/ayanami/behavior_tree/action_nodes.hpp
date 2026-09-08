@@ -21,15 +21,18 @@
 namespace ayanami {
 namespace behavior_tree {
 
-/// @brief 把结构化失败上下文写入黑板 (关键纪律扩展)。节点在返回
-/// FAILURE 前调用, 使 Recovery 节点能读取到精确 cause。
+/// @brief Write the structured failure context to the blackboard (key
+/// discipline extension). Called before the node returns FAILURE so that
+/// Recovery nodes can read the precise cause.
 inline void writeFailureContext(const BT::TreeNode& node,
                                 const FailureContext& context) {
   if (node.config().blackboard) {
     node.config().blackboard->set<FailureContext>(k_failure_context, context);
   }
- // 失败可观测性: FailureContext 之前只进黑板 (排障需 gdb), 这里落一条日志
- // (失败是低频事件, warn 级不刷屏; message 仅诊断, 决策仍只看 code)。
+ // Failure observability: FailureContext previously only went to the
+ // blackboard (debugging required gdb); log one line here (failures are
+ // low-frequency events, warn level does not flood; message is diagnostic
+ // only, decisions still look only at code).
   spdlog::warn("[bt] stage={} failure: code={} msg='{}' plugin='{}' "
                "session={} pv={}",
                static_cast<int>(context.stage), static_cast<int>(context.code),
@@ -37,11 +40,11 @@ inline void writeFailureContext(const BT::TreeNode& node,
                context.plan_version);
 }
 
-/// @brief NaN = "端口未提供" 哨兵 (BT InputPort double 缺省值)。
+/// @brief NaN = "port not provided" sentinel (BT InputPort double default).
 inline constexpr double k_behavior_param_unspecified =
     std::numeric_limits<double>::quiet_NaN();
 
-/// @brief 读取端口 double; 非 NaN 才写入 optional (NaN 保持未提供)。
+/// @brief Read a double port; write into the optional only when not NaN (NaN keeps it unset).
 inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
                               std::optional<double>& out) {
   double value = k_behavior_param_unspecified;
@@ -51,17 +54,22 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
 }
 
 /**
- * @brief ComputePathToPose 异步 action : TaskHandle 直连主流。
+ * @brief ComputePathToPose async action: TaskHandle straight to the
+ * mainline.
  *
- * onStart: 读 goal 端口, 组 GetPathGoal (填 server 当前 session/plan_version +
-  * requestPath 持 TaskHandle, 注册 onComplete ->
- * emitWakeUpSignal。onRunning: 等 task ready; sessionIsCurrent +
- * planVersionIsCurrent 双校验防 stale 竞态 (关键纪律), 通过后写 path
- * 端口 (XML 绑定 {raw_path}) 并 incrementPlanVersion。onHalted: 取消在飞 task。
- * 任何 FAILURE 前把精确 FailureContext 写入黑板 (使 Recovery 可获得 cause)。
+ * onStart: read the goal port, assemble the GetPathGoal (fill the server's
+ * current session/plan_version +
+ * requestPath holds the TaskHandle, register onComplete ->
+ * emitWakeUpSignal. onRunning: wait for the task to be ready;
+ * sessionIsCurrent + planVersionIsCurrent double-check prevents stale
+ * races (key discipline); after passing, write the path port (XML binding
+ * {raw_path}) and incrementPlanVersion. onHalted: cancel the in-flight
+ * task. Before any FAILURE, write the precise FailureContext to the
+ * blackboard (so Recovery can obtain the cause).
  *
- * 端口: goal={goal} (输入), path={raw_path} (输出),
- * path_id={path_id} (输出, 每次成功规划单调递增; smoother 分支以此为准重新平滑)。
+ * Ports: goal={goal} (input), path={raw_path} (output),
+ * path_id={path_id} (output, monotonically increasing on every successful
+ * plan; the smoother branch uses it to decide re-smoothing).
  */
 class ComputePathToPoseNode : public BT::StatefulActionNode {
  public:
@@ -158,12 +166,14 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
       ctx.session_id = r.session_id;
       ctx.plan_version = r.plan_version;
       writeFailureContext(*this, ctx);
-      return BT::NodeStatus::FAILURE;  // 只依据 failure 决策, 不解析 message
+      return BT::NodeStatus::FAILURE;  // decide on failure only, never parse message
     }
     setOutput("path", r.path);
-    // path_id 单调递增 (本次规划 ≠ 上一次): 下游 smoother 分支的 RateController
-    // 以 {path_id} 为 reset_token, 新路径落地即重新平滑并 bump plan_version,
-    // controller 经 in-place updatePlan 跟上; goal 未变时的重规划同样触发。
+    // path_id increases monotonically (this plan differs from the previous):
+    // the downstream smoother branch's RateController uses {path_id} as the
+    // reset_token; a new path triggers re-smoothing and bumps plan_version,
+    // and the controller keeps up via in-place updatePlan; replans with an
+    // unchanged goal trigger this too.
     setOutput(k_path_id, ++planned_path_id);
     return BT::NodeStatus::SUCCESS;
   }
@@ -178,10 +188,10 @@ class ComputePathToPoseNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief SmoothPath 一次性异步 action (同构)。
+ * @brief SmoothPath one-shot async action (isomorphic).
  *
- * 端口: input_path={raw_path} (输入), path={smoothed_path} (输出),
-  * 使用配置期唯一 smoother。
+ * Ports: input_path={raw_path} (input), path={smoothed_path} (output),
+ * uses the single smoother configured at configure time.
  */
 class SmoothPathNode : public BT::StatefulActionNode {
  public:
@@ -255,8 +265,10 @@ class SmoothPathNode : public BT::StatefulActionNode {
       return BT::NodeStatus::FAILURE;
     }
      if (r.error != ErrorCode::NONE) {
-      // 平滑失败显式化: 写入黑板 failure_context 并返回 FAILURE, 由上层
-      // RecoveryNode/恢复分支处理; 不做 best-effort 降级 (不掩盖算法故障)。
+      // Make smoothing failure explicit: write the failure_context to the
+      // blackboard and return FAILURE for the upper RecoveryNode/recovery
+      // branch to handle; no best-effort degradation (algorithm faults are
+      // not masked).
       FailureContext ctx;
       ctx.stage = FailureStage::Smoother;
       ctx.code = r.error;
@@ -280,15 +292,18 @@ class SmoothPathNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief FollowPath 异步 action (同构), 维持至 controller 到达目标。
+ * @brief FollowPath async action (isomorphic), persists until the
+ * controller reaches the goal.
  *
- * plan_version 变化时走 in-place 控制器更新 (requestPlanUpdate): 不 cancel /
- * 不 join / 不新建 Execution, 运行中的 ControllerAction 线程安全更新路径+版本,
- * execution 下一 cycle 消费 setNewPlan, 最终结果携带最新 plan_version。全程无
- * 中间停止 (无 cancel → 无中间零速发布)。
+ * When plan_version changes, take the in-place controller update path
+ * (requestPlanUpdate): no cancel / no join / no new Execution; the running
+ * ControllerAction updates path+version thread-safely, the execution
+ * consumes setNewPlan on the next cycle, and the final result carries the
+ * latest plan_version. No intermediate stops anywhere (no cancel -> no
+ * intermediate zero-velocity publishing).
  *
- * 端口: path={smoothed_path} (输入), frequency={controller_frequency} (输入),
-  * 使用配置期唯一 controller。
+ * Ports: path={smoothed_path} (input), frequency={controller_frequency}
+ * (input), uses the single controller configured at configure time.
  */
 class FollowPathNode : public BT::StatefulActionNode {
  public:
@@ -329,13 +344,15 @@ class FollowPathNode : public BT::StatefulActionNode {
   }
 
   BT::NodeStatus onRunning() override {
-    // 先查任务是否已完成: 已完成的 goal 不再尝试 in-place 更新 (execution 已
-    // 释放), 直接消费结果 —— 避免对已完成的 goal 调 updatePlan 误报失败。
+    // First check whether the task is already finished: a finished goal no
+    // longer attempts in-place updates (execution already released); consume
+    // the result directly -- avoids updatePlan falsely reporting failure for
+    // an already-finished goal.
     if (task.ready()) {
       return evaluateCompletedResult();
     }
-    // 任务仍在跑且 plan_version 变化: 原位更新正在执行的控制器 (不 cancel /
-    // 不 join / 不新建 Execution)。
+    // Task still running and plan_version changed: update the executing
+    // controller in place (no cancel / no join / no new Execution).
     if (nav_server->currentPlanVersion() != submitted_plan_version) {
       nav_msgs::Path path;
       if (!getInput("path", path)) {
@@ -350,13 +367,15 @@ class FollowPathNode : public BT::StatefulActionNode {
         return BT::NodeStatus::FAILURE;
       }
       if (!updateExecutionPlan(path)) {
-        // update miss: 任务可能恰在提交期间完成/终态 (execution 已释放或 terminal,
-        // requestPlanUpdate 拒绝更新)。重查已完成任务并消费其结果 —— 成功到达的
-        // 结果直接 SUCCESS, 不把"更新未命中"误报成失败。
+        // Update miss: the task may have finished/terminated exactly during
+        // submission (execution released or terminal, requestPlanUpdate
+        // rejected the update). Re-check the finished task and consume its
+        // result -- a successful-arrival result goes straight to SUCCESS; an
+        // "update miss" is not misreported as failure.
         if (task.ready()) {
           return evaluateCompletedResult();
         }
-        return BT::NodeStatus::RUNNING;  // 尚未完成, 下一 tick 重试更新/消费
+        return BT::NodeStatus::RUNNING;  // not finished yet; retry update/consume next tick
       }
       return BT::NodeStatus::RUNNING;
     }
@@ -366,11 +385,15 @@ class FollowPathNode : public BT::StatefulActionNode {
   void onHalted() override { task.cancel(); }
 
  private:
-  /// @brief 已完成任务的结果评估 (onRunning 顶部 + update miss 重查共用)。
+  /// @brief Result evaluation for a finished task (shared by the top of
+  /// onRunning and the update-miss re-check).
   ///
-  /// 竞态纪律 : "已到达目标" 的 SUCCESS 结果不因 pending 版本差异被
-  /// 拒 —— controller 可能以旧 applied 版本完成 (更新在途未消费即到达), 这是合法
-  /// 完成竞态; 版本陈旧拒绝只适用于失败/未达标结果 (真 stale 产物)。
+  /// Race discipline: a SUCCESS "goal reached" result is not rejected due to
+  /// a pending-version difference -- the controller may finish with the old
+  /// applied version (arrival happened while the update was in flight and
+  /// unconsumed), a legitimate completion race; stale-version rejection
+  /// applies only to failure/goal-not-reached results (genuinely stale
+  /// artifacts).
   BT::NodeStatus evaluateCompletedResult() {
     const auto& r = task.result();
     if (!nav_server->sessionIsCurrent(r.session_id)) {
@@ -384,7 +407,7 @@ class FollowPathNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    // controller 成功且到达目标: 会话内即终点 (goal 已达), pending 版本差异不拒。
+    // Controller succeeded and reached the goal: that is the end within the session (goal reached); pending version differences are not rejected.
      if (r.error == ErrorCode::NONE && r.reached) {
       return BT::NodeStatus::SUCCESS;
     }
@@ -399,7 +422,7 @@ class FollowPathNode : public BT::StatefulActionNode {
       writeFailureContext(*this, ctx);
       return BT::NodeStatus::FAILURE;
     }
-    // 失败或未达标: 只依据 failure 决策, 不解析 message。
+    // Failure or goal-not-reached: decide on failure only, never parse message.
     FailureContext ctx;
     ctx.stage = FailureStage::Controller;
      ctx.code = r.error != ErrorCode::NONE ? r.error
@@ -434,8 +457,9 @@ class FollowPathNode : public BT::StatefulActionNode {
     return true;
   }
 
-  /// @brief plan_version 变化: 对仍在跑的目标原位更新路径+版本 (无 cancel/新
-  /// Execution)。返回 false 表示更新失败 (节点据此 FAILURE)。
+  /// @brief plan_version changed: update path+version in place for the
+  /// still-running goal (no cancel/new Execution). Returns false on update
+  /// failure (the node returns FAILURE accordingly).
   bool updateExecutionPlan(const nav_msgs::Path& path) {
     actions::ExePathGoal goal;
     goal.path = path;
@@ -454,12 +478,15 @@ class FollowPathNode : public BT::StatefulActionNode {
 };
 
 /**
- * @brief Recovery 一次性异步 action (同构)。
+ * @brief Recovery one-shot async action (isomorphic).
  *
- * 端口: recovery={recovery_id}/{clear_costmap_id}/{spin_id}/{wait_id}/{backup_id}
- * (输入, XML `<Recovery recovery="{...}"/>`; 黑板键由 pilot 配置决定)。
- * requestRecovery 的 Goal.cause = 当前黑板 failure_context (结构化触发原因),
- * 使恢复插件可诊断是谁触发了恢复。
+ * Ports: recovery={recovery_id}/{clear_costmap_id}/{spin_id}/{wait_id}/
+ * {backup_id}
+ * (input, XML `<Recovery recovery="{...}"/>`; blackboard keys are decided
+ * by the pilot configuration).
+ * requestRecovery's Goal.cause = the current blackboard failure_context
+ * (structured trigger reason), so the recovery plugin can diagnose who
+ * triggered the recovery.
  */
 class RecoveryActionNode : public BT::StatefulActionNode {
  public:
@@ -470,8 +497,8 @@ class RecoveryActionNode : public BT::StatefulActionNode {
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<std::string>("recovery", "recovery plugin id"),
-      // 按次覆盖参数 (spec: RecoveryGoal 常用字段)。NaN 默认 = 未提供, 保持
-      // 插件 configure 期默认值。
+      // Per-run override params (spec: common RecoveryGoal fields). NaN
+      // default = not provided, keep the plugin's configure-time defaults.
       BT::InputPort<double>("target_yaw",
                             std::numeric_limits<double>::quiet_NaN(),
                             "override spin target angle [rad]"),
@@ -512,7 +539,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
     actions::RecoveryGoal g;
     g.recovery_id = recovery_id;
     readBehaviorParams(g);
-    // cause: 携带当前黑板上的失败上下文 (触发链: 失败节点已写入)。
+    // cause: carry the failure context currently on the blackboard (trigger chain: written by the failing node).
     if (config().blackboard) {
       (void)config().blackboard->get<FailureContext>(k_failure_context, g.cause);
     }
@@ -568,7 +595,7 @@ class RecoveryActionNode : public BT::StatefulActionNode {
   void onHalted() override { task.cancel(); }
 
  private:
-  /// @brief 读取按次覆盖端口 (NaN = 未提供) 填入 goal.behavior。
+  /// @brief Read per-run override ports (NaN = not provided) into goal.behavior.
   void readBehaviorParams(actions::RecoveryGoal& g) const {
     applyBehaviorPort(*this, "target_yaw", g.behavior.target_yaw);
     applyBehaviorPort(*this, "backup_distance", g.behavior.backup_distance);

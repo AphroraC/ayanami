@@ -1,5 +1,5 @@
-# packages/costmap_server — 纯 C++ CostmapWrapper: LayeredCostmap 生命周期 + 线程安全
-# 消费 costmap_2d 抽象 + costmap_2d_layers 具体层, 无 ROS 依赖。
+# packages/costmap_server -- pure C++ CostmapWrapper: LayeredCostmap lifecycle + thread safety
+# Consumes the costmap_2d abstractions + costmap_2d_layers concrete layers; no ROS dependency.
 add_library(costmap_server INTERFACE)
 add_library(costmap_server::costmap_server ALIAS costmap_server)
 

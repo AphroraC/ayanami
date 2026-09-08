@@ -31,12 +31,12 @@ TEST(MessagesTest, poseStampedHasHeaderAndIsometry) {
 }
 
 TEST(MessagesTest, abstractResultFactoryPreservesTypedOutcome) {
-  auto result = ayanami::PlannerResultT::success(Path{});
+  auto result = ayanami::ResultT<void>::success();
   EXPECT_TRUE(result.ok);
   EXPECT_EQ(result.error, ayanami::ErrorCode::NONE);
   EXPECT_TRUE(static_cast<bool>(result));
 
-  auto failure = ayanami::PlannerResultT::failure(
+  auto failure = ayanami::ResultT<void>::failure(
       ayanami::ErrorCode::PATH_NOT_FOUND, "no route");
   EXPECT_FALSE(failure.ok);
   EXPECT_EQ(failure.error, ayanami::ErrorCode::PATH_NOT_FOUND);
@@ -73,7 +73,7 @@ TEST(MessagesTest, pathPosesIsPoseStampedVector) {
 }
 
 TEST(MessagesTest, failureCodeUnifiedEnumCoversRequiredCodes) {
-  // 统一失败码: None=0, 必须覆盖规定的全部分量。
+  // Unified failure codes: None=0, must cover every mandated member.
   EXPECT_EQ(static_cast<uint8_t>(ayanami::ErrorCode::NONE), 0u);
   EXPECT_NE(static_cast<uint8_t>(ayanami::ErrorCode::CANCELED), 0u);
   static_assert(static_cast<int>(ayanami::ErrorCode::NONE) <
@@ -102,7 +102,7 @@ TEST(MessagesTest, failureCodeUnifiedEnumCoversRequiredCodes) {
                 static_cast<int>(FC::RECOVERY_FAILED));
   static_assert(static_cast<int>(FC::RECOVERY_FAILED) <
                 static_cast<int>(FC::INTERNAL_ERROR));
-  // 全部 17 个成员 (None + 16 失败码)。
+  // All 17 members (None + 16 failure codes).
   static_assert(static_cast<int>(FC::INTERNAL_ERROR) == 16);
 }
 

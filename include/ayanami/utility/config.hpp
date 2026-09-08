@@ -32,8 +32,10 @@ public:
   explicit Config(const std::string& config_filename);
   virtual ~Config();
 
-  /// 可拷贝可移动 (PluginContext 按值携带配置; std::any 持有的 json 深拷贝)。
-  /// GlobalConfig 子类构造私有, 单例不可拷贝/移动不受影响。
+  /// Copyable and movable (PluginContext carries the config by value; the
+  /// json held in std::any is deep-copied).
+  /// The GlobalConfig subclass has a private constructor; the singleton's
+  /// non-copyable/non-movable nature is unaffected.
   Config(const Config&) = default;
   Config& operator=(const Config&) = default;
   Config(Config&&) = default;

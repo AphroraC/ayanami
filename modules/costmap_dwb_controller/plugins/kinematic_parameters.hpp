@@ -1,5 +1,5 @@
-// kinematic_parameters.hpp — 迁移自 dwb_plugins/kinematic_parameters.hpp
-// (去 ROS 动态参数回调; Config 一次性读取 + setSpeedLimit 运行时覆盖)。
+// kinematic_parameters.hpp -- ported from dwb_plugins/kinematic_parameters.hpp
+// (ROS dynamic parameter callbacks removed; one-shot Config reads + setSpeedLimit runtime override).
 #pragma once
 
 #include <memory>
@@ -65,8 +65,8 @@ protected:
 };
 
 /**
- * @brief 等价 nav2_costmap_2d 的 NO_SPEED_LIMIT 哨兵 (costmap_filters/
- * filter_values.hpp)。
+ * @brief Equivalent of the nav2_costmap_2d NO_SPEED_LIMIT sentinel (costmap_filters/
+ * filter_values.hpp).
  */
 constexpr double NO_SPEED_LIMIT = 0.0;
 

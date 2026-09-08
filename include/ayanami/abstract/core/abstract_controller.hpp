@@ -13,11 +13,13 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief 局部控制器插件抽象 (MBF 式分层)。
+ * @brief Local controller plugin abstraction (MBF-style layering).
  *
- * 输入当前位姿/速度, 输出单周期速度命令; 待执行路径经 setPlan 接收。
- * 到达判定由 execution 层经 goal_checker 完成 (控制器自身不判断是否到达)。
- * 零地图类型: 接口不包含任何地图参数。
+ * Takes the current pose/velocity and outputs a single-cycle velocity
+ * command; the path to follow is received via setPlan.
+ * Arrival is decided by the execution layer via goal_checker (the
+ * controller itself does not decide arrival).
+ * Zero map types: the interface contains no map parameters.
  */
 class AbstractController : public virtual ExtensionModule {
  public:
@@ -25,21 +27,25 @@ class AbstractController : public virtual ExtensionModule {
 
   virtual ~AbstractController() = default;
 
-  /// @brief 计算单周期速度命令 (纯虚)。
-  /// @return ControllerResultT: ok=true 携带 ControllerCommand; 失败携带
-  /// ErrorCode + 诊断 (仅诊断, 决策只看 ErrorCode)。
-  virtual ControllerResultT computeVelocityCommand(
+  /// @brief Compute a single-cycle velocity command (pure virtual).
+  /// @param cmd Output parameter: on success (ok=true) the velocity command
+  ///        is written; on failure the content is undefined and the caller
+  ///        must not publish it.
+  /// @return Unified ResultT<void>: failures carry ErrorCode + diagnostics
+  ///         (decisions look only at ErrorCode).
+  virtual ResultT<void> computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped& pose,
-      const ayanami::geometry_msgs::TwistStamped& velocity) = 0;
+      const ayanami::geometry_msgs::TwistStamped& velocity,
+      ayanami::geometry_msgs::TwistStamped& cmd) = 0;
 
-  /// @brief 设置要跟踪的路径。
+  /// @brief Set the path to follow.
   virtual bool setPlan(const ayanami::nav_msgs::Path& plan) = 0;
 
   virtual void activate() {}
   virtual void deactivate() {}
   virtual void cleanup() {}
 
-  /// @brief 取消进行中的控制 (协作式中断; 默认不支持)。
+  /// @brief Cancel in-progress control (cooperative interrupt; unsupported by default).
   virtual bool cancel() { return false; }
 };
 

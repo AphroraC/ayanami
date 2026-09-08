@@ -1,7 +1,7 @@
-// modules/costmap_wait_recovery — 等待恢复模块。
+// modules/costmap_wait_recovery -- wait recovery module.
 //
-// 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。每周期返回 RUNNING
-// (不携带速度), 直到 wait_duration 届满返回 SUCCESS; 无运动占用。
+// Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Returns RUNNING each cycle
+// (carrying no velocity) until wait_duration elapses, then returns SUCCESS; no motion is occupied.
 
 #include "costmap_wait_recovery.hpp"
 
@@ -17,8 +17,8 @@ namespace modules {
 void CostmapWaitRecovery::configure(
     const ayanami::PluginContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  (void)map;  // wait 不读图。
-  // 参数单一来源: 本模块 json (config_recovery 指向文件) 的 recovery 段。
+  (void)map;  // wait does not read the map.
+  // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.wait_duration = context.config.param<double>(
       "recovery", "wait_duration", param.wait_duration);
   param.sim_cycle_dt =
@@ -27,7 +27,7 @@ void CostmapWaitRecovery::configure(
 
 void CostmapWaitRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
-  // nullopt 字段保留 configure 期默认值 (禁止把 nullopt 解释为 0)。
+  // nullopt fields keep the configure-time defaults (interpreting nullopt as 0 is forbidden).
   if (params.wait_duration) {
     param.wait_duration = *params.wait_duration;
   }
@@ -40,18 +40,18 @@ void CostmapWaitRecovery::start() {
       std::max(param.wait_duration, 0.0) / dt));
 }
 
-RecoveryResultT CostmapWaitRecovery::tick() {
+ResultT<void> CostmapWaitRecovery::tick(RecoveryCycleData& cycle) {
   if (canceled.load()) {
-    return RecoveryResultT::failure(ErrorCode::CANCELED,
+    return ResultT<void>::failure(ErrorCode::CANCELED,
                                     "wait recovery canceled");
   }
   if (remaining_frames <= 0) {
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    return RecoveryResultT::success(std::move(data));
+      cycle.status = RecoveryStatus::SUCCESS;
+    return ResultT<void>::success();
   }
   --remaining_frames;
-  return RecoveryResultT::success(RecoveryCycleData{});
+  cycle = RecoveryCycleData{};
+  return ResultT<void>::success();
 }
 
 bool CostmapWaitRecovery::cancel() {

@@ -1,16 +1,16 @@
-// modules/costmap_navigation (AbstractNavigation 宿主插件)。
+// modules/costmap_navigation (AbstractNavigation host plugin).
 //
-// M1 关键里程碑: 把核心库全部组件 (CostmapNavigationServer + 4 族插件 +
-// BehaviorTreePilot) 组装为 dlopen 入口插件。本测试:
-// - ExtensionModule 加载 libayanami_costmap_navigation.so
+// M1 key milestone: assembling all core library components (CostmapNavigationServer + the 4 plugin families +
+// BehaviorTreePilot) into the dlopen entry plugin. This test:
+// - ExtensionModule loads libayanami_costmap_navigation.so
 // - initialize: configureCoreMaps + loadPlugins (dlopen smac/savitzky/spin
-// 真实算法模块 + test controller) + createActions + pilot wiring (
-// configure → loadFromFile → setNavigationRuntime)
-// - start 首发可视化 (on_costmap_visualization 旁路被捕获)
-// - setGoal → navigation_thread 跑 BT → raw_path/smoothed_path 入黑板 +
-// on_velocity_command 收到非零速度 (首帧 cmd_vel.linear 已初始化非 NaN)
-// - 抢占: 第二次 setGoal → 先发零速度 + session_id 自增 + BT 树不重建
-// - 析构顺序不崩
+// real algorithm modules + a test controller) + createActions + pilot wiring (
+// configure -> loadFromFile -> setNavigationRuntime)
+// - start publishes the first visualization (the on_costmap_visualization bypass is captured)
+// - setGoal -> navigation_thread runs the BT -> raw_path/smoothed_path land in the blackboard +
+// on_velocity_command receives a non-zero velocity (the first cmd_vel.linear frame is initialized, non-NaN)
+// - Preemption: the second setGoal -> zero velocity first + session_id increments + the BT tree is not rebuilt
+// - destruction order does not crash
 
 #include <gtest/gtest.h>
 
@@ -51,8 +51,8 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 using ayanami::nav_msgs::Path;
 
-// argv: module .so + 7 插件 .so (smac/savitzky/pid/test_controller/spin/
-// goal_checker/progress_checker)。
+// argv: module .so + 7 plugin .so files (smac/savitzky/pid/test_controller/spin/
+// goal_checker/progress_checker).
 std::string g_module_so;
 std::string g_smac_so;
 std::string g_savitzky_so;
@@ -62,17 +62,17 @@ std::string g_spin_so;
 std::string g_goal_checker_so;
 std::string g_progress_checker_so;
 
-// 捕获 on_velocity_command 事件。
+// Captures on_velocity_command events.
 std::vector<TwistStamped> g_cmds;
 std::mutex g_cmd_mutex;
-// 抢占标记: setGoal 预抢占后观察者记录零速度计数。
+// Preemption marker: after the setGoal pre-emption the observer records the zero-velocity count.
 std::atomic<bool> g_preempt_armed{false};
 std::atomic<int> g_zero_after_preempt{0};
-// 可视化捕获。
+// Visualization capture.
 std::vector<std::string> g_viz_names;
 std::mutex g_viz_mutex;
 
-// ---------------- 测试工具 ----------------
+// ---------------- Test utilities ----------------
 
 bool isZeroTwist(const TwistStamped& t) {
   return t.twist.linear.norm() < 1e-9 && t.twist.angular.norm() < 1e-9;
@@ -110,14 +110,14 @@ std::string pluginJson(const std::string& module, const std::string& name,
          "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
 }
 
-// 未闭合版 (供与模块参数段拼接成单文件)。
+/// Unclosed version (to be concatenated with the module parameter section into a single file).
 std::string pluginJsonOpen(const std::string& module, const std::string& name,
                              const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
          "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n";
 }
 
-// 生成临时 config 目录。so_name 用 argv 注入的真实模块绝对路径。
+/// Generates a temp config dir. so_name uses the real module absolute path injected via argv.
 std::filesystem::path makeConfigDir() {
   const auto dir = makeTempDir() / "cfg";
   std::filesystem::remove_all(dir);
@@ -150,7 +150,7 @@ std::filesystem::path makeConfigDir() {
              "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
              "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
              "  }\n}\n");
-  // goal/progress checker 插件 (execution 需要 injected checkers, 缺失判 InternalError)。
+  // goal/progress checker plugins (the execution needs injected checkers; missing ones are judged InternalError).
   write_file(dir / "goal_checker.json",
              pluginJsonOpen("goal_checker", "simple_goal_checker",
                          g_goal_checker_so) +
@@ -169,8 +169,8 @@ std::filesystem::path makeConfigDir() {
              "    \"time_period\": 5.0\n"
              "  }\n}\n");
 
-  // 20x20 @ 0.5 = 10m x 10m, origin (0,0); 全 FREE 静态地图 (A* 从 (0,0)
-  // 到 (2,0) 可寻路)。
+  // 20x20 @ 0.5 = 10m x 10m, origin (0,0); all-FREE static map (A* can plan from (0,0)
+  // to (2,0)).
   const std::string pgm_path = (dir / "map.pgm").string();
   {
     std::ofstream out(pgm_path, std::ios::binary);
@@ -180,7 +180,7 @@ std::filesystem::path makeConfigDir() {
     }
   }
 
-  // costmap 参数并入 costmap_navigation.json (原 costmap.json 移除)。
+  // Costmap parameters are merged into costmap_navigation.json (the old costmap.json was removed).
   {
     std::ofstream nav(dir / "costmap_navigation.json");
     nav << "{\n  \"navigation\": {\n"
@@ -276,7 +276,7 @@ std::filesystem::path makeConfigDir() {
   return dir;
 }
 
-// RAII 订阅句柄: attach 时替换, detach 时析构退订 (无悬挂 id)。
+// RAII subscription handle: replaced on attach, unsubscribed on destruction at detach (no dangling id).
 ayanami::CallbackSubscription g_cmd_cb;
 ayanami::CallbackSubscription g_viz_cb;
 
@@ -340,9 +340,9 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
   return fn();
 }
 
-// 公共工厂装载 host 模块 → AbstractNavigation::Ptr → dynamic_cast<CostmapNavigation*>。
-// 亲引用: 组件寿命 = 进程 (不 dlclose), 宿主 shared_ptr 特意泄漏保值,
-// 测试仍负责 delete host。
+/// Loads the host module via the common factory -> AbstractNavigation::Ptr -> dynamic_cast<CostmapNavigation*>.
+/// Owning reference: component lifetime = process lifetime (no dlclose); the host shared_ptr is intentionally leaked to stay alive,
+/// and the test is still responsible for deleting the host.
 CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
   auto nav = std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(
       ayanami::ExtensionModule::load_module(g_module_so));
@@ -363,11 +363,11 @@ CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
 
 }  // namespace
 
-// ---------------- 宿主组装 (configureCoreMaps + loadPlugins +) ----------------
+// ---------------- Host assembly (configureCoreMaps + loadPlugins +) ----------------
 
 TEST(CostmapNavigationTest, dlopenAllAlgorithmModulesLoad) {
-  // 4 个真实算法模块 .so 都走公共工厂 create_extension_module, 且经类型化
-  // dynamic_pointer_cast 得到正确的插件族类型。
+  // All 4 real algorithm module .so files go through the common create_extension_module factory and obtain the correct
+  // plugin family type via typed dynamic_pointer_cast.
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapPlanner>(
                 ayanami::ExtensionModule::load_module(g_smac_so)),
             nullptr);
@@ -387,26 +387,26 @@ TEST(CostmapNavigationTest, initializeBuildsFullStack) {
   CostmapNavigation* host = createHost(dir);
   ASSERT_NE(host, nullptr);
 
-  // configureCoreMaps: global/local costmap 已建
+  // configureCoreMaps: global/local costmaps built
   ASSERT_NE(host->navigationServer().costmapContext(), nullptr);
   ASSERT_NE(host->navigationServer().globalCostmap(), nullptr);
   ASSERT_NE(host->navigationServer().localCostmap(), nullptr);
 
-  // loadPlugins: planner/smoother/controller/recovery action 已建
+  // loadPlugins: planner/smoother/controller/recovery actions built
   ASSERT_NE(host->navigationServer().plannerAction(), nullptr);
   ASSERT_NE(host->navigationServer().smootherAction(), nullptr);
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
   ASSERT_NE(host->navigationServer().recoveryAction("test_spin"), nullptr);
 
-  // pilot 已 configure + loadFromFile + setNavigationRuntime
-  // (loadFromFile 校验 17 板项通过 → 树已建)
+  // pilot is configured + loadFromFile + setNavigationRuntime
+  // (loadFromFile validated the 17 blackboard entries -> tree built)
   ASSERT_NE(host->pilot().blackboard(), nullptr);
 
   host->stop();
   delete host;
 }
 
-// ---------------- start / spinOnce 可视化旁路 ----------------
+// ---------------- start / spinOnce visualization bypass ----------------
 
 TEST(CostmapNavigationTest, startPublishesVisualizationAndSpinOnceRepeats) {
   attachObservers();
@@ -432,7 +432,7 @@ TEST(CostmapNavigationTest, startPublishesVisualizationAndSpinOnceRepeats) {
   EXPECT_TRUE(has_global);
   EXPECT_TRUE(has_local);
 
-  // spinOnce: 限频 (100Hz) 下连续调用应再次触发。
+  // spinOnce: under rate limiting (100Hz) repeated calls should trigger again.
   const size_t before = g_viz_names.size();
   for (int i = 0; i < 5; ++i) {
     host->spinOnce();
@@ -445,7 +445,7 @@ TEST(CostmapNavigationTest, startPublishesVisualizationAndSpinOnceRepeats) {
   detachObservers();
 }
 
-// ---------------- setGoal: BT 真跑通 path→cmd_vel ----------------
+// ---------------- setGoal: BT truly runs path -> cmd_vel ----------------
 
 TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
   attachObservers();
@@ -459,7 +459,7 @@ TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
   const auto bb = host->pilot().blackboard();
   ASSERT_NE(bb, nullptr);
 
-  // 100ms 内 raw_path / smoothed_path 写入 pilot 黑板
+  // raw_path / smoothed_path written to the pilot blackboard within 100ms
   EXPECT_TRUE(waitUntil([&] {
     Path raw;
     if (!bb->get<Path>(k_raw_path, raw) || raw.poses.empty()) {
@@ -469,10 +469,10 @@ TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
     return bb->get<Path>(k_smoothed_path, smoothed) && !smoothed.poses.empty();
   }, 2000));
 
-  // BT 主流程推进 → controller 经 on_velocity_command 旁路发非零速度
+  // The BT main flow advances -> the controller emits a non-zero velocity via the on_velocity_command bypass
   EXPECT_TRUE(waitUntil([&] { return nonZeroCmdCount() >= 1; }, 2000));
 
-  // 首帧 cmd_vel.twist.linear 已初始化 (非 NaN)
+  // The first cmd_vel.twist.linear frame is initialized (non-NaN)
   EXPECT_FALSE(anyCmdHasNaNLinear());
 
   host->stop();
@@ -515,7 +515,7 @@ TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   ASSERT_TRUE(bb->get<uint64_t>(k_session_id, sid_after));
   EXPECT_EQ(sid_after, sid_before);
 
-  // BT 树不重建: 同一 tree 实例
+  // The BT tree is not rebuilt: the same tree instance
   EXPECT_EQ(&host->pilot().tree(), tree_addr);
 
   host->stop();
@@ -523,7 +523,7 @@ TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   detachObservers();
 }
 
-// ---------------- 析构顺序 ----------------
+// ---------------- Destruction order ----------------
 
 TEST(CostmapNavigationTest, destructorDoesNotCrash) {
   const auto dir = makeConfigDir();
@@ -532,8 +532,8 @@ TEST(CostmapNavigationTest, destructorDoesNotCrash) {
     ASSERT_NE(host, nullptr);
     host->start();
     host->setGoal(makePose(2.0, 0.0));
-    // 作用域结束 → delete: stop join nav thread → pilot stop → server stop
-    // (clearActions 先于 clearPlugins, BT 节点不再持有过期插件指针)
+    // End of scope -> delete: stop joins the nav thread -> pilot stop -> server stop
+    // (clearActions runs before clearPlugins, so BT nodes no longer hold stale plugin pointers)
     delete host;
   }
 }

@@ -1,4 +1,4 @@
-// path_align.cpp — 迁移自 dwb_critics/src/path_align.cpp。
+// path_align.cpp -- ported from dwb_critics/src/path_align.cpp.
 #include "path_align.hpp"
 
 #include <string>

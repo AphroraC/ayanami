@@ -1,5 +1,5 @@
-// trajectory_utils.hpp — 迁移自 dwb_core/trajectory_utils.hpp (rclcpp::Duration
-// 换 double 秒)。
+// trajectory_utils.hpp -- ported from dwb_core/trajectory_utils.hpp (rclcpp::Duration
+// becomes double seconds).
 #pragma once
 
 #include "dwb_types.hpp"

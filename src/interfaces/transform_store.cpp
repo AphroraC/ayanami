@@ -1,4 +1,4 @@
-// TransformStore 实现 (跨 DSO 单例纪律: instance 定义在 .cpp, 不 inline)。
+// TransformStore implementation (cross-DSO singleton discipline: instance defined in the .cpp, not inline).
 #include "ayanami/interfaces/transform_store.hpp"
 
 #include <chrono>
@@ -45,7 +45,7 @@ TransformStore::lookupTransform(const std::string& target,
     out = buffer->get(target, source, toFastTfTime(stamp), tolerance);
     return true;
   } catch (const std::exception& e) {
- // 诊断 (debug 级): 落图/位姿查询失败的真实原因 (无样本/剪枝窗外/树未连通)。
+ // Diagnostics (debug level): the real reason a map-stamp/pose query failed (no sample / outside pruning window / tree not connected).
     spdlog::debug("TransformStore: lookup {}<-{} @ {:.3f}s failed: {}", target,
                   source, stamp.toSeconds(), e.what());
     return false;
@@ -61,7 +61,7 @@ void
 TransformStore::configureCacheDuration(double seconds) {
   const auto dur = std::chrono::duration_cast<fast_tf::detail::duration_t>(
       std::chrono::duration<double>(seconds));
- // 整 buffer 替换 (启动期专用, 见 hpp 纪律): 旧 buffer 连同已存 TF 一起释放。
+ // Whole-buffer replacement (startup-phase only, see the hpp discipline): the old buffer is released together with its stored TF data.
   buffer = std::make_unique<fast_tf::detail::transform_buffer>(dur);
   spdlog::info("TransformStore: dynamic-link cache duration set to {:.3f}s",
                seconds);

@@ -1,6 +1,6 @@
-// limited_accel_generator.cpp — 迁移自 dwb_plugins/src/
-// limited_accel_generator.cpp (sim_period 回退 controller_frequency 逻辑保留,
-// controller_frequency 从 config 读)。
+// limited_accel_generator.cpp -- ported from dwb_plugins/src/
+// limited_accel_generator.cpp (the sim_period fallback-to-controller_frequency logic is kept,
+// controller_frequency read from config).
 #include "limited_accel_generator.hpp"
 
 #include <memory>
@@ -16,8 +16,8 @@ void LimitedAccelGenerator::initialize(const ayanami::Config& cfg,
   this->plugin_name = plugin_name;
   StandardTrajectoryGenerator::initialize(cfg, plugin_name);
 
-  // 原版: sim_period 参数声明失败 (未设置) → 回退 controller_frequency。
-  // Config json 无"参数未声明"概念, 以 hasParam 判缺省。
+  // Original: if the sim_period parameter declaration fails (unset) -> fall back to controller_frequency.
+  // Config json has no "undeclared parameter" notion, so absence is detected with hasParam.
   if (cfg.hasParam(plugin_name, "sim_period")) {
     acceleration_time = cfg.param<double>(plugin_name, "sim_period", 0.0);
   } else {

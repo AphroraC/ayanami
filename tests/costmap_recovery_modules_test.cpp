@@ -1,16 +1,16 @@
-// +redesign: modules/costmap*_recovery (CostmapRecovery 族 4 个恢复插件)。
+// +redesign: modules/costmap*_recovery (the 4 CostmapRecovery-family recovery plugins).
 //
-// 覆盖 (周期驱动 + 唯一发布者架构):
-// - 插件只返回每周期期望速度, 由 CostmapRecoveryExecution 作为唯一发布者
-// 按周期发布; spin/back_up 结束/取消/collision 终态必须补零 (行为测试)。
-// - 插件不直接调 on_velocity_command / 不 sleep (行为 + grep 源码测试)。
-// - spin 完成所设 spin_dist → 执行 RECOVERY_DONE, 期间发纯角速度, 终态零速度
-// - back_up 倒车检测碰撞 (不可变 global 快照 lethal) → RECOVERY_FAILED,
-// message 含 "collision detected" (插件层 tick 契约)
-// - wait 经执行周期驱动等满 wait_duration → RECOVERY_DONE; 中途 cancel → CANCELED
-// - clear 经 CostmapCommandPort 提交 typed clear 命令, 唯一写者清机器人附近
-// radius → None, master grid 对应区域 = FREE_SPACE(0), 远处保持 lethal
-// - 4 个 module.cpp 统一导出 create_extension_module (dlopen 验证正确类)
+// Coverage (cycle-driven + single-publisher architecture):
+// - plugins only return the desired per-cycle velocity; CostmapRecoveryExecution is the single publisher and
+// publishes it per cycle; spin/back_up end/cancel/collision terminal states must emit zeros (behavior tests).
+// - plugins never call on_velocity_command directly / never sleep (behavior + grep-source tests).
+// - spin completes once the configured spin_dist is covered -> execution RECOVERY_DONE; pure angular velocity while spinning, zero velocity in the terminal state
+// - back_up detects a collision while reversing (lethal on the immutable global snapshot) -> RECOVERY_FAILED,
+// message contains "collision detected" (plugin-layer tick contract)
+// - wait is driven by execution cycles until wait_duration elapses -> RECOVERY_DONE; cancel mid-way -> CANCELED
+// - clear submits a typed clear command via CostmapCommandPort; the single writer clears the area around the robot
+// to None and the master grid region becomes FREE_SPACE(0) while distant cells stay lethal
+// - the 4 module.cpp files uniformly export create_extension_module (dlopen verifies the correct classes)
 
 #include <gtest/gtest.h>
 
@@ -54,7 +54,7 @@
 namespace {
 
 using ayanami::ErrorCode;
-using ayanami::RecoveryResultT;
+using ayanami::ResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapMapContext;
@@ -64,24 +64,24 @@ using ayanami::modules::CostmapClearCostmapRecovery;
 using ayanami::modules::CostmapSpinRecovery;
 using ayanami::modules::CostmapWaitRecovery;
 
-// 4 个模块 .so (argv 注入, 顺序: spin/back_up/wait/clear_costmap)。
+// The 4 module .so files (injected via argv, order: spin/back_up/wait/clear_costmap).
 std::string g_spin_so;
 std::string g_backup_so;
 std::string g_wait_so;
 std::string g_clear_so;
 
-// 模块源码目录 (CMake 注入), 供 grep 源码测试用。
+// Module source directory (injected by CMake), used by the grep-source tests.
 std::string g_modules_src;
 
-// 临时 config 目录 (main 内创建), 供构造各模块 PluginContext.config。
+// Temp config dir (created in main), used to build each module PluginContext.config.
 std::string g_config_dir;
 
-// 各模块自身 json (PluginContext.config 参数单一来源)。
+// Each module's own json (single source of PluginContext.config parameters).
 std::string moduleConfig(const std::string& json_name) {
   return (std::filesystem::path(g_config_dir) / json_name).string();
 }
 
-// 捕捉执行层发布的 on_velocity_command。
+// Captures on_velocity_command published by the execution layer.
 std::vector<TwistStamped> g_emitted;
 std::mutex g_emit_mutex;
 int g_emit_cb_id = -1;
@@ -92,9 +92,9 @@ void writeJsonFile(const std::filesystem::path& path,
   ofs << content;
 }
 
-// ---------------- 测试工具 ----------------
+// ---------------- Test utilities ----------------
 
-// 建一个 NxN @ res, origin=(0,0) 的 master grid (无 layer, 直接 setCost)。
+// Builds an NxN @ res master grid with origin=(0,0) (no layers, direct setCost).
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(unsigned int size,
                                                         double res) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -112,7 +112,7 @@ std::shared_ptr<CostmapMapContext> makeContext(
   return ctx;
 }
 
-// 测试侧等价写者命令端口: submit → writer 级清图 (清层 + updateMapUnlocked 发布)。
+/// Test-side equivalent writer command port: submit -> writer-level map clear (clear layers + updateMapUnlocked publish).
 class TestWriterPort : public CostmapCommandPort {
  public:
   TestWriterPort(const std::shared_ptr<costmap_2d::CostmapWrapper>& global,
@@ -159,7 +159,7 @@ class TestWriterPort : public CostmapCommandPort {
   std::string robot_frame;
 };
 
-// 经 RobotStateController 设置 TF: map←base_link, 机器人位于世界 (wx, wy)。
+/// Sets the TF via RobotStateController: map<-base_link with the robot at world (wx, wy).
 void setRobot(double wx, double wy) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.setTransform(
@@ -222,7 +222,7 @@ bool anyNonZeroLinear() {
   return false;
 }
 
-// 轮询直至 terminal state 或超时。
+/// Polls until a terminal state or timeout.
 void waitExecutionState(ayanami::costmap::CostmapRecoveryExecution& exec,
                         int target, int max_iters = 200) {
   for (int i = 0; i < max_iters; ++i) {
@@ -236,7 +236,7 @@ void waitExecutionState(ayanami::costmap::CostmapRecoveryExecution& exec,
 
 }  // namespace
 
-// ---------- 唯一发布者行为: 插件不直接调 on_velocity_command ----------
+// ---------- Single-publisher behavior: plugins never call on_velocity_command ----------
 
 TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
   attachVelocityCapture();
@@ -257,11 +257,12 @@ TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
   spin->start();
   backup->start();
   wait->start();
-  (void)spin->tick();
-  (void)backup->tick();
-  (void)wait->tick();
+  ayanami::RecoveryCycleData cycle;
+  (void)spin->tick(cycle);
+  (void)backup->tick(cycle);
+  (void)wait->tick(cycle);
 
-  // 插件的 tick 只是驱动周期逻辑, 绝不自行发布速度命令。
+  // The plugin tick only drives the cycle logic; it never publishes velocity commands itself.
   EXPECT_TRUE(emittedIsEmpty())
       << "recovery plugins must not publish on_velocity_command directly";
   detachVelocityCapture();
@@ -289,7 +290,7 @@ TEST(CostmapRecoveryModulesTest, pluginsSourceHasNoDirectPublish) {
   }
 }
 
-// ---------- CostmapSpinRecovery (经执行驱动, 唯一发布者) ----------
+// ---------- CostmapSpinRecovery (execution-driven, single publisher) ----------
 
 TEST(CostmapRecoveryModulesTest, spinCompletesWithSuccessViaExecution) {
   attachVelocityCapture();
@@ -304,8 +305,8 @@ TEST(CostmapRecoveryModulesTest, spinCompletesWithSuccessViaExecution) {
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
-  EXPECT_TRUE(anyNonZeroAngular());            // 发过纯角速度
-  EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);  // 终态零速度
+  EXPECT_TRUE(anyNonZeroAngular());            // Pure angular velocity was emitted
+  EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);  // zero velocity in the terminal state
   detachVelocityCapture();
 }
 
@@ -319,7 +320,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
   exec.setCyclePeriod(std::chrono::milliseconds(10));
   exec.start();
-  // 等至少一帧角速度发出, 再 cancel。
+  // Wait until at least one angular velocity frame is emitted, then cancel.
   for (int i = 0; i < 100 && !anyNonZeroAngular(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -331,7 +332,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
   detachVelocityCapture();
 }
 
-// ---------- 唯一发布者安全校验: finite + max_vel 上限 (超限清零) ----------
+// ---------- Single-publisher safety checks: finite + max_vel caps (over-limit zeroed) ----------
 
 TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
   attachVelocityCapture();
@@ -341,7 +342,7 @@ TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
                                         ayanami::Config(moduleConfig("spin.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
-  // max_w=0.3 > 注入上限 max_vel_theta=0.1 → 非零命令必须被清零。
+  // max_w=0.3 > the injected cap max_vel_theta=0.1 -> non-zero commands must be zeroed.
   exec.setMaximumVelocity(1.0, 1.0, 0.1);
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
@@ -360,7 +361,7 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
   {
     std::unique_lock<std::shared_mutex> lock(global->mutex());
     costmap_2d::Costmap2D* grid = global->get().getCostmap();
-    // 机器人位于 cell (4,4) (世界 2.25,2.25), 该 cell + 邻域设为 lethal。
+    // The robot is at cell (4,4) (world 2.25,2.25); that cell + neighborhood are set lethal.
     for (unsigned int y = 3; y <= 5; ++y) {
       for (unsigned int x = 3; x <= 5; ++x) {
         grid->setCost(x, y, costmap_2d::LETHAL_OBSTACLE);
@@ -377,7 +378,8 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
                  ctx->getSharedConstPtr());
 
   rec->start();
-  const RecoveryResultT outcome = rec->tick();
+  ayanami::RecoveryCycleData cycle;
+  const ResultT<void> outcome = rec->tick(cycle);
   ASSERT_FALSE(outcome.ok);
   EXPECT_EQ(outcome.error, ErrorCode::RECOVERY_FAILED);
   EXPECT_NE(outcome.message.find("collision detected"), std::string::npos)
@@ -397,12 +399,12 @@ TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
-  EXPECT_TRUE(anyNonZeroLinear());              // 发过负向线速度
-  EXPECT_NEAR(lastEmitted().twist.linear.x(), 0.0, 1e-9);  // 终态零速度
+  EXPECT_TRUE(anyNonZeroLinear());              // Negative linear velocity was emitted
+  EXPECT_NEAR(lastEmitted().twist.linear.x(), 0.0, 1e-9);  // zero velocity in the terminal state
   detachVelocityCapture();
 }
 
-// ---------- CostmapWaitRecovery (经执行周期驱动, 无运动) ----------
+// ---------- CostmapWaitRecovery (execution-cycle driven, no motion) ----------
 
 TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   auto ctx = makeContext(makeWrapper(20, 0.5));
@@ -420,7 +422,7 @@ TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   exec.join();
 
-  // wait_duration=0.1, 周期 10ms ⇒ 约 10 帧 (总时长明显 > 0)。
+  // wait_duration=0.1 with a 10ms cycle => about 10 frames (total duration clearly > 0).
   EXPECT_GE(elapsed, 0.05);
 }
 
@@ -439,7 +441,7 @@ TEST(CostmapRecoveryModulesTest, waitCancelReturnsImmediatelyViaExecution) {
   EXPECT_EQ(exec.getError(), ErrorCode::CANCELED);
 }
 
-// ---------- CostmapClearCostmapRecovery (经命令端口, 无运动) ----------
+// ---------- CostmapClearCostmapRecovery (via the command port, no motion) ----------
 
 TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   auto global = makeWrapper(20, 0.5);
@@ -466,12 +468,12 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
     local->updateMapUnlocked(2.25, 2.25, 0.0);
   }
   auto ctx = makeContext(global, local);
-  setRobot(2.25, 2.25);  // cell (4,4) 中心
+  setRobot(2.25, 2.25);  // Center of cell (4,4)
 
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
       ctx->getRobotFrame());
-  // 命令端口经地图上下文暴露 (configure 内 map->commandPort 获取)。
+  // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
   rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
@@ -479,10 +481,11 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
                  ctx->getSharedConstPtr());
 
   rec->start();
-  const RecoveryResultT outcome = rec->tick();
+  ayanami::RecoveryCycleData cycle;
+  const ResultT<void> outcome = rec->tick(cycle);
   ASSERT_TRUE(outcome.ok) << outcome.message;
 
-  // robot 附近 (半径内) → FREE_SPACE(0); 远处保持 lethal。
+  // Near the robot (within the radius) -> FREE_SPACE(0); distant cells stay lethal.
   for (const auto& wrapper : {global, local}) {
     EXPECT_EQ(cellCost(wrapper, 4, 4), costmap_2d::FREE_SPACE);
     EXPECT_EQ(cellCost(wrapper, 5, 5), costmap_2d::FREE_SPACE);
@@ -490,7 +493,7 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   }
 }
 
-// ---------- module.cpp 工厂符号 (公共工厂 + 类型化 cast 验证正确派生类) ----------
+// ---------- module.cpp factory symbols (common factory + typed cast verifying the correct derived classes) ----------
 
 TEST(CostmapRecoveryModulesTest, moduleFactoriesCreateCorrectTypes) {
   ASSERT_FALSE(g_spin_so.empty());
@@ -520,10 +523,10 @@ int main(int argc, char** argv) {
   if (argc > 4) g_clear_so = argv[4];
   if (argc > 5) g_modules_src = argv[5];
 
-  // 临时 config 目录 (严格单层索引): 4 个恢复插件各在自己的 json 文件中声明
-  // "recovery" 段参数; 每个模块构造时经 GlobalConfig::getConfigPath 显式读取
-  // (无 thread_local 注入)。键互不冲突 (短时长便于执行层周期驱动测试;
-  // wait_duration=0.1)。
+  // Temp config dir (strictly single-level index): the 4 recovery plugins each declare their "recovery"
+  // section parameters in their own json file; each module reads them explicitly at construction via GlobalConfig::getConfigPath
+  // (no thread_local injection). The keys do not collide (short durations ease execution-layer cycle-driven testing;
+  // wait_duration=0.1).
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "ayanami_costmap_recovery_test";
   std::filesystem::remove_all(dir);

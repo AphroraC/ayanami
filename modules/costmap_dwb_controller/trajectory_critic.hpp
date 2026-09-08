@@ -1,5 +1,5 @@
-// trajectory_critic.hpp — 迁移自 dwb_core/trajectory_critic.hpp (node 参数读取
-// 换 ayanami::Config; costmap_ros 换 costmap_2d::Costmap2D* + footprint 注入)。
+// trajectory_critic.hpp -- ported from dwb_core/trajectory_critic.hpp (node parameter reading
+// becomes ayanami::Config; costmap_ros becomes costmap_2d::Costmap2D* + footprint injection).
 #pragma once
 
 #include <memory>
@@ -40,13 +40,13 @@ public:
    * @brief Initialize the critic with appropriate pointers and parameters
    *
    * The name and costmap are stored as member variables.
-   * scale 参数读 <plugin_name>.<name>.scale (默认 1.0, 与 nav2 语义一致)。
+   * The scale parameter is read from <plugin_name>.<name>.scale (default 1.0, matching nav2 semantics).
    *
-   * @param cfg 模块配置 (json 段 dwb_plugin_name)
+   * @param cfg Module configuration (json section dwb_plugin_name)
    * @param name The name of this critic
    * @param ns The namespace of the planner (dwb_plugin_name)
    * @param costmap Pointer to the local costmap
-   * @param footprint Robot footprint spec (ObstacleFootprint 等 critic 使用)
+   * @param footprint Robot footprint spec (used by critics such as ObstacleFootprint)
    */
   void initialize(const ayanami::Config& cfg, const std::string& name,
                   const std::string& ns, const costmap_2d::Costmap2D* costmap,
@@ -61,14 +61,14 @@ public:
   }
   virtual void onInit() {}
 
-  /// @brief 快照纪律: 每 cycle 由控制器在刷新 local 快照后调用, 把 critic
-  /// 绑定到当前不可变 epoch 的 grid (快照由控制器持有存活整个打分周期)。
-  /// 默认只换指针; 缓存了 &grid 引用/队列的 critic 覆写为重建缓存。
+  /// @brief Snapshot discipline: called by the controller every cycle after refreshing the local snapshot, binding the critic
+  /// to the grid of the current immutable epoch (the snapshot is held by the controller for the whole scoring cycle).
+  /// The default only swaps the pointer; critics that cached &grid references/queues override this to rebuild their caches.
   virtual void setCostmap(const costmap_2d::Costmap2D* costmap) {
     this->costmap = costmap;
   }
 
-  /// @brief 子类 onInit 读取参数用 (Config 不可拷贝, 保存指针)。
+  /// @brief For subclass onInit parameter reads (Config is non-copyable, so the pointer is stored).
   const ayanami::Config& config() const { return *cfg; }
 
   /**

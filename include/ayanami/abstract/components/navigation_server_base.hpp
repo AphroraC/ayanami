@@ -53,9 +53,11 @@ public:
   virtual void cancelAllControllers() = 0;
   virtual void cancelAllPlanners() {}
   virtual void cancelAllSmoothers() {}
-  /// @brief 路径有效性查询 (BT IsPathValid 条件节点消费; 职责表"路径是否
-  /// 过期"的 BT 可读面)。默认 = 非空即有效; 地图族宿主覆写为真实校验
-  /// (CostmapNavigationServer → AbstractMapContext::isPathValid)。
+  /// @brief Path validity query (consumed by the BT IsPathValid condition
+  /// node; the BT-readable surface of the responsibility table's "is the
+  /// path stale"). Default = valid iff non-empty; map-family hosts override
+  /// with real validation (CostmapNavigationServer ->
+  /// AbstractMapContext::isPathValid).
   virtual bool isPathValid(const ayanami::nav_msgs::Path& path) const {
     return !path.poses.empty();
   }
@@ -64,36 +66,43 @@ public:
 };
 
 /**
- * @brief 导航服务基类 ( 无地图依赖)。
+ * @brief Navigation server base class (no map dependency).
  *
- * 持插件管理器、四类 Action 和共享导航会话。
- * 地图对象 (costmap/gridmap) 由派生 server (如 CostmapNavigationServer, §5.4)
- * 覆写 virtual initialize*Plugin 注入; 派生覆写 createActions() 构造带地图的
- * Action (生产路径 = costmap_action)。基类 createActions() 经虚 new*Execution
- * 工厂装配 abstract Action (供无地图 server 与测试覆写)。
+ * Holds the plugin managers, the four Action families and the shared
+ * navigation session.
+ * Map objects (costmap/gridmap) are injected by derived servers (e.g.
+ * CostmapNavigationServer, §5.4) overriding the virtual initialize*Plugin
+ * hooks; derived servers override createActions() to build map-aware
+ * Actions (production path = costmap_action). The base createActions()
+ * assembles abstract Actions via the virtual new*Execution factories (for
+ * map-free servers and test overrides).
  *
- * 主流控制流: requestPath/requestSmoothing/requestExecution/requestRecovery
- * 返回 TaskHandle 直连调用者 (BT 节点); 旁路由各 Action 在
- * NavigationCallbacks::on*_result 上 emit (rviz 扩展/监控)。规划失败不经旁路
- * 自动触发 recovery —— recovery 只由 BT 内 RecoveryNode/Recovery 节点调度。
+ * Mainline control flow: requestPath/requestSmoothing/requestExecution/
+ * requestRecovery return TaskHandles straight to the caller (BT nodes);
+ * the side path is emitted by each Action on
+ * NavigationCallbacks::on*_result (rviz extension/monitoring). A planning
+ * failure does not automatically trigger recovery via the side path --
+ * recovery is scheduled only by RecoveryNode/Recovery nodes inside the BT.
  */
 class NavigationServerBase : public NavigationRuntime {
 public:
 
   virtual ~NavigationServerBase();
 
-  /// @brief 读 config.json global 段 → 6 个子配置逐 dlopen + 调虚
-  /// initialize*Plugin → createActions。
+  /// @brief Read the config.json global section -> dlopen each of the 6
+  /// sub-configs + call the virtual initialize*Plugin hooks ->
+  /// createActions.
   void loadPlugins(const std::string& config_path);
 
-  /// @brief 用 default*_ 插件名取插件, 装配各 Action (每插件一个; 派生覆写以
-  /// 返回带地图的 Action, 如 CostmapNavigationServer → Costmap*Action)。
+  /// @brief Fetch plugins by their default*_ names and assemble the Actions
+  /// (one per plugin; derived servers override to return map-aware Actions,
+  /// e.g. CostmapNavigationServer -> Costmap*Action).
   virtual void createActions();
 
-  /// @brief 启动服务 (幂等; 预留生命周期钩子)。
+  /// @brief Start the server (idempotent; reserved lifecycle hook).
   void start();
 
-  /// @brief 停止服务: 取消并 join 所有 RUNNING action (幂等)。
+  /// @brief Stop the server: cancel and join all RUNNING actions (idempotent).
   void stop();
 
   /// @brief Return the single configured action for the first three families.
@@ -106,7 +115,7 @@ public:
 
   /// @brief Mainline TaskHandle requests. Planner, smoother and controller each
   /// dispatch to their one configured action; recovery uses recovery_id.
-  /// virtual 供测试 Mock 覆写 。
+  /// virtual so test mocks can override.
   virtual TaskHandle<ayanami::actions::GetPathResult> requestPath(
       const ayanami::actions::GetPathGoal& goal);
   virtual TaskHandle<ayanami::actions::SmoothPathResult> requestSmoothing(
@@ -116,34 +125,40 @@ public:
   virtual TaskHandle<ayanami::actions::RecoveryResult> requestRecovery(
       const ayanami::actions::RecoveryGoal& goal);
 
-  /// @brief 控制器 in-place 规划更新 (spec): 目标仍在跑时仅更新路径 + 版本,
-  /// 无 cancel/join/new Execution。FollowPathNode 在 plan_version 变化时调用。
+  /// @brief Controller in-place plan update (spec): while the goal is still
+  /// running, only the path + version are updated, with no cancel/join/new
+  /// Execution. Called by FollowPathNode when plan_version changes.
   virtual bool requestPlanUpdate(uint64_t goal_id,
                                  const ayanami::actions::ExePathGoal& goal);
 
-  /// @brief 取消全部 controller action map (所有逻辑 id, 不止默认 id): 抢占 /
-  /// 新会话 / halt 时清理所有可能在跑的 controller 任务。派生可覆写。
+  /// @brief Cancel the entire controller action map (all logical ids, not
+  /// just the default id): cleans up every possibly running controller task
+  /// on preemption / new session / halt. Derived classes may override.
   virtual void cancelAllControllers();
   virtual void cancelAllPlanners();
   virtual void cancelAllSmoothers();
 
-  // ---- 会话/版本 (单一来源 = 共享 NavigationSessionState) ----
+  // ---- Session/version (single source of truth = shared NavigationSessionState) ----
   uint64_t currentSessionId() const;
   uint64_t currentPlanVersion() const;
   void incrementPlanVersion();
   bool sessionIsCurrent(uint64_t session_id) const;
   bool planVersionIsCurrent(uint64_t plan_version) const;
-  /// @brief 开启新会话 (session+1 且 plan_version 归零)。
+  /// @brief Start a new session (session+1 and plan_version reset to zero).
   void startNewSession();
 
-  /// @brief 注入共享会话状态 (BehaviorTreePilot 调用 setNavigationRuntime 时传入,
-  /// 使 pilot 与 server 使用同一 session/plan_version 计数); 未注入用内置实例。
+  /// @brief Inject the shared session state (passed in when
+  /// BehaviorTreePilot calls setNavigationRuntime, so pilot and server share
+  /// one session/plan_version count); falls back to the built-in instance
+  /// when not injected.
   void setSessionState(std::shared_ptr<NavigationSessionState> session);
   std::shared_ptr<NavigationSessionState> sessionState() const;
 
 protected:
-  // ★ 虚钩子: 派生覆写注入地图对象 (关键)。module_config 是该插件
-  // 自身的模块 json (已解析), 派生用它构造 PluginContext 传入族级 configure。
+  // Key virtual hooks: derived servers override these to inject map
+  // objects. module_config is the plugin's own module json (already
+  // parsed); derived servers use it to build the PluginContext passed to
+  // the family-level configure.
   virtual bool initializePlannerPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractPlanner::Ptr);
@@ -156,7 +171,7 @@ protected:
   virtual bool initializeRecoveryPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr);
-  // ★ checker 虚钩子: 无地图依赖, 默认 return true (扩展族)。
+  // Checker virtual hooks: no map dependency, default return true (extension families).
   virtual bool initializeGoalCheckerPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractGoalChecker::Ptr);
@@ -164,9 +179,12 @@ protected:
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractProgressChecker::Ptr);
 
-  // ★ 工厂: 派生覆写返回带地图的 Execution。基类 createActions 经此装配
-  // abstract Action (无地图 server 与测试覆写面)。默认返回 abstract 版。
-  // CostmapNavigationServer 不再使用 (其 createActions 直接构造 Costmap*Action)。
+  // Factories: derived servers override to return map-aware Executions.
+  // The base createActions assembles abstract Actions through them (the
+  // map-free server and test override surface). Defaults return the
+  // abstract versions.
+  // No longer used by CostmapNavigationServer (its createActions constructs
+  // Costmap*Action directly).
   virtual std::unique_ptr<SmootherExecution> newSmootherExecution(
       const std::string& name, ayanami::abstract::AbstractSmoother::Ptr);
   virtual std::unique_ptr<PlannerExecution> newPlannerExecution(
@@ -176,13 +194,14 @@ protected:
   virtual std::unique_ptr<RecoveryExecution> newRecoveryExecution(
       const std::string& name, ayanami::abstract::AbstractRecovery::Ptr);
 
-  /// @brief 对 controller execution 施加 server 级装配 (goal/progress checker
-  /// 注入 + 速度上限)。基类与 costmap 派生 createActions 共用; virtual 供
-  /// 派生/测试注入自定义 checker 装配。
+  /// @brief Apply server-level assembly to a controller execution (goal/
+  /// progress checker injection + velocity limits). Shared by the base and
+  /// costmap derived createActions; virtual so derived/test code can inject
+  /// custom checker assembly.
   virtual void configureControllerExecution(
       std::shared_ptr<ControllerExecution> exec) const;
 
-  /// @brief 对 recovery execution 施加 server 级装配 (速度上限)。同上。
+  /// @brief Apply server-level assembly to a recovery execution (velocity limits). Same as above.
   virtual void configureRecoveryExecution(
       std::shared_ptr<RecoveryExecution> exec) const;
 
@@ -205,15 +224,27 @@ protected:
   std::vector<std::string> recovery_sequence;
   std::string default_goal_checker;
   std::string default_progress_checker;
-  // 速度上限缓存 (navigation.max_vel_x/max_vel_y/max_vel_theta, 参数非负;
-  // max_vel_y=0 禁止横移)。loadPlugins 读取缓存, createActions controller
-  // execution factory 注入 ControllerExecution::setMaximumVelocity。缺省
-  // Infinity = 不限幅 (与 ControllerExecution 默认一致)。
+  // Velocity limit cache (navigation.max_vel_x/max_vel_y/max_vel_theta,
+  // parameters non-negative; max_vel_y=0 forbids lateral motion).
+  // loadPlugins reads the cache; the createActions controller execution
+  // factory injects ControllerExecution::setMaximumVelocity. The default
+  // Infinity = no clamping (consistent with ControllerExecution defaults).
   double max_vel_x{std::numeric_limits<double>::infinity()};
   double max_vel_y{std::numeric_limits<double>::infinity()};
   double max_vel_theta{std::numeric_limits<double>::infinity()};
-  // 会话/版本单一来源: 默认内置; BehaviorTreePilot setNavigationRuntime 时注入共享
-  // 实例 (spec 单一来源纪律, 移除发散 pilot-only 计数)。
+  // Patience (navigation.{controller_patience,recovery_patience}, seconds,
+  // <=0 = disabled): controller = failure_tolerance analogue (no valid
+  // command for this long -> terminal), recovery = per-run timeout.
+  double controller_patience{0.0};
+  double recovery_patience{0.0};
+
+ public:
+  /// @brief Cached patience values (config readback for tests/observability).
+  double controllerPatience() const { return controller_patience; }
+  double recoveryPatience() const { return recovery_patience; }
+  // Session/version single source of truth: built-in by default;
+  // BehaviorTreePilot injects the shared instance on setNavigationRuntime
+  // (spec single-source discipline, removing divergent pilot-only counts).
   std::shared_ptr<NavigationSessionState> session_state{
       std::make_shared<NavigationSessionState>()};
 
@@ -225,8 +256,9 @@ protected:
   mutable std::mutex controller_request_mutex;
   mutable std::atomic<uint64_t> next_rejected_id{1};
 
-  /// @brief 构造立即失败的 TaskHandle (无效插件 id 等): valid==true,
-  /// ready==true, status=ABORTED, result.failure 结构化失败码。
+  /// @brief Build an immediately-failed TaskHandle (invalid plugin id
+  /// etc.): valid==true, ready==true, status=ABORTED, result.failure
+  /// structured failure code.
   template <typename Result>
   TaskHandle<Result> rejectedHandle(ErrorCode code,
                                     const std::string& message,

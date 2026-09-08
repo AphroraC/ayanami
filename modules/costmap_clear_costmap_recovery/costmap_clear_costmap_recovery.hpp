@@ -14,27 +14,27 @@ using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 
 /**
- * @brief 清代价地图恢复模块 (costmap_clear_costmap_recovery)。
+ * @brief Clear costmap recovery module (costmap_clear_costmap_recovery).
  *
- * 纯 C++ (零 ROS): 统一恢复协议 (start/tick/finish)。首周期构造类型化
- * ClearCostmapCommand 并经 CostmapCommandPort 提交给唯一地图写者
- * (CostmapNavigationServer) 执行, 随后 SUCCESS (无运动, 零速度)。插件不自行
- * sleep、不接触任何可变 wrapper / layer。
- * 命令端口在 configure 时经 map->commandPort() 获取 (地图族写命令接口)。
- * global 的静态底图由 StaticLayer 恢复, 不直接把 master grid 墙体写成 FREE。
- * 参数统一从 PluginContext.config (config_recovery 指向的本模块 json) 读取。
+ * Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). On the first cycle it builds a typed
+ * ClearCostmapCommand and submits it via CostmapCommandPort to the single map writer
+ * (CostmapNavigationServer) for execution, followed by SUCCESS (no motion, zero velocity). The plugin does not
+ * sleep on its own and never touches any mutable wrapper / layer.
+ * The command port is obtained at configure time via map->commandPort() (the map family's write-command interface).
+ * The global static base map is restored by StaticLayer; master grid walls are not written to FREE directly.
+ * Parameters are uniformly read from PluginContext.config (the module json that config_recovery points to).
  */
 class CostmapClearCostmapRecovery final : public ayanami::costmap::CostmapRecovery {
  public:
   CostmapClearCostmapRecovery() = default;
-  // 派生层补裸 virtual ~ 让 shared_ptr 删除走虚析构。
+  // The derived layer adds a bare virtual ~ so that shared_ptr deletion goes through the virtual destructor.
   virtual ~CostmapClearCostmapRecovery() = default;
 
   void configure(const ayanami::PluginContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   void start() override;
-  RecoveryResultT tick() override;
+  ResultT<void> tick(RecoveryCycleData& cycle) override;
   void finish() override {}
 
   bool cancel() override;

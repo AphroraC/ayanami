@@ -13,12 +13,13 @@ namespace ayanami {
 namespace geometry_msgs {
 
 /**
- * @brief 自研 std_msgs/Header 等价物, 布局对齐 ROS2:
- *        {builtin_interfaces/Time stamp, string frame_id} (ROS2 无 seq)。
+ * @brief In-house std_msgs/Header equivalent, layout aligned with ROS2:
+ *        {builtin_interfaces/Time stamp, string frame_id} (ROS2 has no seq).
  *
- * 帧名唯一来源为配置里的 robot_frame (spec Global Constraints)，核心内部不做 TF。
- * stamp 为中间件无关 Timestamp (默认 latest 哨兵, 与旧行为 "无时间信息 → latest"
- * 对齐)。
+ * The frame name's single source of truth is the configured robot_frame
+ * (spec Global Constraints); the core does no TF internally.
+ * stamp is a middleware-agnostic Timestamp (default latest sentinel,
+ * aligned with the old "no time info -> latest" behavior).
  */
 struct Header {
   ayanami::Timestamp stamp;
@@ -27,16 +28,17 @@ struct Header {
   using ConstPtr = std::shared_ptr<const Header>;
 };
 
-// Eigen 内联别名：保持 Eigen 原生语义，不做 ROS 风格 Polar 化。
+// Inline Eigen aliases: keep Eigen's native semantics; no ROS-style Polar-ization.
 using Quaternion = Eigen::Quaterniond;
 using Vector3 = Eigen::Vector3d;
 using Point = Eigen::Vector3d;
 
 /**
- * @brief geometry_msgs/Pose 等价物, 布局对齐 ROS2:
- *        {Point position; Quaternion orientation}, 用 Eigen 类型存储。
+ * @brief geometry_msgs/Pose equivalent, layout aligned with ROS2:
+ *        {Point position; Quaternion orientation}, stored with Eigen types.
  *
- * 与 Eigen::Isometry3d 互相转换：fromIsometry() 构造，toIsometry() 提取。
+ * Converts to/from Eigen::Isometry3d: fromIsometry() constructs,
+ * toIsometry() extracts.
  */
 struct Pose {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
@@ -61,7 +63,7 @@ struct Pose {
 };
 
 /**
- * @brief 速度 (体坐标系，linear 前向 / angular 偏航为主)。
+ * @brief Velocity (body frame; linear forward / angular yaw dominant).
  */
 struct Twist {
   Eigen::Vector3d linear = Eigen::Vector3d::Zero();
@@ -71,9 +73,9 @@ struct Twist {
 };
 
 /**
- * @brief 带 frame 的位姿, pose 布局对齐 ROS2 geometry_msgs/Pose。
+ * @brief Framed pose; the pose layout aligns with ROS2 geometry_msgs/Pose.
  *
- * 与 Eigen::Isometry3d 互相转换：fromIsometry() 构造，toIsometry() 提取。
+ * Converts to/from Eigen::Isometry3d: fromIsometry() constructs, toIsometry() extracts.
  */
 struct PoseStamped {
   Header header;
@@ -93,7 +95,7 @@ struct PoseStamped {
 };
 
 /**
- * @brief 带 frame 的点。
+ * @brief Framed point.
  */
 struct PointStamped {
   Header header;
@@ -103,7 +105,7 @@ struct PointStamped {
 };
 
 /**
- * @brief 带 frame 的速度 (等价 geometry_msgs/TwistStamped)。
+ * @brief Framed velocity (equivalent to geometry_msgs/TwistStamped).
  */
 struct TwistStamped {
   Header header;

@@ -13,12 +13,15 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 写者级清图实现: 在 wrapper 的写锁内, 以 robot (该 map frame 下)
- * 为中心的 radius 内清空动态障碍层, 并让 StaticLayer 重算更新窗口, 最后
- * updateMapUnlocked 重算 master grid (调用方已持写锁)。
+ * @brief Writer-level map clearing implementation: inside the wrapper's
+ * write lock, clear the dynamic obstacle layer within radius centered on
+ * the robot (in that map's frame), let the StaticLayer recompute its
+ * update window, and finally updateMapUnlocked recomputes the master grid
+ * (the caller already holds the write lock).
  *
- * 调用方 (唯一写者 = CostmapNavigationServer / 等价测试写者) 负责解析 robot
- * pose 到 wrapper 的 frame 并保证单写者。
+ * The caller (the sole writer = CostmapNavigationServer / an equivalent
+ * test writer) is responsible for resolving the robot pose into the
+ * wrapper's frame and guaranteeing single-writer access.
  */
 inline bool clearCostmapArea(const costmap_2d::CostmapWrapper::Ptr& wrapper,
                              const Eigen::Isometry3d& robot_pose,

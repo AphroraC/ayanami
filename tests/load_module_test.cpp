@@ -8,7 +8,7 @@
 
 namespace {
 
-// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:...> 路径)
+// Read by main from argv (ctest passes the $<TARGET_FILE:...> path)
 std::string g_dummy_planner_so;
 std::string g_dummy_extension_so;
 
@@ -32,7 +32,7 @@ TEST(ExtensionModuleTest, loadViaCreateExtensionModule) {
   ASSERT_NE(ext, nullptr);
 }
 
-// ---- 卸载准备: 模块登记表 (去重 + 引用计数 + 观测) ----
+// ---- Unload preparation: module registry (dedup + refcount + observation) ----
 
 TEST(ModuleRegistryTest, repeatedOpenDedupesAndCountsRefs) {
   const auto before = ayanami::moduleHandleRefs(g_dummy_planner_so);

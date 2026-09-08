@@ -1,5 +1,5 @@
-// costmap_dwb_controller.cpp — 迁移自 dwb_core/src/dwb_local_planner.cpp
-// (逐函数对应, ROS 组件全替换)。
+// costmap_dwb_controller.cpp -- ported from dwb_core/src/dwb_local_planner.cpp
+// (function-by-function correspondence; ROS components fully replaced).
 #include "costmap_dwb_controller.hpp"
 
 #include <algorithm>
@@ -25,8 +25,8 @@ namespace modules {
 
 namespace {
 
-/// @brief 等价 nav2_utils::transformPose 的 TransformStore 版:
-/// 查 target ← source 变换 (latest), 返回目标帧下的 2D 位姿。
+/// @brief TransformStore version equivalent to nav2_utils::transformPose:
+/// looks up the target <- source transform (latest) and returns the 2D pose in the target frame.
 bool transformPose(ayanami::components::RobotStateController* state_controller,
                    const std::string& target_frame,
                    const nav_2d_msgs::Pose2DStamped& pose_in,
@@ -71,8 +71,8 @@ void CostmapDwBLocalPlanner::configure(
   dwb_plugin_name = context.name;
   map_context = std::move(map);
 
-  // 参数经 PluginContext 注入的自身配置读取 (插件不知道全局配置布局)。
-  // json 段 = controller.name (插件实例名)。
+  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
+  // json section = controller.name (plugin instance name).
   module_config = std::make_unique<Config>(std::move(context.config));
   const ayanami::Config& cfg = *module_config;
   const std::string section =
@@ -98,12 +98,12 @@ void CostmapDwBLocalPlanner::configure(
                                           {});
   param.critics = cfg.param<std::vector<std::string>>(section, "critics", {});
 
-  // 创建运行资源 (trajectory generator + critics)。子插件 (generator/critic)
-  // 自身参数由其 initialize 读取。
+  // Create runtime resources (trajectory generator + critics). Sub-plugin (generator/critic)
+  // parameters are read by their own initialize.
 
   spdlog::info("Setting transform_tolerance to {}", param.transform_tolerance);
 
-  // 静态注册表创建 generator (strip "dwb_plugins::" 前缀)。
+  // Create the generator from the static registry (strips the "dwb_plugins::" prefix).
   const std::string k_gen_prefix = "dwb_plugins::";
   std::string gen_key = param.trajectory_generator_name;
   if (gen_key.compare(0, k_gen_prefix.size(), k_gen_prefix) == 0) {
@@ -118,10 +118,10 @@ void CostmapDwBLocalPlanner::configure(
   traj_generator = gen_it->second();
   traj_generator->initialize(cfg, dwb_plugin_name);
 
-  // footprint 每周期从快照刷新; 初始化阶段 critic 先以空网格/空 footprint
-  // 装载, costmap/footprint 指针在每周期 prepare 前由控制器重绑。
-  // local_grid 置空: 首个 computeVelocityCommands 会返回 MapUnavailable 直至
-  // 拿到有效快照。
+  // The footprint is refreshed from the snapshot every cycle; at initialization critics are loaded
+  // with an empty grid/empty footprint, and the costmap/footprint pointers are re-bound by the controller before each cycle's prepare.
+  // local_grid starts out empty: the first computeVelocityCommands returns MapUnavailable until
+  // a valid snapshot is available.
   try {
     loadCritics();
   } catch (const std::exception& e) {
@@ -136,7 +136,7 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
     base_name = base_name + "Critic";
   }
 
-  // 与 loadCritics 同源回退: 配置未指定命名空间时默认 dwb_critics。
+  // Same fallback as loadCritics: default to dwb_critics when the config specifies no namespace.
   std::vector<std::string> namespaces = param.default_critic_namespaces;
   if (namespaces.empty()) {
     namespaces.emplace_back("dwb_critics");
@@ -144,7 +144,7 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
   if (base_name.find("::") == std::string::npos) {
     for (unsigned int j = 0; j < namespaces.size(); j++) {
       std::string full_name = namespaces[j] + "::" + base_name;
-      // 注册表查简化名 (strip 命名空间)
+      // Registry lookup uses the short name (namespace stripped)
       const std::string prefix = namespaces[j] + "::";
       const std::string key = full_name.substr(prefix.size());
       if (criticRegistry().count(key) != 0) {
@@ -156,8 +156,8 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
 }
 
 void CostmapDwBLocalPlanner::loadCritics() {
-  // loadCritics 在 initialize (configure) 调用链内创建 critic 运行资源;
-  // 模块级参数 default_critic_namespaces / critics 已在构造函数读入 param。
+  // loadCritics creates the critic runtime resources within the initialize (configure) call chain;
+  // the module-level parameters default_critic_namespaces / critics were already read into param in the constructor.
   const ayanami::Config& cfg = *module_config;
 
   std::vector<std::string> default_critic_namespaces =
@@ -178,7 +178,7 @@ void CostmapDwBLocalPlanner::loadCritics() {
 
     plugin_class = resolveCriticClassName(plugin_class);
 
-    // 注册表键 = strip 命名空间后的简化类名
+    // Registry key = the short class name after stripping the namespace
     const std::string k_critic_prefix = "dwb_critics::";
     std::string registry_key = plugin_class;
     if (registry_key.compare(0, k_critic_prefix.size(), k_critic_prefix) == 0) {
@@ -193,9 +193,9 @@ void CostmapDwBLocalPlanner::loadCritics() {
     spdlog::info("Using critic \"{}\" ({})", critic_plugin_name, plugin_class);
     critics.push_back(plugin);
     try {
-      // costmap/footprint 此时为空: 每周期 prepare 前由控制器重绑
-      // (critic::setCostmap + 更新 footprint_spec 内容), 初始化不再要求
-      // 具体地图实例。
+      // costmap/footprint are empty at this point: re-bound by the controller before each cycle's prepare
+      // (critic::setCostmap + updating the footprint_spec contents); initialization no longer requires
+      // a concrete map instance.
       plugin->initialize(cfg, critic_plugin_name, dwb_plugin_name, nullptr,
                          &footprint_spec);
     } catch (const std::exception& e) {
@@ -218,31 +218,32 @@ bool CostmapDwBLocalPlanner::setPlan(const ayanami::nav_msgs::Path& path) {
   return true;
 }
 
-ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
+ResultT<void> CostmapDwBLocalPlanner::computeVelocityCommand(
     const ayanami::geometry_msgs::PoseStamped& pose,
-    const ayanami::geometry_msgs::TwistStamped& velocity) {
-  // 入口清零 (框架纪律)。
+    const ayanami::geometry_msgs::TwistStamped& velocity,
+    ayanami::geometry_msgs::TwistStamped& cmd) {
+  // Zeroed at entry (framework discipline).
   ayanami::geometry_msgs::TwistStamped cmd_vel = {};
 
-  // 锁纪律: 持 shared 锁的 local 读视图 (整个打分周期), 零拷贝; 地图写者
-  // 等锁写入。视图必须为函数局部变量 —— 析构于本周期结束, 立即释放读锁;
-  // 存成成员会把 shared 锁持有到插件销毁, 地图写者 (落图/滚动/清图) 永久
-  // 阻塞 (实测卡死根因)。
+  // Lock discipline: a local read view under a shared lock (held for the whole scoring cycle), zero copy; the map writer
+  // waits for the lock to write. The view must be a function-local variable -- destroyed at the end of this cycle, releasing the read lock immediately;
+  // storing it as a member would hold the shared lock until plugin destruction, permanently blocking map writers (map drop/rolling/clearing)
+  // (observed root cause of a stall).
   if (!map_context) {
-    return ControllerResultT::failure(
+    return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE,
         "CostmapDwBLocalPlanner: no costmap module");
   }
   auto local_view = map_context->lockLocal();
   if (!local_view.valid()) {
-    return ControllerResultT::failure(
+    return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE,
         "CostmapDwBLocalPlanner: no local costmap available");
   }
   local_grid = local_view.grid();
   local_frame = local_view.frame();
 
-  // 每周期刷新 footprint (critics 持有 footprint_spec 地址, 内容就地更新)。
+  // Refresh the footprint every cycle (critics hold the footprint_spec address; contents are updated in place).
   footprint_spec.clear();
   const auto& fp = map_context->footprint();
   footprint_spec.reserve(fp.size());
@@ -256,8 +257,8 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
 
   std::shared_ptr<dwb_msgs::LocalPlanEvaluation> results = nullptr;
 
- // 调参可观测性 (对标 nav2 cost_cloud/trajectories): AYANAMI_DWB_DEBUG=1
- // 时构建逐轨迹逐 critic 评分, 并在成功路径上节流输出 best/worst 统计。
+ // Tuning observability (modeled on nav2 cost_cloud/trajectories): with AYANAMI_DWB_DEBUG=1
+ // build per-trajectory per-critic scores and emit throttled best/worst statistics on the success path.
   static const bool debug_scoring = [] {
     const char* env = std::getenv("AYANAMI_DWB_DEBUG");
     return env != nullptr && env[0] != '\0' && env[0] != '0';
@@ -277,7 +278,7 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
       nav_2d_msgs::Pose2DStamped pose_local;
       if (!transformPose(&ayanami::components::RobotStateController::instance(),
                          local_frame, pose2d, pose_local)) {
-        return ControllerResultT::failure(
+        return ResultT<void>::failure(
             ErrorCode::TRANSFORM_UNAVAILABLE,
             "CostmapDwBLocalPlanner: unable to transform robot pose into "
             "local costmap frame");
@@ -289,7 +290,7 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
     cmd_vel.header.frame_id = cmd_vel2d.frame_id;
     cmd_vel.twist = dwb_core::conversions::twist2Dto3D(cmd_vel2d.velocity);
     if (results) {
- // 节流 1s: best/worst 评分 + 非法轨迹占比 (调参时定位"谁否掉了轨迹")
+ // Throttled to 1 s: best/worst scores + illegal trajectory ratio (to locate "who rejected the trajectory" while tuning)
       static thread_local auto last_log = std::chrono::steady_clock::now() -
                                           std::chrono::seconds(1);
       const auto now = std::chrono::steady_clock::now();
@@ -306,14 +307,15 @@ ControllerResultT CostmapDwBLocalPlanner::computeVelocityCommand(
             cmd_vel.twist.angular.z());
       }
     }
-    return ControllerResultT::success(ControllerCommand{cmd_vel});
+    cmd = cmd_vel;
+    return ResultT<void>::success();
   } catch (const dwb_core::PlannerTFException& e) {
-    return ControllerResultT::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
+    return ResultT<void>::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
                                       e.what());
   } catch (const dwb_core::PlannerException& e) {
-    return ControllerResultT::failure(ErrorCode::NO_VALID_COMMAND, e.what());
+    return ResultT<void>::failure(ErrorCode::NO_VALID_COMMAND, e.what());
   } catch (const std::exception& e) {
-    return ControllerResultT::failure(ErrorCode::INTERNAL_ERROR, e.what());
+    return ResultT<void>::failure(ErrorCode::INTERNAL_ERROR, e.what());
   }
 }
 

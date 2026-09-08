@@ -1,5 +1,5 @@
-// velocity_iterator.hpp — 迁移自 dwb_plugins/velocity_iterator.hpp
-// (LifecycleNode 换 ayanami::Config)。
+// velocity_iterator.hpp -- ported from dwb_plugins/velocity_iterator.hpp
+// (LifecycleNode becomes ayanami::Config).
 #pragma once
 
 #include <memory>

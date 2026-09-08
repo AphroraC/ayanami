@@ -1,5 +1,5 @@
-// exceptions.cpp — IllegalTrajectoryTracker 实现 (迁移自
-// dwb_core/src/illegal_trajectory_tracker.cpp)。
+// exceptions.cpp -- IllegalTrajectoryTracker implementation (ported from
+// dwb_core/src/illegal_trajectory_tracker.cpp).
 #include "exceptions.hpp"
 
 #include <map>

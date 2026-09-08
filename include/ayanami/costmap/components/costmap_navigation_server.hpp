@@ -31,28 +31,39 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief costmap 特化的导航服务 ( 对标 MBF navfn/planner 组合)。
+ * @brief costmap-specialized navigation server (mirroring the MBF
+ * navfn/planner combination).
  *
- * 在 NavigationServerBase (无地图) 之上:
- * - 覆写虚 initialize*Plugin: dynamic_pointer_cast 到 costmap 族接口
- *   (CostmapPlanner/Smoother/Controller/Recovery); 失败 (非 costmap 族插件)
- *   spdlog::error + return false (不入表)。算法插件只接收名称初始化, 不注入
- *   CostmapMapContext —— 地图访问全部经 execution 加锁直读。
- * - 覆写 createActions(): 生产路径直接构造 Costmap*Action (带 CostmapMapContext
- *   + execution 配置: checker/速度上限/机器人状态源), 取代基类的
- *   new*Execution 虚工厂间接层。
- * - configureCoreMaps(config_path) 读 config_costmap 构 global/local
- *   LayeredCostmap: global = StaticLayer+InflationLayer;
- *   local = rolling SimpleObstacleLayer+InflationLayer; 每次变更 (障碍落图 /
- *   命令端口 clear) 都由本 server 作为唯一写者 updateMap → 发布不可变 epoch。
- * - 障碍观测不走全局回调槽: 宿主 (CostmapNavigation) 把 setPointcloud/
- *   setLaserScan 直递到公共 handleObstacle* 方法落图 (输入/输出分离纪律)。
- * - RobotStateController::instance() 帧名 + velocity_timeout 在 configureCoreMaps
- *   一次性配置; controller execution 经其读最新 TF 位姿 + 最新速度 (过期零速)。
+ * On top of NavigationServerBase (map-free):
+ * - Overrides the virtual initialize*Plugin hooks:
+ *   dynamic_pointer_cast to the costmap family interfaces
+ *   (CostmapPlanner/Smoother/Controller/Recovery); on failure (not a
+ *   costmap-family plugin) spdlog::error + return false (not registered).
+ *   Algorithm plugins receive only name-based initialization; no
+ *   CostmapMapContext is injected -- all map access goes through lock-based
+ *   direct reads in the executions.
+ * - Overrides createActions(): the production path constructs Costmap*Action
+ *   directly (with CostmapMapContext + execution configuration: checkers/
+ *   velocity limits/robot state source), replacing the base class's
+ *   new*Execution virtual factory indirection layer.
+ * - configureCoreMaps(config_path) reads config_costmap and builds the
+ *   global/local LayeredCostmap pair: global = StaticLayer+InflationLayer;
+ *   local = rolling SimpleObstacleLayer+InflationLayer; every change
+ *   (obstacle stamping / command-port clear) is applied by this server as
+ *   the sole writer via updateMap -> publishing an immutable epoch.
+ * - Obstacle observations do not go through global callback slots: the host
+ *   (CostmapNavigation) hands setPointcloud/setLaserScan straight to the
+ *   common handleObstacle* methods to stamp the map (input/output
+ *   separation discipline).
+ * - RobotStateController::instance() frame names + velocity_timeout are
+ *   configured once in configureCoreMaps; the controller execution reads
+ *   the latest TF pose + latest velocity through it (zero velocity when
+ *   stale).
  *
- * 动态障碍更新前 clearArea 上一帧观察窗口 (含旧
- * 膨胀带), 让 InflationLayer 在 recompute window 内重算, 障碍移走后无 stale
- * 膨胀带残留。
+ * Before a dynamic obstacle update, clearArea the previous observation
+ * window (including the old inflation band) so the InflationLayer
+ * recomputes within its recompute window and no stale inflation band
+ * remains after an obstacle moves away.
  */
 class CostmapNavigationServer
     : public ayanami::components::NavigationServerBase {
@@ -62,21 +73,23 @@ class CostmapNavigationServer
   explicit CostmapNavigationServer();
   ~CostmapNavigationServer() override;
 
-  /// @brief 读 config_navigation 构 global/local costmap (StaticLayer +
-  /// InflationLayer + SimpleObstacleLayer), 并注入 map_context。
-  /// @param factory 地图族工厂 (context 唯一创建点); 为空时回退
-  /// CostmapMapFamilyFactory。经工厂创建的 context 被记录在
-  /// mapFamilyFactory 供测试/装配审计。
+  /// @brief Read config_navigation and build the global/local costmaps
+  /// (StaticLayer + InflationLayer + SimpleObstacleLayer), injecting the
+  /// map_context.
+  /// @param factory Map-family factory (the sole context creation point);
+  ///        falls back to CostmapMapFamilyFactory when empty. Contexts
+  ///        created via the factory are recorded in mapFamilyFactory for
+  ///        test/assembly auditing.
   void configureCoreMaps(
       const std::string& config_path,
       ayanami::map::MapFamilyFactory::Ptr factory = nullptr);
 
-  /// @brief configureCoreMaps 实际使用的地图族工厂 (抽象面, 核心只认此类型)。
+  /// @brief The map-family factory actually used by configureCoreMaps (the abstract surface; the core only knows this type).
   ayanami::map::MapFamilyFactory::Ptr mapFamilyFactory() const {
     return map_family_factory;
   }
 
-  // ---- 虚 initialize*Plugin 覆写: costmap 族注入 ----
+  // ---- Virtual initialize*Plugin overrides: costmap family injection ----
   bool initializePlannerPlugin(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractPlanner::Ptr) override;
@@ -90,23 +103,26 @@ class CostmapNavigationServer
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr) override;
 
-  /// @brief 路径有效性 (职责表"路径是否过期"的 BT 可读面): 委托地图族
-  /// AbstractMapContext::isPathValid (global costmap lethal/unknown/出界)。
+  /// @brief Path validity (the BT-readable surface of the responsibility
+  /// table's "is the path stale"): delegates to the map family's
+  /// AbstractMapContext::isPathValid (global costmap lethal/unknown/out of
+  /// bounds).
   bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
     return costmap_context && costmap_context->isPathValid(path);
   }
 
-  // ---- createActions 覆写: 生产路径 = Costmap*Action (costmap_action) ----
+  // ---- createActions override: production path = Costmap*Action (costmap_action) ----
   void createActions() override;
 
-  // ---- 障碍观测信号接入口 ----
-  /// @brief 把点云 (sensor frame) 经 TransformStore 转到 local costmap frame,
-  /// 落 SimpleObstacleLayer 并触发 updateMap (含 旧带清理)。
+  // ---- Obstacle observation signal entry points ----
+  /// @brief Transform the point cloud (sensor frame) into the local costmap
+  /// frame via TransformStore, stamp it into the SimpleObstacleLayer and
+  /// trigger updateMap (including old-band clearing).
   void handleObstaclePointCloud(const ayanami::sensor_msgs::PointCloud2& cloud);
-  /// @brief 把激光 ranges 转成点后走同一落图管线。
+  /// @brief Convert laser ranges to points and run the same map-stamping pipeline.
   void handleObstacleLaserScan(const ayanami::sensor_msgs::LaserScan& scan);
 
-  // ---- accessors (测试 / 宿主) ----
+  // ---- Accessors (tests / host) ----
    CostmapMapContext::Ptr costmapContext() const { return costmap_context; }
    CostmapMapContext::ConstPtr costmapContextConst() const {
      return costmap_context ? costmap_context->getSharedConstPtr() : nullptr;
@@ -118,23 +134,29 @@ class CostmapNavigationServer
     return costmap_context ? costmap_context->localCostmap() : nullptr;
   }
 
-  /// @brief 地图变更命令端口 (清除等写命令; 恢复插件经此提交)。
+  /// @brief Map change command port (write commands such as clear; recovery plugins submit through it).
   CostmapCommandPort::Ptr commandPort() const { return command_port; }
 
-  /// @brief 执行一条清代价地图命令 (唯一写者路径: 变更层 + updateMap →
-  /// 发布新 epoch)。供命令端口实现与测试复用。
+  /// @brief Execute one clear-costmap command (sole-writer path: mutate the
+  /// layer + updateMap -> publish a new epoch). Reused by the command port
+  /// implementation and tests.
   bool executeClearCommand(const ClearCostmapCommand& command);
 
-  /// @brief 周期性滚动更新 (宿主 spinOnce 调用, 与传感器流解耦): 对启用了
-  /// rolling_window 的地图, 以最新机器人位姿居中窗口并重算 (无脏窗时
-  /// updateMap 在 updateOrigin 后即早退, 开销可忽略)。scan 断流时窗口仍
-  /// 跟随机器人 —— 否则 DWB 前进轨迹逐渐"出界", 机器人卡死在冻结窗口
-  /// 边缘且 current 标记不可检测。位姿解析在拿地图锁之前完成。
+  /// @brief Periodic rolling update (called by the host's spinOnce,
+  /// decoupled from the sensor stream): for maps with rolling_window
+  /// enabled, center the window on the latest robot pose and recompute
+  /// (when no window is dirty, updateMap exits early right after
+  /// updateOrigin, so the cost is negligible). When the scan stream stops,
+  /// the window still follows the robot -- otherwise DWB forward trajectories
+  /// gradually "leave the map" and the robot gets stuck at the edge of a
+  /// frozen window with an undetectable current flag. Pose resolution
+  /// happens before taking the map lock.
   void updateRollingWindows();
 
  private:
-  /// @brief 把 frame_id 下 (stamp 时刻) 的点经 TransformStore 落图
-  /// (handleObstacle* 共用)。stamp 用传感器消息 header.stamp 查询 TF。
+  /// @brief Stamp points in frame_id (at stamp time) into the map via
+  /// TransformStore (shared by handleObstacle*). The stamp queries TF using
+  /// the sensor message's header.stamp.
   void markObstaclesInFrame(const std::string& frame_id,
                             const ayanami::Timestamp& stamp,
                             const std::vector<Eigen::Vector3d>& points,
@@ -144,16 +166,20 @@ class CostmapNavigationServer
   CostmapCommandPort::Ptr command_port;
   ayanami::map::MapFamilyFactory::Ptr map_family_factory;
 
-  // TF 链路缺失告警节流 (每次传感器回调都可能失败; 只按固定间隔提示, 避免
-  // 5.5Hz 激光每帧刷屏)。同一链路 (local/global) 缺 TF 持续超过间隔才再告警。
+  // Throttling for missing TF chain warnings (every sensor callback can
+  // fail; warn at fixed intervals only, avoiding flooding at 5.5Hz laser
+  // per frame). The same chain (local/global) must lack TF for longer than
+  // the interval before warning again.
   std::atomic<std::chrono::steady_clock::time_point> local_tf_warn_at{};
   std::atomic<std::chrono::steady_clock::time_point> global_tf_warn_at{};
   std::atomic<std::chrono::steady_clock::time_point> local_robot_diag_at{};
   int tf_robot_diag_count{0};
 
-  // 机器人位姿缓存 (local rolling 窗口滚动用): 位姿查询短暂失败时用最后
-  // 一次成功值滚动窗口, 绝不回退到 (0,0,0) —— 否则滚动代价地图窗口会被锚
-  // 回世界原点, 机器人走出窗口后 dwb 无路可走 (原地卡顿)。
+  // Robot pose cache (for rolling the local rolling window): on a transient
+  // pose query failure, roll the window with the last successful value and
+  // never fall back to (0,0,0) -- otherwise the rolling costmap window gets
+  // anchored back to the world origin and, once the robot walks out of the
+  // window, dwb has no path (stuttering in place).
   bool has_last_local_robot{false};
   double last_local_robot_x{0.0}, last_local_robot_y{0.0};
   double last_local_robot_yaw{0.0};
@@ -172,12 +198,12 @@ class CostmapNavigationServer
   std::vector<Eigen::Vector2d> prev_obstacles_local;
   bool has_prev_obstacles_global{false};
   bool has_prev_obstacles{false};
- // 滚动窗口解耦更新 (spinOnce): 周期与上次触发时刻
-  std::chrono::duration<double> local_roll_period{0.1};   // 10Hz 默认
-  std::chrono::duration<double> global_roll_period{0.2};  // 5Hz 默认
+ // Decoupled rolling-window updates (spinOnce): period and last trigger time
+  std::chrono::duration<double> local_roll_period{0.1};   // 10Hz default
+  std::chrono::duration<double> global_roll_period{0.2};  // 5Hz default
   std::chrono::steady_clock::time_point last_local_roll{};
   std::chrono::steady_clock::time_point last_global_roll{};
- // 落图 scan-stamp 查询统计 (ok/回退 latest) 与节流诊断时刻
+ // Map-stamp scan-time query stats (ok/fallback to latest) and throttled diagnostic timestamps
   std::atomic<std::uint64_t> stamp_query_ok{0};
   std::atomic<std::uint64_t> stamp_query_fallback{0};
   std::chrono::steady_clock::time_point last_stamp_diag_at{};

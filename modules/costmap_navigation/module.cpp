@@ -1,6 +1,6 @@
-// modules/costmap_navigation 模块工厂 。
-// 公共 dlopen 入口: create_extension_module → ayanami::ExtensionModule*
-// (宿主插件 CostmapNavigation 间接派生 AbstractNavigation/ExtensionModule)。
+// modules/costmap_navigation module factory.
+// Public dlopen entry: create_extension_module -> ayanami::ExtensionModule*
+// (the host plugin CostmapNavigation indirectly derives AbstractNavigation/ExtensionModule).
 
 #include "costmap_navigation.hpp"
 #include <ayanami/utility/extension_module.hpp>

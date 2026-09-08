@@ -119,3 +119,14 @@ AyanamiROS 构造
  │         └─ bt_pilot.loadFromFile("", tree_id) # 建常驻树（扩展注册树）
  └─ subscribeTopics()
 ```
+
+## Patience 与频率（navigation 段）
+
+- `planner_frequency`：-1 = 每 goal 只规划一次（goal 更新经
+  goal_revision reset_token 触发重规划）。
+- `smoother_frequency`：10.0（生产默认；每条新路径落地即重新平滑）。
+- `controller_frequency`：20.0。
+- `controller_patience`：对标 nav2 failure_tolerance（秒，0=关）。无有效
+  速度命令持续超过该时长才终态上报；重试决策仍归 BT。
+- `recovery_patience`：单次恢复的框架级超时（秒，0=关），防止自限缺失的
+  恢复插件无限 RUNNING。

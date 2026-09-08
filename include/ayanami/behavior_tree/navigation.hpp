@@ -4,6 +4,7 @@
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
 #include "ayanami/behavior_tree/condition_nodes.hpp"
 #include "ayanami/behavior_tree/pipeline_sequence.hpp"
+#include "ayanami/behavior_tree/navigation_node_state.hpp"
 #include "ayanami/behavior_tree/rate_controller.hpp"
 #include "ayanami/behavior_tree/recovery_node.hpp"
 
@@ -17,17 +18,23 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief RoundRobin (保留节点): 按记忆游标轮询 children。
+ * @brief RoundRobin (retained node): polls children with a memory cursor.
  *
- * - 当前 child RUNNING -> 整体 RUNNING, 游标停住 (下次 tick 仍 tick 它);
- * - 当前 child SUCCESS -> 游标移到下一个 (mod 数量) 并整体 SUCCESS;
- * - 当前 child FAILURE -> 移到下一个, 全部试过仍 FAILURE -> 整体 FAILURE。
+ * - Current child RUNNING -> overall RUNNING, cursor stays (next tick ticks
+ *   it again);
+ * - Current child SUCCESS -> cursor moves to the next (mod count) and the
+ *   node returns SUCCESS;
+ * - Current child FAILURE -> move to the next; if all were tried and still
+ *   FAILURE -> overall FAILURE.
  *
- * reset_token (常驻树复位协议): 令牌变化 (新导航轮 goal_revision 推进) 时
- * 复位游标并 halt 在飞 child —— 跨 goal 不继承上一轮的恢复轮询位置
- * (nav2 靠整树重建天然规避; 常驻树必须显式复位)。
+ * reset_token (resident-tree reset protocol): when the token changes (a new
+ * navigation round's goal_revision advance), reset the cursor and halt
+ * in-flight children -- recovery polling positions do not carry across
+ * goals (nav2 avoids this naturally via full tree rebuilds; a resident tree
+ * must reset explicitly).
  */
-class RoundRobin : public BT::ControlNode {
+class RoundRobin : public BT::ControlNode,
+                    public NavigationTreeNodeState {
  public:
   RoundRobin(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -44,7 +51,7 @@ class RoundRobin : public BT::ControlNode {
     (void)getInput("reset_token", token);
     if (token != reset_token) {
       reset_token = token;
-      haltChildren();  // 取消在飞 recovery (IDLE child 为 no-op)
+      haltChildren();  // cancel in-flight recoveries (no-op for IDLE children)
       current_child_idx = 0;
     }
     if (childrenCount() == 0) {
@@ -61,7 +68,7 @@ class RoundRobin : public BT::ControlNode {
         resetChildren();
         return BT::NodeStatus::SUCCESS;
       }
-      // FAILURE -> 下一 child
+      // FAILURE -> next child
       ++current_child_idx;
     }
     current_child_idx = 0;
@@ -73,8 +80,8 @@ class RoundRobin : public BT::ControlNode {
     current_child_idx = 0;
   }
 
-  /// @brief 树生命终端后的逻辑重置 (v4 halt 只传播到 RUNNING child)。
-  void resetState() { current_child_idx = 0; }
+  /// @brief Logical reset after a tree-life terminal state (v4 halt only propagates to RUNNING children).
+  void resetState() override { current_child_idx = 0; }
 
  private:
   size_t current_child_idx;
@@ -85,9 +92,12 @@ class RoundRobin : public BT::ControlNode {
 /// SUCCESS to its parent so the surrounding RecoveryNode retries navigation;
 /// a failed recovery advances to the next child.
 ///
-/// reset_token (常驻树复位协议): 令牌变化时复位游标并 halt 在飞 child,
-/// 新导航轮从第一个 recovery 重新开始 (不继承上轮游标)。
-class RecoverySequence : public BT::ControlNode {
+/// reset_token (resident-tree reset protocol): when the token changes,
+/// reset the cursor and halt in-flight children; a new navigation round
+/// restarts from the first recovery (the previous cursor is not carried
+/// over).
+class RecoverySequence : public BT::ControlNode,
+                       public NavigationTreeNodeState {
  public:
   RecoverySequence(const std::string& name, const BT::NodeConfig& config)
       : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -129,57 +139,66 @@ class RecoverySequence : public BT::ControlNode {
     current_child_idx = 0;
   }
 
-  /// @brief 树生命终端后的逻辑重置 (v4 halt 只传播到 RUNNING child)。
-  void resetState() { current_child_idx = 0; }
+  /// @brief Logical reset after a tree-life terminal state (v4 halt only propagates to RUNNING children).
+  void resetState() override { current_child_idx = 0; }
 
  private:
   std::size_t current_child_idx;
   uint64_t reset_token{0};
 };
 
-/// @brief 树生命终端后的全量逻辑重置 (pilot 在 tick 返回非 RUNNING 时调用)。
+/// @brief Full logical reset after a tree-life terminal state (the pilot
+/// calls it when a tick returns non-RUNNING).
 ///
-/// BT.CPP v4 的 halt 语义变更: ControlNode::haltChildren 只对 status==RUNNING
-/// 的 child 调 haltNode, 终态 (SUCCESS/FAILURE) 缓存的子树不会被重置 —— 常驻
-/// 树模型下 planner/smoother 的 RateController 缓存、RecoveryNode 重试计数、
-/// RecoverySequence/RoundRobin 游标会跨树生命残留, 造成 "planner 永不重规划 +
-/// 恢复风暴" (rviz 实测 rosbag 取证)。nav2 (BT.CPP v3) 的强 halt 语义等价物
-/// 即本函数: 逐节点重置内部状态, 不触碰 BT 状态机 (executeTick 已 auto-reset)。
+/// BT.CPP v4 changed the halt semantics: ControlNode::haltChildren only
+/// calls haltNode on children with status==RUNNING; subtrees cached in a
+/// terminal state (SUCCESS/FAILURE) are not reset -- in the resident-tree
+/// model the planner/smoother RateController caches, RecoveryNode retry
+/// counters, and RecoverySequence/RoundRobin cursors would leak across tree
+/// lives, causing "planner never replans + recovery storm" (captured with a
+/// rosbag in rviz field tests). This function is the equivalent of nav2's
+/// (BT.CPP v3) strong halt semantics: reset each node's internal state
+/// without touching the BT state machine (executeTick already auto-resets).
 inline void resetNavigationTreeState(BT::Tree& tree) {
   tree.applyVisitor([](BT::TreeNode* node) {
-    if (auto* n = dynamic_cast<RateController*>(node)) {
+    if (auto* n = dynamic_cast<NavigationTreeNodeState*>(node)) {
       n->resetState();
-    } else if (auto* n = dynamic_cast<PipelineSequence*>(node)) {
-      n->resetState();
-    } else if (auto* n = dynamic_cast<RecoveryNode*>(node)) {
-      n->resetState();
-    } else if (auto* n = dynamic_cast<RecoverySequence*>(node)) {
-      n->resetState();
-    } else if (auto* n = dynamic_cast<RoundRobin*>(node)) {
-      n->resetState();
+    }
+    // v3-style strong halt for the tree-life boundary: BT.CPP v4 returns a
+    // terminal node's cached SUCCESS/FAILURE without re-ticking it, so every
+    // non-IDLE node must go back to IDLE or the next tree life never
+    // re-executes it (root cause of "planner never replans"). At a tree-life
+    // terminal state no child is RUNNING, so no in-flight onHalted work is
+    // lost by resetting the status directly.
+    if (node->status() != BT::NodeStatus::IDLE) {
+      node->haltNode();
     }
   });
 }
 
-/// @brief 注册导航 BT 节点类 (保留节点 + 控制/条件节点)。
-/// action 节点经 blackboard 注入 NavigationRuntime::Ptr (action_nodes.hpp)。
+/// @brief Register the navigation BT node classes (retained nodes +
+/// control/condition nodes).
+/// Action nodes receive NavigationRuntime::Ptr via the blackboard
+/// (action_nodes.hpp).
 ///
-/// 注意: 默认导航树的 XML 与整棵树的注册已下沉到 navigation_behavior_tree
-/// 扩展模块 (BehaviorTreeExtension); 本函数只注册节点类型, 供扩展模块
-/// registerNodes 与测试复用。核心 (BehaviorTreePilot) 不含默认导航 XML 或策略。
+/// Note: the default navigation tree XML and whole-tree registration have
+/// been pushed down into the navigation_behavior_tree extension module
+/// (BehaviorTreeExtension); this function only registers node types, reused
+/// by the extension module's registerNodes and by tests. The core
+/// (BehaviorTreePilot) contains no default navigation XML or policy.
 inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory) {
-  // 4 个 action 节点 (TaskHandle 直连)
+  // 4 action nodes (TaskHandle direct)
   factory.registerNodeType<ComputePathToPoseNode>("ComputePathToPose");
   factory.registerNodeType<SmoothPathNode>("SmoothPath");
   factory.registerNodeType<FollowPathNode>("FollowPath");
   factory.registerNodeType<RecoveryActionNode>("Recovery");
-  // 5 个条件节点
+  // 5 condition nodes
   factory.registerNodeType<IsPathValid>("IsPathValid");
   factory.registerNodeType<IsGoalReached>("IsGoalReached");
   factory.registerNodeType<IsFarFromGoal>("IsFarFromGoal");
   factory.registerNodeType<IsRobotStuck>("IsRobotStuck");
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
-  // 控制节点 (+ RoundRobin)
+  // Control nodes (+ RoundRobin)
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<RecoveryNode>("RecoveryNode");

@@ -12,18 +12,20 @@ namespace ayanami {
 namespace costmap {
 
 using ayanami::ErrorCode;
-using ayanami::RecoveryResultT;
-
+using ayanami::ResultT;
 /**
- * @brief 恢复行为插件基类 (costmap族, MBF 式分层)。
+ * @brief Recovery behavior plugin base class (costmap family, MBF-style
+ * layering).
  *
- * 在 abstract::AbstractRecovery (start/tick/cancel/finish 统一协议) 之上
- * 只新增:
- * - configure(context, map): 注入插件逻辑名 + 自身配置 + 地图模块 const
- *   指针 (碰撞类恢复读图用)。
- * 需要修改地图的恢复 (如 clear) 在 configure 内经 map->commandPort()
- * 取 CostmapCommandPort 提交命令, 由唯一写者 (CostmapNavigationServer)
- * 执行; 恢复插件绝不持锁直写地图。
+ * On top of abstract::AbstractRecovery (the start/tick/cancel/finish
+ * unified protocol), only the following is added:
+ * - configure(context, map): injects the plugin logical name + its own
+ *   config + a const pointer to the map module (for collision-type
+ *   recoveries to read the map).
+ * Recoveries that need to modify the map (e.g. clear) fetch the
+ * CostmapCommandPort via map->commandPort() inside configure and submit
+ * commands, executed by the sole writer (CostmapNavigationServer); recovery
+ * plugins never write the map directly under a lock.
  */
 class CostmapRecovery : public ayanami::abstract::AbstractRecovery {
  public:

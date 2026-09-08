@@ -1,7 +1,7 @@
-// SimpleGoalChecker — 简单目标检查模块。
+// SimpleGoalChecker -- simple goal checker module.
 //
-// 纯 C++ (零 ROS): 位置 xy 差、相对转角差按 PoseTolerance 判; 静止速度阈值
-// 按 TwistTolerance 判。容差经 simple_goal_checker.json 配置。
+// Pure C++ (zero ROS): position xy difference and relative rotation angle are judged by PoseTolerance; at-rest velocity thresholds
+// are judged by TwistTolerance. Tolerances are configured via simple_goal_checker.json.
 
 #include "simple_goal_checker.hpp"
 
@@ -11,8 +11,8 @@ namespace ayanami {
 namespace modules {
 
 void SimpleGoalChecker::configure(const ayanami::PluginContext& context) {
-  // 参数单一来源: 本模块 json (config_goal_checker 指向文件) 的
-  // simple_goal_checker 段。
+  // Single source of parameters: the
+  // simple_goal_checker section of this module's json (the file config_goal_checker points to).
   param.position_tolerance = context.config.param<double>(
       "simple_goal_checker", "position_tolerance", param.position_tolerance);
   param.angle_tolerance = context.config.param<double>(
@@ -38,7 +38,7 @@ bool SimpleGoalChecker::isGoalReached(
     return false;
   }
 
-  // 相对转角 (Eigen::AngleAxisd 取旋转轴转角, 对 2D 偏航足够稳健)。
+  // Relative rotation angle (Eigen::AngleAxisd extracts the rotation axis angle; robust enough for 2D yaw).
   const Eigen::AngleAxisd relative(
       (goal_pose.pose.orientation.inverse() * current_pose.pose.orientation)
           .normalized());

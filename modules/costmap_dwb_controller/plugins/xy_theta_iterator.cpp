@@ -1,4 +1,4 @@
-// xy_theta_iterator.cpp — 迁移自 dwb_plugins/src/xy_theta_iterator.cpp。
+// xy_theta_iterator.cpp -- ported from dwb_plugins/src/xy_theta_iterator.cpp.
 #include "xy_theta_iterator.hpp"
 
 #include <cmath>

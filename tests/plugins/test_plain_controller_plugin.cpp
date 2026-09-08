@@ -1,4 +1,4 @@
-// 测试插件: 非 costmap 族 controller (PlainController), 验证 costmap 宿主拒绝路径。
+// Test plugin: non-costmap-family controller (PlainController), verifies the costmap host reject path.
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -10,17 +10,14 @@ namespace {
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
-using ayanami::ControllerCommand;
-using ayanami::ControllerResultT;
-
+using ayanami::ResultT;
 class PlainController : public ayanami::abstract::AbstractController {
  public:
-  ControllerResultT computeVelocityCommand(const PoseStamped& /*pose*/,
-                                           const TwistStamped& /*velocity*/) override {
-    ControllerCommand cmd;
-    cmd.velocity = TwistStamped{};
-    cmd.velocity.twist.linear.x() = 0.1;
-    return ControllerResultT::success(std::move(cmd));
+  ResultT<void> computeVelocityCommand(const PoseStamped& /*pose*/,
+                                           const TwistStamped& /*velocity*/, ayanami::geometry_msgs::TwistStamped& cmd) override {
+    cmd = TwistStamped{};
+    cmd.twist.linear.x() = 0.1;
+    return ResultT<void>::success();
   }
   bool setPlan(const Path& /*plan*/) override { return true; }
   bool cancel() override { return true; }

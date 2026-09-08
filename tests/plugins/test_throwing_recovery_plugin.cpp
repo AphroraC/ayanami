@@ -1,7 +1,7 @@
-// 测试插件: start 抛异常的 recovery (异常路径闭合回归用)。
+// Test plugin: a recovery whose start throws (for exception-path closure regression).
 //
-// 复现高优缺陷 #1 的原始场景: 插件 start 抛异常曾使 RecoveryExecution
-// 停在 STARTED 中间态 → action 驱动任务死轮询 → recovery_exclusive 死锁。
+// Reproduces the original scenario of high-priority defect #1: a plugin start exception used to leave RecoveryExecution
+// stuck in the STARTED intermediate state -> the action-driving task polled forever -> recovery_exclusive deadlock.
 
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/types.hpp>
@@ -15,9 +15,8 @@ class ThrowingStartRecovery : public ayanami::abstract::AbstractRecovery {
  public:
   void start() override { throw std::runtime_error("recovery start exploded"); }
 
-  ayanami::RecoveryResultT tick() override {
-    return ayanami::RecoveryResultT::success(
-        ayanami::RecoveryCycleData{});
+  ayanami::ResultT<void> tick(ayanami::RecoveryCycleData& /*cycle*/) override {
+    return ayanami::ResultT<void>::success();
   }
 };
 

@@ -11,7 +11,7 @@
 
 namespace {
 
-// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:dummy_planner_module> 等)
+// Read by main from argv (ctest passes $<TARGET_FILE:dummy_planner_module> etc.)
 std::string g_dummy_planner_so;
 std::string g_dummy_extension_so;
 
@@ -31,7 +31,7 @@ TEST(PluginManagerTest, loadPluginInvokesInitFnAndStores) {
   bool init_called = false;
   std::string init_name;
   std::shared_ptr<ayanami::abstract::AbstractPlanner> init_plugin;
-  // 公共工厂 create_extension_module → ExtensionModule::Ptr → 类型化 cast。
+  // Common factory create_extension_module -> ExtensionModule::Ptr -> typed cast.
   bool ok = mgr.loadPlugin(
       ayanami::components::PluginSpec{"dummy", g_dummy_planner_so},
       [&](const std::string& name,
@@ -71,8 +71,8 @@ TEST(PluginManagerTest, initFnRejectDoesNotStore) {
 }
 
 TEST(PluginManagerTest, nonDerivedModuleFailsTypeCheck) {
-  // 装载一个不是 AbstractPlanner 的扩展 (dummy_extension_module.so, 仅派生
-  // ExtensionModule) → 类型化 cast 失败 → 不入表。
+  // Load an extension that is not an AbstractPlanner (dummy_extension_module.so, only derives
+  // ExtensionModule) -> the typed cast fails -> not registered.
   auto& g = g_dummy_planner_so;
   ayanami::components::PluginManager<ayanami::abstract::AbstractPlanner> mgr;
   bool ok = mgr.loadPlugin(

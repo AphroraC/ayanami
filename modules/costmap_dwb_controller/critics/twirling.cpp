@@ -1,4 +1,4 @@
-// twirling.cpp — 迁移自 dwb_critics/src/twirling.cpp。
+// twirling.cpp -- ported from dwb_critics/src/twirling.cpp.
 #include "twirling.hpp"
 
 namespace dwb_critics {

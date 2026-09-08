@@ -9,8 +9,8 @@ NavigationCore
     ├── AbstractMapContext        (map/abstract_map_context.hpp)
     │     ├── map identity        (mapFamily())
     │     ├── coordinate frames   (globalFrame/localFrame/robotFrame)
-    │     ├── robot state query   (getRobotState)
-    │     ├── snapshot/version    (isCurrent/version)
+    │     ├── robot state query   (统一走 RobotStateController)
+    │     ├── freshness           (isCurrent；不做 map version)
     │     ├── collision/query     (isPathValid + capabilities)
     │     └── write command port  (commandPort)
     ├── AbstractPlanner / AbstractSmoother / AbstractController / AbstractRecovery
@@ -23,6 +23,20 @@ NavigationCore
                       ├── obstacle update（handleObstacle* 落图管线）
                       └── costmap clear command（CostmapCommandPort）
 ```
+
+## 读图契约（全地图族约定）与零拷贝红线
+
+- **planner 读 global+local 的叠加**（costmap 族 = `lockPlanning()` 返回
+  `CostmapPlanningView`：同时持有两把 shared 锁，逐 cell 取
+  max(global, local)，local 仅在窗口内参与，NO_INFORMATION 保守占优；
+  smac A* 经 cost functor 读叠加代价）。
+- **smoother 只读 local**（碰撞检查分支 `lockLocal()`）。
+- **controller 读 local**（dwb 每 cycle `lockLocal()`；pid 不读图）。
+- 快照即锁、**禁止 COW / 任何深拷贝快照**；planner/smoother 保证单次
+  调用 <10ms，写者等锁写入。
+- 机器人状态查询统一走 `RobotStateController`（地图上下文不再暴露
+  pose/velocity 查询；视图内 robot_pose 是构建期的解析缓存）。
+- 不做 map version：新鲜度只有 `isCurrent()`。
 
 - 族级插件接口在抽象接口之上只增加注入点：
   `configure(const PluginContext&, CostmapMapContext::ConstPtr)`

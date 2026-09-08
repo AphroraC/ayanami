@@ -1,4 +1,4 @@
-// 测试插件: 成功 planner (SuccessPlanner), 经公共工厂 create_extension_module 导出。
+// Test plugin: success planner (SuccessPlanner), exported via the common create_extension_module factory.
 
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -9,18 +9,18 @@ namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
-using ayanami::PlannerResultT;
-
+using ayanami::ResultT;
 class SuccessPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  PlannerResultT makePlan(const PoseStamped& start,
+  ResultT<void> makePlan(const PoseStamped& start,
                           const PoseStamped& /*goal*/,
-                          double /*tolerance*/) override {
+                          double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
     Path plan;
     plan.header.frame_id = "map";
     plan.poses.push_back(start);
     plan.poses.push_back(start);
-    return PlannerResultT::success(std::move(plan));
+    plan_out = std::move(plan);
+    return ResultT<void>::success();
   }
   bool cancel() override { return true; }
 };

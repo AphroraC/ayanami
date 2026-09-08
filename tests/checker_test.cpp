@@ -1,6 +1,6 @@
-// Checker 单测: AbstractGoalChecker / AbstractProgressChecker 抽象 +
-// SimpleGoalChecker / SimpleProgressChecker 模块 + PluginManager<Checker 族>
-// dlopen 装载 + NavigationServerBase 注入 (createActions → ControllerExecution)。
+// Checker unit tests: AbstractGoalChecker / AbstractProgressChecker abstractions +
+// SimpleGoalChecker / SimpleProgressChecker modules + PluginManager<Checker family>
+// dlopen loading + NavigationServerBase injection (createActions -> ControllerExecution).
 //
 // argv: 1=simple_goal_checker.so, 2=simple_progress_checker.so,
 // 3=test_planner_plugin.so, 4=test_smoother_plugin.so,
@@ -72,13 +72,13 @@ TwistStamped twist(double linear_x, double angular_z) {
   return t;
 }
 
-// --- 直接模块 API 测试 (配置驱动容差/时间窗) ---
+// --- Direct module API tests (config-driven tolerance / time window) ---
 
 std::filesystem::path makeModuleConfigDir() {
   const auto dir = makeTempDir() / "module_cfg";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
-  // 参数段 = 插件同名段 (configure 期经 PluginContext 注入)。
+  // The parameter section has the same name as the plugin (injected via PluginContext at configure time).
   write_file(dir / "simple_goal_checker.json",
              "{\n  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.1,\n"
@@ -95,7 +95,7 @@ std::filesystem::path makeModuleConfigDir() {
   return dir;
 }
 
-// 直连模块测试统一注入: 构造后显式 configure(PluginContext)。
+/// Direct module tests inject uniformly: call configure(PluginContext) explicitly after construction.
 ayanami::PluginContext checkerContext(const std::filesystem::path& dir,
                                       const std::string& json_name,
                                       const std::string& name) {
@@ -128,7 +128,7 @@ TEST(SimpleGoalCheckerTest, notReachedOutsideTolerances) {
                                      twist(0.5, 0.0)));
   EXPECT_FALSE(checker.isGoalReached(pose(0.0, 0.0), pose(0.0, 0.0),
                                      twist(0.0, 0.5)));
-  // 转角超差 (90°> 0.2 rad) 不算到达。
+  // Heading error too large (90 deg > 0.2 rad) does not count as reached.
   EXPECT_FALSE(checker.isGoalReached(
       pose(0.0, 0.0, 1.5708), pose(0.0, 0.0), twist(0.0, 0.0)));
 }
@@ -152,7 +152,7 @@ TEST(SimpleProgressCheckerTest, movesWithinPeriodHasProgress) {
                                    "simple_progress_checker"));
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
-  // 时间窗内移动超过 required_movement → 有进展。
+  // Movement within the time window exceeds required_movement -> progress.
   EXPECT_TRUE(checker.check(pose(1.0, 0.0)));
 }
 
@@ -164,7 +164,7 @@ TEST(SimpleProgressCheckerTest, noMovementWithinPeriodIsNoProgress) {
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  // 时间窗 (10ms) 已过且未移动 → 无进展。
+  // Time window (10ms) elapsed without movement -> no progress.
   EXPECT_FALSE(checker.check(pose(0.0, 0.0)));
 }
 
@@ -175,11 +175,11 @@ TEST(SimpleProgressCheckerTest, angleMovementCountsAsProgress) {
                                    "simple_progress_checker"));
   checker.reset();
   EXPECT_TRUE(checker.check(pose(0.0, 0.0)));
-  // 转角 > movement_angle_required → 有进展。
+  // Rotation > movement_angle_required -> progress.
   EXPECT_TRUE(checker.check(pose(0.0, 0.0, 1.0)));
 }
 
-// --- PluginManager<Checker 族> dlopen 装载 ---
+// --- PluginManager<Checker family> dlopen loading ---
 
 TEST(CheckerPluginManagerTest, loadGoalCheckerFromSo) {
   PluginManager<AbstractGoalChecker> mgr;
@@ -211,10 +211,10 @@ TEST(CheckerPluginManagerTest, loadProgressCheckerFromSo) {
   ASSERT_TRUE(mgr.hasPlugin("simple_progress_checker"));
 }
 
-// --- NavigationServerBase: createActions 注入 → ControllerExecution ----
+// --- NavigationServerBase: createActions injection -> ControllerExecution ----
 
-// 暴露 protected 速度上限成员 (新 execution 无 getMaximumVelocity 出参 getter;
-// 语义等价: 断言 server 注入的 navigation.max_vel_{x,y,theta})。
+/// Exposes the protected velocity-limit members (the new execution has no getMaximumVelocity output getter;
+/// semantically equivalent: assert the navigation.max_vel_{x,y,theta} injected by the server).
 class ExposedControllerExecution
     : public ayanami::components::ControllerExecution {
  public:
@@ -226,11 +226,11 @@ class ExposedControllerExecution
   }
 };
 
-// 派生 server: 捕获每次 newControllerExecution 的 execution (非拥有), 供测试
-// 断言 checker 注入。checker 由 base loadPlugins 装载 (default override 接受)。
+/// Derived server: captures the execution from each newControllerExecution (non-owning) so tests
+/// can assert checker injection. The checker is loaded by the base loadPlugins (default override accepted).
 class CheckerNavServer : public NavigationServerBase {
  public:
-  // 弱捕获: 由 Action 槽持有 execution 的存活期 (任务 RUNNING 期间访问安全)。
+  // Weak capture: the Action slot owns the execution lifetime (safe to access while the task is RUNNING).
   ExposedControllerExecution* running_controller_exec = nullptr;
 
   std::unique_ptr<ayanami::components::ControllerExecution>
@@ -243,6 +243,8 @@ class CheckerNavServer : public NavigationServerBase {
     running_controller_exec = exec.get();
     return exec;
   }
+
+
 
   bool goalCheckerLoaded(const std::string& name) const {
     return goal_checker_plugins.hasPlugin(name);
@@ -259,7 +261,7 @@ std::filesystem::path makeServerConfigDir() {
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
-  // 插件文件指针统一在 navigation 段 (单一来源), 无独立 *_id 键。
+  // Plugin file pointers live uniformly in the navigation section (single source), no separate *_id keys.
   write_file(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
@@ -270,7 +272,9 @@ std::filesystem::path makeServerConfigDir() {
              "    \"config_progress_checker\": \"progress_checker.json\",\n"
              "    \"max_vel_x\": 0.5,\n"
              "    \"max_vel_y\": 0.0,\n"
-             "    \"max_vel_theta\": 1.5\n"
+             "    \"max_vel_theta\": 1.5,\n"
+             "    \"controller_patience\": 1.5,\n"
+             "    \"recovery_patience\": 2.5\n"
              "  }\n}\n");
 
   auto pluginJson = [](const std::string& module, const std::string& name,
@@ -313,11 +317,11 @@ TEST(CheckerServerInjectionTest, controllerExecutionGetsCheckers) {
   server.loadPlugins(dir.string());
 
   ASSERT_NE(server.controllerAction(), nullptr);
-  // checker 插件已装载 + default ids 解析。
+  // The checker plugins are loaded and the default ids resolved.
   EXPECT_TRUE(server.goalCheckerLoaded("simple_goal_checker"));
   EXPECT_TRUE(server.progressCheckerLoaded("simple_progress_checker"));
 
-  // looping 控制器永不到达 → execution 保持 RUNNING, 期间安全读注入的 checker。
+  // The looping controller never arrives -> the execution stays RUNNING; read the injected checker safely meanwhile.
   ayanami::actions::ExePathGoal goal;
   goal.path.poses.push_back(pose(0.0, 0.0));
   goal.path.poses.push_back(pose(1.0, 0.0));
@@ -333,12 +337,17 @@ TEST(CheckerServerInjectionTest, controllerExecutionGetsCheckers) {
   EXPECT_NE(server.running_controller_exec->getGoalChecker(), nullptr);
   EXPECT_NE(server.running_controller_exec->getProgressChecker(), nullptr);
 
-  // createActions 注入 navigation.max_vel_{x,y,theta} → execution 速度上限。
+  // createActions injects navigation.max_vel_{x,y,theta} -> the execution velocity limits.
   double max_x = 0.0, max_y = 0.0, max_theta = 0.0;
   server.running_controller_exec->maximumVelocity(max_x, max_y, max_theta);
   EXPECT_DOUBLE_EQ(max_x, 0.5);
-  EXPECT_DOUBLE_EQ(max_y, 0.0);  // max_vel_y=0: 禁止横移
+  EXPECT_DOUBLE_EQ(max_y, 0.0);  // max_vel_y=0: lateral motion forbidden
   EXPECT_DOUBLE_EQ(max_theta, 1.5);
+  // createActions injects navigation.controller_patience -> the execution.
+  EXPECT_DOUBLE_EQ(server.running_controller_exec->getPatience(), 1.5);
+  // navigation.recovery_patience cached on the server (injected into every
+  // recovery execution at factory time).
+  EXPECT_DOUBLE_EQ(server.recoveryPatience(), 2.5);
 
   task.cancel();
   ASSERT_TRUE(waitReady(task));

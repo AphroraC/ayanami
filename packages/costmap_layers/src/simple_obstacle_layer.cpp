@@ -7,7 +7,7 @@ void SimpleObstacleLayer::clearArea(double min_wx, double min_wy,
                                     double max_wx, double max_wy) {
   clear_regions.emplace_back(
       ClearRegion{min_wx, min_wy, max_wx, max_wy});
-  // 移除落在清除区域内的障碍标记, 避免下次 updateCosts 重新写回。
+  // Remove obstacle marks that fall inside the clear region so the next updateCosts does not write them back.
   marks.erase(
       std::remove_if(
           marks.begin(), marks.end(),
@@ -165,7 +165,7 @@ void SimpleObstacleLayer::updateCosts(costmap_2d::Costmap2D& master_grid,
     }
   }
 
-  // 2) 障碍标记: 写回 mark 点所在 cell
+  // 2) Obstacle marks: write back the cells containing mark points
   for (const auto& mark : marks) {
     unsigned int mx = 0;
     unsigned int my = 0;

@@ -1,4 +1,4 @@
-// path_dist.cpp — 迁移自 dwb_critics/src/path_dist.cpp。
+// path_dist.cpp -- ported from dwb_critics/src/path_dist.cpp.
 #include "path_dist.hpp"
 
 #include <vector>

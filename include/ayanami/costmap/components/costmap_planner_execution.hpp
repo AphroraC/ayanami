@@ -12,14 +12,15 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 全局路径规划的 costmap 版执行。
+ * @brief The costmap variant of the global planning execution.
  *
- * 在 PlannerExecution 之上绑定 costmap 上下文:
- * - preRun: checkActivate() 幂等激活 global costmap;
- * - postRun: checkDeactivate() 幂等停用 global costmap;
- * - safetyCheck: global wrapper isCurrent() (地图新鲜度, 原子读);
- * - callPlanner: typed 调用 CostmapPlanner; 插件内部经持有的地图模块
- *   lockGlobal() 加锁读图 (shared 锁, 零拷贝, 单次规划 <10ms)。
+ * Binds a costmap context on top of PlannerExecution:
+ * - preRun: checkActivate() idempotently activates the global costmap;
+ * - postRun: checkDeactivate() idempotently deactivates the global costmap;
+ * - safetyCheck: global wrapper isCurrent() (map freshness, atomic read);
+ * - callPlanner: typed call into CostmapPlanner; the plugin reads the map
+ *   under a lock internally via its held map module's lockGlobal() (shared
+ *   lock, zero copy, single planning call <10ms).
  */
 class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
  public:
@@ -51,21 +52,22 @@ class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
   }
 
  protected:
-  PlannerResultT callPlanner(const ayanami::geometry_msgs::PoseStamped& start,
+  ResultT<void> callPlanner(const ayanami::geometry_msgs::PoseStamped& start,
                              const ayanami::geometry_msgs::PoseStamped& goal,
-                             double tolerance) override {
+                             double tolerance,
+                             ayanami::nav_msgs::Path& plan) override {
     auto* typed = dynamic_cast<CostmapPlanner*>(planner.get());
     if (!typed) {
-      return PlannerResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
           "CostmapPlannerExecution: plugin is not a CostmapPlanner");
     }
     if (!ctx) {
-      return PlannerResultT::failure(
+      return ResultT<void>::failure(
           ErrorCode::MAP_UNAVAILABLE,
           "CostmapPlannerExecution: no costmap module");
     }
-    return typed->makePlan(start, goal, tolerance);
+    return typed->makePlan(start, goal, tolerance, plan);
   }
 
  private:

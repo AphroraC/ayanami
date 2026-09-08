@@ -8,9 +8,9 @@
 
 namespace costmap_2d_layers {
 
-// 简单障碍层 (简洁版): 接受 markObstacles / clearArea API 写入障碍与清除区,
-// 在 updateCosts 阶段把标记写回 master grid。不直接加载传感器 (observation_sources
-// 留给上层把观测转成 markObstacles 调用)。
+/// Simple obstacle layer (compact version): accepts markObstacles / clearArea APIs to write obstacles and
+/// clear regions, and writes the marks back into the master grid during updateCosts. Does not consume sensors
+/// directly (observation_sources is left to upper layers, which turn observations into markObstacles calls).
 class SimpleObstacleLayer : public costmap_2d::Layer {
  public:
   enum class CombinationMethod { OVERWRITE = 0, MAXIMUM = 1, NONE = 2 };
@@ -23,15 +23,15 @@ class SimpleObstacleLayer : public costmap_2d::Layer {
   // marks, so they must not overwrite that restored value with FREE.
   void setClearToFree(bool clear_to_free) { clear_to_free = clear_to_free; }
 
-  // 在世界坐标 (wx, wy) 标记一个障碍; 在 updateCosts 阶段写入 master grid。
+  /// Marks an obstacle at world coordinates (wx, wy); written into the master grid during updateCosts.
   void markObstacles(double wx, double wy,
                      costmap_2d::CostValue cost = costmap_2d::LETHAL_OBSTACLE) {
     marks.push_back(Mark{wx, wy, cost});
     current = false;
   }
 
-  // 清除世界矩形 [min_wx, max_wx] x [min_wy, max_wy] 覆盖的区域:
-  // 移除该区域内的障碍标记, 并在 updateCosts 阶段把区域内 cell 写回 FREE。
+  /// Clears the world rectangle [min_wx, max_wx] x [min_wy, max_wy]:
+  /// removes obstacle marks inside it and writes the covered cells back to FREE during updateCosts.
   void clearArea(double min_wx, double min_wy, double max_wx, double max_wy);
 
   // Nav2-style freespace clearing: remove only dynamic marks intersected by

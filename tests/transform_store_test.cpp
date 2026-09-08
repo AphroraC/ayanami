@@ -34,9 +34,9 @@ TEST(TransformStoreTest, lookupMissingEdgeReturnsFalse) {
 }
 
 TEST(TransformStoreTest, fromSecondsCompatHelper) {
-  // fromSeconds 仅作兼容 helper: 指定秒 → 纳秒计数。
+  // fromSeconds is only a compatibility helper: seconds -> nanosecond count.
   EXPECT_EQ(TransformStore::fromSeconds(5.0).count(), 5000000000LL);
-  // 0 秒 == latest 哨兵 (显式 latest 语义一致)。
+  // 0 seconds == the latest sentinel (explicit latest semantics agree).
   EXPECT_TRUE(TransformStore::fromSeconds(0.0).isLatest());
   EXPECT_TRUE(ayanami::Timestamp().isLatest());
   EXPECT_TRUE(ayanami::Timestamp::latest().isLatest());
@@ -51,13 +51,13 @@ TEST(TransformStoreTest, specificStampInterpolatesBetweenEntries) {
   store.setTransform("base_odom", "base_link_stamp", t2, makeTranslation(3.0));
 
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
-  // 中间时刻 0.2s: fast_tf 在 [0.1, 0.3] 间线性插值 → x = 2.0。
+  // Intermediate time 0.2s: fast_tf interpolates linearly within [0.1, 0.3] -> x = 2.0.
   EXPECT_TRUE(store.lookupTransform("base_odom", "base_link_stamp",
                                     ayanami::timestampFromSeconds(0.2), out,
                                     0.0));
   EXPECT_DOUBLE_EQ(2.0, out.translation().x());
 
-  // 精确命中较新条目。
+  // Exact hit on the newer entry.
   EXPECT_TRUE(store.lookupTransform("base_odom", "base_link_stamp", t2, out,
                                     0.0));
   EXPECT_DOUBLE_EQ(3.0, out.translation().x());
@@ -71,18 +71,18 @@ TEST(TransformStoreTest, explicitLatestReturnsNewestEntry) {
                      makeTranslation(3.0));
 
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
-  // 显式 latest 哨兵 → 最新条目 (0.3s)。
+  // Explicit latest sentinel -> the newest entry (0.3s).
   EXPECT_TRUE(store.lookupTransform("latest_odom", "latest_link",
                                     ayanami::Timestamp::latest(), out, 0.0));
   EXPECT_DOUBLE_EQ(3.0, out.translation().x());
 }
 
-// ---- 时间缓存/按戳回溯 (fast_tf 窗口配置 + tf2 式 latest common time) ----
+// ---- Time cache / lookup-by-stamp (fast_tf window config + tf2-style latest common time) ----
 
 TEST(TransformStoreTest, configureCacheDurationExtendsLookupHorizon) {
   auto& store = TransformStore::instance();
- // 样本间隔 1s: 默认 500ms 窗下旧样本会被剪枝 (1.0s 查询失败);
- // 配置 10s 窗后同样本序列的中间时刻可插值命中。
+ // Samples spaced 1s apart: with the default 500ms window old samples are pruned (the 1.0s query fails);
+ // after configuring a 10s window, intermediate times of the same sample sequence can be hit by interpolation.
   store.configureCacheDuration(10.0);
   const auto t1 = ayanami::timestampFromSeconds(100.0);
   const auto t2 = ayanami::timestampFromSeconds(101.0);
@@ -90,12 +90,12 @@ TEST(TransformStoreTest, configureCacheDurationExtendsLookupHorizon) {
   store.setTransform("win_odom", "win_link", t2, makeTranslation(3.0));
 
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
- // 窗口内中间时刻 → 插值。
+ // Intermediate time within the window -> interpolation.
   EXPECT_TRUE(store.lookupTransform("win_odom", "win_link",
                                     ayanami::timestampFromSeconds(100.5), out,
                                     0.0));
   EXPECT_DOUBLE_EQ(2.0, out.translation().x());
- // 超出配置窗口 (早于 最老样本 100.0 - 窗口) → 仍拒绝过去外推。
+ // Outside the configured window (older than oldest sample 100.0 - window) -> extrapolation into the past is still rejected.
   EXPECT_FALSE(store.lookupTransform("win_odom", "win_link",
                                      ayanami::timestampFromSeconds(90.0), out,
                                      0.0));
@@ -106,7 +106,7 @@ TEST(TransformStoreTest, outOfOrderInsertInterpolates) {
   store.configureCacheDuration(10.0);
   store.setTransform("ooo_odom", "ooo_link",
                      ayanami::timestampFromSeconds(5.0), makeTranslation(5.0));
- // 乱序写入: 旧样本后到 (fast_tf map 存储支持任意顺序插入)。
+ // Out-of-order writes: the older sample arrives later (the fast_tf map storage supports insertion in any order).
   store.setTransform("ooo_odom", "ooo_link",
                      ayanami::timestampFromSeconds(4.0), makeTranslation(4.0));
 
@@ -119,8 +119,8 @@ TEST(TransformStoreTest, outOfOrderInsertInterpolates) {
 
 TEST(TransformStoreTest, latestCommonTimeIsMinAcrossChain) {
   auto& store = TransformStore::instance();
-  store.configureCacheDuration(10.0);  // 同时重置 buffer, 保证测试隔离
- // map→odom 最新样本 2.0s; odom→base_link 最新样本 2.5s。
+  store.configureCacheDuration(10.0);  // Reset the buffer at the same time to keep tests isolated
+ // map->odom newest sample 2.0s; odom->base_link newest sample 2.5s.
   store.setTransform("map", "odom", ayanami::timestampFromSeconds(1.0),
                      makeTranslation(1.0));
   store.setTransform("map", "odom", ayanami::timestampFromSeconds(2.0),
@@ -134,8 +134,8 @@ TEST(TransformStoreTest, latestCommonTimeIsMinAcrossChain) {
   ASSERT_TRUE(store.latestCommonTime("map", "base_link", common));
   EXPECT_EQ(common.count(), ayanami::timestampFromSeconds(2.0).count());
 
- // 多跳 latest 查询 == 在 common time 的显式查询 (tf2 式一致性快照,
- // 不再是各边各取最新的混合)。
+ // A multi-hop latest query == an explicit query at common time (a tf2-style consistent snapshot,
+ // no longer a mix of per-edge newest lookups).
   Eigen::Isometry3d via_latest = Eigen::Isometry3d::Identity();
   Eigen::Isometry3d via_common = Eigen::Isometry3d::Identity();
   ASSERT_TRUE(store.lookupTransform("map", "base_link",
@@ -145,11 +145,11 @@ TEST(TransformStoreTest, latestCommonTimeIsMinAcrossChain) {
                                     0.0));
   EXPECT_DOUBLE_EQ(via_latest.translation().x(),
                    via_common.translation().x());
- // common time 采样: map←odom @2.0 (x=2) * odom←base_link @2.0
- // (在 [1.5, 2.5] 间插值 → x=15) → 总 x = 17 (各边取最新会是 2+20=22)。
+ // Common-time sampling: map<-odom @2.0 (x=2) * odom<-base_link @2.0
+ // (interpolated within [1.5, 2.5] -> x=15) -> total x = 17 (taking each edge newest would give 2+20=22).
   EXPECT_DOUBLE_EQ(via_latest.translation().x(), 17.0);
 
- // 未连通帧 → false。
+ // Unconnected frames -> false.
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
   EXPECT_FALSE(store.lookupTransform("map", "world_undef",
                                      ayanami::Timestamp::latest(), out, 0.0));
@@ -163,11 +163,11 @@ TEST(TransformStoreTest, lookupBeforeFirstStampReturnsFalse) {
                      makeTranslation(1.0));
 
   Eigen::Isometry3d out = Eigen::Isometry3d::Identity();
-  // 早于首条数据时刻 → 外推失败 (false), 非隐式 latest。
+  // Earlier than the first data time -> extrapolation fails (false), not an implicit latest.
   EXPECT_FALSE(store.lookupTransform("early_odom", "early_link",
                                      ayanami::timestampFromSeconds(0.1), out,
                                      0.0));
-  // 数据时刻本身可命中。
+  // The data time itself can be hit.
   EXPECT_TRUE(store.lookupTransform("early_odom", "early_link",
                                     ayanami::timestampFromSeconds(0.5), out,
                                     0.0));

@@ -12,8 +12,10 @@
 namespace ayanami {
 namespace {
 
-// 模块登记表: so_name → 句柄 + 引用计数。openSo 重复加载去重 (同一句柄),
-// 并为未来静默卸载保留账本 (卸载逻辑未实现; 前置条件见 load_module.hpp)。
+// Module registry: so_name -> handle + reference count. Repeated openSo
+// loads are deduplicated (same handle),
+// and a ledger is kept for future silent unloading (unload logic not yet
+// implemented; see load_module.hpp for preconditions).
 std::mutex registry_mutex;
 std::map<std::string, void*>& moduleRegistry() {
   static std::map<std::string, void*> registry;
@@ -31,18 +33,19 @@ void* openSo(const std::string& so_name) {
   auto& registry = moduleRegistry();
   auto iter = registry.find(so_name);
   if (iter != registry.end()) {
-    // 已登记: 去重, 引用计数 +1, 返回同一句柄。
+    // Already registered: deduplicate, reference count +1, return the same handle.
     ++moduleRefCounts()[so_name];
     return iter->second;
   }
-  // RTLD_NODELETE: 镜像恒驻 (即使未来 dlclose 也不卸载代码段), 为静默卸载
-  // 准备安全垫; 当前路径从不 dlclose 。
+  // RTLD_NODELETE: keep the image resident (the code segment is not
+  // unloaded even by a future dlclose), a safety cushion for silent
+  // unloading; the current path never dlcloses.
   void* handle = dlopen(so_name.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
   if (handle == nullptr) {
     spdlog::error("failed to load shared object '{}': {}", so_name, dlerror());
     return nullptr;
   }
-  // 句柄从不 dlclose：插件生命周期等于进程生命周期 。
+  // Handles are never dlclosed: the plugin lifetime equals the process lifetime.
   registry.emplace(so_name, handle);
   moduleRefCounts()[so_name] = 1;
   return handle;
@@ -69,7 +72,7 @@ void* loadSymbol(void* h, const std::string& sym) {
   if (h == nullptr) {
     return nullptr;
   }
-  dlerror();  // 清除上一次错误，区分 dlsym 找到空符号与失败
+  dlerror();  // clear the previous error, distinguishing a null symbol found by dlsym from failure
   void* symbol = dlsym(h, sym.c_str());
   if (symbol == nullptr) {
     const char* err = dlerror();

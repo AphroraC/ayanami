@@ -11,12 +11,16 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 局部控制插件基类 (costmap族, MBF 式分层)。
+ * @brief Local control plugin base class (costmap family, MBF-style
+ * layering).
  *
- * 在 abstract::AbstractController (零地图纯虚接口) 之上只新增地图族注入点:
- * - configure(context, map): 注入插件逻辑名 + 自身配置 + 地图模块 const 指针。
- * - computeVelocityCommand(...): 即 abstract 纯虚签名; 实现内部每周期经
- *   map->lockLocal() 加锁读 local master grid (零拷贝, 周期结束释放)。
+ * On top of abstract::AbstractController (zero-map pure virtual interface),
+ * only the map-family injection point is added:
+ * - configure(context, map): injects the plugin logical name + its own
+ *   config + a const pointer to the map module.
+ * - computeVelocityCommand(...): the abstract pure virtual signature; the
+ *   implementation reads the local master grid under a lock per cycle via
+ *   map->lockLocal() (zero copy, released at cycle end).
  */
 class CostmapController : public ayanami::abstract::AbstractController {
  public:

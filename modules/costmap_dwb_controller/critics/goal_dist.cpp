@@ -1,4 +1,4 @@
-// goal_dist.cpp — 迁移自 dwb_critics/src/goal_dist.cpp。
+// goal_dist.cpp -- ported from dwb_critics/src/goal_dist.cpp.
 #include "goal_dist.hpp"
 
 #include <vector>

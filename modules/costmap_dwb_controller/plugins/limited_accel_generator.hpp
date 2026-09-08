@@ -1,4 +1,4 @@
-// limited_accel_generator.hpp — 迁移自 dwb_plugins/limited_accel_generator.hpp。
+// limited_accel_generator.hpp -- ported from dwb_plugins/limited_accel_generator.hpp.
 #pragma once
 
 #include <memory>

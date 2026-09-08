@@ -1,9 +1,9 @@
-// Map Family 抽象测试 : 证明 NavigationServerBase 装配路径零 costmap
-// 依赖 —— 一个非 costmap 的 fake 地图族 (Grid 族) 经同一组虚钩子
-// (initialize*Plugin + PluginContext 注入) 完成插件配置, 地图上下文经
-// AbstractMapContext 接口提供 identity/frame/版本/能力/写命令/机器人状态。
+// Map Family abstraction test: proves the NavigationServerBase assembly path has zero costmap
+// dependency -- a non-costmap fake map family (the Grid family) completes plugin configuration through the same set of virtual hooks
+// (initialize*Plugin + PluginContext injection), with the map context provided via the
+// AbstractMapContext interface: identity/frame/version/capability/write commands/robot state.
 //
-// 本测试不 dlopen 任何 .so (装配缝在钩子层, 与加载机制正交)。
+// This test dlopens no .so at all (the assembly seam is at the hook layer, orthogonal to the loading mechanism).
 
 #include <gtest/gtest.h>
 
@@ -24,7 +24,7 @@ using ayanami::map::AbstractMapContext;
 using ayanami::map::MapCapability;
 using ayanami::map::MapCommandPort;
 
-// ---- fake "grid" 地图族上下文 (与 costmap 族平行的最小实现) ----
+// ---- Fake "grid" map-family context (a minimal implementation parallel to the costmap family) ----
 
 struct GridWriteCommand {
   double clear_radius = 0.5;
@@ -56,35 +56,21 @@ class GridMapContext final : public AbstractMapContext {
   std::string localFrame() const override { return global_frame; }
   std::string robotFrame() const override { return robot_frame; }
   bool isCurrent() const override { return is_current.load(); }
-  std::uint64_t version() const override { return context_version.load(); }
   std::uint32_t capabilities() const override {
-    return static_cast<std::uint32_t>(MapCapability::GlobalPlanning) |
-           static_cast<std::uint32_t>(MapCapability::ClearRegion);
+    return static_cast<std::uint32_t>(MapCapability::ClearRegion);
   }
   MapCommandPort::Ptr commandPort() const override { return command_port; }
-  bool getRobotState(ayanami::geometry_msgs::PoseStamped& pose,
-                     ayanami::geometry_msgs::TwistStamped&) const override {
-    pose.header.frame_id = global_frame;
-    pose.pose.position.x() = robot_x;
-    pose.pose.position.y() = robot_y;
-    return true;
-  }
-
   void setCommandPort(GridCommandPort::Ptr port) { command_port = std::move(port); }
   void setCurrent(bool value) { is_current = value; }
-  void bumpVersion() { ++context_version; }
 
  private:
   std::string global_frame;
   std::string robot_frame;
   std::atomic<bool> is_current{true};
-  std::atomic<std::uint64_t> context_version{1};
-  double robot_x{1.0};
-  double robot_y{2.0};
   GridCommandPort::Ptr command_port;
 };
 
-// ---- fake 族的族级插件层 (抽象层零地图, 族层绑定 GridMapContext) ----
+// ---- Fake-family family-level plugin layer (the abstract layer has zero map knowledge; the family layer binds GridMapContext) ----
 
 class GridPlanner : public ayanami::abstract::AbstractPlanner {
  public:
@@ -105,19 +91,20 @@ class StraightLineGridPlanner final : public GridPlanner {
     configured = true;
   }
 
-  ayanami::PlannerResultT makePlan(
+  ayanami::ResultT<void> makePlan(
       const ayanami::geometry_msgs::PoseStamped& start,
       const ayanami::geometry_msgs::PoseStamped& goal,
-      double /*tolerance*/) override {
+      double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
     if (!configured) {
-      return ayanami::PlannerResultT::failure(
+      return ayanami::ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR, "grid planner not configured");
     }
     ayanami::nav_msgs::Path path;
     path.header = goal.header;
     path.poses.push_back(start);
     path.poses.push_back(goal);
-    return ayanami::PlannerResultT::success(std::move(path));
+    plan_out = std::move(path);
+    return ayanami::ResultT<void>::success();
   }
 
   bool configured = false;
@@ -141,20 +128,21 @@ class GridClearRecovery final : public GridRecovery {
     command_port = std::dynamic_pointer_cast<GridCommandPort>(map_context->commandPort());
   }
 
-  ayanami::RecoveryResultT tick() override {
+  ayanami::ResultT<void> tick(ayanami::RecoveryCycleData& cycle) override {
     if (!command_port) {
-      return ayanami::RecoveryResultT::failure(
+      return ayanami::ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR, "grid recovery has no command port");
     }
     GridWriteCommand command;
     command.clear_radius = 0.75;
     if (!command_port->submit(command)) {
-      return ayanami::RecoveryResultT::failure(
+      return ayanami::ResultT<void>::failure(
           ErrorCode::RECOVERY_FAILED, "grid write command rejected");
     }
     ayanami::RecoveryCycleData data;
     data.status = ayanami::RecoveryStatus::SUCCESS;
-    return ayanami::RecoveryResultT::success(std::move(data));
+    cycle = std::move(data);
+    return ayanami::ResultT<void>::success();
   }
 
   std::string configured_name;
@@ -163,7 +151,7 @@ class GridClearRecovery final : public GridRecovery {
   GridCommandPort::Ptr command_port;
 };
 
-// ---- fake 族的派生 server: 与 CostmapNavigationServer 平行的注入层 ----
+// ---- Fake-family derived server: an injection layer parallel to CostmapNavigationServer ----
 
 class GridNavigationServer final : public ayanami::components::NavigationServerBase {
  public:
@@ -194,7 +182,7 @@ class GridNavigationServer final : public ayanami::components::NavigationServerB
 
 }  // namespace
 
-// ---- 地图族经抽象接口完整表达 identity/frame/版本/能力/写命令/机器人状态 ----
+// ---- The map family is fully expressed through the abstract interface: identity/frame/version/capability/write commands/robot state ----
 
 TEST(MapFamilyAbstractionTest, gridContextSatisfiesAbstractInterface) {
   auto map = std::make_shared<GridMapContext>("world", "base");
@@ -207,29 +195,21 @@ TEST(MapFamilyAbstractionTest, gridContextSatisfiesAbstractInterface) {
   EXPECT_EQ(abstract->localFrame(), "world");
   EXPECT_EQ(abstract->robotFrame(), "base");
   EXPECT_TRUE(abstract->isCurrent());
-  EXPECT_EQ(abstract->version(), 1u);
 
   map->setCurrent(false);
   EXPECT_FALSE(abstract->isCurrent());
   map->setCurrent(true);
-  map->bumpVersion();
-  EXPECT_EQ(abstract->version(), 2u);
 
   const std::uint32_t caps = abstract->capabilities();
-  EXPECT_NE(caps & static_cast<std::uint32_t>(MapCapability::GlobalPlanning), 0u);
   EXPECT_NE(caps & static_cast<std::uint32_t>(MapCapability::ClearRegion), 0u);
   EXPECT_EQ(caps & static_cast<std::uint32_t>(MapCapability::CollisionQuery), 0u);
+  EXPECT_EQ(caps & static_cast<std::uint32_t>(MapCapability::DynamicObstacleUpdate), 0u);
 
-  ayanami::geometry_msgs::PoseStamped pose;
-  ayanami::geometry_msgs::TwistStamped velocity;
-  EXPECT_TRUE(abstract->getRobotState(pose, velocity));
-  EXPECT_EQ(pose.header.frame_id, "world");
-  EXPECT_DOUBLE_EQ(pose.pose.position.x(), 1.0);
 
   EXPECT_EQ(abstract->commandPort(), port);
 }
 
-// ---- 派生 server 钩子把 fake 地图族上下文注入族级插件 (零 costmap 依赖) ----
+// ---- The derived server hooks inject the fake map-family context into family-level plugins (zero costmap dependency) ----
 
 TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   GridNavigationServer server;
@@ -244,35 +224,37 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
       "grid_planner", ayanami::Config(""), planner_base));
   EXPECT_TRUE(planner->configured);
 
-  // 插件经注入的地图上下文工作 (族层 configure + 抽象层 makePlan)。
+  // The plugins work through the injected map context (family-level configure + abstract-layer makePlan).
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
   start.header.frame_id = "world";
   goal.header.frame_id = "world";
   goal.pose.position.x() = 3.0;
-  const auto result = planner_base->makePlan(start, goal, 0.1);
+  ayanami::nav_msgs::Path plan;
+  const auto result = planner_base->makePlan(start, goal, 0.1, plan);
   ASSERT_TRUE(result.ok) << result.message;
-  EXPECT_EQ(result.data.poses.size(), 2u);
+  EXPECT_EQ(plan.poses.size(), 2u);
 
-  // recovery 插件经 commandPort 提交族内写命令 (写命令接口闭环)。
+  // The recovery plugin submits family write commands via commandPort (the write-command interface closes the loop).
   auto recovery = std::make_shared<GridClearRecovery>();
   ayanami::abstract::AbstractRecovery::Ptr recovery_base = recovery;
   EXPECT_TRUE(server.initializeRecoveryPlugin(
       "grid_clear", ayanami::Config(""), recovery_base));
   EXPECT_EQ(recovery->configured_name, "grid_clear");
 
-  const auto outcome = recovery_base->tick();
+  ayanami::RecoveryCycleData cycle;
+  const auto outcome = recovery_base->tick(cycle);
   ASSERT_TRUE(outcome.ok) << outcome.message;
   EXPECT_EQ(port->submissions.load(), 1);
   EXPECT_DOUBLE_EQ(port->last_radius.load(), 0.75);
 
-  // 非 fake 族插件 (普通 AbstractPlanner) 被族钩子拒绝 (类型化约束)。
+  // A non-fake-family plugin (a plain AbstractPlanner) is rejected by the family hooks (typed constraint).
   class PlainPlanner : public ayanami::abstract::AbstractPlanner {
    public:
-    ayanami::PlannerResultT makePlan(const ayanami::geometry_msgs::PoseStamped&,
+    ayanami::ResultT<void> makePlan(const ayanami::geometry_msgs::PoseStamped&,
                                      const ayanami::geometry_msgs::PoseStamped&,
-                                     double) override {
-      return ayanami::PlannerResultT::failure(ErrorCode::INTERNAL_ERROR, "unused");
+                                     double, ayanami::nav_msgs::Path& plan_out) override {
+      return ayanami::ResultT<void>::failure(ErrorCode::INTERNAL_ERROR, "unused");
     }
   };
   EXPECT_FALSE(server.initializePlannerPlugin(

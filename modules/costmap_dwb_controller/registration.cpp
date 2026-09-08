@@ -1,4 +1,4 @@
-// registration.cpp — 静态注册表实现。
+// registration.cpp -- static registry implementation.
 #include "registration.hpp"
 
 #include "critics/base_obstacle.hpp"
@@ -66,8 +66,8 @@ void registerAllCritics() {
   registry["TwirlingCritic"] = []() -> dwb_core::TrajectoryCritic::Ptr {
     return std::make_shared<dwb_critics::TwirlingCritic>();
   };
-  // MapGridCritic 是抽象基类 (validCellToQueue 可实例化但不导出, 与 nav2 的
-  // default_critics.xml 一致: 10 个导出插件)。
+  // MapGridCritic is an abstract base class (validCellToQueue could be instantiated but is not exported, matching nav2's
+  // default_critics.xml: 10 exported plugins).
 }
 
 void registerAllTrajectoryGenerators() {

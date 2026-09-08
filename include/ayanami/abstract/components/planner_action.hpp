@@ -18,13 +18,15 @@ namespace ayanami {
 namespace components {
 
 /**
- * @brief 全局路径规划 Action (对标 MBF PlannerAction)。
+ * @brief Global path planning Action (modeled after MBF PlannerAction).
  *
- * acceptGoal 返回 TaskHandle 直连调用者 (主流, BT 节点); 结果同时 emit 到
- * NavigationCallbacks::on_get_path_result 作旁路 (rviz 扩展/回退/监控)。
- * ExecutionState→GoalStatus 映射 : FOUND_PLAN→SUCCEEDED,
- * CANCELED→CANCELED, 其余 terminal (NO_PLAN_FOUND/STOPPED/INTERNAL_ERROR)
- * →ABORTED + ErrorCode。
+ * acceptGoal returns a TaskHandle straight to the caller (mainline, BT
+ * nodes); the result is also emitted to
+ * NavigationCallbacks::on_get_path_result as a side path (rviz extension/
+ * fallback/monitoring).
+ * ExecutionState->GoalStatus mapping: FOUND_PLAN->SUCCEEDED,
+ * CANCELED->CANCELED, other terminal states (NO_PLAN_FOUND/STOPPED/
+ * INTERNAL_ERROR) ->ABORTED + ErrorCode.
  */
 class PlannerAction : public ActionBase<ayanami::actions::GetPathGoal,
                                         PlannerExecution> {
@@ -56,9 +58,10 @@ public:
 
   ~PlannerAction() override { cancelAll(); }
 
-  /// @brief 主流: 接受 goal 并拿 TaskHandle 直连 。
-  /// 同一 execution 在跑且插件支持 in-place 目标更新时走 latest-wins seam
-  /// (不 cancel / 不新建 execution), 旧 goal 立即以 CANCELED 结算。
+  /// @brief Mainline: accept a goal and get a TaskHandle straight away.
+  /// When the same execution is running and the plugin supports in-place
+  /// goal updates, take the latest-wins seam (no cancel / no new
+  /// execution); the old goal is settled immediately as CANCELED.
   Task acceptGoal(const Goal& goal) {
     auto task = action_server->acceptGoal(goal);
     auto gh = action_server->getGoal(task.goal_id());
@@ -77,7 +80,7 @@ public:
     }
     {
       std::lock_guard<std::mutex> lock(goal_mutex);
-      if (active_execution && Base::isRunning(0) &&
+      if (active_execution && Base::isRunning() &&
           active_execution->setNewGoal(goal.start, goal.goal,
                                        goal.tolerance)) {
         if (active_goal_id != 0) {
@@ -99,13 +102,13 @@ public:
       active_goal_id = gh->id;
       active_goal = goal;
     }
-    Base::start(*gh, active_execution, 0);
+    Base::start(*gh, active_execution);
     return task;
   }
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
-  /// @brief 驱动任务异常兜底: 发布 ABORTED 保证 TaskHandle 完成 (幂等)。
+  /// @brief Driver task exception fallback: publish ABORTED to guarantee TaskHandle completion (idempotent).
   void abortGoal(const GoalHandleType& gh) override {
     Result result;
     result.error = ErrorCode::INTERNAL_ERROR;
@@ -124,8 +127,9 @@ public:
 
   ServerPtr server() const { return action_server; }
 
-  /// @brief 注入 execution 工厂 (server 装配用: 经地图族工厂返回带地图的
-  /// execution)。未注入时 createExecution 默认构造 abstract execution。
+  /// @brief Inject an execution factory (for server assembly: the
+  /// map-family factory returns executions carrying a map). When not
+  /// injected, createExecution default-constructs the abstract execution.
   void setExecutionFactory(std::function<PlannerExecution::Ptr()> factory) {
     execution_factory = std::move(factory);
   }
@@ -149,8 +153,9 @@ protected:
           goal = gh.goal;
         }
       }
-      // 兜底异常终态 (k_aborted) 不被 PlannerExecution 枚举识别, 必须在此
-      // 结算, 否则驱动任务死轮询、槽占用不释放。
+      // The fallback exception terminal state (k_aborted) is not recognized
+      // by the PlannerExecution enum and must be settled here, otherwise the
+      // driver task spins forever and the slot occupancy is never released.
       if (exec.aborted()) {
         finishResult(goal_id, goal, exec,
                      ayanami::actions::GoalStatus::ABORTED);
@@ -203,7 +208,7 @@ protected:
 private:
   std::function<PlannerExecution::Ptr()> execution_factory;
   void finishResult(uint64_t goal_id, const Goal& goal,
-                    const PlannerExecution& exec,
+                    PlannerExecution& exec,
                     ayanami::actions::GoalStatus status) {
     if (goal_id == 0) return;
     Result result;
@@ -217,8 +222,8 @@ private:
       result.error = ErrorCode::INTERNAL_ERROR;
     }
     result.message = exec.getMessage();
+    result.path = exec.takePlan();
     result.path.header = goal.goal.header;
-    result.path.poses = exec.getPlan().poses;
     result.session_id = goal.session_id;
     result.plan_version = goal.plan_version;
     action_server->publishResult(goal_id, status, result);

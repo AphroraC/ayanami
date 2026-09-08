@@ -1,27 +1,9 @@
 {
   "ayanami_ros": {
     "pointcloud_topic": "/velodyne_points",
-    "laserscan_topic": "/scan",
+    "laserscan_topic": "",
     "odom_topic": "/odom",
     "goal_topic": "/move_base_simple/goal",
-    "cmd_vel_topic": "/cmd_vel",
-    "cmd_vel_stamped_topic": "/cmd_vel_stamped",
-    "planner_path_topic": "/ayanami/planner/path",
-    "smoother_path_topic": "/ayanami/smoother/path",
-    "global_costmap_topic": "/ayanami/global_costmap",
-    "local_costmap_topic": "/ayanami/local_costmap",
-    "static_map_topic": "/ayanami/map",
-    "planner_goal_topic": "/ayanami/planner/goal",
-    "planner_feedback_topic": "/ayanami/planner/feedback",
-    "smoother_input_path_topic": "/ayanami/smoother/input_path",
-    "smoother_feedback_topic": "/ayanami/smoother/feedback",
-    "controller_path_topic": "/ayanami/controller/path",
-    "controller_feedback_topic": "/ayanami/controller/feedback",
-    "controller_status_topic": "/ayanami/controller/status",
-    "recovery_goal_topic": "/ayanami/recovery/goal",
-    "recovery_feedback_topic": "/ayanami/recovery/feedback",
-    "recovery_status_topic": "/ayanami/recovery/status",
-    "robot_state_topic": "/ayanami/robot_state",
     "map_frame": "map",
     "odom_frame": "odom",
     "robot_frame": "base_link",
@@ -47,9 +29,8 @@
         "laser"
       ]
     ],
-    "navigation_so_name": "libayanami_costmap_navigation.so",
-    "extension_modules": [
-      "libayanami_rviz_viewer.so"
-    ]
+    "localization_clear_yaw_threshold": 1.0,
+    "localization_clear_pos_threshold": 2.0,
+    "navigation_so_name": "libayanami_costmap_navigation.so"
   }
 }

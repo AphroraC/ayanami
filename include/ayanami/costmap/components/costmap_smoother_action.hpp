@@ -13,12 +13,15 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief 路径平滑的 costmap 版 Action ( 生产路径)。
+ * @brief The costmap variant of the path smoothing Action (production
+ * path).
  *
- * 复用 SmootherAction 全部协议 (TaskHandle 直连 + 旁路 emit), 只覆写
- * createExecution: 返回 CostmapSmootherExecution (带 CostmapMapContext 的
- * 激活/停用 global + safetyCheck→isCurrent)。执行配置器 (server 装配:
- * 速度上限等) 经 configure 注入, 默认无操作。
+ * Reuses the entire SmootherAction protocol (TaskHandle direct + side-path
+ * emit) and only overrides createExecution: returns a
+ * CostmapSmootherExecution (with CostmapMapContext global
+ * activation/deactivation + safetyCheck->isCurrent). The execution
+ * configurator (server assembly: velocity limits etc.) is injected via
+ * configure; a no-op by default.
  */
 class CostmapSmootherAction : public ayanami::components::SmootherAction {
  public:

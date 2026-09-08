@@ -15,18 +15,18 @@ using ayanami::actions::GoalResult;
 
 namespace {
 
-// 由 main 从 argv 读取 (ctest 传 $<TARGET_FILE:echo_extension> 路径)
+// Read by main from argv (ctest passes the $<TARGET_FILE:echo_extension> path)
 std::string g_echo_so;
 
 } // namespace
 
 TEST(NavigationCallbacksTest, addAndCallAcrossCompilationUnits) {
-  // 槽对象实体定义在 libayanami 的 src/interfaces/callbacks.cpp (不 inline),
-  // 测试编译单元 (link libayanami) 引用到同一实例 → 跨编译单元一致。
+  // The slot object is defined out-of-line in libayanami's src/interfaces/callbacks.cpp (not inline),
+  // so the test TU (which links libayanami) refers to the same instance -> consistent across TUs.
   int received = 0;
   const int id = NavigationCallbacks::on_get_path_result.add(
       [&](const auto&){ received++; });
-  // 右值防护: 非平凡类型必须传左值, 避免多观察者下第一个 observer 搬空参数。
+  // Rvalue guard: non-trivial types must be passed as lvalues so the first observer cannot move the argument away.
   const GoalResult<GetPathResult> result{};
   NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(received, 1);
@@ -34,7 +34,7 @@ TEST(NavigationCallbacksTest, addAndCallAcrossCompilationUnits) {
 }
 
 TEST(NavigationCallbacksTest, threadSafeAcrossAddRemoveCall) {
-  // 同 的并发测试, 但挂在 NavigationCallbacks 槽上。
+  // Same concurrency test, but attached to the NavigationCallbacks slot.
   std::atomic<int> hits{0};
   const int id = NavigationCallbacks::on_get_path_result.add([&](const auto&){ hits++; });
   std::vector<std::thread> ts;
@@ -52,8 +52,8 @@ TEST(NavigationCallbacksTest, threadSafeAcrossAddRemoveCall) {
 }
 
 TEST(NavigationCallbacksTest, subscriptionHandleUnsubscribesOnDestruction) {
-  // RAII 生命周期: CallbackSubscription 析构即退订, 其后的 emit 不再送达;
-  // 移动赋值只保留最新一份订阅 (旧的被替换退订)。
+  // RAII lifetime: destroying a CallbackSubscription unsubscribes; later emits are no longer delivered;
+  // move assignment keeps only the newest subscription (the old one is replaced and unsubscribed).
   std::atomic<int> hits{0};
   {
     ayanami::CallbackSubscription sub =
@@ -62,12 +62,12 @@ TEST(NavigationCallbacksTest, subscriptionHandleUnsubscribesOnDestruction) {
     GoalResult<GetPathResult> result{};
     NavigationCallbacks::on_get_path_result(result);
     EXPECT_EQ(hits.load(), 1);
-  }  // sub 析构 → 退订
+  }  // sub destructor -> unsubscribe
   GoalResult<GetPathResult> result{};
   NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(hits.load(), 1);
 
-  // 移动赋值: 旧订阅退订, 新订阅生效。
+  // Move assignment: the old subscription is unsubscribed, the new one takes effect.
   ayanami::CallbackSubscription outer;
   {
     ayanami::CallbackSubscription first =
@@ -75,20 +75,20 @@ TEST(NavigationCallbacksTest, subscriptionHandleUnsubscribesOnDestruction) {
             [&](const auto&) { hits++; });
     NavigationCallbacks::on_get_path_result(result);
     EXPECT_EQ(hits.load(), 2);
-    outer = std::move(first);  // first 变空, 订阅转移给 outer
+    outer = std::move(first);  // first becomes empty; the subscription was moved to outer
   }
   NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(hits.load(), 3);
-  outer.reset();  // 显式退订 (等价析构)
+  outer.reset();  // Explicit unsubscribe (equivalent to destruction)
   NavigationCallbacks::on_get_path_result(result);
   EXPECT_EQ(hits.load(), 3);
 }
 
 TEST(NavigationCallbacksTest, callbackVisibleAcrossSoBoundary) {
-  // dlopen echo_extension.so (链接 libayanami): 其构造期 add 到
-  // NavigationCallbacks::on_get_path_result。本测试 emit 槽后, echo .so
-  // 内部的计数必须增加 —— 证明槽对象是 libayanami 内的同一实例
-  // (关键纪律, 不能用 inline static)。
+  // dlopen echo_extension.so (linked against libayanami): its constructor adds itself to
+  // NavigationCallbacks::on_get_path_result. After this test emits the slot, the counter inside the echo .so
+  // must have increased -- proving the slot object is the single instance inside libayanami
+  // (key discipline: an inline static must not be used).
   auto ext = ayanami::ExtensionModule::load_module(g_echo_so);
   ASSERT_NE(ext, nullptr);
   auto hits_fn =

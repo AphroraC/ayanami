@@ -1,4 +1,4 @@
-// base_obstacle.cpp — 迁移自 dwb_critics/src/base_obstacle.cpp。
+// base_obstacle.cpp -- ported from dwb_critics/src/base_obstacle.cpp.
 #include "base_obstacle.hpp"
 
 #include <string>

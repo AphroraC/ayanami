@@ -110,7 +110,7 @@ inline void reportCallbackException() noexcept {
  *
  * Holds a copy-on-write immutable snapshot of the callback list. Emissions
  * only read the currently published snapshot via an atomic load: no mutex, no
- * allocation, no std::function copies on the call path — each callback is
+ * allocation, no std::function copies on the call path -- each callback is
  * dereferenced in place. Mutations (add/remove) serialize on an internal
  * mutex, copy the snapshot, apply the change and republish it; concurrent
  * emitters keep the old snapshot alive for the duration of their call.
@@ -128,7 +128,7 @@ inline void reportCallbackException() noexcept {
  *
  * @note The static slot objects that need to be shared across .so boundaries
  *       (see NavigationCallbacks) must be defined in libayanami's .cpp, NOT
- *       as inline/static members of a header — otherwise each .so keeps its
+ *       as inline/static members of a header -- otherwise each .so keeps its
  *       own instance and callbacks registered from plugins silently vanish.
  *       The exception-handler hook above has the same caveat: set it from the
  *       main DSO if plugins should adopt the same logging sink.
@@ -139,8 +139,9 @@ class CallbackSlot {
 
   std::shared_ptr<const CallbackList> snapshot;
   std::atomic<std::size_t> subscriber_count{0};
-  // 缓存行隔离: add/remove 写 mutex 时不与 emit 热读的
-  // snapshot/subscriber_count 产生伪共享 (对齐到独立 cache line)。
+  // Cache-line isolation: add/remove writes on the mutex must not false-
+  // share with the snapshot/subscriber_count hot-read by emit (aligned to
+  // its own cache line).
   alignas(64) mutable std::mutex mutex;
 
   void publish(std::shared_ptr<CallbackList> fresh) {
@@ -202,10 +203,13 @@ public:
    * from the immutable snapshot, so a callback may add/remove subscriptions
    * or emit the same slot recursively without affecting this emission.
    *
-   * 右值防护 (编译期): 参数会转发给每一个 observer, 非平凡类型的右值/按值
-   * 参数会在第一个 observer 处被 move 搬空, 后续 observer 读到 moved-from
-   * 状态。因此只允许左值引用或 trivially-copyable 的按值实参 (对可平凡拷贝
-   * 类型 move == copy, 每个 observer 都拿到完整值); 非平凡结构体请传左值。
+   * Rvalue guard (compile time): arguments are forwarded to every
+   * observer; rvalue/by-value arguments of non-trivial types would be moved
+   * out at the first observer, and later observers would read moved-from
+   * state. Therefore only lvalue references or trivially-copyable by-value
+   * arguments are allowed (for trivially copyable types move == copy, so
+   * every observer gets the full value); pass lvalues for non-trivial
+   * structs.
    */
   template <typename... Args>
   void call(Args&&... args) const {

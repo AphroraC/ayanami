@@ -1,5 +1,5 @@
-// rotate_to_goal.cpp — 迁移自 dwb_critics/src/rotate_to_goal.cpp
-// (angles::shortest_angular_distance 换数学实现)。
+// rotate_to_goal.cpp -- ported from dwb_critics/src/rotate_to_goal.cpp
+// (angles::shortest_angular_distance becomes a math implementation).
 #include "rotate_to_goal.hpp"
 
 #include <filesystem>
@@ -21,10 +21,10 @@ void RotateToGoalCritic::onInit() {
       config().param<double>(dwb_plugin_name, "xy_goal_tolerance", 0.25);
   xy_goal_tolerance_sq = xy_goal_tolerance * xy_goal_tolerance;
 
- // 容差联动一致性校验: 本 critic 的切入半径应 <= goal_checker 的到达容差,
- // 否则接近终点时"原地转向"与"未判到达"的判定区间重叠 (nav2 靠参数手动
- // 对齐, 这里显式校验)。checker 配置不在本插件 PluginContext 内, 经
- // GlobalConfig 解析导航配置; 任何缺失都静默跳过 (不阻塞插件加载)。
+ // Cross-parameter tolerance consistency check: this critic's engage radius should be <= the goal_checker's arrival tolerance;
+ // otherwise, near the goal, the "rotate in place" and "not yet arrived" decision regions overlap (nav2 relies on manual
+ // parameter alignment; here it is validated explicitly). The checker config is not in this plugin's PluginContext, so it is
+ // resolved from the navigation config via GlobalConfig; any absence silently skips (does not block plugin loading).
   try {
     ayanami::Config nav_cfg(
         ayanami::GlobalConfig::getConfigPath("config_navigation"));
@@ -124,7 +124,7 @@ double RotateToGoalCritic::scoreRotation(const dwb_msgs::Trajectory2D& traj) {
   } else {
     end_yaw = traj.poses.back().theta;
   }
-  // angles::shortest_angular_distance(from, to): 归一化到 [-pi, pi] 的最短角差
+  // angles::shortest_angular_distance(from, to): shortest angular difference normalized to [-pi, pi]
   return fabs(std::remainder(end_yaw - goal_yaw, 2.0 * M_PI));
 }
 

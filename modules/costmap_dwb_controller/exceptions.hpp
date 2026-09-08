@@ -1,6 +1,6 @@
-// exceptions.hpp — DWB 异常体系 (迁移自 dwb_core/exceptions.hpp +
-// illegal_trajectory_tracker.hpp/cpp, nav2_core::PlannerException 换
-// std::runtime_error)。
+// exceptions.hpp -- DWB exception hierarchy (ported from dwb_core/exceptions.hpp +
+// illegal_trajectory_tracker.hpp/cpp; nav2_core::PlannerException becomes
+// std::runtime_error).
 #pragma once
 
 #include <map>
@@ -11,7 +11,7 @@
 namespace dwb_core {
 
 /**
- * @brief 基类规划异常 (等价 nav2_core::PlannerException)。
+ * @brief Base planner exception (equivalent of nav2_core::PlannerException).
  */
 class PlannerException : public std::runtime_error {
 public:
@@ -43,7 +43,7 @@ protected:
 };
 
 /**
- * @brief 统计非法轨迹的失败原因分布 (迁移自 illegal_trajectory_tracker)。
+ * @brief Tracks the failure-reason distribution of illegal trajectories (ported from illegal_trajectory_tracker).
  */
 class IllegalTrajectoryTracker {
 public:
