@@ -24,9 +24,10 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
   `goal_revision = 0`。
 - 后续 goal：`++goal_revision`（同一会话内的目标修订）。
 - 重写黑板：`goal / goal_revision / session_id / plan_version /
-  reset_stuck_token / failure_context(清零)`。
-- goal_revision 的变化同时是树上 RateController(planner/smoother 分支) 与
-  RecoverySequence/RoundRobin 的 **reset_token**（新导航轮重置游标与缓存）。
+  failure_context(清零)`。
+- goal_revision 的变化同时是树上 planner RateController 与
+  RecoverySequence/RoundRobin 的 **reset_token**（新导航轮重置游标与缓存）；
+  smoother 分支的 reset_token 是 {plan_version}（规划落地即重平滑）。
 
 ## 3. 规划 → 平滑 → 跟随（Pipeline 流水线）
 
@@ -38,13 +39,13 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
     <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
       <RecoveryNode name="ComputePath" number_of_retries="1">
         <Sequence>
-          <ComputePathToPose goal="{goal}" path="{raw_path}" path_id="{path_id}"/>
+          <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
           <IsPathValid path="{raw_path}"/>
         </Sequence>
         <Sequence><Recovery recovery="{clear_costmap_id}"/></Sequence>
       </RecoveryNode>
     </RateController>
-    <RateController hz="{smoother_frequency}" reset_token="{path_id}">
+    <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
       <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
     </RateController>
     <RecoveryNode name="FollowPath" number_of_retries="1">
@@ -67,8 +68,8 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
 
 | BT 节点 | onStart | onRunning |
 |---|---|---|
-| ComputePathToPose | `requestPath`，注册 `onComplete → emitWakeUpSignal` | goal 端口变化 → 重发请求；`sessionIsCurrent && planVersionIsCurrent` 双校验；成功写 `raw_path` + `path_id++` |
-| SmoothPath | `requestSmoothing` | 同上校验；成功写 `smoothed_path` 并 `incrementPlanVersion` |
+| ComputePathToPose | `requestPath`，注册 `onComplete → emitWakeUpSignal` | goal 端口变化 → 重发请求；session 校验（版本陈旧拒绝不适用于 planner，它自己是版本推进者）；成功写 `raw_path` + `plan_version++` 并写黑板 |
+| SmoothPath | `requestSmoothing` | session 校验；输入签名与上次一致时直接 SUCCESS（跳过重复平滑）；成功写 `smoothed_path` 并 `incrementPlanVersion` |
 | FollowPath | `requestExecution`（记录 submitted_plan_version） | **先查 task.ready()**；plan_version 变化 → `requestPlanUpdate`（in-place，不 cancel）——update miss 时不误报失败，重查已完成结果或下一 tick 重试 |
 | Recovery | `requestRecovery`（cause=黑板 failure_context；支持按次覆盖端口 target_yaw/backup_distance/backup_speed/wait_duration） | 成功即 SUCCESS |
 
@@ -82,25 +83,33 @@ FollowPath 发现有新版本时对运行中的 controller 执行 in-place `upda
 每个周期（1/controller_frequency，默认 20Hz）：
 
 1. cancel/stop 检查；`safetyCheck()`（costmap 地图族 = wrapper isCurrent）。
+   **失败计入 controller_patience**（nav2 failure_tolerance 语义：<0 无限
+   容忍、0 立即失败、>0 容忍窗口），超时以 **MAP_STALE 终态**上报，交 BT
+   恢复分支（clear costmap）——不再无限零速循环。
 2. `hasNewPlan()` → 原子取 `(plan, plan_version)` → `controller->setPlan` →
    **goal 位姿快照 + goal_checker/progress_checker reset** → applied 版本推进。
-3. `RobotStateController::getRobotState`（位姿 = TF map←base 最新；速度 = 最新
+3. `RobotStateController::getRobotState`（位姿 = TF 最新；速度 = 最新
    odom，超 `velocity_timeout` 返回零速）；失败 → TRANSFORM_UNAVAILABLE 终态。
-4. `goal_checker->isGoalReached`（唯一到达判定）→ 到达：零速 + ARRIVED_GOAL。
-5. `progress_checker->check`（无进展判定，patience 内清零重试）→ 失败：
-   NO_PROGRESS 终态。
-6. `callController`（地图族 execution 覆写为 typed 直调，含 global/local 视图
-   加锁）→ 有效命令：清零后经 `on_velocity_command` 发布；**发布前复查
+4. 进度度量（nav2 FollowPath feedback 语义）：speed、distance_remaining
+   （最近点投影到路径末端）、estimated_time_remaining（平均速度 ETA），
+   经 `on_exe_path_feedback` 插槽每周期发出。
+5. `goal_checker->isGoalReached`（唯一到达判定）→ 到达：零速 + ARRIVED_GOAL。
+6. `progress_checker->check`（无进展判定）→ 失败：NO_PROGRESS 终态。
+7. `callController`（地图族 execution 覆写为 typed 直调，局部图加锁）→
+   有效命令：清零后经 `on_velocity_command` 发布；**发布前复查
    cancel/stop**，防止恢复启动瞬间漏出一条旧命令。
-7. 无效命令（非有限/超限）：清零发布，patience > 0 时按累计时长终态上报
-   （对标 nav2 failure_tolerance；默认 0 = 关闭）。
+8. 无效命令（非有限/超限）：清零发布，按 controller_patience 累计终态
+   （TIMEOUT）。
 
 ## 5. 恢复（资源协议）
 
 - **requestRecovery 独占**：CAS `recovery_exclusive`（true=占住）→ 校验
-  recovery_id → **同步 `cancelAllControllers()`** → acceptGoal →
-  `task.onComplete(释放互斥)`。恢复期间 request* 返回
-  `RESOURCE_BUSY` 结构化拒绝（不发旁路事件）。
+  recovery_id → `preemptAllControllers()`（非阻塞：cancel 内已同步发零速，
+  任务自行收尾，BT tick 线程不阻塞等慢插件）→ acceptGoal →
+  `task.onComplete(释放互斥)`（**listener 先于 future 发布**，杜绝"BT 已见
+  完成但互斥未释放"的竞态窗口）。恢复期间其余 request* 返回
+  `RESOURCE_BUSY` 结构化拒绝；RESOURCE_BUSY 归类为**可恢复**（瞬时态，
+  交恢复分支重试）。
 - RecoveryExecution 驱动插件统一协议 `start → tick×N → finish`，是恢复期间
   **唯一速度发布者**（插件 tick 只返回期望速度 optional，执行层校验
   finite+max_vel 后发布；终态一律先零速）。

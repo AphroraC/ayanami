@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include "ayanami/abstract/components/execution_base.hpp"
 #include "ayanami/abstract/core/abstract_controller.hpp"
+#include "ayanami/messages/actions.hpp"
 #include "ayanami/abstract/core/abstract_goal_checker.hpp"
 #include "ayanami/abstract/core/abstract_progress_checker.hpp"
 #include "ayanami/abstract/components/robot_state_controller.hpp"
@@ -11,6 +12,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -60,6 +62,10 @@ public:
     STOPPED,
     INTERNAL_ERROR,
     ROBOT_DISABLED,
+    /// @brief Terminal: safetyCheck (map freshness) stayed false longer than
+    /// controller_patience. Reported so the BT recovery branch (clear costmap
+    /// / replan) takes over instead of the loop stalling in zero velocity.
+    MAP_STALE,
   };
 
   explicit ControllerExecution(ayanami::abstract::AbstractController::Ptr controller)
@@ -121,10 +127,12 @@ public:
 
   double getControllerFrequency() const { return controller_frequency; }
 
-  /// @brief Patience for lacking valid commands (seconds, mirrors nav2
-  /// failure_tolerance); <=0 disables it (default): failures publish a
-  /// zeroed command and keep looping; terminal states are decided only by
-  /// arrival/progress/cancel/stop.
+  /// @brief Patience (seconds, nav2 failure_tolerance semantics): the time
+  /// without a valid command (plugin failure/invalid command) or with a
+  /// failed safety check (stale map) that is tolerated before a terminal
+  /// state is reported. 0 = fail on the first bad cycle; negative (default
+  /// -1) = tolerate forever, matching the old "disabled" behavior. Retry and
+  /// recovery decisions always belong to the BT.
   void setPatience(double seconds) {
     patience = std::chrono::duration<double>(seconds);
   }
@@ -144,9 +152,13 @@ public:
 
   double getPoseGrace() const { return pose_grace.count(); }
 
-  bool isPatienceExceeded() const {
-    if (patience <= std::chrono::duration<double>(0)) return false;
-    return std::chrono::steady_clock::now() - start_time > patience;
+  /// @brief nav2 failure_tolerance semantics: patience < 0 tolerates forever;
+  /// patience >= 0 fails once the elapsed time since `since` (the last valid
+  /// command, or the first stale safety check) exceeds it (0 = immediate).
+  bool isPatienceExceeded(
+      std::chrono::steady_clock::time_point since) const {
+    if (patience < std::chrono::duration<double>(0)) return false;
+    return std::chrono::steady_clock::now() - since > patience;
   }
 
   void setMaximumVelocity(double linear_x, double linear_y,
@@ -154,6 +166,15 @@ public:
     max_linear_x = linear_x;
     max_linear_y = linear_y;
     max_angular_z = angular_z;
+  }
+
+  /// @brief Feedback sink (nav2 FollowPath semantics: speed /
+  /// distance_remaining / estimated_time_remaining, emitted every control
+  /// cycle through the action layer to the on_exe_path_feedback slot).
+  using FeedbackFn =
+      std::function<void(const ayanami::actions::ExePathFeedback&)>;
+  void setFeedbackCallback(FeedbackFn callback) {
+    feedback_callback = std::move(callback);
   }
 
   /// @brief Inject the goal-checker plugin (wired by NavigationServerBase createActions).
@@ -208,6 +229,7 @@ protected:
 
   void run() override {
     start_time = std::chrono::steady_clock::now();
+    last_valid_time = start_time;
     setState(STARTED, false);
 
     // Loop period from controller_frequency
@@ -248,10 +270,27 @@ protected:
         }
 
         if (!safetyCheck()) {
+          // Stale/unsafe map: publish zero and count the outage into
+          // controller_patience (nav2 failure_tolerance semantics: <0 =
+          // tolerate forever, 0 = first stale cycle aborts). Exceeding it is
+          // a MAP_STALE terminal so the BT recovery branch (clear costmap /
+          // replan) takes over instead of looping in zero velocity forever.
           publishStopCommand();
+          const auto now = std::chrono::steady_clock::now();
+          if (!map_stale_since) {
+            map_stale_since = now;
+          }
+          if (isPatienceExceeded(*map_stale_since)) {
+            error = ErrorCode::MAP_STALE;
+            message = "Map is not current (safety check failed)";
+            publishStopCommand();
+            setState(MAP_STALE, true);
+            return;
+          }
           sleepInterruptibly(period);
           continue;
         }
+        map_stale_since.reset();
 
         // Dynamically update the path (safe for continuous replanning)
         if (hasNewPlan()) {
@@ -314,6 +353,12 @@ protected:
         }
         pose_failure_since.reset();
 
+        // Progress metrics for the cycle feedback (nav2 FollowPath
+        // semantics): remaining length from the nearest path point, smoothed
+        // average speed, ETA from the two.
+        updateProgressMetrics(robot_pose, robot_velocity);
+        emitFeedback();
+
         // Goal check: goal_checker is the sole arrival decision
         if (goal_checker->isGoalReached(robot_pose, goal, robot_velocity)) {
           error = ErrorCode::NONE;
@@ -356,6 +401,9 @@ protected:
             error = ErrorCode::NONE;
             message = result.message;
             setState(GOT_LOCAL_CMD, false);
+            // nav2 failure_tolerance semantics: the tolerance window is
+            // measured from the last valid command, not from task start.
+            last_valid_time = std::chrono::steady_clock::now();
             ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd_vel);
           }
         } else {
@@ -364,7 +412,7 @@ protected:
         }
 
         if (error != ErrorCode::NONE) {
-          if (isPatienceExceeded()) {
+          if (isPatienceExceeded(last_valid_time)) {
             error = ErrorCode::TIMEOUT;
             publishStopCommand();
             setState(INTERNAL_ERROR, true);
@@ -411,6 +459,7 @@ protected:
       case STOPPED:
       case INTERNAL_ERROR:
       case ROBOT_DISABLED:
+      case MAP_STALE:
         return true;
       default:
         return false;
@@ -432,8 +481,68 @@ protected:
   double max_linear_x{std::numeric_limits<double>::infinity()};
   double max_linear_y{std::numeric_limits<double>::infinity()};
   double max_angular_z{std::numeric_limits<double>::infinity()};
-  std::chrono::duration<double> patience{0};
+  FeedbackFn feedback_callback;
+  double last_speed{0.0};
+  double distance_remaining{0.0};
+  double avg_speed{0.0};
+  double estimated_time_remaining{0.0};
+
+  /// @brief nav2 failure_tolerance semantics: <0 (default) tolerates forever,
+  /// 0 fails immediately, >0 is the tolerance window in seconds.
+  std::chrono::duration<double> patience{-1};
   std::chrono::steady_clock::time_point start_time;
+  /// @brief Last valid-command timestamp (patience window origin) and the
+  /// first consecutive failed-safetyCheck timestamp (MAP_STALE window origin).
+  std::chrono::steady_clock::time_point last_valid_time;
+  std::optional<std::chrono::steady_clock::time_point> map_stale_since;
+
+  /// @brief Update speed / distance_remaining / avg-speed metrics (call
+  /// after the robot state query, before the goal check).
+  void updateProgressMetrics(
+      const geometry_msgs::PoseStamped& robot_pose,
+      const geometry_msgs::TwistStamped& robot_velocity) {
+    last_speed = std::hypot(robot_velocity.twist.linear.x(),
+                            robot_velocity.twist.linear.y());
+    // Remaining length = distance to the nearest plan point + the plan
+    // length from there to the end (nav2 distance_remaining semantics,
+    // nearest-point projection).
+    std::size_t nearest_index = 0;
+    double best = std::numeric_limits<double>::max();
+    for (std::size_t i = 0; i < plan.poses.size(); ++i) {
+      const double d = (plan.poses[i].pose.position -
+                        robot_pose.pose.position)
+                           .norm();
+      if (d < best) {
+        best = d;
+        nearest_index = i;
+      }
+    }
+    double remaining = best;
+    for (std::size_t i = nearest_index; i + 1 < plan.poses.size(); ++i) {
+      remaining += (plan.poses[i + 1].pose.position -
+                    plan.poses[i].pose.position)
+                       .norm();
+    }
+    distance_remaining = remaining;
+    // Exponential moving average of the measured speed drives the ETA.
+    constexpr double k_alpha = 0.2;
+    avg_speed = (1.0 - k_alpha) * avg_speed + k_alpha * last_speed;
+    estimated_time_remaining =
+        avg_speed > 1e-3 ? distance_remaining / avg_speed : 0.0;
+  }
+
+  /// @brief Publish the cycle feedback (no-op without an injected sink).
+  void emitFeedback() {
+    if (!feedback_callback) {
+      return;
+    }
+    ayanami::actions::ExePathFeedback feedback;
+    feedback.speed = last_speed;
+    feedback.distance_remaining = distance_remaining;
+    feedback.estimated_time_remaining = estimated_time_remaining;
+    feedback.message = message;
+    feedback_callback(feedback);
+  }
 
   /// @brief Goal-change detection for checker resets: position/orientation
   /// only (header stamps change on every replan and must not count).

@@ -46,23 +46,24 @@ namespace costmap {
  *   directly (with CostmapMapContext + execution configuration: checkers/
  *   velocity limits/robot state source), replacing the base class's
  *   new*Execution virtual factory indirection layer.
- * - configureCoreMaps(config_path) reads config_costmap and builds the
- *   global/local LayeredCostmap pair, both in the shared map frame:
- *   global = StaticLayer+InflationLayer; local = rolling
- *   SimpleObstacleLayer+InflationLayer; every change (obstacle stamping /
- *   command-port clear) is applied by this server as the sole writer via
- *   updateMap -> publishing an immutable epoch.
+ * - configureCoreMaps(config_path) reads config_navigation and builds the
+ *   global/local LayeredCostmap pair in DIFFERENT frames:
+ *   global = StaticLayer+InflationLayer in global_costmap_frame (typically
+ *   "map"); local = rolling SimpleObstacleLayer+InflationLayer in
+ *   local_costmap_frame (typically "odom" -- the odometry frame keeps the
+ *   rolling dynamic window immune to localization jumps, nav2 convention).
+ *   Every change (obstacle stamping / command-port clear) is applied by this
+ *   server as the sole writer via updateMap -> publishing an immutable epoch.
  * - Obstacle observations do not go through global callback slots: the host
  *   (CostmapNavigation) hands setPointcloud/setLaserScan straight to the
  *   common handleObstacle* methods to stamp the map (input/output
- *   separation discipline). Sensor points are transformed into the shared
- *   map frame once (stamp-time query preferred) and stamped into both maps.
- * - The map context's transform lookups are wired here (TransformLookup
- *   function over the robot state): the context itself stays free of any
- *   global singleton dependency.
- * - RobotStateController frame names + velocity_timeout are configured once
- *   in configureCoreMaps; the controller execution reads the latest TF pose
- *   + latest velocity through it (zero velocity when stale).
+ *   separation discipline). Sensor points are transformed into each map's
+ *   own frame (stamp-time query preferred) and stamped per map.
+ * - All TF queries go through the RobotStateController singleton (the
+ *   framework-wide transform surface); its frame names + velocity_timeout
+ *   are configured once in configureCoreMaps. The controller execution reads
+ *   the latest TF pose + latest velocity through it (zero velocity when
+ *   stale).
  *
  * Before a dynamic obstacle update, clearArea the previous observation
  * window (including the old inflation band) so the InflationLayer
@@ -181,14 +182,17 @@ class CostmapNavigationServer
   // the interval before warning again.
   std::atomic<std::chrono::steady_clock::time_point> map_tf_warn_at{};
   std::atomic<std::chrono::steady_clock::time_point> robot_diag_at{};
-  // Robot pose cache (for rolling the local rolling window): on a transient
-  // pose query failure, roll the window with the last successful value and
-  // never fall back to (0,0,0) -- otherwise the rolling costmap window gets
-  // anchored back to the world origin and, once the robot walks out of the
+  // Robot pose caches, one per map frame (global/local): on a transient pose
+  // query failure, roll the window with the last successful value and never
+  // fall back to (0,0,0) -- otherwise the rolling costmap window gets
+  // anchored back to the frame origin and, once the robot walks out of the
   // window, dwb has no path (stuttering in place).
-  bool has_last_map_robot{false};
-  double last_map_robot_x{0.0}, last_map_robot_y{0.0};
-  double last_map_robot_yaw{0.0};
+  bool has_last_local_robot{false};
+  double last_local_robot_x{0.0}, last_local_robot_y{0.0};
+  double last_local_robot_yaw{0.0};
+  bool has_last_global_robot{false};
+  double last_global_robot_x{0.0}, last_global_robot_y{0.0};
+  double last_global_robot_yaw{0.0};
   // Each map owns an obstacle layer so dynamic markers and static content
   // combine per the map's own combination method.
   costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer{nullptr};

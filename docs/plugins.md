@@ -41,8 +41,8 @@ class AbstractPlanner : public virtual ExtensionModule {
 
 | 接口 | 纯虚 | 说明 |
 |---|---|---|
-| AbstractPlanner | makePlan(start, goal, tolerance) | 失败立即返回 ErrorCode，**不做内部重试**（重试归 BT） |
-| AbstractSmoother | smoothPath(Path&, max_duration, check_collision) | **in-place** 修改传入路径 |
+| AbstractPlanner | makePlan(start, goal, tolerance) | 失败立即返回 ErrorCode，**不做内部重试**（重试归 BT）；**start 永远有效**（空 start 由 PlannerExecution 经 RobotStateController 解析，插件不自解释哨兵） |
+| AbstractSmoother | smoothPath(Path&, max_duration, check_collision) | **in-place** 修改传入路径；碰撞检查只读 local（lockLocal），路径帧→局部帧变换每次调用解析一次 |
 | AbstractController | computeVelocityCommand(pose, velocity) + setPlan(plan) | 单周期速度命令；到达判定不归插件 |
 | AbstractRecovery | start() / tick() / finish()（+cancel/setBehaviorParams） | 框架固定周期驱动；tick 返回状态+optional 速度 |
 | AbstractGoalChecker / AbstractProgressChecker | configure/reset/isGoalReached·check | 由 ControllerExecution 消费 |
@@ -125,8 +125,11 @@ extern "C" ayanami::ExtensionModule* create_extension_module() {
 
 1. 新建 `config/modules/my_plugin.json`（family 段 + 参数段）。
 2. 在 `costmap_navigation.json::navigation` 增加文件指针
-   （planner/smoother/controller/goal_checker/progress_checker 单串；
-   recovery 追加到 `config_recovery` 数组）。
+   （planner/smoother/controller/goal_checker/progress_checker 单串或数组；
+   recovery 追加到 `config_recovery` 数组）。**数组 = 多插件**（nav2 语义）：
+   每个插件一个 action，BT 端口 `planner_id/controller_id/smoother_id`（可经
+   PlannerSelector/ControllerSelector/SmootherSelector 写黑板热切换）按 id
+   选择，空 id = 第一个配置的插件。生产配置仍为每族单插件。
 3. recovery 类插件补充 `role` 字段，pilot 会把它映射到黑板
    `spin_id/wait_id/backup_id/clear_costmap_id`（默认树的恢复引用）。
 

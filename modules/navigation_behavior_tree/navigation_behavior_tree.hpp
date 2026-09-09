@@ -56,7 +56,7 @@ class NavigationBehaviorTreeExtension
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-               <ComputePathToPose goal="{goal}" path="{raw_path}" path_id="{path_id}"/>
+               <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
@@ -64,7 +64,7 @@ class NavigationBehaviorTreeExtension
             </Sequence>
           </RecoveryNode>
         </RateController>
-        <RateController hz="{smoother_frequency}" reset_token="{path_id}">
+        <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
                <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
         </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">

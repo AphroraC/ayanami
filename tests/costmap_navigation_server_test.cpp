@@ -344,14 +344,16 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   ASSERT_NE(server.costmapContext(), nullptr);
   ASSERT_NE(server.globalCostmap(), nullptr);
   ASSERT_NE(server.localCostmap(), nullptr);
-  EXPECT_EQ(server.costmapContext()->getMapFrame(), "map");
+  EXPECT_EQ(server.costmapContext()->getGlobalFrame(), "map");
   EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
-  // Frame single-source consistency: both wrappers share the map frame.
+  // Frame single-source consistency: global wrapper in the global frame,
+  // local wrapper in the local frame; RSC configured with the same names.
   {
-    EXPECT_EQ(server.localCostmap()->getGlobalFrame(), "map");
     EXPECT_EQ(server.globalCostmap()->getGlobalFrame(), "map");
+    EXPECT_EQ(server.localCostmap()->getGlobalFrame(),
+              server.costmapContext()->getLocalFrame());
     auto& rsc = ayanami::components::RobotStateController::instance();
-    EXPECT_EQ(rsc.getGlobalFrame(), server.costmapContext()->getMapFrame());
+    EXPECT_EQ(rsc.getGlobalFrame(), server.costmapContext()->getGlobalFrame());
     EXPECT_EQ(rsc.getRobotFrame(), server.costmapContext()->getRobotFrame());
   }
   EXPECT_DOUBLE_EQ(server.globalCostmap()->get().getCostmap()->getOriginX(),

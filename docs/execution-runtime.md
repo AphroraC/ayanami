@@ -62,22 +62,48 @@ runTask catch 后置 `k_aborted=250` 统一终态并发布停止命令——驱�
 
 ## Action 层
 
-`ActionBase<Goal, Execution>`：并发槽 + 抢占语义（对标 MBF
-AbstractActionBase）。
+`ActionBase<Goal, Execution>`：单在飞槽 + 抢占语义（对标 MBF
+AbstractActionBase；单导航纪律下旧并发槽收敛为单在飞记录 + pending 槽）。
 
-- 每个 `ConcurrencySlot` 持 execution + **驱动线程**（runImpl 一次完整执行）。
-- `start()`：同槽先 cancel 旧 execution → 等旧驱动任务 `task_done` →
-  join 旧线程 → 换装新 execution → spawn 新驱动线程（同槽绝不重入）。
+- 每个在飞任务持 execution + **驱动线程**（runImpl 一次完整执行）。
+- `start()`：同槽在飞时先 cancel 旧 execution（cancel 内同步发零速）→
+  新 goal 停靠 pending 槽 → 旧驱动任务退出时 teardown 链装新驱动线程
+  （tick 线程绝不阻塞在慢插件上，同槽插件绝不重入）。
 - `runImplCommon`：轮询骨架——先查 `aborted()`（k_aborted 兜底优先），
   再交给派生的 StateMapper（透传 cancel / Execution 状态→GoalStatus 映射 /
   finish 结算），`waitForStateUpdate` 事件驱动 + 20ms 兜底。
 - `runImpl` 异常兜底：`abortGoal` 保证 TaskHandle 完成（不完成会让等待方与
   recovery 互斥悬挂）。
+- **TaskHandle 完成顺序**：`TaskState::complete` 先跑 onComplete listener
+  （旁路 emit + recovery 互斥释放）再 `promise.set_value`——先释放资源后
+  发布可见性，杜绝"BT 轮询已见 ready 但互斥未释放"的 RESOURCE_BUSY 竞态。
+
+## 多插件与 goal 级选择（nav2 语义）
+
+- planner/smoother/controller 支持**多插件配置**：每个加载的插件都有独立
+  action；recovery 本就按 id 派发。
+- goal 携带 `planner_id / smoother_id / controller_id`（BT 端口经
+  PlannerSelector/ControllerSelector/SmootherSelector 写黑板后绑定）；空 id
+  = 家族默认（第一个配置的插件）；显式未知 id → INVALID_INPUT 结构化拒绝。
+- `requestPlanUpdate(goal_id, ...)` 在全部 controller action 中按 goal_id
+  寻址；cancelAll*/preemptAll* 覆盖整个 action map（防止非默认 id 残留
+  速度输出）。
+- 生产配置仍为每族单插件（机制完备、配置从简）。
+
+## Feedback（nav2 对齐）
+
+- `ExePathFeedback{speed, distance_remaining, estimated_time_remaining,
+  message}`：controller execution 每控制周期计算（最近点投影剩余长 +
+  速度 EMA ETA），经 action 层发到 `on_exe_path_feedback` 插槽。
+- planner/smoother/recovery：nav2 本身无 feedback，ayanami 仅发 stage
+  message（accept/finished）。
+- 均只经全局回调插槽旁路输出；**ayanami_ros 不发布任何 *_feedback topic**。
 
 ## NavigationServerBase（NavigationRuntime）
 
 - `requestPath/requestSmoothing/requestExecution/requestRecovery` →
-  TaskHandle（主流）；request* 会盖上当前 session_id / plan_version。
+  TaskHandle（主流）；request* 会**盖上当前 session_id / plan_version**
+  （测试 mock 必须复刻同一契约），并按 goal 级 id 派发到对应 action。
 - `requestRecovery` 资源协议：CAS `recovery_exclusive` → 校验 id →
   **同步 `cancelAllControllers()`** → acceptGoal →
   `onComplete(释放互斥)`。恢复期间其余 request* 返回 RESOURCE_BUSY
@@ -85,6 +111,9 @@ AbstractActionBase）。
 - `requestPlanUpdate`：controller in-place 路径更新（无 cancel/join）。
 - 无人使用时 `cancelAllPlanners/Smoothers/Controllers` 供 halt/抢占调用。
 - checker 注入与速度上限注入（`configureControllerExecution`）。
+- 空 start 解析上收框架：`PlannerExecution::start/setNewGoal` 把空 start
+  （默认构造位姿）经 RobotStateController 解析为最新机器人位姿；插件契约
+  为"start 永远有效"，插件不再各自解释哨兵。
 
 ## 全局动态代价图重建触发（AyanamiROS）
 
@@ -100,5 +129,6 @@ map 系 scan 持续旋转、全局动态标记整体错位。
 |---|---|
 | AbstractPlannerExecution（一线程 + 状态机 + patience/retries） | ExecutionBase + 四族 Execution（**无内部重试**，重试归 BT） |
 | AbstractActionBase 并发槽 + 临时线程 | ActionBase 并发槽 + 槽内驱动线程（每长任务一线程，无池） |
-| uint32 outcome + message | ErrorCode 枚举 + Result 结构 + 结构化拒绝 |
+| uint32 outcome + message | ErrorCode 枚举 + Result 结构 + 结构化拒绝（RESOURCE_BUSY 可恢复） |
 | pluginlib | dlopen + create_extension_module 工厂 |
+| 无 feedback 概念（MBF）| nav2 式 feedback：ExePath 周期度量经 on_exe_path_feedback 插槽 |

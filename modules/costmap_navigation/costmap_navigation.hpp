@@ -49,7 +49,9 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
 
   /// @brief Localization correction jump: clears the global costmap dynamic layers (marks made under the old
   /// correction are untrusted; the static layer is kept, and later scans rebuild it under the new correction).
-  /// local is in the odom frame, unaffected by AMCL jumps, so it is not cleared.
+  /// The local map lives in the local costmap frame (local_costmap_frame,
+  /// typically odom), which the map<-odom correction does not touch, so its
+  /// marks stay valid and it is not cleared.
   void onLocalizationJump() override;
 
   // ---- Test/host support accessors ----

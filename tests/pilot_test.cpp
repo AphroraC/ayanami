@@ -105,14 +105,17 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   }
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
-    auto task = path_server.acceptGoal(goal);
-    last_path_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = path_server.acceptGoal(g);
+    last_path_goal = g;
     if (path_sync) {
       GetPathResult r;
       r.error = path_failure;
       r.path = path_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       path_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -120,22 +123,28 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<SmoothPathResult> requestSmoothing(
       const SmoothPathGoal& goal) override {
-    auto task = smooth_server.acceptGoal(goal);
-    last_smooth_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = smooth_server.acceptGoal(g);
+    last_smooth_goal = g;
     if (smooth_sync) {
       SmoothPathResult r;
       r.error = smooth_failure;
       r.smoothed_path = smooth_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       smooth_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
   }
 
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
-    auto task = exe_server.acceptGoal(goal);
-    last_exe_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = exe_server.acceptGoal(g);
+    last_exe_goal = g;
     // cmd_vel bypass: simulates the controller velocity output (on_velocity_command)
     const ayanami::geometry_msgs::TwistStamped stop{};
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(stop);
@@ -143,21 +152,24 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
       ExePathResult r;
       r.error = exe_failure;
       r.reached = exe_reached;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       exe_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
   }
 
   TaskHandle<RecoveryResult> requestRecovery(const RecoveryGoal& goal) override {
-    auto task = recovery_server.acceptGoal(goal);
-    last_recovery_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = recovery_server.acceptGoal(g);
+    last_recovery_goal = g;
     if (recovery_sync) {
       RecoveryResult r;
       r.error = recovery_failure;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;

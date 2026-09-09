@@ -72,6 +72,9 @@ public:
       return task;
     }
     Base::start(*gh, createExecution());
+    Feedback accepted;
+    accepted.message = "controller goal accepted";
+    action_server->publishFeedback(gh->id, accepted);
     return task;
   }
 
@@ -137,6 +140,12 @@ public:
 protected:
   void runImpl(const GoalHandleType& gh, ControllerExecution& exec) override {
     action_server->setActive(gh.id);
+    // Per-cycle progress feedback (nav2 FollowPath: speed / distance
+    // remaining / ETA) flows through the action server to the
+    // on_exe_path_feedback slot.
+    exec.setFeedbackCallback([this, gh](const Feedback& feedback) {
+      action_server->publishFeedback(gh.id, feedback);
+    });
     exec.setNewPlan(gh.goal.path);
     exec.setPlanVersion(gh.goal.plan_version);
     exec.start();
@@ -165,6 +174,7 @@ protected:
             case ControllerExecution::STOPPED:
             case ControllerExecution::INTERNAL_ERROR:
             case ControllerExecution::ROBOT_DISABLED:
+            case ControllerExecution::MAP_STALE:
               finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
               return true;
             default:
@@ -206,6 +216,9 @@ private:
     // exec.getPlanVersion only after the execution loop consumes it and
     // setPlan succeeds.
     result.plan_version = exec.getPlanVersion();
+    Feedback feedback;
+    feedback.message = "goal finished";
+    action_server->publishFeedback(gh.id, feedback);
     action_server->publishResult(gh.id, status, result);
   }
 

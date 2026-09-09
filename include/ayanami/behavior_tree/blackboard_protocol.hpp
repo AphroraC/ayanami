@@ -36,7 +36,6 @@ inline bool goalEquals(const geometry_msgs::PoseStamped& lhs,
 // declared+provided by the extension that references them.
 inline constexpr const char* k_goal = "goal";
 inline constexpr const char* k_raw_path = "raw_path";
-inline constexpr const char* k_path_id = "path_id";
 inline constexpr const char* k_smoothed_path = "smoothed_path";
 inline constexpr const char* k_planner_frequency = "planner_frequency";
 inline constexpr const char* k_smoother_frequency = "smoother_frequency";
@@ -58,7 +57,7 @@ inline constexpr const char* k_failure_context = "failure_context";
 /// -- the BT only orchestrates recoveries and never decides what they do.
 inline const std::vector<const char*>& requiredBlackboardEntries() {
   static const std::vector<const char*> k_required = {
-    k_goal, k_raw_path, k_path_id, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
+    k_goal, k_raw_path, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
     k_session_id, k_plan_version,
     k_failure_context, k_goal_revision,

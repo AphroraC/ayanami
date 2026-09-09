@@ -22,6 +22,12 @@ namespace abstract {
  *
  * Responsibility table: the plugin only performs path search; failures
  * return an ErrorCode immediately, and retries are decided by the BT.
+ *
+ * Pose contract: `start` is ALWAYS a fully resolved, valid pose -- the
+ * execution layer (PlannerExecution) substitutes the latest robot pose for
+ * an empty start before the plugin is called. Plugins must not interpret
+ * sentinel poses themselves. The plan is expected in the start/goal frame
+ * (costmap family: the global costmap frame).
  */
 class AbstractPlanner : public virtual ExtensionModule {
  public:

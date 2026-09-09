@@ -111,7 +111,9 @@ public:
   /// @brief Stop the server: cancel and join all RUNNING actions (idempotent).
   void stop();
 
-  /// @brief Return the single configured action for the first three families.
+  /// @brief Lookup an action of the first three families by plugin id
+  /// (nav2 semantics: every configured plugin gets an action; an empty id
+  /// resolves to the family default = the first configured plugin).
   /// Recovery actions remain selectable by their configured recovery id.
   PlannerAction* plannerAction(const std::string& id = "") const;
   SmootherAction* smootherAction(const std::string& id = "") const;
@@ -215,7 +217,7 @@ protected:
   virtual void configureRecoveryExecution(
       std::shared_ptr<RecoveryExecution> exec) const;
 
-  /// @brief Shared dispatch for the three single-plugin families.
+  /// @brief Shared plugin managers for the four families (+ checkers).
   PluginManager<ayanami::abstract::AbstractPlanner> planner_plugins;
   PluginManager<ayanami::abstract::AbstractSmoother> smoother_plugins;
   PluginManager<ayanami::abstract::AbstractController> controller_plugins;
@@ -223,10 +225,12 @@ protected:
   PluginManager<ayanami::abstract::AbstractGoalChecker> goal_checker_plugins;
   PluginManager<ayanami::abstract::AbstractProgressChecker>
       progress_checker_plugins;
-  // The first three families each contain one configured plugin/action.
-  std::unique_ptr<PlannerAction> planner_action;
-  std::unique_ptr<SmootherAction> smoother_action;
-  std::unique_ptr<ControllerAction> controller_action;
+  // Multi-plugin action maps (nav2 semantics): every configured plugin gets
+  // an action; requests select by goal id, empty = default (first
+  // configured).
+  std::map<std::string, std::unique_ptr<PlannerAction>> planner_actions;
+  std::map<std::string, std::unique_ptr<SmootherAction>> smoother_actions;
+  std::map<std::string, std::unique_ptr<ControllerAction>> controller_actions;
   std::map<std::string, std::unique_ptr<RecoveryAction>> recovery_actions;
   std::string default_planner;
   std::string default_smoother;
@@ -242,10 +246,12 @@ protected:
   double max_vel_x{std::numeric_limits<double>::infinity()};
   double max_vel_y{std::numeric_limits<double>::infinity()};
   double max_vel_theta{std::numeric_limits<double>::infinity()};
-  // Patience (navigation.{controller_patience,recovery_patience}, seconds,
-  // <=0 = disabled): controller = failure_tolerance analogue (no valid
-  // command for this long -> terminal), recovery = per-run timeout.
-  double controller_patience{0.0};
+  // Patience (navigation.{controller_patience,recovery_patience}, seconds):
+  // controller = nav2 failure_tolerance analogue (<0 = tolerate forever
+  // [default], 0 = fail immediately, >0 = tolerance window; covers both "no
+  // valid command" and "stale map" -> MAP_STALE terminal), recovery = per-run
+  // timeout (<=0 = disabled).
+  double controller_patience{-1.0};
   double recovery_patience{0.0};
   // Robot-pose loss grace window (navigation.velocity_timeout, seconds):
   // injected into the controller execution (setPoseGrace).

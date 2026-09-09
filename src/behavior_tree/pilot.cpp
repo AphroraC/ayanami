@@ -343,6 +343,11 @@ void BehaviorTreePilot::buildTree(const std::string& xml_path,
     }
     tree_extensions.push_back(std::move(ext));
   }
+  // Resident-tree reset protocol as a BUILD-TIME check: every custom
+  // control/decorator node must implement NavigationTreeNodeState, otherwise
+  // its terminal-cached state leaks across tree lives (v4 halt only resets
+  // RUNNING children). A violating extension fails here, not in the field.
+  validateTreeNodeStateProtocol(factory);
   if (xml_path.empty()) {
     // The default tree was registered by the extension.
   } else {
@@ -374,7 +379,6 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal,
                                                geometry_msgs::PoseStamped{});
   bt_blackboard->set<nav_msgs::Path>(k_raw_path, nav_msgs::Path{});
-  bt_blackboard->set<uint64_t>(k_path_id, 0u);
   bt_blackboard->set<nav_msgs::Path>(k_smoothed_path, nav_msgs::Path{});
   bt_blackboard->set<double>(k_planner_frequency, planner_frequency);
   bt_blackboard->set<double>(k_smoother_frequency, smoother_frequency);

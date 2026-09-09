@@ -1,12 +1,17 @@
 // modules/costmap_savitzky_smoother -- 7-point Savitzky-Golay path smoothing.
 //
-// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapView (global master grid).
+// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapView (LOCAL master grid;
+// family read contract: smoother = local map only).
 // The core is the 7-point SG convolution (nav2 SavitzkyGolaySmoother semantics):
 // - coefficients [-2, 3, 6, 7, 6, 3, -2] / 21; end points fixed; interior points convolved over the window
 // - places with less than a full window at the boundaries use replicated padding (clamped to the end points)
 // - do_refinement: applies refinement_num more filter rounds to the result (bounded by max_duration)
 // - collision check: after smoothing, queries the local costmap point by point; any cost >=
-// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original
+// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original.
+// Frames: the path is expressed in its header frame (production: the global
+// costmap frame), the local grid in the local costmap frame (typically
+// odom) -- the grid<-path transform is resolved ONCE per smooth call (no
+// per-point TF queries) and the returned path keeps its original frame.
 
 #include "costmap_savitzky_smoother.hpp"
 
@@ -146,14 +151,40 @@ ResultT<void> CostmapSavitzkySmoother::smoothPath(
 
   updateOrientations(path.poses);
 
-  // Collision check: after smoothing, query the lock-held read view point by point; on a lethal hit roll back to the original.
+  // Collision check: after smoothing, query the lock-held read view point by
+  // point; on a lethal hit roll back to the original. The path frame and the
+  // local grid frame may differ (map vs odom): the grid<-path transform is
+  // resolved ONCE per call and applied to the query points; the returned
+  // path keeps its original frame untouched.
   const costmap_2d::Costmap2D* cm = costmap ? costmap->grid() : nullptr;
   if (cm) {
+    const std::string grid_frame =
+        costmap ? costmap->frame() : std::string{};
+    const std::string path_frame = path.header.frame_id.empty()
+                                       ? (map_context ? map_context->getGlobalFrame()
+                                                      : std::string{})
+                                       : path.header.frame_id;
+    Eigen::Isometry3d grid_from_path = Eigen::Isometry3d::Identity();
+    const bool need_transform =
+        !path_frame.empty() && !grid_frame.empty() && path_frame != grid_frame;
+    if (need_transform) {
+      if (!ayanami::components::RobotStateController::instance()
+               .lookupTransform(grid_frame, path_frame,
+                                ayanami::Timestamp::latest(), grid_from_path,
+                                0.0)) {
+        return ResultT<void>::failure(
+            ErrorCode::TRANSFORM_UNAVAILABLE,
+            "CostmapSavitzkySmoother: cannot transform path frame '" +
+                path_frame + "' into local costmap frame '" + grid_frame + "'");
+      }
+    }
     for (const auto& p : path.poses) {
+      const Eigen::Vector3d query =
+          need_transform ? (grid_from_path * p.pose.position)
+                         : p.pose.position;
       unsigned int mx = 0;
       unsigned int my = 0;
-      if (!cm->worldToMap(p.pose.position.x(), p.pose.position.y(),
-                          mx, my)) {
+      if (!cm->worldToMap(query.x(), query.y(), mx, my)) {
         continue;
       }
       if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {

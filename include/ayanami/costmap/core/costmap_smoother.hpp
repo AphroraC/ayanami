@@ -19,9 +19,10 @@ namespace costmap {
  * - configure(context, map): injects the plugin logical name + its own
  *   config + a const pointer to the map module.
  * - smoothPath(...): the abstract pure virtual in-place signature; when
- *   collision checking is needed, the implementation reads the map under a
- *   lock internally via map->lockGlobal() (zero copy, no copies or
- *   snapshots).
+ *   collision checking is needed, the implementation reads the LOCAL map
+ *   under a lock internally via map->lockLocal() (zero copy, no copies or
+ *   snapshots); a path expressed in another frame (production: the global
+ *   costmap frame) is transformed into the local frame once per call.
  */
 class CostmapSmoother : public ayanami::abstract::AbstractSmoother {
  public:

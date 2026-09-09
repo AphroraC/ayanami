@@ -119,14 +119,19 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
     ++path_request_count;
-    auto task = path_server.acceptGoal(goal);
-    last_path_goal = goal;
+    // Replicate the real server contract: request* stamps the CURRENT
+    // session/plan_version into the goal before accepting it.
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = path_server.acceptGoal(g);
+    last_path_goal = g;
     if (path_sync) {
       GetPathResult r;
       r.error = path_failure;
       r.path = path_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       path_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -134,14 +139,17 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<SmoothPathResult> requestSmoothing(
       const SmoothPathGoal& goal) override {
-    auto task = smooth_server.acceptGoal(goal);
-    last_smooth_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = smooth_server.acceptGoal(g);
+    last_smooth_goal = g;
     if (smooth_sync) {
       SmoothPathResult r;
       r.error = smooth_failure;
       r.smoothed_path = smooth_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       smooth_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -149,14 +157,17 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
     ++exe_request_count;
-    auto task = exe_server.acceptGoal(goal);
-    last_exe_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = exe_server.acceptGoal(g);
+    last_exe_goal = g;
     if (exe_sync) {
       ExePathResult r;
       r.error = exe_failure;
       r.reached = exe_reached;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       exe_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -164,13 +175,16 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<RecoveryResult> requestRecovery(const RecoveryGoal& goal) override {
     ++recovery_request_count;
-    auto task = recovery_server.acceptGoal(goal);
-    last_recovery_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = recovery_server.acceptGoal(g);
+    last_recovery_goal = g;
     if (recovery_sync) {
       RecoveryResult r;
       r.error = recovery_failure;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -302,8 +316,9 @@ TEST(BehaviorTreeActionTest, pipelineSequenceWritesPathsAndBumpsPlanVersion) {
   ASSERT_TRUE(bb->get<Path>(k_smoothed_path, smooth));
   EXPECT_FALSE(smooth.poses.empty());
 
-  // Only the final smoothed path publishes a new controller plan version.
-  EXPECT_EQ(server->currentPlanVersion(), 1u);
+  // Merged monotonic plan_version: planning bumps (+1) and smoothing bumps
+  // again (+1) -> two bumps per fresh plan->smooth chain.
+  EXPECT_EQ(server->currentPlanVersion(), 2u);
   EXPECT_EQ(server->last_path_goal.session_id, server->currentSessionId());
   EXPECT_EQ(server->last_path_goal.plan_version, 0u);
 }
@@ -338,7 +353,7 @@ TEST(BehaviorTreeActionTest, followPathUpdatesPlanInPlaceWhenPlanVersionChanges)
   EXPECT_EQ(server->cancel_count.load(), 0);
 }
 
-TEST(BehaviorTreeActionTest, everySmoothingCompletionBumpsVersion) {
+TEST(BehaviorTreeActionTest, smoothingSkipsIdenticalInputAndBumpsPerFreshInput) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
   server->smooth_result = makePath(3);
@@ -351,12 +366,20 @@ TEST(BehaviorTreeActionTest, everySmoothingCompletionBumpsVersion) {
   BT::BehaviorTreeFactory factory;
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_pipeline_xml, bb);
-  for (int cycle = 0; cycle < 2; ++cycle) {
-    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-    EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  // Drive by status instead of a fixed tick count: cycle 2 completes faster
+  // (the smoother skips an identical input without a request).
+  int success_cycles = 0;
+  for (int i = 0; i < 8 && success_cycles < 2; ++i) {
+    if (tree.tickExactlyOnce() == BT::NodeStatus::SUCCESS) {
+      ++success_cycles;
+    }
   }
-  EXPECT_EQ(server->currentPlanVersion(), 2u);
+  ASSERT_EQ(success_cycles, 2);
+  // Merged counter: cycle1 = planning(+1) + smoothing(+1); cycle2 replans
+  // the identical mock path -> planning(+1), but the smoother sees an input
+  // identical to the last smoothed one and skips (no bump, no request):
+  // identical input has an identical output.
+  EXPECT_EQ(server->currentPlanVersion(), 3u);
 }
 
 TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
@@ -388,8 +411,9 @@ TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
   // With the smoothing failure made explicit, recovery was indeed entered (one clear).
   EXPECT_EQ(server->recovery_request_count, 1);
 
-  // Smoothing never succeeded -> the plan version is not advanced.
-  EXPECT_EQ(server->currentPlanVersion(), 0u);
+  // Smoothing never succeeded, but the merged counter was still bumped by
+  // the two SUCCESSFUL planning rounds (initial + post-recovery retry).
+  EXPECT_EQ(server->currentPlanVersion(), 2u);
 
   // The output path was not polluted by a degraded fallback (still empty; no best-effort raw path fallback).
   Path smooth;
@@ -429,7 +453,7 @@ TEST(BehaviorTreeActionTest, staleSessionIsRejectedOnRunning) {
   EXPECT_EQ(server->currentPlanVersion(), 0u);
 }
 
-TEST(BehaviorTreeActionTest, versionStaleResultRejected) {
+TEST(BehaviorTreeActionTest, plannerResultNeverVersionStaleRejected) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
 
@@ -444,15 +468,19 @@ TEST(BehaviorTreeActionTest, versionStaleResultRejected) {
 
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // Result carries the current session but a stale plan_version (current-1): before the task finished a new path
-  // had been produced and plan_version incremented (session/version double check)
+  // Policy (merged monotonic counter): the PLANNER bumps plan_version on
+  // success itself, so its own result can never be "version stale" -- a
+  // concurrent bump (e.g. a smoother completion during flight) must NOT
+  // reject a fresh plan. Round freshness is enforced by the planner
+  // RateController reset_token (halt + resubmit on goal revision change).
   server->incrementPlanVersion();
-  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 
-  // Rejected: raw_path not written (stale plan_version rejection discipline)
+  // Accepted: raw_path written and the version bumped again by this node.
   Path raw;
   ASSERT_TRUE(bb->get<Path>(k_raw_path, raw));
-  EXPECT_TRUE(raw.poses.empty());
+  EXPECT_FALSE(raw.poses.empty());
+  EXPECT_EQ(server->currentPlanVersion(), 2u);
 }
 
 TEST(BehaviorTreeActionTest, haltedNodeCancelsTask) {

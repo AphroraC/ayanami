@@ -84,9 +84,9 @@ std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
 
 NavigationServerBase::~NavigationServerBase() {
   stop();
-  planner_action.reset();
-  smoother_action.reset();
-  controller_action.reset();
+  planner_actions.clear();
+  smoother_actions.clear();
+  controller_actions.clear();
   recovery_actions.clear();
   for (const auto& name : planner_plugins.getLoadedNames()) {
     if (auto plugin = planner_plugins.getPlugin(name)) plugin->cleanup();
@@ -133,10 +133,11 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   max_vel_y = nav_cfg.param<double>("navigation", "max_vel_y", max_vel_y);
   max_vel_theta =
       nav_cfg.param<double>("navigation", "max_vel_theta", max_vel_theta);
-  // Patience (nav2 failure_tolerance / recovery patience analogues;
-  // <=0 disables).
+  // Patience: controller = nav2 failure_tolerance semantics (<0 forever,
+  // 0 immediate, >0 window; also covers the stale-map safety check);
+  // recovery patience <=0 disables.
   controller_patience =
-      nav_cfg.param<double>("navigation", "controller_patience", 0.0);
+      nav_cfg.param<double>("navigation", "controller_patience", -1.0);
   recovery_patience =
       nav_cfg.param<double>("navigation", "recovery_patience", 0.0);
   // Pose-loss grace window for the controller loop (same source as the
@@ -262,9 +263,15 @@ void NavigationServerBase::start() {
 
 void NavigationServerBase::stop() {
   if (!running.exchange(false)) return;
-  if (planner_action) planner_action->cancelAll();
-  if (smoother_action) smoother_action->cancelAll();
-  if (controller_action) controller_action->cancelAll();
+  for (auto& kv : planner_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
+  for (auto& kv : smoother_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
+  for (auto& kv : controller_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
   for (auto& kv : recovery_actions) {
     if (kv.second) kv.second->cancelAll();
   }
@@ -283,56 +290,73 @@ void NavigationServerBase::stop() {
 }
 
 void NavigationServerBase::createActions() {
-  planner_action.reset();
-  smoother_action.reset();
-  controller_action.reset();
+  planner_actions.clear();
+  smoother_actions.clear();
+  controller_actions.clear();
   recovery_actions.clear();
 
-  if (auto planner = planner_plugins.getPlugin(default_planner)) {
+  // planner/smoother/controller/recovery: one action per loaded plugin
+  // (nav2 multi-plugin semantics). default_* is the FIRST configured plugin;
+  // requests select by goal id, empty id = default.
+  for (const auto& name : planner_plugins.getLoadedNames()) {
+    auto planner = planner_plugins.getPlugin(name);
+    if (!planner) {
+      continue;
+    }
     auto action = std::make_unique<PlannerAction>(planner);
-    action->setExecutionFactory([this]() {
+    action->setExecutionFactory([this, name]() {
       return std::shared_ptr<PlannerExecution>(
-          newPlannerExecution(default_planner, planner_plugins.getPlugin(default_planner)));
+          newPlannerExecution(name, planner_plugins.getPlugin(name)));
     });
-    planner_action = std::move(action);
+    planner_actions[name] = std::move(action);
   }
-  if (!planner_plugins.hasPlugin(default_planner)) {
+  if (!planner_actions.empty() &&
+      planner_actions.find(default_planner) == planner_actions.end()) {
     spdlog::error("NavigationServerBase::createActions: default planner '{}' "
                   "not loaded",
                   default_planner);
   }
 
-  if (auto smoother = smoother_plugins.getPlugin(default_smoother)) {
+  for (const auto& name : smoother_plugins.getLoadedNames()) {
+    auto smoother = smoother_plugins.getPlugin(name);
+    if (!smoother) {
+      continue;
+    }
     auto action = std::make_unique<SmootherAction>(smoother);
-    action->setExecutionFactory([this]() {
+    action->setExecutionFactory([this, name]() {
       return std::shared_ptr<SmootherExecution>(
-          newSmootherExecution(default_smoother, smoother_plugins.getPlugin(default_smoother)));
+          newSmootherExecution(name, smoother_plugins.getPlugin(name)));
     });
-    smoother_action = std::move(action);
+    smoother_actions[name] = std::move(action);
   }
-  if (!smoother_plugins.hasPlugin(default_smoother)) {
+  if (!smoother_actions.empty() &&
+      smoother_actions.find(default_smoother) == smoother_actions.end()) {
     spdlog::error("NavigationServerBase::createActions: default smoother '{}' "
                   "not loaded",
                   default_smoother);
   }
 
-  if (auto controller = controller_plugins.getPlugin(default_controller)) {
+  for (const auto& name : controller_plugins.getLoadedNames()) {
+    auto controller = controller_plugins.getPlugin(name);
+    if (!controller) {
+      continue;
+    }
     auto action = std::make_unique<ControllerAction>(controller);
-    action->setExecutionFactory([this]() {
-      auto exec = std::shared_ptr<ControllerExecution>(newControllerExecution(
-          default_controller, controller_plugins.getPlugin(default_controller)));
+    action->setExecutionFactory([this, name]() {
+      auto exec = std::shared_ptr<ControllerExecution>(
+          newControllerExecution(name, controller_plugins.getPlugin(name)));
       configureControllerExecution(exec);
       return exec;
     });
-    controller_action = std::move(action);
+    controller_actions[name] = std::move(action);
   }
-  if (!controller_plugins.hasPlugin(default_controller)) {
+  if (!controller_actions.empty() &&
+      controller_actions.find(default_controller) == controller_actions.end()) {
     spdlog::error("NavigationServerBase::createActions: default controller "
                   "'{}' not loaded",
                   default_controller);
   }
 
-  // recovery: build an action for every loaded recovery plugin (requestRecovery dispatches by id)
   for (const auto& name : recovery_plugins.getLoadedNames()) {
     auto recovery = recovery_plugins.getPlugin(name);
     if (!recovery) {
@@ -394,25 +418,40 @@ void NavigationServerBase::configureRecoveryExecution(
   exec->setRecoveryPatience(recovery_patience);
 }
 
+namespace {
+
+/// @brief Family map lookup: explicit id -> that action (nullptr when the id
+/// is unknown); empty id -> the family default.
+template <typename Action>
+Action* selectAction(
+    const std::map<std::string, std::unique_ptr<Action>>& actions,
+    const std::string& default_id, const std::string& requested) {
+  if (!requested.empty()) {
+    auto iter = actions.find(requested);
+    return iter == actions.end() ? nullptr : iter->second.get();
+  }
+  auto iter = actions.find(default_id);
+  if (iter != actions.end()) {
+    return iter->second.get();
+  }
+  return actions.empty() ? nullptr : actions.begin()->second.get();
+}
+
+}  // namespace
+
 PlannerAction* NavigationServerBase::plannerAction(
     const std::string& id) const {
-  const std::string key = id.empty() ? default_planner : id;
-  (void)key;
-  return planner_action.get();
+  return selectAction(planner_actions, default_planner, id);
 }
 
 SmootherAction* NavigationServerBase::smootherAction(
     const std::string& id) const {
-  const std::string key = id.empty() ? default_smoother : id;
-  (void)key;
-  return smoother_action.get();
+  return selectAction(smoother_actions, default_smoother, id);
 }
 
 ControllerAction* NavigationServerBase::controllerAction(
     const std::string& id) const {
-  const std::string key = id.empty() ? default_controller : id;
-  (void)key;
-  return controller_action.get();
+  return selectAction(controller_actions, default_controller, id);
 }
 
 RecoveryAction* NavigationServerBase::recoveryAction(
@@ -433,45 +472,80 @@ std::vector<std::string> NavigationServerBase::recoveryActionNames() const {
 TaskHandle<ayanami::actions::GetPathResult> NavigationServerBase::requestPath(
     const ayanami::actions::GetPathGoal& goal) {
   std::lock_guard<std::mutex> lock(planner_request_mutex);
-  if (recovery_exclusive.load() || !planner_action) {
+  PlannerAction* action =
+      selectAction(planner_actions, default_planner, goal.planner_id);
+  if (recovery_exclusive.load()) {
     return rejectedHandle<ayanami::actions::GetPathResult>(
         ErrorCode::RESOURCE_BUSY, "planner unavailable", currentSessionId(),
         currentPlanVersion());
   }
+  if (!action) {
+    // Explicit unknown id -> structured rejection (nav2/MBF semantics);
+    // an empty-id miss means the family has no plugin at all.
+    return rejectedHandle<ayanami::actions::GetPathResult>(
+        goal.planner_id.empty() ? ErrorCode::RESOURCE_BUSY
+                                : ErrorCode::INVALID_INPUT,
+        goal.planner_id.empty()
+            ? "planner unavailable"
+            : "unknown planner id: " + goal.planner_id,
+        currentSessionId(), currentPlanVersion());
+  }
   auto g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
-  return planner_action->acceptGoal(g);
+  return action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::SmoothPathResult>
 NavigationServerBase::requestSmoothing(
     const ayanami::actions::SmoothPathGoal& goal) {
   std::lock_guard<std::mutex> lock(smoother_request_mutex);
-  if (recovery_exclusive.load() || !smoother_action) {
+  SmootherAction* action =
+      selectAction(smoother_actions, default_smoother, goal.smoother_id);
+  if (recovery_exclusive.load()) {
     return rejectedHandle<ayanami::actions::SmoothPathResult>(
         ErrorCode::RESOURCE_BUSY, "smoother unavailable", currentSessionId(),
         currentPlanVersion());
   }
+  if (!action) {
+    return rejectedHandle<ayanami::actions::SmoothPathResult>(
+        goal.smoother_id.empty() ? ErrorCode::RESOURCE_BUSY
+                                 : ErrorCode::INVALID_INPUT,
+        goal.smoother_id.empty()
+            ? "smoother unavailable"
+            : "unknown smoother id: " + goal.smoother_id,
+        currentSessionId(), currentPlanVersion());
+  }
   auto g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
-  return smoother_action->acceptGoal(g);
+  return action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::ExePathResult>
 NavigationServerBase::requestExecution(
     const ayanami::actions::ExePathGoal& goal) {
   std::lock_guard<std::mutex> lock(controller_request_mutex);
-  if (recovery_exclusive.load() || !controller_action) {
+  ControllerAction* action =
+      selectAction(controller_actions, default_controller, goal.controller_id);
+  if (recovery_exclusive.load()) {
     return rejectedHandle<ayanami::actions::ExePathResult>(
         ErrorCode::RESOURCE_BUSY, "controller unavailable", currentSessionId(),
         currentPlanVersion());
   }
+  if (!action) {
+    return rejectedHandle<ayanami::actions::ExePathResult>(
+        goal.controller_id.empty() ? ErrorCode::RESOURCE_BUSY
+                                   : ErrorCode::INVALID_INPUT,
+        goal.controller_id.empty()
+            ? "controller unavailable"
+            : "unknown controller id: " + goal.controller_id,
+        currentSessionId(), currentPlanVersion());
+  }
   auto g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
-  return controller_action->acceptGoal(g);
+  return action->acceptGoal(g);
 }
 
 TaskHandle<ayanami::actions::RecoveryResult>
@@ -519,38 +593,50 @@ NavigationServerBase::requestRecovery(
 
 bool NavigationServerBase::requestPlanUpdate(
     uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) {
-  ControllerAction* action = controllerAction();
-  if (!action) {
-    spdlog::error("NavigationServerBase::requestPlanUpdate: no controller "
-                  "action for '{}'",
-                  default_controller);
-    return false;
+  // The in-place update addresses the goal by id: search every loaded
+  // controller action (the goal may run on a non-default plugin).
+  std::lock_guard<std::mutex> request_lock(controller_request_mutex);
+  for (auto& kv : controller_actions) {
+    if (kv.second && kv.second->updatePlan(goal_id, goal.path,
+                                           goal.plan_version)) {
+      return true;
+    }
   }
-  return action->updatePlan(goal_id, goal.path, goal.plan_version);
+  spdlog::error("NavigationServerBase::requestPlanUpdate: no running "
+                "controller goal {} to update",
+                goal_id);
+  return false;
 }
 
 void NavigationServerBase::cancelAllControllers() {
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
-  // Preemption/new-session/halt discipline: cancel the entire loaded
-  // controller action map, not just the default id's entry -- with multiple
-  // controller configs, controller tasks beyond the default id must stop
-  // too, otherwise stale velocity output remains after preemption.
-  if (controller_action) controller_action->cancelAll();
+  // Preemption/new-session/halt discipline: cancel the ENTIRE controller
+  // action map -- with multiple controller plugins, tasks beyond the default
+  // id must stop too, otherwise stale velocity output remains.
+  for (auto& kv : controller_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
 }
 
 void NavigationServerBase::preemptAllControllers() {
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
-  if (controller_action) controller_action->preemptAll();
+  for (auto& kv : controller_actions) {
+    if (kv.second) kv.second->preemptAll();
+  }
 }
 
 void NavigationServerBase::cancelAllPlanners() {
   std::lock_guard<std::mutex> request_lock(planner_request_mutex);
-  if (planner_action) planner_action->cancelAll();
+  for (auto& kv : planner_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
 }
 
 void NavigationServerBase::cancelAllSmoothers() {
   std::lock_guard<std::mutex> request_lock(smoother_request_mutex);
-  if (smoother_action) smoother_action->cancelAll();
+  for (auto& kv : smoother_actions) {
+    if (kv.second) kv.second->cancelAll();
+  }
 }
 
 uint64_t NavigationServerBase::currentSessionId() const {

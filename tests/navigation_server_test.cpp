@@ -361,11 +361,11 @@ class RecoveryExclusiveServer : public ayanami::components::NavigationServerBase
     default_planner = "blocker";
     default_smoother = "blocker";
     default_controller = "blocker";
-    planner_action = std::make_unique<ayanami::components::PlannerAction>(
+    planner_actions["blocker"] = std::make_unique<ayanami::components::PlannerAction>(
         std::make_shared<BlockingPlanner>(coord));
-    smoother_action = std::make_unique<ayanami::components::SmootherAction>(
+    smoother_actions["blocker"] = std::make_unique<ayanami::components::SmootherAction>(
         std::make_shared<BlockingSmoother>(coord));
-    controller_action = std::make_unique<RecoveryTestControllerAction>(
+    controller_actions["blocker"] = std::make_unique<RecoveryTestControllerAction>(
         std::make_shared<BlockingController>(coord));
     recovery_actions["test_recovery"] = std::make_unique<ayanami::components::RecoveryAction>(
         std::make_shared<ActiveRecovery>(coord));

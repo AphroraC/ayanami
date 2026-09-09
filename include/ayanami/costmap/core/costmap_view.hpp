@@ -18,19 +18,21 @@ namespace costmap {
  *
  * Replaces the old CostmapSnapshot (full deep copy / COW epoch) -- the view
  * holds the map's shared lock via RAII and the grid pointer points straight
- * at the master grid, zero copy. A single planning call is <10ms; the map
- * writer (~10Hz) waits for readers to release before writing.
+ * at the master grid, zero copy. Views are for SHORT reads (smoother/
+ * controller per-cycle access); the planner materializes its input via
+ * composePlanningOverlay() (locks held only for the compose pass) so a slow
+ * search can never stall the map writer.
  *
  * - grid(): master grid pointer, valid only within this view's lifetime
  *   (the lock is released when the view is destroyed).
- * - Red line: the snapshot IS the lock, never a copy. COW or any deep-copy
- *   snapshot (CostmapSnapshot-style) is forbidden; planner/smoother
- *   guarantee <10ms per call, so holding the shared lock for the whole
- *   call is the only sanctioned map access.
+ * - Red line: the snapshot IS the lock for view-based reads -- never copy
+ *   grid data out of a view (COW / deep-copy snapshots are forbidden here);
+ *   the planner's overlay buffer is the one sanctioned materialization and
+ *   it lives behind composePlanningOverlay's bounded compose window.
  * - footprint: this map's robot footprint (configure-time cache, immutable,
  *   no lock needed).
- * - robot_pose: the robot pose resolved at view construction (TransformStore,
- *   lock-free query).
+ * - robot_pose: the robot pose resolved at view construction (via the
+ *   RobotStateController singleton, in the view frame).
  * - frame / current: metadata.
  */
 class CostmapView {

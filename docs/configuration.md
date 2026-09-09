@@ -42,7 +42,7 @@ config/
 | `behavior_tree_xml` | 空 | 可选外部树 XML（相对 config_path）；生产为空 = 用扩展内嵌默认树 |
 | `config_planner` 等 | — | 见上 |
 | `planner_frequency` | 1.0 | >0：RateController 限频重规划（nav2 语义）；<=0：单发缓存 |
-| `smoother_frequency` | -1.0 | -1：每条新 raw_path 只平滑一次（reset_token={path_id} 仍会触发） |
+| `smoother_frequency` | 10.0 | >0：RateController 限频重平滑，reset_token={plan_version}（规划落地即重平滑；SmoothPath 按内容签名跳过相同输入）；<=0：单发缓存 |
 | `controller_frequency` | 20.0 | controller execution 周期 |
 | `tick_frequency` | 100.0 | pilot BT tick 频率 |
 | `max_vel_x / max_vel_y / max_vel_theta` | 0.5 / 0.0 / 1.5 | **速度上限单一来源**：execution 层发布前校验，超限清零 |
@@ -53,8 +53,8 @@ config/
 
 | 段/键 | 值 | 说明 |
 |---|---|---|
-| `costmap.global_frame` | map | 全局图帧 |
-| `costmap.local_frame` | odom | 局部图帧（nav2 语义；`config_ros.odom_frame` 应与其一致） |
+| `costmap.global_costmap_frame` | map | 全局图帧（兼容旧键 `global_frame` / `map_frame`） |
+| `costmap.local_costmap_frame` | odom | 局部图帧（nav2 语义；兼容旧键 `local_frame`；`config_ros.odom_frame` 应与其一致） |
 | `costmap.resolution` | 0.05 | |
 | `costmap.robot_radius` | 0.12 | 无 footprint 多边形时的圆近似来源；有 `costmap.footprint` 则优先 |
 | `costmap_global.rolling_window` | false | 全局图固定 |
@@ -126,7 +126,7 @@ AyanamiROS 构造
   goal_revision reset_token 触发重规划）。
 - `smoother_frequency`：10.0（生产默认；每条新路径落地即重新平滑）。
 - `controller_frequency`：20.0。
-- `controller_patience`：对标 nav2 failure_tolerance（秒，0=关）。无有效
+- `controller_patience`：对标 nav2 failure_tolerance 语义（秒，<0=无限容忍，0=立即失败，>0=容忍窗口）。覆盖"无有效命令"与"地图持续过期"（MAP_STALE 终态，交 BT 恢复分支）。无有效
   速度命令持续超过该时长才终态上报；重试决策仍归 BT。
 - `recovery_patience`：单次恢复的框架级超时（秒，0=关），防止自限缺失的
   恢复插件无限 RUNNING。

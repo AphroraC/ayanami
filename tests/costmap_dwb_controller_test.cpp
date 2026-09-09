@@ -395,7 +395,12 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
+  ctx->setFrames("map", "odom", "base_link");
+  // The plan is expressed in "map", the local frame is "odom": feed the
+  // map->odom edge so the in-plugin plan transform can resolve it.
+  ayanami::components::RobotStateController::instance().setTransform(
+      "odom", "map", ayanami::Timestamp::latest(),
+      Eigen::Isometry3d::Identity());
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   ASSERT_NO_THROW(planner.configure(
@@ -413,14 +418,55 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   }
   ASSERT_NO_THROW(planner.setPlan(path));
 
-  // Then computeVelocityCommands: reads the map via lockLocal within the cycle -> scoring path (controlled failure, not a crash).
+  // Then computeVelocityCommands: reads the map via lockLocal within the
+  // cycle -> scoring path. The local view frame is the LOCAL costmap frame
+  // ("odom", matching the wrapper), so the odom pose needs no transform and
+  // the free 20x20 map yields a valid command (no crash, no internal error).
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
           "odom", Eigen::Isometry3d::Identity());
   ayanami::geometry_msgs::TwistStamped vel;
   ayanami::geometry_msgs::TwistStamped cmd;
   const auto result = planner.computeVelocityCommand(pose, vel, cmd);
-  // pose frame (odom) != local frame (map) and no TF -> controlled TransformUnavailable, not an internal error/crash.
+  EXPECT_TRUE(result.ok) << result.message;
+}
+
+// Regression: a robot pose in a frame with no transform into the local
+// costmap frame fails with a controlled TRANSFORM_UNAVAILABLE (no crash).
+TEST(DwbController, missingPoseTransformFailsControlled) {
+  const std::string dir = setupHeadlessConfigDir();
+  ayanami::Config cfg(g_config_json);
+
+  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>("odom", true,
+                                                               false);
+  local_lm->resizeMap(20, 20, 0.05, 0.0, 0.0);
+  auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom");
+  auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
+  ctx->setLocalCostmap(wrapper);
+  ctx->setFrames("map", "odom", "base_link");
+
+  ayanami::modules::CostmapDwBLocalPlanner planner;
+  ASSERT_NO_THROW(planner.configure(
+      ayanami::PluginContext{"costmap_dwb_controller",
+                            ayanami::Config(g_config_json)},
+      ctx->getSharedConstPtr()));
+
+  ayanami::nav_msgs::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i < 5; ++i) {
+    path.poses.push_back(ayanami::geometry_msgs::PoseStamped::fromIsometry(
+        "map", Eigen::Translation3d(static_cast<double>(i) * 0.2, 0.0, 0.0) *
+                   Eigen::Quaterniond::Identity()));
+  }
+  ASSERT_NO_THROW(planner.setPlan(path));
+
+  // Pose in an unrelated frame with no TF into "odom".
+  ayanami::geometry_msgs::PoseStamped pose =
+      ayanami::geometry_msgs::PoseStamped::fromIsometry(
+          "no_tf_frame", Eigen::Isometry3d::Identity());
+  ayanami::geometry_msgs::TwistStamped vel;
+  ayanami::geometry_msgs::TwistStamped cmd;
+  const auto result = planner.computeVelocityCommand(pose, vel, cmd);
   EXPECT_FALSE(result.ok);
   EXPECT_EQ(result.error, ayanami::ErrorCode::TRANSFORM_UNAVAILABLE);
 }
@@ -437,7 +483,10 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
 
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
+  ctx->setFrames("map", "odom", "base_link");
+  ayanami::components::RobotStateController::instance().setTransform(
+      "odom", "map", ayanami::Timestamp::latest(),
+      Eigen::Isometry3d::Identity());
 
   ayanami::modules::CostmapDwBLocalPlanner planner;
   EXPECT_NO_THROW(planner.configure(
@@ -446,9 +495,11 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
       ctx->getSharedConstPtr()));
 
   // compute binds the current grid via lockLocal -> scoring path (controlled failure, not a crash).
+  // Pose in "odom": matches the local costmap frame, no pose transform
+  // needed; the failure comes from the empty plan (NoValidCommand).
   ayanami::geometry_msgs::PoseStamped pose =
       ayanami::geometry_msgs::PoseStamped::fromIsometry(
-          "map", Eigen::Isometry3d::Identity());
+          "odom", Eigen::Isometry3d::Identity());
   ayanami::geometry_msgs::TwistStamped vel;
   ayanami::geometry_msgs::TwistStamped cmd;
   const auto result = planner.computeVelocityCommand(pose, vel, cmd);

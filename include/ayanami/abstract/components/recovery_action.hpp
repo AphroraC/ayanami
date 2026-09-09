@@ -184,6 +184,9 @@ private:
     result.message = exec.getMessage();
     result.session_id = gh.goal.session_id;
     result.plan_version = gh.goal.plan_version;
+    Feedback feedback;
+    feedback.message = "goal finished";
+    action_server->publishFeedback(gh.id, feedback);
     action_server->publishResult(gh.id, status, result);
   }
 

@@ -2,6 +2,7 @@
 
 
 #include "ayanami/abstract/components/execution_base.hpp"
+#include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/abstract/core/abstract_planner.hpp"
 #include "ayanami/types.hpp"
 
@@ -50,10 +51,12 @@ public:
       : planner(std::move(planner)) {}
 
   /// @brief Record start/goal/tolerance and start the planning thread.
+  /// An empty start is resolved to the latest robot pose HERE (framework
+  /// responsibility); plugins always receive a fully valid start.
   using ExecutionBase::start;
   void start(const geometry_msgs::PoseStamped& start,
              const geometry_msgs::PoseStamped& goal, double tolerance) {
-    this->start_pose = start;
+    this->start_pose = resolveStart(start);
     this->goal_pose = goal;
     this->goal_tolerance = tolerance;
     ExecutionBase::start();
@@ -79,7 +82,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(goal_mutex);
       if (isTerminalState()) return false;
-      pending_start = start;
+      pending_start = resolveStart(start);
       pending_goal = goal;
       pending_tolerance = tolerance;
       goal_revision.fetch_add(1);
@@ -195,6 +198,19 @@ protected:
   }
 
 protected:
+  /// @brief Interface contract helper (AbstractPlanner): an empty start
+  /// (default-constructed pose) is resolved to the latest robot pose via the
+  /// RobotStateController so plugins never interpret sentinels themselves.
+  /// An unresolvable start is passed through unchanged; the plugin then
+  /// fails with START_INVALID and the BT recovery branch takes over.
+  static geometry_msgs::PoseStamped resolveStart(
+      const geometry_msgs::PoseStamped& start) {
+    if (!start.header.frame_id.empty() || start.pose.position.norm() > 0.0) {
+      return start;
+    }
+    return ayanami::components::RobotStateController::instance().getRobotPose();
+  }
+
   ayanami::abstract::AbstractPlanner::Ptr planner;
   geometry_msgs::PoseStamped start_pose;
   geometry_msgs::PoseStamped goal_pose;

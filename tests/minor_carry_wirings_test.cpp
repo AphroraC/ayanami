@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -21,6 +22,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include <Eigen/Geometry>
 
@@ -31,6 +33,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/ostream_sink.h>
 
+#include <ayanami/abstract/components/planner_execution.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
@@ -204,21 +207,14 @@ TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
 
 // ---------------- Test 1 ----------------
 
-TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
+TEST(MinorCarryWiring, emptyStartResolvedToRobotPoseAtExecutionLayer) {
   resetModuleConfig();
 
   auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5 = 10m x 10m, all free
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(wrapper);
   ctx->setLocalCostmap(wrapper);
-  ctx->setFrames("map", "base_link");
-  // The context resolves poses through the injected lookup (host wiring).
-  ctx->setTransformLookup(
-      [](const std::string& target, const std::string& source,
-         ayanami::Timestamp stamp, Eigen::Isometry3d& transform) {
-        return ayanami::components::RobotStateController::instance()
-            .lookupTransform(target, source, stamp, transform);
-      });
+  ctx->setFrames("map", "map", "base_link");
 
   // Mock robot pose (1, 2, pi/4) in the map frame.
   auto& rsc = ayanami::components::RobotStateController::instance();
@@ -233,15 +229,31 @@ TEST(MinorCarryWiring, smacPlannerFallsBackToRobotPose) {
   planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
-  // start left empty (default constructed: all-zero translation + empty frame_id).
-  const PoseStamped start;
+  // Interface contract: an EMPTY start is resolved to the latest robot pose
+  // by the execution layer (PlannerExecution), never by the plugin.
+  ayanami::components::PlannerExecution exec(planner);
+  const PoseStamped start;  // default constructed: zero translation + empty frame
   const PoseStamped goal = cellCenter(17, 17);
-  Path plan;
-  const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
+  exec.start(start, goal, 0.1);
+  const auto is_terminal = [](int s) {
+    using PE = ayanami::components::PlannerExecution;
+    return s == PE::FOUND_PLAN || s == PE::NO_PLAN_FOUND ||
+           s == PE::CANCELED || s == PE::STOPPED || s == PE::INTERNAL_ERROR;
+  };
+  int state = static_cast<int>(exec.getState());
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(10);
+  while (!is_terminal(state) && std::chrono::steady_clock::now() < deadline) {
+    exec.waitForStateUpdate(std::chrono::milliseconds(100));
+    state = static_cast<int>(exec.getState());
+  }
+  ASSERT_EQ(state,
+            static_cast<int>(
+                ayanami::components::PlannerExecution::FOUND_PLAN));
+  const Path plan = exec.takePlan();
 
-  ASSERT_TRUE(result.ok) << result.message;
   ASSERT_FALSE(plan.poses.empty());
-  // The first pose == the fallback robot pose (1, 2, pi/4).
+  // The first pose == the substituted robot pose (1, 2, pi/4).
   EXPECT_NEAR(plan.poses.front().pose.position.x(), 1.0, 1e-6);
   EXPECT_NEAR(plan.poses.front().pose.position.y(), 2.0, 1e-6);
   const auto& q = plan.poses.front().pose.orientation;

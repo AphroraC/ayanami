@@ -60,8 +60,8 @@ ayanami 采用"算法核心与中间件彻底分离"的两包结构：
 | 目录 | 内容 |
 |---|---|
 | `include/ayanami/abstract/core` | 算法插件抽象接口（零地图类型）：Planner/Smoother/Controller/Recovery/GoalChecker/ProgressChecker/Navigation |
-| `include/ayanami/abstract/components` | 运行时组件：ExecutionBase、四族 Execution、ActionBase、ActionServer/TaskHandle、PluginManager、NavigationServerBase(NavigationRuntime)、NavigationSessionState、RobotStateController |
-| `include/ayanami/behavior_tree` | BehaviorTreePilot、BT action/condition 节点、控制节点（PipelineSequence/RecoveryNode/RateController/RoundRobin/RecoverySequence）、黑板协议、BehaviorTreeExtension |
+| `include/ayanami/abstract/components` | 运行时组件：ExecutionBase、四族 Execution、ActionBase、ActionServer/TaskHandle、PluginManager、NavigationServerBase(NavigationRuntime，多插件 action map + goal 级 id 派发)、NavigationSessionState、RobotStateController(唯一 TF 查询单例) |
+| `include/ayanami/behavior_tree` | BehaviorTreePilot、BT action/condition/selector 节点（CRTP 基类 NavigationActionNode）、控制节点（PipelineSequence/RecoveryNode/RateController/RoundRobin/RecoverySequence）、黑板协议、BehaviorTreeExtension |
 | `include/ayanami/costmap` | costmap 地图族：MapContext、CostmapView、命令端口、地图族 Execution/Action |
 | `include/ayanami/map` | 地图族抽象：AbstractMapContext、MapCommandPort、MapCapability、MapFamilyFactory |
 | `include/ayanami/interfaces` | NavigationCallbacks 全局旁路槽、TransformStore |
@@ -102,13 +102,16 @@ Ayanami 内部**没有进程级线程池**（WorkerPool 已移除）。线程模
    内部状态（BT.CPP v4 halt 语义适配，见 [behavior-tree.md](behavior-tree.md)）。
 3. **latest-wins 单一目标**：同一时间只有一个导航任务。新 goal 覆写邮箱；
    planner 原位换目标；controller 持续跟随旧路径直到新路径平滑落地后
-   in-place `updatePlan`。
+   in-place `updatePlan`。版本计数合并为**单一单调 plan_version**（规划
+   +1、平滑 +1；SmooothPath 按内容签名跳过相同输入）。
 4. **地图族抽象**：核心与宿主只认 `MapFamilyFactory` / `AbstractMapContext`
    抽象面；CostmapMapContext 的创建经由工厂；`libayanami` 本体不含任何
    costmap 符号（`map_family_abstraction_test` 守护）。
-5. **CostmapView 零拷贝读**：算法侧 `lockLocal()/lockGlobal()` 得到持有
-   shared 锁的视图（RAII），单次调用 (<10ms) 持锁；视图禁止存为长生命周期
-   成员（历史 bug，见 [troubleshooting.md](troubleshooting.md)）。
+5. **地图读契约**：短时读走 `CostmapView` 零拷贝 RAII 视图；**规划器读
+   global+local 叠加经 `composePlanningOverlay()`**——双锁只住 O(N) 合成
+   （local←global 变换一次解析），A* 无锁查 buffer，写者永不被搜索阻塞。
+   local costmap 建在 odom 系（定位跳变免疫，nav2 惯例）。视图禁止存为
+   长生命周期成员（历史 bug，见 [troubleshooting.md](troubleshooting.md)）。
 6. **恢复调度归 BT**：执行层失败只返回结构化 `ErrorCode`，不做重试决策；
    恢复动作的编排全部在行为树（RecoveryNode / RecoverySequence）。
 

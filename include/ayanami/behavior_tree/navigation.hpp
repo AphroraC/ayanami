@@ -7,12 +7,16 @@
 #include "ayanami/behavior_tree/navigation_node_state.hpp"
 #include "ayanami/behavior_tree/rate_controller.hpp"
 #include "ayanami/behavior_tree/recovery_node.hpp"
+#include "ayanami/behavior_tree/selector_nodes.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <behaviortree_cpp/control_node.h>
 
+#include <algorithm>
 #include <cstddef>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace ayanami {
 namespace behavior_tree {
@@ -173,14 +177,14 @@ inline void resetNavigationTreeState(BT::Tree& tree) {
 }
 
 /// @brief Register the navigation BT node classes (retained nodes +
-/// control/condition nodes).
+/// control/condition nodes + plugin selectors).
 /// Action nodes receive NavigationRuntime::Ptr via the blackboard
 /// (action_nodes.hpp).
 ///
 /// Note: the default navigation tree XML and whole-tree registration have
 /// been pushed down into the navigation_behavior_tree extension module
 /// (BehaviorTreeExtension); this function only registers node types, reused
-/// by the extension module's registerNodes and by tests. The core
+/// by the extension module registerNodes and by tests. The core
 /// (BehaviorTreePilot) contains no default navigation XML or policy.
 inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory) {
   // 4 action nodes (TaskHandle direct)
@@ -197,6 +201,59 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   factory.registerNodeType<RoundRobin>("RoundRobin");
   factory.registerNodeType<RecoverySequence>("RecoverySequence");
+  // plugin selectors (nav2 PlannerSelector/ControllerSelector analogues;
+  // one class under three names, output feeds the *_id action ports)
+  factory.registerNodeType<PluginSelectorNode>("PlannerSelector");
+  factory.registerNodeType<PluginSelectorNode>("ControllerSelector");
+  factory.registerNodeType<PluginSelectorNode>("SmootherSelector");
+}
+
+/**
+ * @brief Registration-time enforcement of the resident-tree reset protocol
+ * (build-time check, no longer a convention).
+ *
+ * The resident tree relies on every custom control/decorator node
+ * implementing NavigationTreeNodeState: at a tree-life terminal state the
+ * pilot walk calls resetState() (plus a v3-style strong halt) to clear
+ * terminal-cached internal state (single-shot caches, retry counters,
+ * round-robin cursors). BT.CPP v4 halt only resets RUNNING children, so a
+ * third-party node holding terminal state WITHOUT the interface would
+ * silently leak it across tree lives -- the historical "planner never
+ * replans + recovery storm" failure mode.
+ *
+ * This walk instantiates every registered non-builtin Control/Decorator
+ * node once (empty config) and throws when it does not implement
+ * NavigationTreeNodeState, so a violating extension fails at tree build,
+ * not in the field.
+ */
+inline void validateTreeNodeStateProtocol(BT::BehaviorTreeFactory& factory) {
+  // builtinNodes() is a set in BT.CPP v4; manifests() a map id -> manifest.
+  const std::set<std::string> builtin = factory.builtinNodes();
+  for (const auto& entry : factory.manifests()) {
+    const BT::TreeNodeManifest& manifest = entry.second;
+    const bool is_builtin = builtin.count(manifest.registration_ID) != 0;
+    if (is_builtin || (manifest.type != BT::NodeType::CONTROL &&
+                       manifest.type != BT::NodeType::DECORATOR)) {
+      continue;
+    }
+    BT::NodeConfig config;
+    auto node = factory.instantiateTreeNode(manifest.registration_ID,
+                                            manifest.registration_ID,
+                                            config);
+    if (node == nullptr) {
+      throw BT::RuntimeError("validateTreeNodeStateProtocol: node '" +
+                             manifest.registration_ID + "' failed to build");
+    }
+    if (dynamic_cast<NavigationTreeNodeState*>(node.get()) == nullptr) {
+      throw BT::RuntimeError(
+          "validateTreeNodeStateProtocol: control/decorator node '" +
+          manifest.registration_ID +
+          "' does not implement NavigationTreeNodeState -- resident-tree "
+          "reset protocol cannot reset its internal state; implement the "
+          "interface (resetState) or the node will leak terminal state "
+          "across tree lives");
+    }
+  }
 }
 
 } // namespace behavior_tree

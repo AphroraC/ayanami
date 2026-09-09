@@ -177,14 +177,18 @@ class MockNavServer : public NavigationServerBase {
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
     ++path_requests;
-    auto task = path_server.acceptGoal(goal);
-    last_path_goal = goal;
+    // Replicate the real server contract: stamp the CURRENT session/version.
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = path_server.acceptGoal(g);
+    last_path_goal = g;
     if (path_sync) {
       GetPathResult r;
       r.error = path_failure;
       r.path = path_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       path_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -192,14 +196,17 @@ class MockNavServer : public NavigationServerBase {
 
   TaskHandle<SmoothPathResult> requestSmoothing(
       const SmoothPathGoal& goal) override {
-    auto task = smooth_server.acceptGoal(goal);
-    last_smooth_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = smooth_server.acceptGoal(g);
+    last_smooth_goal = g;
     if (smooth_sync) {
       SmoothPathResult r;
       r.error = smooth_failure;
       r.smoothed_path = smooth_result;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       smooth_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -207,15 +214,18 @@ class MockNavServer : public NavigationServerBase {
 
   TaskHandle<ExePathResult> requestExecution(const ExePathGoal& goal) override {
     ++exe_requests;
-    auto task = exe_server.acceptGoal(goal);
-    last_exe_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = exe_server.acceptGoal(g);
+    last_exe_goal = g;
     last_exe_goal_id = task.goal_id();
     if (exe_sync) {
       ExePathResult r;
       r.error = exe_failure;
       r.reached = exe_reached;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       exe_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -233,13 +243,16 @@ class MockNavServer : public NavigationServerBase {
   }
 
   TaskHandle<RecoveryResult> requestRecovery(const RecoveryGoal& goal) override {
-    auto task = recovery_server.acceptGoal(goal);
-    last_recovery_goal = goal;
+    auto g = goal;
+    g.session_id = currentSessionId();
+    g.plan_version = currentPlanVersion();
+    auto task = recovery_server.acceptGoal(g);
+    last_recovery_goal = g;
     if (recovery_sync) {
       RecoveryResult r;
       r.error = recovery_failure;
-      r.session_id = goal.session_id;
-      r.plan_version = goal.plan_version;
+      r.session_id = g.session_id;
+      r.plan_version = g.plan_version;
       recovery_server.publishResult(task.goal_id(), GoalStatus::SUCCEEDED, r);
     }
     return task;
@@ -504,7 +517,7 @@ class FollowServer : public NavigationServerBase {
     auto action = std::unique_ptr<InPlaceControllerAction>(
         new InPlaceControllerAction(controller, goal_checker, progress));
     controller_action_ptr = action.get();
-    controller_action = std::move(action);
+    controller_actions["test_controller"] = std::move(action);
   }
 };
 

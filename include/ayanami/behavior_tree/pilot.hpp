@@ -27,8 +27,9 @@ namespace behavior_tree {
  * - **Tree is resident, never rebuilt** `loadFromFile` builds the tree
  *   once; a new goal goes through `beginNavigation` which writes
  *   `pending_goal`, and the run loop's `applyPendingGoal` only rewrites the
- *   blackboard (goal / session / plan_version / reset_stuck_token),
- *   avoiding the heavyweight recreateTree and the IsRobotStuck static state
+ *   blackboard (goal / session / plan_version / goal_revision /
+ *   failure_context cleared),
+ *   avoiding the heavyweight recreateTree and cross-goal state leakage
  *   leaking across tasks.
  * - New goals reach the tick thread via a latest-wins mailbox. The first
  *   goal opens a session; subsequent goals only advance goal_revision, the
@@ -85,16 +86,18 @@ class BehaviorTreePilot {
   void loadFromFile(const std::string& xml_path, const std::string& tree_id);
 
   /// @brief Mailbox delivery of a new goal (latest-wins): overwrite
-  /// pending_goal + emitWakeUpSignal to wake run. **No more cross-thread
-  /// haltTree** -- the actual preemption (halting the old tree / controller
-  /// cancelAll / zero velocity / session advance) all happens in the tick
-  /// thread's applyPendingGoal (preemption discipline).
+  /// pending_goal + emitWakeUpSignal to wake run. **No cross-thread
+  /// haltTree**: the first goal opens a session on the tick thread;
+  /// subsequent goals are IN-PLACE revisions (goal_revision advance + goal
+  /// blackboard rewrite) -- no tree halt, no controller cancel (the running
+  /// controller keeps following its path until the revised one lands via
+  /// in-place updatePlan). Halting stays on the halt() path.
   void beginNavigation(const geometry_msgs::PoseStamped& goal);
 
   /// @brief Tick loop (tick_frequency Hz, default 100Hz): before each
   /// tick, first consume halt_requested / pending_goal (applyPendingGoal:
-  /// turn+halt the old tree + controller cancelAll + one zero velocity +
-  /// startNewSession + rewrite the blackboard), then bt_tree.tickOnce +
+  /// session/revision advance + goal/session/revision/plan_version/
+  /// failure_context blackboard rewrite), then bt_tree.tickOnce +
   /// bt_tree.sleep(period). Blocking; the host calls it on its own thread.
   void run();
 

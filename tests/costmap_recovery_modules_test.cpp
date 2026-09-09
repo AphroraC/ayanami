@@ -109,13 +109,6 @@ std::shared_ptr<CostmapMapContext> makeContext(
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(global);
   ctx->setLocalCostmap(local);
-  // Pose resolution goes through the injected lookup (host wiring shape).
-  ctx->setTransformLookup(
-      [](const std::string& target, const std::string& source,
-         ayanami::Timestamp stamp, Eigen::Isometry3d& transform) {
-        return ayanami::components::RobotStateController::instance()
-            .lookupTransform(target, source, stamp, transform);
-      });
   return ctx;
 }
 

@@ -240,6 +240,9 @@ private:
     result.path.header = goal.goal.header;
     result.session_id = goal.session_id;
     result.plan_version = goal.plan_version;
+    Feedback feedback;
+    feedback.message = "goal finished";
+    action_server->publishFeedback(goal_id, feedback);
     action_server->publishResult(goal_id, status, result);
   }
 

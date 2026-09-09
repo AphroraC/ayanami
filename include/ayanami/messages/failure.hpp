@@ -75,9 +75,12 @@ inline bool isRecoverable(ErrorCode code) {
     case ErrorCode::GOAL_INVALID:
     case ErrorCode::TRANSFORM_UNAVAILABLE:
     case ErrorCode::CANCELED:
-    case ErrorCode::RESOURCE_BUSY:
       return false;
     default:
+      // RESOURCE_BUSY is deliberately NOT listed as fatal: it is transient by
+      // definition (another task holds the family/resource right now), so
+      // retrying via the recovery branch is the correct response -- classifying
+      // it as fatal would abort a whole navigation on a scheduling race.
       return true;
   }
 }

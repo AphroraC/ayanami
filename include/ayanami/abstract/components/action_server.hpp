@@ -65,10 +65,15 @@ struct TaskState {
       value = std::move(completion);
       listeners.swap(callbacks);
     }
-    promise.set_value(value);
+    // Listeners run BEFORE the future is published: side-path emits and
+    // resource releases (e.g. the recovery exclusive flag) must land before a
+    // poller can observe ready()==true. Publishing the future first opens a
+    // window where the BT poll loop sees the finished task and re-requests a
+    // family whose resource is still flagged busy (spurious RESOURCE_BUSY).
     for (auto& listener : listeners) {
       listener(value);
     }
+    promise.set_value(value);
     return true;
   }
 

@@ -41,7 +41,7 @@ namespace behavior_tree {
  * decorator nodes (RateController, RecoveryNode, RoundRobin,
  * RecoverySequence).
  *
- * A token input (e.g. {goal_revision}, {path_id}) carries "the upstream
+ * A token input (e.g. {goal_revision}, {plan_version}) carries "the upstream
  * artifact changed; reset this node's cached state". The mixin owns the
  * cached token value and the read-and-compare step, so each node only
  * reacts to consumeResetToken() returning true. The cache is deliberately
