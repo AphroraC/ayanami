@@ -1,6 +1,6 @@
-// Test plugin: costmap-family controller (SoCostmapController), common factory export.
+// Test module: success controller (SuccessController), exported via the common create_extension_module factory.
 
-#include <ayanami/costmap/core/costmap_controller.hpp>
+#include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
 #include <ayanami/utility/extension_module.hpp>
@@ -11,10 +11,8 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 using ayanami::ResultT;
-class SoCostmapController : public ayanami::costmap::CostmapController {
- public:
-  void configure(const ayanami::PluginContext& /*context*/,
-                 ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
+class SuccessController : public ayanami::abstract::AbstractController {
+public:
   ResultT<void> computeVelocityCommand(const PoseStamped& /*pose*/,
                                            const TwistStamped& /*velocity*/, ayanami::geometry_msgs::TwistStamped& cmd) override {
     cmd = TwistStamped{};
@@ -28,5 +26,5 @@ class SoCostmapController : public ayanami::costmap::CostmapController {
 }  // namespace
 
 extern "C" ayanami::ExtensionModule* create_extension_module() {
-  return new SoCostmapController;
+  return new SuccessController;
 }

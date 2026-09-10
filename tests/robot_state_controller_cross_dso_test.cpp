@@ -6,9 +6,9 @@
 // (libayanami_costmap_navigation.so, via the ServerControllerAction factory).
 // With the definition sunk into a libayanami .cpp, every DSO linking libayanami resolves to the same instance.
 //
-// This test uses a dlopen test plugin (robot_state_dso_extension.so, linked against libayanami) to play
-// "another DSO": the main binary writes a velocity and the plugin reads the same value (shared mutable state); the instance
-// addresses resolved by the main binary and the plugin are identical (a single instance).
+// This test uses a dlopen test module (robot_state_dso_extension.so, linked against libayanami) to play
+// "another DSO": the main binary writes a velocity and the module reads the same value (shared mutable state); the instance
+// addresses resolved by the main binary and the module are identical (a single instance).
 //
 // argv: 1=robot_state_dso_extension.so
 
@@ -38,8 +38,8 @@ using WriteFn = void (*)(double);
 
 }  // namespace
 
-TEST(RobotStateControllerCrossDSO, coreAndPluginResolveSameInstance) {
-  auto ext = ayanami::ExtensionModule::load_module(g_dso_so);
+TEST(RobotStateControllerCrossDSO, coreAndModuleResolveSameInstance) {
+  auto ext = ayanami::ExtensionModule::loadModule(g_dso_so);
   ASSERT_NE(ext, nullptr);
   const auto dso_instance = ayanami::loadModuleFromSo<InstanceFn>(
       g_dso_so, "robotStateDsoInstance");
@@ -51,11 +51,11 @@ TEST(RobotStateControllerCrossDSO, coreAndPluginResolveSameInstance) {
   ASSERT_NE(dso_read, nullptr);
   ASSERT_NE(dsoWrite, nullptr);
 
-  // Same address: the instance resolved by the plugin == the instance resolved by the main binary.
+  // Same address: the instance resolved by the module == the instance resolved by the main binary.
   EXPECT_EQ(dso_instance(),
             reinterpret_cast<uintptr_t>(&RobotStateController::instance()));
 
-  // The writer (this binary, standing in for the ayanami_ros odomCallback) writes directly -> the reader (the plugin DSO,
+  // The writer (this binary, standing in for the ayanami_ros odomCallback) writes directly -> the reader (the module DSO,
   // standing in for the core controller execution) reads the same value. Proves cross-DSO shared mutable state.
   RobotStateController& rsc = RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 0.25);
@@ -69,7 +69,7 @@ TEST(RobotStateControllerCrossDSO, coreAndPluginResolveSameInstance) {
   EXPECT_TRUE(rsc.hasFreshVelocity());
   EXPECT_DOUBLE_EQ(dso_read(), 0.75);
 
-  // Reverse: the plugin DSO writes -> the main binary (standing in for the core reader) reads the same value.
+  // Reverse: the module DSO writes -> the main binary (standing in for the core reader) reads the same value.
   dsoWrite(1.25);
   EXPECT_DOUBLE_EQ(rsc.getRobotVelocity().twist.linear.x(), 1.25);
 }

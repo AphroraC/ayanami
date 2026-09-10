@@ -19,7 +19,7 @@ class MapCommandPort {
  * and an opaque command port. Everything else (frames, freshness, path
  * validity, read views) is family-specific and lives on the concrete
  * context (e.g. ayanami::costmap::CostmapMapContext). The host owns the
- * concrete context; plugins of a family receive the family-typed context
+ * concrete context; modules of a family receive the family-typed context
  * at configure time.
  */
 class AbstractMapContext {

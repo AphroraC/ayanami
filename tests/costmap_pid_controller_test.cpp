@@ -11,11 +11,13 @@
 // - cancel mid-way -> returns ErrorCode::CANCELED + zero velocity
 // - Twist zeroing: linear.z / angular.x / angular.y are always 0, no NaN/dirty memory
 // - module.cpp exports the unified create_extension_module factory (verified via dlopen)
-// - the stop-line velocity XY bounds come fixed from the config goal_tolerance (its own param, no longer
-// receiving a goal_checker; arrival is decided by the execution-layer goal_checker)
+// - the stop-line velocity XY bound is the tighter of the config goal_tolerance and the arrival
+//   contract injected by the execution layer from the goal checker (arrival itself is decided by
+//   the execution-layer goal_checker)
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -96,8 +98,8 @@ std::shared_ptr<CostmapMapContext> makeContext() {
 }
 std::shared_ptr<CostmapPidController> makeController() {
   auto ctl = std::make_shared<CostmapPidController>();
-  // New API: parameters are injected via PluginContext.config (this module json); the map is received per the family contract.
-  ctl->configure(ayanami::PluginContext{
+  // New API: parameters are injected via ModuleContext.config (this module json); the map is received per the family contract.
+  ctl->configure(ayanami::ModuleContext{
                      "test_pid",
                      ayanami::Config((g_config_dir /
                                       "costmap_pid_controller.json").string())},
@@ -330,6 +332,59 @@ TEST(CostmapPidControllerTest, multiFrameReachesGoalAndStops) {
                                      TwistStamped{}));
 }
 
+// ---------- The arrival contract comes from the goal checker (single source) ----------
+// The controller's goal_tolerance is a tracking preference, not the contract. A checker whose XY
+// tolerance is tighter than that preference is unsatisfiable from the controller's own stop line:
+// the robot would align its heading outside the acceptance region, isGoalReached would never fire,
+// and the run would die on patience having achieved nothing.
+
+TEST(CostmapPidControllerTest, tighterCheckerToleranceMovesTheStopLine) {
+  const PoseStamped near_goal = makePose(8.95, 0.0);  // 0.05 m from the goal
+  ErrorCode failure = ErrorCode::NONE;
+  std::string message;
+
+  // Baseline: no contract injected -> the controller's own goal_tolerance (0.1 m) applies.
+  auto plain = makeController();
+  ASSERT_TRUE(plain->setPlan(makeXPath()));
+  const TwistStamped stopped = compute(plain, near_goal, failure, message);
+  ASSERT_EQ(failure, ErrorCode::NONE);
+  ASSERT_NEAR(stopped.twist.linear.x(), 0.0, 1e-9);
+
+  // Contract injected, tighter than the preference -> the controller must keep translating.
+  auto guarded = makeController();
+  ASSERT_TRUE(guarded->setPlan(makeXPath()));
+  guarded->setGoalTolerances(ayanami::PoseTolerance{0.02, 0.2});
+  const TwistStamped moving = compute(guarded, near_goal, failure, message);
+  EXPECT_EQ(failure, ErrorCode::NONE);
+  EXPECT_GT(moving.twist.linear.x(), 1e-6)
+      << "controller held station outside the goal checker's tolerance";
+}
+
+TEST(CostmapPidControllerTest, tighterCheckerToleranceIsReachable) {
+  auto ctl = makeController();
+  ctl->setGoalTolerances(ayanami::PoseTolerance{0.02, 0.2});
+  ASSERT_TRUE(ctl->setPlan(makeXPath()));
+
+  PoseStamped robot = makePose(0.0, 0.0);
+  ErrorCode failure = ErrorCode::NONE;
+  std::string message;
+  double closest = std::numeric_limits<double>::infinity();
+  // Budget note: distanceDecay is quadratic near the goal (v ~ d^2/2), so closing the last
+  // few centimetres takes on the order of a hundred control cycles. At 20 Hz that is seconds
+  // of real time, which is fine for navigation but needs a generous loop budget here.
+  for (int i = 0; i < 6000; ++i) {
+    closest = std::min(closest, std::abs(9.0 - robot.pose.position.x()));
+    const TwistStamped cmd = compute(ctl, robot, failure, message);
+    ASSERT_EQ(failure, ErrorCode::NONE) << message;
+    if (cmd.twist.linear.x() < 1e-6) {
+      break;
+    }
+    robot.pose.position.x() += cmd.twist.linear.x() * k_dt;
+  }
+  // The stop line sits at the injected 0.02 m, not the controller's 0.1 m.
+  EXPECT_LT(closest, 0.02) << "robot stopped short of the injected arrival contract";
+}
+
 // ---------- cancel ----------
 
 TEST(CostmapPidControllerTest, cancelReturnsCanceledOutcomeAndZero) {
@@ -419,7 +474,7 @@ TEST(CostmapPidControllerTest, inheritsCostmapControllerAndInitializes) {
 
   // The algorithm does not read the map, but implements configure(context, map) per the family contract.
   EXPECT_NO_THROW(cm->configure(
-      ayanami::PluginContext{
+      ayanami::ModuleContext{
           "test_pid",
           ayanami::Config((g_config_dir /
                            "costmap_pid_controller.json").string())},
@@ -440,7 +495,7 @@ TEST(CostmapPidControllerTest, moduleFactoryCreatesDerivedController) {
   ASSERT_FALSE(g_module_so.empty());
   // Common factory + typed cast: returns the real derived instance.
   auto controller = std::dynamic_pointer_cast<CostmapPidController>(
-      ayanami::ExtensionModule::load_module(g_module_so));
+      ayanami::ExtensionModule::loadModule(g_module_so));
   ASSERT_NE(controller, nullptr);
 }
 

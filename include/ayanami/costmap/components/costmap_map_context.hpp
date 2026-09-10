@@ -1,11 +1,15 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <shared_mutex>
 #include <string>
 #include <type_traits>
 #include <utility>
+
+#include <spdlog/spdlog.h>
 
 #include <Eigen/Geometry>
 
@@ -16,7 +20,7 @@
 #include "ayanami/map/abstract_map_context.hpp"
 #include "ayanami/costmap/core/costmap_command.hpp"
 #include "ayanami/costmap/core/planning_overlay.hpp"
-#include "ayanami/costmap/core/costmap_view.hpp"
+#include "ayanami/costmap/core/costmap_reader.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
 #include "ayanami/messages/geometry_msgs.hpp"
 #include "ayanami/messages/timestamp.hpp"
@@ -38,10 +42,11 @@ namespace costmap {
  *
  * Ownership and holding discipline:
  * - Ownership: the host (CostmapNavigation / CostmapNavigationServer) holds
- *   CostmapMapContext::Ptr; family plugins (planner/smoother/controller/
+ *   CostmapMapContext::Ptr; family modules (planner/smoother/controller/
  *   recovery) hold a ConstPtr (const smart pointer) on demand via
  *   configure(context, map) and never modify the map.
- * - Map reads: plugins take a CostmapView via lockGlobal()/lockLocal()
+ * - Map reads: modules read through readGlobal()/readLocal(), which hand a
+ *   CostmapReader to a callback and release the lock when it returns
  *   (RAII shared lock + zero-copy direct master grid reads) and hold the
  *   lock for the duration of one short algorithm call; the map writer waits
  *   for the lock to write. The planner is the exception: it materializes its
@@ -49,8 +54,8 @@ namespace costmap {
  *   pass) and searches the returned buffer lock-free.
  * - Mutable wrapper/layer access (globalCostmap()/localCostmap()) is
  *   provided only to the map writer (CostmapNavigationServer) and the
- *   execution lifecycle (checkActivate/checkDeactivate/isCurrent); rule
- *   plugins never use it.
+ *   execution lifecycle (checkActivate/checkDeactivate/current); rule
+ *   modules never use it.
  * - All TF queries go through the RobotStateController global singleton
  *   (the framework has exactly one transform query surface; no per-module
  *   getRobotPose-style wrappers).
@@ -59,7 +64,7 @@ namespace costmap {
  * - planner: global+local overlay via composePlanningOverlay() (global-frame
  *   buffer; the local<-global transform is resolved exactly once per
  *   compose, never per searched node);
- * - smoother: reads only the local map (lockLocal(); paths expressed in the
+ * - smoother: reads only the local map (readLocal(); paths expressed in the
  *   global frame are transformed into the local frame once per call);
  * - controller/recovery: read the local map (family-defined).
  */
@@ -82,10 +87,13 @@ class CostmapMapContext : public map::AbstractMapContext,
   /// explicitly; every point must be in bounds (out of bounds treated as
   /// lethal, mirroring nav2) and its cost must be neither NO_INFORMATION nor
   /// lethal (isLethal >= 253 includes inscribed, mirroring nav2 use_radius
-  /// mode). The overlay (and therefore the locks) only lives for the compose
-  /// pass; the point scan runs on the returned buffer. Degrades to a
-  /// non-empty check when no global wrapper exists; degrades to a full-path
-  /// check (conservative) when the robot pose is unavailable.
+  /// mode). Path validation is an O(path length) SPARSE probe: both shared
+  /// locks are held only for the point scan (short critical section), never
+  /// a whole-map materialization -- composePlanningOverlay exists for the A*
+  /// hot path. A readable local map whose local<-global transform is missing
+  /// degrades the check to global-only and emits a throttled warning.
+  /// Degrades to a non-empty check when no global wrapper exists; degrades
+  /// to a full-path check (conservative) when the robot pose is unavailable.
   bool isPathValid(const ayanami::nav_msgs::Path& path) const {
     if (path.poses.empty()) {
       return false;
@@ -93,38 +101,63 @@ class CostmapMapContext : public map::AbstractMapContext,
     if (!global_costmap) {
       return true;
     }
-    PlanningOverlay overlay;
-    if (!composePlanningOverlay(overlay)) {
-      return true;
-    }
-    // Start from the nearest point (pose resolution outside the overlay
-    // query; the pose was resolved at compose time).
-    std::size_t start_index = 0;
-    if (overlay.has_robot_pose) {
-      double best = std::numeric_limits<double>::max();
-      for (std::size_t i = 0; i < path.poses.size(); ++i) {
-        const double d = (path.poses[i].pose.position -
-                          overlay.robot_pose.pose.position)
-                             .norm();
-        if (d < best) {
-          best = d;
-          start_index = i;
+    // Resolve the local participation BEFORE taking map locks (the writer
+    // discipline). A missing local<-global transform is a degraded overlay:
+    // local lethal obstacles would silently drop out of the check, so warn
+    // (throttled) instead of failing silently.
+    Eigen::Isometry3d local_from_global = Eigen::Isometry3d::Identity();
+    const bool has_local = resolveLocalParticipation(local_from_global,
+                                                     /*warn_missing=*/true);
+    // Short critical section: both shared locks are held only for the
+    // O(path length) point scan -- path validation is a sparse probe, NOT a
+    // whole-map materialization (composePlanningOverlay exists for the A*
+    // hot path; per-point queries here would pay O(map) for O(path) work).
+    // Both maps are read inside nested callbacks (local first, then global:
+    // the same acquisition order the writer and composePlanningOverlay use).
+    // The locks therefore span exactly this O(path) probe and nothing else.
+    return readLocal([&](const CostmapReader& local) {
+      return readGlobal([&](const CostmapReader& global) {
+        if (!global.valid()) {
+          return true;
         }
-      }
-    }
-    for (std::size_t i = start_index; i < path.poses.size(); ++i) {
-      unsigned int mx = 0;
-      unsigned int my = 0;
-      if (!overlay.worldToMap(path.poses[i].pose.position.x(),
-                              path.poses[i].pose.position.y(), mx, my)) {
-        return false;  // out of bounds: treated as lethal, mirroring nav2
-      }
-      const auto cost = overlay.costAt(mx, my);
-      if (cost == costmap_2d::NO_INFORMATION || costmap_2d::isLethal(cost)) {
-        return false;
-      }
-    }
-    return true;
+        const auto* global_grid = global.grid();
+        const auto* local_grid =
+            (has_local && local.valid()) ? local.grid() : nullptr;
+        // Start from the nearest point: segments already traversed may be
+        // occupied by new obstacles and are a false-positive source (mirrors
+        // nav2 planner_server::isPathValid). Robot pose = global reader cache.
+        std::size_t start_index = 0;
+        if (global.hasRobotPose()) {
+          double best = std::numeric_limits<double>::max();
+          for (std::size_t i = 0; i < path.poses.size(); ++i) {
+            const double d = (path.poses[i].pose.position -
+                              global.robot_pose().pose.position)
+                                 .norm();
+            if (d < best) {
+              best = d;
+              start_index = i;
+            }
+          }
+        }
+        for (std::size_t i = start_index; i < path.poses.size(); ++i) {
+          unsigned int mx = 0;
+          unsigned int my = 0;
+          if (!global_grid->worldToMap(path.poses[i].pose.position.x(),
+                                       path.poses[i].pose.position.y(), mx,
+                                       my)) {
+            // out of bounds: treated as lethal, mirroring nav2
+            return false;
+          }
+          const auto cost = overlayPolicy.costAt(
+              *global_grid, local_grid, local_from_global, mx, my);
+          if (cost == costmap_2d::NO_INFORMATION ||
+              costmap_2d::isLethal(cost)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    });
   }
 
   // ---- Configuration (writer / test injection) ----
@@ -151,19 +184,21 @@ class CostmapMapContext : public map::AbstractMapContext,
 
   /// @brief Inject the map write-command port (during configureCoreMaps,
   /// right after the sole writer is created).
-  /// Map-family plugins such as recovery fetch it via commandPort instead
+  /// Map-family modules such as recovery fetch it via commandPort instead
   /// of side-path injection.
   void setCommandPort(map::MapCommandPort::Ptr port) {
     command_port = std::move(port);
   }
 
   // ---- frames / freshness ----
-  const std::string& getGlobalFrame() const { return global_frame; }
-  const std::string& getLocalFrame() const { return local_frame; }
-  const std::string& getRobotFrame() const { return robot_frame; }
+  const std::string& globalFrame() const { return global_frame; }
+  const std::string& localFrame() const { return local_frame; }
+  const std::string& robotFrame() const { return robot_frame; }
 
   /// @brief False if any wrapper is not current; no wrapper counts as current.
-  bool isCurrent() const {
+  /// @note Noun form to match CostmapReader::current(). The wrapper keeps
+  ///       isCurrent() because its flag is already named `current`.
+  bool current() const {
     return (!global_costmap || global_costmap->isCurrent()) &&
            (!local_costmap || local_costmap->isCurrent());
   }
@@ -183,23 +218,14 @@ class CostmapMapContext : public map::AbstractMapContext,
     return local_costmap;
   }
 
-  /// @brief Return a const owner for external observers and map-family plugins.
-  /// Map data must still be accessed through lockGlobal/lockLocal/readGlobal/
-  /// readLocal so the underlying master grid cannot escape its lock scope.
+  /// @brief Return a const owner for external observers and map-family modules.
+  /// Map data is still only reachable through readGlobal/readLocal, so the
+  /// underlying master grid cannot escape its lock scope.
   ConstPtr getSharedConstPtr() const {
     return shared_from_this();
   }
 
   // ---- Reader interface (shared lock + zero copy) ----
-
-  /// @brief Global read view under a shared lock (held for the whole
-  /// algorithm call; no wrapper -> invalid view). The grid and the resolved
-  /// robot pose are both in the wrapper's own (global) frame.
-  CostmapView lockGlobal() const { return buildView(global_costmap); }
-
-  /// @brief Local read view under a shared lock (grid + robot pose in the
-  /// wrapper's own (local) frame, typically odom).
-  CostmapView lockLocal() const { return buildView(local_costmap); }
 
   /// @brief Materialize the planning input: global+local overlay composed
   /// into `overlay` while both shared locks are held (compose pass only,
@@ -230,7 +256,7 @@ class CostmapMapContext : public map::AbstractMapContext,
     const auto* local_probe =
         local_costmap ? local_costmap->get().getCostmap() : nullptr;
     const std::string local_grid_frame =
-        local_costmap ? local_costmap->getGlobalFrame() : std::string{};
+        local_costmap ? local_costmap->globalFrame() : std::string{};
     Eigen::Isometry3d local_from_global = Eigen::Isometry3d::Identity();
     bool has_local = false;
     if (local_probe && local_grid_frame == global_frame) {
@@ -244,97 +270,157 @@ class CostmapMapContext : public map::AbstractMapContext,
     }
     // Acquisition order local -> global (the writer stamps local first, then
     // global, taking the two locks sequentially without nesting, so no
-    // lock-ordering cycle can form).
-    CostmapView local = buildView(local_costmap);
-    CostmapView global = buildView(global_costmap);
-    if (!global.valid()) {
-      return false;
-    }
-    const auto* global_grid = global.grid();
-    const auto* local_grid = local.grid();
-    has_local = has_local && local_grid != nullptr;
+    // lock-ordering cycle can form). Both locks live only for the compose pass
+    // below; the caller searches the returned buffer lock-free.
+    return readLocal([&](const CostmapReader& local) {
+      return readGlobal([&](const CostmapReader& global) {
+        if (!global.valid()) {
+          return false;
+        }
+        const auto* global_grid = global.grid();
+        const auto* local_grid = local.valid() ? local.grid() : nullptr;
+        const bool local_in_overlay = has_local && local_grid != nullptr;
 
-    const unsigned int size_x = global_grid->getSizeInCellsX();
-    const unsigned int size_y = global_grid->getSizeInCellsY();
-    overlay.frame = global_frame;
-    overlay.size_x = size_x;
-    overlay.size_y = size_y;
-    overlay.resolution = global_grid->getResolution();
-    overlay.origin_x = global_grid->getOriginX();
-    overlay.origin_y = global_grid->getOriginY();
-    overlay.robot_pose = global.robot_pose();
-    overlay.has_robot_pose = global.has_robot_pose();
-    overlay.local_overlay_valid = has_local;
-    overlay.costs.resize(static_cast<std::size_t>(size_x) * size_y);
-    for (unsigned int my = 0; my < size_y; ++my) {
-      for (unsigned int mx = 0; mx < size_x; ++mx) {
-        const unsigned char global_cost = global_grid->getCost(mx, my);
-        unsigned char cost = global_cost;
-        if (has_local) {
-          double wx = 0.0;
-          double wy = 0.0;
-          global_grid->mapToWorld(mx, my, wx, wy);
-          const Eigen::Vector3d p_local = local_from_global *
-                                          Eigen::Vector3d(wx, wy, 0.0);
-          unsigned int lx = 0;
-          unsigned int ly = 0;
-          if (local_grid->worldToMap(p_local.x(), p_local.y(), lx, ly)) {
-            const unsigned char local_cost = local_grid->getCost(lx, ly);
-            if (local_cost != costmap_2d::NO_INFORMATION && local_cost > cost) {
-              cost = local_cost;  // unknown never downgrades
-            }
+        const unsigned int size_x = global_grid->getSizeInCellsX();
+        const unsigned int size_y = global_grid->getSizeInCellsY();
+        overlay.frame = global_frame;
+        overlay.size_x = size_x;
+        overlay.size_y = size_y;
+        overlay.resolution = global_grid->getResolution();
+        overlay.origin_x = global_grid->getOriginX();
+        overlay.origin_y = global_grid->getOriginY();
+        overlay.robot_pose = global.robot_pose();
+        overlay.hasRobotPose = global.hasRobotPose();
+        overlay.local_overlay_valid = local_in_overlay;
+        overlay.costs.resize(static_cast<std::size_t>(size_x) * size_y);
+        for (unsigned int my = 0; my < size_y; ++my) {
+          for (unsigned int mx = 0; mx < size_x; ++mx) {
+            // local_in_overlay = false means the transform did not resolve: the
+            // local grid must NOT participate (an identity-transform fallback
+            // would stamp local marks at the wrong world coordinates).
+            overlay.costs[static_cast<std::size_t>(my) * size_x + mx] =
+                overlayPolicy.costAt(*global_grid,
+                                     local_in_overlay ? local_grid : nullptr,
+                                     local_from_global, mx, my);
           }
         }
-        overlay.costs[static_cast<std::size_t>(my) * size_x + mx] = cost;
-      }
-    }
-    overlay.valid = true;
-    return true;
+        overlay.valid = true;
+        return true;
+      });
+    });
   }
 
-  /// @brief Run a callback while the global master grid is protected
-  /// (shared lock).
+  /// @brief Run `fn` with read access to the global map.
+  ///
+  /// The only way to read a map: the shared lock lives in the reader handed to
+  /// `fn` and is released when it returns, so no caller can hold the map (and
+  /// therefore block the writer) past its own algorithm step. `fn` receives a
+  /// `const CostmapReader&`, whose grid pointer must not escape the call.
   template <typename Fn>
   auto readGlobal(Fn&& fn) const
       -> decltype(std::forward<Fn>(fn)(
-          std::declval<const costmap_2d::Costmap2D&>())) {
-    using Result = decltype(std::forward<Fn>(fn)(
-        std::declval<const costmap_2d::Costmap2D&>()));
-    if (!global_costmap) {
-      if constexpr (std::is_void_v<Result>) return;
-      else return Result{};
-    }
-    std::shared_lock<std::shared_mutex> lock(global_costmap->mutex());
-    const auto* grid = global_costmap->get().getCostmap();
-    if (!grid) {
-      if constexpr (std::is_void_v<Result>) return;
-      else return Result{};
-    }
-    return std::forward<Fn>(fn)(static_cast<const costmap_2d::Costmap2D&>(*grid));
+          std::declval<const CostmapReader&>())) {
+    return read(global_costmap, std::forward<Fn>(fn));
   }
 
-  /// @brief Run a callback while the local master grid is protected
-  /// (shared lock).
+  /// @brief Local-map counterpart of readGlobal (the grid and the robot pose are
+  /// in the local map's own frame, typically odom).
   template <typename Fn>
   auto readLocal(Fn&& fn) const
       -> decltype(std::forward<Fn>(fn)(
-          std::declval<const costmap_2d::Costmap2D&>())) {
-    using Result = decltype(std::forward<Fn>(fn)(
-        std::declval<const costmap_2d::Costmap2D&>()));
-    if (!local_costmap) {
-      if constexpr (std::is_void_v<Result>) return;
-      else return Result{};
-    }
-    std::shared_lock<std::shared_mutex> lock(local_costmap->mutex());
-    const auto* grid = local_costmap->get().getCostmap();
-    if (!grid) {
-      if constexpr (std::is_void_v<Result>) return;
-      else return Result{};
-    }
-    return std::forward<Fn>(fn)(static_cast<const costmap_2d::Costmap2D&>(*grid));
+          std::declval<const CostmapReader&>())) {
+    return read(local_costmap, std::forward<Fn>(fn));
   }
 
  private:
+  /// @brief The costmap family's overlay composition rule.
+  ///
+  /// Named and kept separate because two independent paths apply it -- the
+  /// planner's materialization (composePlanningOverlay) and path validation
+  /// (isPathValid) -- and "both use the same rule" should be a fact about the
+  /// code rather than a claim in a comment that drifts when one is edited.
+  struct OverlayPolicy {
+    /// @brief Cost of one global-grid cell once the local map has been folded in.
+    ///
+    /// Conservative per-cell max: the robot is blocked if either map says so.
+    /// Three cases keep the local map from manufacturing free space or
+    /// manufacturing obstacles at the wrong coordinates:
+    /// - no local grid (absent, or its transform did not resolve): the global
+    ///   cost stands, so an identity-transform fallback can never stamp local
+    ///   marks at the wrong world coordinates;
+    /// - the cell falls outside the local window: the global cost stands;
+    /// - the local cell is NO_INFORMATION: the global cost stands, so local
+    ///   unknown cannot clear global unknown.
+    ///
+    /// @param local_grid the LOCAL master grid (nullptr = global only)
+    /// @param local_from_global transform from the global frame into the local
+    ///        grid's frame (resolved once per query pass, never per cell).
+    unsigned char costAt(const costmap_2d::Costmap2D& global_grid,
+                         const costmap_2d::Costmap2D* local_grid,
+                         const Eigen::Isometry3d& local_from_global,
+                         unsigned int mx, unsigned int my) const {
+      const unsigned char global_cost = global_grid.getCost(mx, my);
+      if (local_grid == nullptr) {
+        return global_cost;
+      }
+      double wx = 0.0;
+      double wy = 0.0;
+      global_grid.mapToWorld(mx, my, wx, wy);
+      const Eigen::Vector3d p_local =
+          local_from_global * Eigen::Vector3d(wx, wy, 0.0);
+      unsigned int lx = 0;
+      unsigned int ly = 0;
+      if (!local_grid->worldToMap(p_local.x(), p_local.y(), lx, ly)) {
+        return global_cost;  // outside the local window: global only
+      }
+      const unsigned char local_cost = local_grid->getCost(lx, ly);
+      if (local_cost == costmap_2d::NO_INFORMATION) {
+        return global_cost;  // unknown never downgrades
+      }
+      return global_cost > local_cost ? global_cost : local_cost;
+    }
+  };
+
+  OverlayPolicy overlayPolicy;
+
+  /// @brief Resolve whether the local map participates in overlay queries:
+  /// true when a readable local grid exists AND the local<-global transform
+  /// resolves (identity when both frames coincide). With warn_missing, a
+  /// readable local grid whose transform is unavailable emits a throttled
+  /// warning -- the overlay silently degrades to global-only, which drops
+  /// local obstacles from path validation.
+  bool resolveLocalParticipation(Eigen::Isometry3d& local_from_global,
+                                 bool warn_missing) const {
+    const auto* local_probe =
+        local_costmap ? local_costmap->get().getCostmap() : nullptr;
+    if (local_probe == nullptr) {
+      return false;
+    }
+    const std::string local_grid_frame = local_costmap->globalFrame();
+    if (local_grid_frame == global_frame) {
+      return true;  // same frame: identity transform, no lookup needed
+    }
+    if (ayanami::components::RobotStateController::instance().lookupTransform(
+            local_grid_frame, global_frame, ayanami::Timestamp::latest(),
+            local_from_global, 0.0)) {
+      return true;
+    }
+    if (warn_missing) {
+      const auto now = std::chrono::steady_clock::now();
+      auto prev = local_transform_warn_at.load();
+      if (now - prev >= std::chrono::duration<double>(
+                            k_local_transform_warn_interval_s) &&
+          local_transform_warn_at.compare_exchange_strong(prev, now)) {
+        spdlog::warn(
+            "CostmapMapContext: no transform {} <- {}; path validation runs "
+            "on the GLOBAL overlay only (local obstacles are NOT reflected). "
+            "Check the TF producers of the local costmap frame",
+            local_grid_frame, global_frame);
+      }
+    }
+    return false;
+  }
+
   /// @brief Resolve the robot pose in the requested frame via the
   /// RobotStateController singleton (the framework-wide TF query surface).
   bool robotPoseInFrame(ayanami::geometry_msgs::PoseStamped& pose,
@@ -348,24 +434,49 @@ class CostmapMapContext : public map::AbstractMapContext,
     return true;
   }
 
-  /// @brief Build a read view under a shared lock: grid and frame come from
-  /// the wrapper (the wrapper's frame is authoritative for its grid); the
-  /// footprint comes from the immutable configure-time cache; robot_pose is
-  /// resolved in the wrapper frame via the RobotStateController.
-  CostmapView buildView(
+  /// @brief Build a read view: the robot pose is resolved BEFORE the lock is
+  /// taken, then the lock and the grid pointer are acquired together.
+  ///
+  /// The order matters and used to be wrong here: the previous version took the
+  /// map's shared lock and then called robotPoseInFrame(), i.e. it performed a
+  /// transform lookup while holding the map lock -- the exact nesting the
+  /// compose path documents as forbidden ("never nest the robot-state lock
+  /// inside a map-lock wait"), and a lock-order inversion waiting for a writer
+  /// to hit it. Resolving the pose first keeps the map lock free of any
+  /// transform work.
+  CostmapReader buildReader(
       const costmap_2d::CostmapWrapper::Ptr& wrapper) const {
     if (!wrapper) {
-      return CostmapView{};
+      return CostmapReader{};
     }
+    const std::string frame = wrapper->globalFrame();
+    ayanami::geometry_msgs::PoseStamped robot_pose;
+    const bool has_robot_pose = robotPoseInFrame(robot_pose, frame);
     std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
     const auto* grid = wrapper->get().getCostmap();
-    ayanami::geometry_msgs::PoseStamped robot_pose;
-    const bool has_robot_pose =
-        robotPoseInFrame(robot_pose, wrapper->getGlobalFrame());
-    return CostmapView(std::move(lock), grid, wrapper->getGlobalFrame(),
-                       &cached_footprint, std::move(robot_pose),
-                       has_robot_pose, wrapper->isCurrent());
+    return CostmapReader(std::move(lock), grid, frame, &cached_footprint,
+                         std::move(robot_pose), has_robot_pose,
+                         wrapper->isCurrent());
   }
+
+  /// @brief Shared implementation of readGlobal/readLocal.
+  template <typename Fn>
+  auto read(const costmap_2d::CostmapWrapper::Ptr& wrapper, Fn&& fn) const
+      -> decltype(std::forward<Fn>(fn)(
+          std::declval<const CostmapReader&>())) {
+    // The callback always runs, even without a wrapper: it receives an invalid
+    // reader (valid() == false) and decides for itself. Skipping the call
+    // instead would make "this map is absent" and "the callback never ran" look
+    // the same from the caller's side.
+    const CostmapReader reader = buildReader(wrapper);
+    return std::forward<Fn>(fn)(reader);
+  }
+
+  /// @brief Throttle for the missing-local-transform warning of path
+  /// validation (mutable: isPathValid is const).
+  static constexpr double k_local_transform_warn_interval_s = 5.0;
+  mutable std::atomic<std::chrono::steady_clock::time_point>
+      local_transform_warn_at{};
 
   costmap_2d::CostmapWrapper::Ptr global_costmap;
   costmap_2d::CostmapWrapper::Ptr local_costmap;

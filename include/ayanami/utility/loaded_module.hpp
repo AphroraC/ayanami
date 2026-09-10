@@ -11,7 +11,7 @@ namespace ayanami {
  * Bookkeeping for a loaded shared object.
  *
  * The current runtime intentionally keeps the module image resident. Keeping
- * this object separate from plugin instances establishes the ownership seam
+ * this object separate from module instances establishes the ownership seam
  * needed for a future, fully quiescent unload without changing RTLD_GLOBAL.
  */
 class LoadedModule {

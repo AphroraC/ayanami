@@ -14,11 +14,16 @@ namespace {
 constexpr double k_pi = 3.14159265358979323846;
 }
 
-void SimpleProgressChecker::configure(const ayanami::PluginContext& context) {
+
+void SimpleProgressChecker::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // SimpleProgressCheckerParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: this module's json (the file
   // config_progress_checker points to). Param section convention: the
   // section key = the module json "name" field, delivered as
-  // PluginContext::name.
+  // ModuleContext::name.
   const std::string& section = context.name;
   param.required_movement = context.config.param<double>(
       section, "required_movement", param.required_movement);
@@ -27,6 +32,15 @@ void SimpleProgressChecker::configure(const ayanami::PluginContext& context) {
   param.time_period = context.config.param<double>(
       section, "time_period", param.time_period);
 }
+
+void SimpleProgressChecker::configure(const ayanami::ModuleContext& context) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
+}
+
 
 void SimpleProgressChecker::reset() {
   initialized = false;

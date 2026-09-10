@@ -67,7 +67,7 @@ public:
   /// @brief Current internal state (atomic read).
   int getState() const { return state.load(); }
 
-  /// @brief Unified error code of the most recent plugin call (NONE=success).
+  /// @brief Unified error code of the most recent module call (NONE=success).
   ErrorCode getError() const { return error; }
 
   /// @brief The most recent human-readable message.

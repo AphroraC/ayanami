@@ -1,6 +1,6 @@
 // Recovery vs obstacle concurrency (map changes go through the single-writer command port).
 //
-// New architecture (locked direct-read CostmapView, no snapshots/epochs): recovery plugins never touch the mutable
+// New architecture (locked direct-read map access, no snapshots/epochs): recovery modules never touch the mutable
 // wrapper/layers; the clear recovery only constructs a typed ClearCostmapCommand and submits it via
 // CostmapCommandPort; the single writer (an equivalent writer simulated here) holds the wrapper
 // unique lock to clear layers + publish via updateMapUnlocked. Readers read the master grid directly under a shared lock.
@@ -51,7 +51,7 @@ constexpr double k_robot_x = 2.25;
 constexpr double k_robot_y = 2.25;
 
 /// Equivalent writer command port: submit immediately performs the writer-level map clear (clearCostmapArea clears
-/// layers + publishes via updateMapUnlocked under the write lock). Recovery plugins only hold this interface and never touch the wrapper.
+/// layers + publishes via updateMapUnlocked under the write lock). Recovery modules only hold this interface and never touch the wrapper.
 class TestWriterPort : public CostmapCommandPort {
  public:
   TestWriterPort(const std::shared_ptr<costmap_2d::CostmapWrapper>& global,
@@ -75,7 +75,7 @@ class TestWriterPort : public CostmapCommandPort {
     bool ok = true;
     if (clear_global && global) {
       Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
-      ok = rsc->lookupTransform(global->getGlobalFrame(), robot_frame,
+      ok = rsc->lookupTransform(global->globalFrame(), robot_frame,
                                 ayanami::Timestamp::latest(), p) &&
            ok;
       ok = ayanami::costmap::clearCostmapArea(global, p, command.clear_radius) &&
@@ -83,7 +83,7 @@ class TestWriterPort : public CostmapCommandPort {
     }
     if (clear_local && local) {
       Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
-      ok = rsc->lookupTransform(local->getGlobalFrame(), robot_frame,
+      ok = rsc->lookupTransform(local->globalFrame(), robot_frame,
                                 ayanami::Timestamp::latest(), p) &&
            ok;
       ok = ayanami::costmap::clearCostmapArea(local, p, command.clear_radius) &&
@@ -160,7 +160,7 @@ unsigned char cellCost(
 }  // namespace
 
 // The command port truly works: after submitting the clear command the area near the robot is cleared back to FREE while distant
-// cells stay LETHAL; and only the writer may trigger changes (recovery plugins have no mutable access at all).
+// cells stay LETHAL; and only the writer may trigger changes (recovery modules have no mutable access at all).
 TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
   auto global_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
   auto local_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
@@ -174,12 +174,12 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
 
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
-      ctx->getRobotFrame());
+      ctx->robotFrame());
 
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
 
@@ -221,12 +221,12 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
 
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
-      ctx->getRobotFrame());
+      ctx->robotFrame());
 
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
 

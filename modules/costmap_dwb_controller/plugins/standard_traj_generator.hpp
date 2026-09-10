@@ -22,7 +22,7 @@ class StandardTrajectoryGenerator : public dwb_core::TrajectoryGenerator {
 public:
   // Standard TrajectoryGenerator interface
   void initialize(const ayanami::Config& cfg,
-                  const std::string& plugin_name) override;
+                  const std::string& module_name) override;
   void startNewIteration(
       const nav_2d_msgs::Twist2D& current_velocity) override;
   bool hasMoreTwists() override;
@@ -98,7 +98,7 @@ protected:
   /// @brief Whether to limit the velocity command in the trajectory
   bool limit_vel_cmd_in_traj;
 
-  std::string plugin_name;
+  std::string module_name;
 };
 
 }  // namespace dwb_plugins

@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <stdexcept>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
@@ -91,25 +92,130 @@ GlobalConfig* GlobalConfig::instance(const std::string& config_path,
   return inst;
 }
 
+void Config::recordConsumed(const std::string& module_name,
+                             const std::string& param_name) const {
+  const std::string full = module_name + "." + param_name;
+  for (const auto& seen : consumed) {
+    if (seen == full) {
+      return;
+    }
+  }
+  consumed.push_back(full);
+}
+
+bool Config::wasConsumed(const std::string& module_name,
+                          const std::string& param_name) const {
+  const std::string full = module_name + "." + param_name;
+  for (const auto& seen : consumed) {
+    if (seen == full) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> Config::consumedKeys() const { return consumed; }
+
+std::vector<std::string> Config::unusedKeys(const std::string& section) const {
+  std::vector<std::string> unused;
+  for (const auto& key : keys(section)) {
+    if (!wasConsumed(section, key)) {
+      unused.push_back(key);
+    }
+  }
+  return unused;
+}
+
+std::vector<std::string> auditUnusedParameters(const Config& config,
+                                               const std::string& section,
+                                               const std::string& owner) {
+  const std::vector<std::string> unused = config.unusedKeys(section);
+  if (unused.empty()) {
+    return unused;
+  }
+  std::string joined;
+  for (std::size_t i = 0; i < unused.size(); ++i) {
+    joined += (i == 0 ? "" : ", ") + unused[i];
+  }
+  const bool strict =
+      config.param<bool>("global", "strict_params", false);
+  if (strict) {
+    throw std::runtime_error("unused config parameter(s) in section '" +
+                             section + "' for " + owner + ": " + joined);
+  }
+  spdlog::warn(
+      "unused config parameter(s) in section '{}' for {}: {} "
+      "(typo, or a leftover from an older version; set global.strict_params "
+      "to true to make this fatal)",
+      section, owner, joined);
+  return unused;
+}
+
+bool Config::hasSection(const std::string& section) const {
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
+  return json.find(section) != json.end();
+}
+
+std::vector<std::string> Config::keys(const std::string& section) const {
+  std::vector<std::string> keys;
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
+  const auto found = json.find(section);
+  if (found == json.end() || !found->is_object()) {
+    return keys;
+  }
+  keys.reserve(found->size());
+  for (auto iter = found->begin(); iter != found->end(); ++iter) {
+    keys.push_back(iter.key());
+  }
+  return keys;
+}
+
+std::vector<std::string> Config::sections() const {
+  std::vector<std::string> sections;
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
+  if (!json.is_object()) {
+    return sections;
+  }
+  sections.reserve(json.size());
+  for (auto iter = json.begin(); iter != json.end(); ++iter) {
+    sections.push_back(iter.key());
+  }
+  return sections;
+}
+
+std::vector<std::string> Config::paramStringOrList(
+    const std::string& module_name, const std::string& param_name) const {
+  // Either spelling is legal, so try the list form first and fall back to the
+  // scalar one. Both reads are type-guarded inside param<T>(), so a genuine
+  // type error shows up as "not found" on both attempts and the caller gets an
+  // empty list rather than an exception.
+  const auto as_list =
+      param<std::vector<std::string>>(module_name, param_name);
+  if (as_list) {
+    return *as_list;
+  }
+  const auto as_single = param<std::string>(module_name, param_name);
+  if (as_single && !as_single->empty()) {
+    return {*as_single};
+  }
+  return {};
+}
+
 std::string GlobalConfig::getConfigPath(const std::string& config_name) {
   const GlobalConfig* config = instance();
   const std::filesystem::path directory =
       config->param<std::string>("global", "config_path", ".");
   std::string filename = config_name + ".json";
   // The global section's single-level index only resolves root-level keys
-  // (config_navigation/config_ros);
-  // plugin file pointers live uniformly in config_navigation's navigation
-  // section, enumerated directly by NavigationServerBase::loadPlugins,
-  // bypassing this entry point.
-  if (config->hasParam("global", config_name)) {
-    try {
-      filename = config->param<std::string>(
-          "global", config_name, filename);
-    } catch (const std::exception&) {
-      const auto files = config->param<std::vector<std::string>>(
-          "global", config_name, {});
-      if (!files.empty()) filename = files.front();
-    }
+  // (config_navigation/config_ros); module file pointers live in
+  // config_navigation's navigation section, enumerated by
+  // NavigationServerBase::loadModules, bypassing this entry point.
+  // A single string or a one-element array are both accepted: one shared helper
+  // handles the two spellings (this used to be a hand-written try/catch).
+  const std::vector<std::string> configured =
+      config->paramStringOrList("global", config_name);
+  if (!configured.empty()) {
+    filename = configured.front();
   }
   return (directory / filename).string();
 }

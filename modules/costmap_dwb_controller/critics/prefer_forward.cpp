@@ -6,12 +6,12 @@
 namespace dwb_critics {
 
 void PreferForwardCritic::onInit() {
-  penalty = config().param<double>(dwb_plugin_name, name + ".penalty", 1.0);
-  strafe_x = config().param<double>(dwb_plugin_name, name + ".strafe_x", 0.1);
+  penalty = config().param<double>(dwb_module_name, name + ".penalty", 1.0);
+  strafe_x = config().param<double>(dwb_module_name, name + ".strafe_x", 0.1);
   strafe_theta =
-      config().param<double>(dwb_plugin_name, name + ".strafe_theta", 0.2);
+      config().param<double>(dwb_module_name, name + ".strafe_theta", 0.2);
   theta_scale =
-      config().param<double>(dwb_plugin_name, name + ".theta_scale", 10.0);
+      config().param<double>(dwb_module_name, name + ".theta_scale", 10.0);
 }
 
 double PreferForwardCritic::scoreTrajectory(

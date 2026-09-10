@@ -16,7 +16,7 @@ public:
       : kinematics_handler(nullptr), x_it(nullptr), y_it(nullptr),
         th_it(nullptr) {}
   void initialize(const ayanami::Config& cfg, KinematicsHandler::Ptr kinematics,
-                  const std::string& plugin_name) override;
+                  const std::string& module_name) override;
   void startNewIteration(const nav_2d_msgs::Twist2D& current_velocity,
                          double dt) override;
   bool hasMoreTwists() override;

@@ -1,6 +1,6 @@
 // Map Family abstraction test: proves the NavigationServerBase assembly path has zero costmap
-// dependency -- a non-costmap fake map family (the Grid family) completes plugin configuration through the same set of virtual hooks
-// (initialize*Plugin + PluginContext injection), with the map context provided via the
+// dependency -- a non-costmap fake map family (the Grid family) completes module configuration through the same set of virtual hooks
+// (initialize*Module + ModuleContext injection), with the map context provided via the
 // AbstractMapContext interface: identity/frame/version/capability/write commands/robot state.
 //
 // This test dlopens no .so at all (the assembly seam is at the hook layer, orthogonal to the loading mechanism).
@@ -56,11 +56,11 @@ class GridMapContext final : public AbstractMapContext {
   GridCommandPort::Ptr command_port;
 };
 
-// ---- Fake-family family-level plugin layer (the abstract layer has zero map knowledge; the family layer binds GridMapContext) ----
+// ---- Fake-family family-level module layer (the abstract layer has zero map knowledge; the family layer binds GridMapContext) ----
 
 class GridPlanner : public ayanami::abstract::AbstractPlanner {
  public:
-  virtual void configure(const ayanami::PluginContext& context,
+  virtual void configure(const ayanami::ModuleContext& context,
                          std::shared_ptr<const GridMapContext> map) = 0;
 
  protected:
@@ -70,7 +70,7 @@ class GridPlanner : public ayanami::abstract::AbstractPlanner {
 
 class StraightLineGridPlanner final : public GridPlanner {
  public:
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  std::shared_ptr<const GridMapContext> map) override {
     configured_name = context.name;
     map_context = std::move(map);
@@ -98,7 +98,7 @@ class StraightLineGridPlanner final : public GridPlanner {
 
 class GridRecovery : public ayanami::abstract::AbstractRecovery {
  public:
-  virtual void configure(const ayanami::PluginContext& context,
+  virtual void configure(const ayanami::ModuleContext& context,
                          std::shared_ptr<const GridMapContext> map) = 0;
 
  protected:
@@ -107,7 +107,7 @@ class GridRecovery : public ayanami::abstract::AbstractRecovery {
 
 class GridClearRecovery final : public GridRecovery {
  public:
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  std::shared_ptr<const GridMapContext> map) override {
     configured_name = context.name;
     map_context = std::move(map);
@@ -141,25 +141,25 @@ class GridClearRecovery final : public GridRecovery {
 
 class GridNavigationServer final : public ayanami::components::NavigationServerBase {
  public:
-  bool initializePlannerPlugin(const std::string& name,
+  bool initializePlannerModule(const std::string& name,
                                const ayanami::Config& module_config,
                                ayanami::abstract::AbstractPlanner::Ptr ptr) override {
     auto cast = std::dynamic_pointer_cast<GridPlanner>(ptr);
     if (!cast || !grid_map) {
       return false;
     }
-    cast->configure(ayanami::PluginContext{name, module_config}, grid_map);
+    cast->configure(ayanami::ModuleContext{name, module_config}, grid_map);
     return true;
   }
 
-  bool initializeRecoveryPlugin(const std::string& name,
+  bool initializeRecoveryModule(const std::string& name,
                                 const ayanami::Config& module_config,
                                 ayanami::abstract::AbstractRecovery::Ptr ptr) override {
     auto cast = std::dynamic_pointer_cast<GridRecovery>(ptr);
     if (!cast || !grid_map) {
       return false;
     }
-    cast->configure(ayanami::PluginContext{name, module_config}, grid_map);
+    cast->configure(ayanami::ModuleContext{name, module_config}, grid_map);
     return true;
   }
 
@@ -180,7 +180,7 @@ TEST(MapFamilyAbstractionTest, gridContextSatisfiesAbstractInterface) {
   EXPECT_EQ(abstract->commandPort(), port);
 }
 
-// ---- The derived server hooks inject the fake map-family context into family-level plugins (zero costmap dependency) ----
+// ---- The derived server hooks inject the fake map-family context into family-level modules (zero costmap dependency) ----
 
 TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   GridNavigationServer server;
@@ -191,11 +191,11 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
 
   auto planner = std::make_shared<StraightLineGridPlanner>();
   ayanami::abstract::AbstractPlanner::Ptr planner_base = planner;
-  EXPECT_TRUE(server.initializePlannerPlugin(
+  EXPECT_TRUE(server.initializePlannerModule(
       "grid_planner", ayanami::Config(""), planner_base));
   EXPECT_TRUE(planner->configured);
 
-  // The plugins work through the injected map context (family-level configure + abstract-layer makePlan).
+  // The modules work through the injected map context (family-level configure + abstract-layer makePlan).
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
   start.header.frame_id = "world";
@@ -206,10 +206,10 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   ASSERT_TRUE(result.ok) << result.message;
   EXPECT_EQ(plan.poses.size(), 2u);
 
-  // The recovery plugin submits family write commands via commandPort (the write-command interface closes the loop).
+  // The recovery module submits family write commands via commandPort (the write-command interface closes the loop).
   auto recovery = std::make_shared<GridClearRecovery>();
   ayanami::abstract::AbstractRecovery::Ptr recovery_base = recovery;
-  EXPECT_TRUE(server.initializeRecoveryPlugin(
+  EXPECT_TRUE(server.initializeRecoveryModule(
       "grid_clear", ayanami::Config(""), recovery_base));
   EXPECT_EQ(recovery->configured_name, "grid_clear");
 
@@ -219,7 +219,7 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
   EXPECT_EQ(port->submissions.load(), 1);
   EXPECT_DOUBLE_EQ(port->last_radius.load(), 0.75);
 
-  // A non-fake-family plugin (a plain AbstractPlanner) is rejected by the family hooks (typed constraint).
+  // A non-fake-family module (a plain AbstractPlanner) is rejected by the family hooks (typed constraint).
   class PlainPlanner : public ayanami::abstract::AbstractPlanner {
    public:
     ayanami::ResultT<void> makePlan(const ayanami::geometry_msgs::PoseStamped&,
@@ -228,7 +228,7 @@ TEST(MapFamilyAbstractionTest, gridServerInjectsContextViaFamilyHooks) {
       return ayanami::ResultT<void>::failure(ErrorCode::INTERNAL_ERROR, "unused");
     }
   };
-  EXPECT_FALSE(server.initializePlannerPlugin(
+  EXPECT_FALSE(server.initializePlannerModule(
       "plain", ayanami::Config(""), std::make_shared<PlainPlanner>()));
 }
 

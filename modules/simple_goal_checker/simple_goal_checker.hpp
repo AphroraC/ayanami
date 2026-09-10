@@ -15,13 +15,18 @@ namespace modules {
  * Pure C++ (zero ROS): xy distance of pose.position and relative rotation angle of pose.angle within tolerance,
  * and linear velocity < velocity.linear and angular velocity < velocity.angular -> arrived.
  * Tolerances are configured via the simple_goal_checker section of simple_goal_checker.json
- * (injected from PluginContext at configure time).
+ * (injected from ModuleContext at configure time).
  */
 class SimpleGoalChecker final : public ayanami::abstract::AbstractGoalChecker {
  public:
   SimpleGoalChecker() = default;
 
-  void configure(const ayanami::PluginContext& context) override;
+  /// @brief Parameter-loading seam (ExtensionModule): called by the loader
+  /// right after a successful load, and by configure() for callers that build
+  /// the object directly.
+  void configureParameters(const ayanami::ModuleContext& context) override;
+
+  void configure(const ayanami::ModuleContext& context) override;
 
   void reset() override;
 
@@ -29,7 +34,7 @@ class SimpleGoalChecker final : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::PoseStamped& goal_pose,
                      const ayanami::geometry_msgs::TwistStamped& current_velocity) override;
 
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override;
+  ayanami::GoalCheckerTolerances getTolerances() const override;
 
  private:
   struct SimpleGoalCheckerParam {

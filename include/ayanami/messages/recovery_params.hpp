@@ -10,7 +10,7 @@ namespace ayanami {
  *
  * BT recovery nodes may override common behavior params per run (e.g.
  * <Recovery recovery="{spin_id}" target_yaw="3.14"/>); a field left unset
- * (nullopt) means use the plugin's configure-time defaults. A nullopt field
+ * (nullopt) means use the module's configure-time defaults. A nullopt field
  * must keep the configured default; interpreting nullopt as 0 is
  * forbidden.
  */

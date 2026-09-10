@@ -33,7 +33,7 @@ TEST(CostmapServerTest, constructionHoldsLayeredCostmapWithStaticLayer) {
 
   costmap_2d::CostmapWrapper wrapper(lm, "map");
   EXPECT_EQ(&wrapper.get(), lm.get());
-  EXPECT_EQ(wrapper.getGlobalFrame(), "map");
+  EXPECT_EQ(wrapper.globalFrame(), "map");
   EXPECT_TRUE(wrapper.isRollingWindow());
   EXPECT_EQ(wrapper.get().getGlobalFrameID(), "map");
 }
@@ -108,14 +108,14 @@ TEST(CostmapServerTest, updateMapRollingWindowPreservesOverlap) {
   EXPECT_EQ(cm->getCost(5, 5), costmap_2d::FREE_SPACE);
 }
 
-// ---------- isCurrent / getGlobalFrame ----------
+// ---------- isCurrent / globalFrame ----------
 
 TEST(CostmapServerTest, isCurrentAndGetGlobalFrame) {
   auto lm = makeRollingGrid(10, 0.5);
   costmap_2d::CostmapWrapper wrapper(lm, "map");
 
   EXPECT_TRUE(wrapper.isCurrent());
-  EXPECT_EQ(wrapper.getGlobalFrame(), "map");
+  EXPECT_EQ(wrapper.globalFrame(), "map");
   wrapper.setCurrent(false);
   EXPECT_FALSE(wrapper.isCurrent());
   wrapper.setCurrent(true);

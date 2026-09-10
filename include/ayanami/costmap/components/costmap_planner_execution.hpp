@@ -18,8 +18,8 @@ namespace costmap {
  * - preRun: checkActivate() idempotently activates the global costmap;
  * - postRun: checkDeactivate() idempotently deactivates the global costmap;
  * - safetyCheck: global wrapper isCurrent() (map freshness, atomic read);
- * - callPlanner: typed call into CostmapPlanner; the plugin reads the map
- *   under a lock internally via its held map module's lockGlobal() (shared
+ * - callPlanner: typed call into CostmapPlanner; the module reads the map
+ *   under a lock internally via its held map module's readGlobal() callback (shared
  *   lock, zero copy, single planning call <10ms).
  */
 class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
@@ -60,7 +60,7 @@ class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
     if (!typed) {
       return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
-          "CostmapPlannerExecution: plugin is not a CostmapPlanner");
+          "CostmapPlannerExecution: module is not a CostmapPlanner");
     }
     if (!ctx) {
       return ResultT<void>::failure(

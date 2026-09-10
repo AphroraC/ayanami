@@ -1,9 +1,9 @@
-// Concurrency regression: while a reader holds the shared lock (the lockGlobal read view) the writer is blocked;
+// Concurrency regression: while a reader is inside the map read callback the writer is blocked;
 // after release the writer completes its write with no data race (locked direct-read model).
 //
 // Old architecture (BLOCK #1): CostmapPlannerExecution::run held the global wrapper recursive_mutex for the entire
 // plan, starving the obstacle feed during multi-hundred-millisecond plans (large A*).
-// New architecture: single writer + multiple readers; a reader takes an RAII shared-lock view via CostmapMapContext::lockGlobal
+// New architecture: single writer + multiple readers; a reader reads via CostmapMapContext::readGlobal
 // (zero-copy direct read of the master grid, held briefly for a <10ms plan), and the writer (the only one) waits for readers
 // to release before writing under the unique lock.
 //
@@ -41,12 +41,12 @@ using ayanami::ResultT;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-/// Slow planning plugin: holds the map ConstPtr; inside makePlan it takes a read view via lockGlobal (shared
+/// Slow planning module: holds the map ConstPtr; inside makePlan it reads via readGlobal (shared
 /// lock) and blocks until release (simulating a long search). The view RAII lifetime = the read window holding the lock;
 /// the writer is blocked during the read window; the recorded (2,2) value proves the map stayed stable within the read window.
 class SlowPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void configure(const ayanami::PluginContext&,
+  void configure(const ayanami::ModuleContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_context = std::move(map);
   }
@@ -54,24 +54,28 @@ class SlowPlanner : public ayanami::costmap::CostmapPlanner {
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::PoseStamped&, double, ayanami::nav_msgs::Path& plan_out) override {
     ++calls;
-    auto view = map_context->lockGlobal();
-    if (!view.valid()) {
-      return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
-                                     "no global view");
-    }
-    saw_cell.store(view.grid()->getCost(2, 2));
-    ayanami::nav_msgs::Path plan;
-    plan.header.frame_id = "map";
-    plan.poses.resize(1);
-    {
-      std::unique_lock<std::mutex> lock(mutex);
-      entered.notify_all();
-      release.wait_for(lock, std::chrono::seconds(30), [this] {
-        return released.load();
-      });
-    }
-    plan_out = std::move(plan);
-    return ResultT<void>::success();
+    // The read callback is the only way to hold the map lock, so a slow reader
+    // is expressed by staying inside it -- exactly the window the writer is
+    // expected to be excluded from.
+    return map_context->readGlobal(
+        [&](const ayanami::costmap::CostmapReader& view) -> ResultT<void> {
+          if (!view.valid()) {
+            return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
+                                          "no global view");
+          }
+          saw_cell.store(view.grid()->getCost(2, 2));
+          ayanami::nav_msgs::Path plan;
+          plan.header.frame_id = "map";
+          plan.poses.resize(1);
+          {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered.notify_all();
+            release.wait_for(lock, std::chrono::seconds(30),
+                             [this] { return released.load(); });
+          }
+          plan_out = std::move(plan);
+          return ResultT<void>::success();
+        });
   }
   bool cancel() override { return true; }
 
@@ -115,7 +119,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   }
 
   auto planner = std::make_shared<SlowPlanner>();
-  planner->configure(ayanami::PluginContext{"test_planner", ayanami::Config("")}, ctx);
+  planner->configure(ayanami::ModuleContext{"test_planner", ayanami::Config("")}, ctx);
   ayanami::costmap::CostmapPlannerExecution exec("test_planner", planner, ctx);
 
   exec.start(PoseStamped{}, PoseStamped{}, 0.1);
@@ -130,9 +134,10 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
 
   // Another reader can read concurrently within the read window, matching the planner value (no torn reads).
   {
-    auto view = ctx->lockGlobal();
-    ASSERT_TRUE(view.valid());
-    EXPECT_EQ(view.grid()->getCost(2, 2), planner->saw_cell.load());
+    ctx->readGlobal([&](const ayanami::costmap::CostmapReader& view) {
+      ASSERT_TRUE(view.valid());
+      EXPECT_EQ(view.grid()->getCost(2, 2), planner->saw_cell.load());
+    });
   }
 
   // Within the read window the writer unique-lock attempt fails -> blocked by the reader.
@@ -154,7 +159,8 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   }
 
   // After the writer finishes, readers read the new value (no loss / no data race).
-  ctx->readGlobal([&](const costmap_2d::Costmap2D& grid) {
-    EXPECT_EQ(grid.getCost(2, 2), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+  ctx->readGlobal([&](const ayanami::costmap::CostmapReader& reader) {
+    EXPECT_EQ(reader.grid()->getCost(2, 2),
+              costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   });
 }

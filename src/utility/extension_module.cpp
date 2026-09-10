@@ -3,7 +3,7 @@
 
 namespace ayanami {
 
-ExtensionModule::Ptr ExtensionModule::load_module(const std::string& so_name) {
+ExtensionModule::Ptr ExtensionModule::loadModule(const std::string& so_name) {
   auto create =
       loadModuleFromSo<ExtensionModule* (*)()>(so_name, "create_extension_module");
   if (create == nullptr) {
@@ -11,6 +11,16 @@ ExtensionModule::Ptr ExtensionModule::load_module(const std::string& so_name) {
   }
   // No custom deleter: the dlopen handle is never dlclosed; the object lives as long as the process.
   return Ptr(create());
+}
+
+ExtensionModule::Ptr ExtensionModule::loadModule(
+    const std::string& so_name, const ModuleContext& context) {
+  Ptr module = loadModule(so_name);
+  if (module) {
+    // Only a module that loaded successfully gets its parameters read.
+    module->configureParameters(context);
+  }
+  return module;
 }
 
 } // namespace ayanami

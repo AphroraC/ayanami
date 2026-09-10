@@ -17,14 +17,14 @@ namespace components {
  * @brief Global path planning execution (single run, modeled after MBF
  * AbstractPlannerExecution).
  *
- * Responsibility table: the plugin only performs path search; a failure is
+ * Responsibility table: the module only performs path search; a failure is
  * mapped immediately to an ErrorCode terminal state, and retries are
  * decided by the BT (RecoveryNode) -- the execution layer does no retry/
  * patience loop.
  *
  * latest-wins goal seam: setNewGoal stores the latest start/goal/tolerance
  * into a pending slot; run() adopts the latest pending goal before each
- * plugin call, and after a plugin call returns, if the revision has
+ * module call, and after a module call returns, if the revision has
  * advanced it restarts with the latest goal (no cancel / no join / no new
  * thread).
  *
@@ -52,7 +52,7 @@ public:
 
   /// @brief Record start/goal/tolerance and start the planning thread.
   /// An empty start is resolved to the latest robot pose HERE (framework
-  /// responsibility); plugins always receive a fully valid start.
+  /// responsibility); modules always receive a fully valid start.
   using ExecutionBase::start;
   void start(const geometry_msgs::PoseStamped& start,
              const geometry_msgs::PoseStamped& goal, double tolerance) {
@@ -62,7 +62,7 @@ public:
     ExecutionBase::start();
   }
 
-  /// @brief Cancel: set cancel_requested and forward to the planner plugin (cooperative).
+  /// @brief Cancel: set cancel_requested and forward to the planner module (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (planner) planner->cancel();
@@ -71,7 +71,7 @@ public:
 
   /// @brief In-place goal update while running (latest-wins update seam).
   /// @return false means the execution has reached a terminal state or the
-  /// plugin does not support it; the caller should fall back to creating a
+  /// module does not support it; the caller should fall back to creating a
   /// new execution.
   virtual bool setNewGoal(const geometry_msgs::PoseStamped& start,
                           const geometry_msgs::PoseStamped& goal,
@@ -107,9 +107,9 @@ public:
   nav_msgs::Path takePlan() { return std::move(plan); }
 
 protected:
-  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// @brief Module call hook: by default calls the abstract signature;
   /// map-family executions override it with a typed call (the execution
-  /// layer performs map access; plugins never touch map modules).
+  /// layer performs map access; modules never touch map modules).
   virtual ResultT<void> callPlanner(
       const geometry_msgs::PoseStamped& start,
       const geometry_msgs::PoseStamped& goal, double tolerance,
@@ -148,14 +148,14 @@ protected:
         }
         setState(PLANNING, false);
 
-        // in-place: the plugin writes the result member directly (single-shot
+        // in-place: the module writes the result member directly (single-shot
         // execution; the FOUND_PLAN terminal state makes the write visible to
         // the action reader via the state machine's happens-before edge), so
         // no buffer + move round-trip is needed.
         const ResultT<void> result =
             callPlanner(cur_start, cur_goal, cur_tolerance, plan);
 
-        // A new goal arrived during the plugin call (revision advanced): do
+        // A new goal arrived during the module call (revision advanced): do
         // not commit this result; replan for the latest goal on the same
         // execution thread (latest-wins, no cancel/new thread).
         {
@@ -171,7 +171,7 @@ protected:
           return;
         }
         if (result.ok) {
-          // plan was written in place by the plugin (see callPlanner arg).
+          // plan was written in place by the module (see callPlanner arg).
           error = ErrorCode::NONE;
           message = result.message;
           setState(FOUND_PLAN, true);
@@ -200,8 +200,8 @@ protected:
 protected:
   /// @brief Interface contract helper (AbstractPlanner): an empty start
   /// (default-constructed pose) is resolved to the latest robot pose via the
-  /// RobotStateController so plugins never interpret sentinels themselves.
-  /// An unresolvable start is passed through unchanged; the plugin then
+  /// RobotStateController so modules never interpret sentinels themselves.
+  /// An unresolvable start is passed through unchanged; the module then
   /// fails with START_INVALID and the BT recovery branch takes over.
   static geometry_msgs::PoseStamped resolveStart(
       const geometry_msgs::PoseStamped& start) {

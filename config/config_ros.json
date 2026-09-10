@@ -10,24 +10,12 @@
     "tf_sync_rate": 50.0,
     "tf_cache_duration": 10.0,
     "tf_sync_edges": [
-      [
-        "map",
-        "odom"
-      ],
-      [
-        "odom",
-        "base_link"
-      ],
-      [
-        "base_link",
-        "laser"
-      ]
+      "map-odom:50hz",
+      "odom-base_link:50hz",
+      "base_link-laser:10hz"
     ],
     "tf_static_edges": [
-      [
-        "base_link",
-        "laser"
-      ]
+      "base_link-laser"
     ],
     "localization_clear_yaw_threshold": 1.0,
     "localization_clear_pos_threshold": 2.0,

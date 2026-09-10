@@ -1,7 +1,7 @@
 // Requirement 2/3 focused tests:
 // A. All production module .so files load through the common create_extension_module factory and are
-// typed dynamic_pointer_cast to the correct plugin family type (no arbitrary create* symbols anymore).
-// B. The default-tree extension module (navigation_behavior_tree) loads standalone: load_module ->
+// typed dynamic_pointer_cast to the correct module family type (no arbitrary create* symbols anymore).
+// B. The default-tree extension module (navigation_behavior_tree) loads standalone: loadModule ->
 // BehaviorTreeExtension cast -> registerNodes + registerTrees -> createTree ->
 // tick (execute the tree).
 //
@@ -12,10 +12,14 @@
 
 #include <gtest/gtest.h>
 
+#include <ayanami/utility/config.hpp>
+
 #include <chrono>
 #include <memory>
 #include <string>
 #include <thread>
+#include <filesystem>
+#include <fstream>
 
 #include <Eigen/Geometry>
 
@@ -42,16 +46,41 @@ using namespace ayanami::behavior_tree;
 
 namespace {
 
+/// @brief Minimal config dir for the BT extension. The extension resolves its
+/// tree asset itself and has no embedded fallback, so a test that calls
+/// registerTrees() directly must provide a real file on disk.
+std::filesystem::path makeTreeConfigDir() {
+  const auto dir =
+      std::filesystem::temp_directory_path() / "ayanami_bt_ext_cfg";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir / "BT");
+  {
+    std::ofstream ofs(dir / "config.json");
+    ofs << R"({ "global": { "config_navigation": "nav.json" } })";
+  }
+  {
+    std::ofstream ofs(dir / "nav.json");
+    ofs << R"({ "navigation": {
+      "behavior_tree_xml": "BT/navigation.xml",
+      "behavior_tree_id": "NavigateWithReplanningAndSmoothing" } })";
+  }
+  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
+                             std::filesystem::copy_options::overwrite_existing);
+  ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
+  return dir;
+}
+
+
 std::string g_host_so, g_dwb_so, g_smac_so, g_savitzky_so, g_pid_so;
 std::string g_spin_so, g_backup_so, g_wait_so, g_clear_so;
 std::string g_goal_checker_so, g_progress_checker_so, g_bt_ext_so;
 
-/// Typed-load assertion: ExtensionModule::load_module -> dynamic_pointer_cast<T> is non-null.
+/// Typed-load assertion: ExtensionModule::loadModule -> dynamic_pointer_cast<T> is non-null.
 template <typename T>
 void expectLoadsAs(const std::string& so, const char* what = nullptr) {
-  auto ext = ayanami::ExtensionModule::load_module(so);
+  auto ext = ayanami::ExtensionModule::loadModule(so);
   SCOPED_TRACE(what ? what : so);
-  EXPECT_NE(ext, nullptr) << "load_module failed: " << so;
+  EXPECT_NE(ext, nullptr) << "loadModule failed: " << so;
   if (!ext) {
     return;
   }
@@ -83,7 +112,7 @@ TEST(ExtensionModuleFactoryTest, allProductionModulesLoadViaCommonFactory) {
 
 TEST(ExtensionModuleFactoryTest, nonNavigationModuleIsNotNavigation) {
   // Counter-example: the goal_checker .so must not be castable to AbstractNavigation.
-  auto ext = ayanami::ExtensionModule::load_module(g_goal_checker_so);
+  auto ext = ayanami::ExtensionModule::loadModule(g_goal_checker_so);
   ASSERT_NE(ext, nullptr);
   EXPECT_EQ(std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(ext),
             nullptr);
@@ -185,12 +214,15 @@ class StubNavServer : public ayanami::components::NavigationServerBase {
 
 TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) {
   auto ext = std::dynamic_pointer_cast<BehaviorTreeExtension>(
-      ayanami::ExtensionModule::load_module(g_bt_ext_so));
+      ayanami::ExtensionModule::loadModule(g_bt_ext_so));
   ASSERT_NE(ext, nullptr) << "load default BT extension failed";
   EXPECT_EQ(ext->name(), "navigation");
   EXPECT_EQ(ext->defaultTreeId(), "NavigateWithReplanningAndSmoothing");
 
   // Standalone registration (no pilot): nodes + default tree XML all come from the extension.
+  // The extension resolves its tree asset from the config (no embedded fallback).
+  makeTreeConfigDir();
+
   BT::BehaviorTreeFactory factory;
   EXPECT_NO_THROW(ext->registerNodes(factory));
   std::vector<std::string> tree_ids;
@@ -213,7 +245,7 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   bb->set<std::string>(k_wait_id, "x");
   bb->set<std::string>(k_backup_id, "x");
   bb->set<uint64_t>(k_session_id, 0u);
-  bb->set<uint64_t>(k_plan_version, 0u);
+  bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));

@@ -27,7 +27,7 @@ namespace modules {
  * returned PlanningOverlay buffer lock-free in O(1) per cell, so a slow
  * search (unreachable goal / large map) never stalls the map writer. The
  * start pose arrives fully resolved (the execution layer substitutes the
- * current robot pose for an empty start; plugins never interpret sentinels).
+ * current robot pose for an empty start; modules never interpret sentinels).
  */
 class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
  public:
@@ -35,7 +35,12 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
   // Derived class adds the virtual destructor with override (base AbstractPlanner is already virtual)
   ~CostmapSmacPlanner() override = default;
 
-  void configure(const PluginContext& context,
+  /// @brief Parameter-loading seam (ExtensionModule): called by the loader
+  /// right after a successful load, and by configure() for callers that build
+  /// the object directly.
+  void configureParameters(const ayanami::ModuleContext& context) override;
+
+  void configure(const ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   ResultT<void> makePlan(const geometry_msgs::PoseStamped& start,

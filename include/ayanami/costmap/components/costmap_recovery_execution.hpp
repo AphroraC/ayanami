@@ -21,7 +21,7 @@ namespace costmap {
  *   retained; the recovery cycle loop does not gate on it -- recovery must
  *   always advance to a terminal state and publish zeros);
  * - callRecoveryTick: typed call into CostmapRecovery; collision-type
- *   recovery plugins read the map under a lock internally via their held
+ *   recovery modules read the map under a lock internally via their held
  *   map module; map-modifying recoveries (clear) submit commands via
  *   CostmapCommandPort, executed by the sole writer
  *   (CostmapNavigationServer).
@@ -70,7 +70,7 @@ class CostmapRecoveryExecution : public ayanami::components::RecoveryExecution {
     if (!typed) {
       return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
-          "CostmapRecoveryExecution: plugin is not a CostmapRecovery");
+          "CostmapRecoveryExecution: module is not a CostmapRecovery");
     }
     if (!ctx) {
       return ResultT<void>::failure(

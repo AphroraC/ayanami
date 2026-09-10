@@ -2,7 +2,7 @@
 //
 // Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Each cycle returns a negative linear velocity
 // suggestion (vx = -max_v); RecoveryExecution acts as the sole publisher, publishing per cycle and zeroing
-// on the final state; the plugin neither loops/waits on its own nor bypass-publishes velocity commands. M1 headless does not depend on
+// on the final state; the module neither loops/waits on its own nor bypass-publishes velocity commands. M1 headless does not depend on
 // actual base motion; SUCCESS is returned once duration has elapsed. Collision detection (lock-held global grid read,
 // any cell >= 253 near the robot) -> FAILED(RecoveryFailed), message contains "collision detected".
 
@@ -18,21 +18,32 @@ namespace {
 constexpr int k_lethal_threshold = 253;  //
 }
 
-void CostmapBackUpRecovery::configure(
-    const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+
+void CostmapBackUpRecovery::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapBackUpRecoveryParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.backup_dist =
       context.config.param<double>(context.name, "backup_dist", param.backup_dist);
   param.max_v =
       context.config.param<double>(context.name, "max_v", param.max_v);
-  param.sim_cycle_dt =
-      context.config.param<double>(
-          "recovery", "sim_cycle_dt", param.sim_cycle_dt);
   param.collision_radius = context.config.param<double>(
       context.name, "collision_radius", param.collision_radius);
+}
+
+void CostmapBackUpRecovery::configure(
+    const ayanami::ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
   map_context = std::move(map);
 }
+
 
 void CostmapBackUpRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
@@ -45,16 +56,30 @@ void CostmapBackUpRecovery::setBehaviorParams(
   }
 }
 
+void CostmapBackUpRecovery::setCyclePeriod(double seconds) {
+  // Framework input, not a config value: the execution owns the tick cadence.
+  cycle_dt = std::max(seconds, 1e-6);
+}
+
 void CostmapBackUpRecovery::start() {
   canceled.store(false);
-  const double dt = std::max(param.sim_cycle_dt, 1e-6);
+  const double dt = std::max(cycle_dt, 1e-6);
   remaining_frames = static_cast<int>(std::ceil(
       std::max(param.backup_dist, 0.0) / std::max(param.max_v, 1e-6) / dt));
 }
 
 ResultT<void> CostmapBackUpRecovery::tick(RecoveryCycleData& cycle) {
-  // Hold the shared lock to read the map (released at the end of the cycle), zero copy.
-  auto costmap = map_context->lockGlobal();
+  // The read callback owns the shared lock for its duration, zero copy: the map
+  // is readable for exactly this cycle and the writer is never held off longer.
+  return map_context->readGlobal(
+      [&](const ayanami::costmap::CostmapReader& costmap) -> ResultT<void> {
+        return tickWithMap(cycle, costmap);
+      });
+}
+
+ResultT<void> CostmapBackUpRecovery::tickWithMap(
+    RecoveryCycleData& cycle,
+    const ayanami::costmap::CostmapReader& costmap) {
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
@@ -65,7 +90,7 @@ ResultT<void> CostmapBackUpRecovery::tick(RecoveryCycleData& cycle) {
 
   ::Eigen::Isometry3d robot_pose = ::Eigen::Isometry3d::Identity();
   const bool have_pose =
-      costmap.has_robot_pose() &&
+      costmap.hasRobotPose() &&
       (robot_pose = costmap.robot_pose().pose.toIsometry(), true);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
     return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED,
@@ -91,7 +116,7 @@ bool CostmapBackUpRecovery::cancel() {
 }
 
 bool CostmapBackUpRecovery::collisionNearRobot(
-    const ayanami::costmap::CostmapView& costmap,
+    const ayanami::costmap::CostmapReader& costmap,
     const ::Eigen::Isometry3d& robot_pose) const {
   const costmap_2d::Costmap2D* grid = costmap.grid();
   if (!grid) {

@@ -17,11 +17,11 @@ namespace ayanami {
 namespace modules {
 
 /**
- * @brief AbstractNavigation host plugin: assembles the full costmap stack behind a dlopen entry point.
+ * @brief AbstractNavigation host module: assembles the full costmap stack behind a dlopen entry point.
  *
  * Responsibilities (preemption discipline and more):
  * - Holds a CostmapNavigationServer (costmap family server) + a BehaviorTreePilot with a resident tree.
- * - initialize: configureCoreMaps -> loadPlugins (triggering the virtual initialize*Plugin injections of the
+ * - initialize: configureCoreMaps -> loadModules (triggering the virtual initialize*Module injections of the
  *   costmap context, which internally includes createActions) -> bt_pilot wiring: configure ->
  *   loadFromFile -> setNavigationRuntime (explicit three-step sequence, not relying on bt_pilot auto-wiring).
  * - setGoal: single navigation thread reuse (bt_pilot.run is a resident loop; beginNavigation only rewrites the blackboard +
@@ -30,7 +30,7 @@ namespace modules {
  *   side-channel NavigationCallbacks::on_costmap_visualization.
  *
  * Lifecycle: on destruction, first stop joins the navigation thread, then bt_pilot stop, then server
- * stop (the server calls clearPlugins only once BT nodes no longer hold stale plugin pointers).
+ * stop (the server calls clearModules only once BT nodes no longer hold stale module pointers).
  */
 class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
  public:

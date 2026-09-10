@@ -1,10 +1,10 @@
-// Concurrency regression: the controller takes a local read view via lockLocal each cycle (RAII shared
+// Concurrency regression: the controller takes the local read scope via readLocal each cycle (shared
 // lock, zero-copy direct read of the master grid), interleaved with a concurrent obstacle writer (drops obstacles +
 // updateMapUnlocked recompute); neither side starves.
 //
 // Old architecture (BLOCK #1): CostmapControllerExecution::run held the local wrapper recursive_mutex for the
 // whole control loop, starving the obstacle feed. New architecture: single writer + multiple readers:
-// - the controller takes a local shared-lock view via lockLocal each cycle and releases it at cycle end;
+// - the controller takes the local read scope via readLocal each cycle and releases it on return;
 // - the obstacle writer (the only writer) drops obstacles and recomputes the master under a unique lock;
 // - readers hold the lock briefly, the writer waits for readers to release, and both sides make progress (no starvation / no deadlock).
 //
@@ -46,22 +46,26 @@ using ayanami::nav_msgs::Path;
 /// Lock-read-view fake controller: records the cycle count (concurrency check that the writer is not starved by readers).
 class SnapshotController : public ayanami::costmap::CostmapController {
  public:
-  void configure(const ayanami::PluginContext&,
+  void configure(const ayanami::ModuleContext&,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     map_context = std::move(map);
   }
   ResultT<void> computeVelocityCommand(const PoseStamped&,
                                            const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     ++cycles;
-    auto view = map_context->lockLocal();
-    if (!view.valid()) {
-      ++snapshot_missing;
-      return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
-                                        "no local view");
-    }
-    cmd = TwistStamped{};
-    cmd.twist.linear.x() = 0.5;
-    return ResultT<void>::success();
+    // This cycle's map read: the callback's scope is the cycle, so the writer is
+    // excluded for exactly that long.
+    return map_context->readLocal(
+        [&](const ayanami::costmap::CostmapReader& view) -> ResultT<void> {
+          if (!view.valid()) {
+            ++snapshot_missing;
+            return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
+                                          "no local view");
+          }
+          cmd = TwistStamped{};
+          cmd.twist.linear.x() = 0.5;
+          return ResultT<void>::success();
+        });
   }
 
   std::atomic<int> cycles{0};
@@ -81,7 +85,7 @@ class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const TwistStamped&) override {
     return false;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -111,7 +115,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   ctx->setLocalCostmap(local);
 
   auto controller = std::make_shared<SnapshotController>();
-  controller->configure(ayanami::PluginContext{"test_controller", ayanami::Config("")}, ctx);
+  controller->configure(ayanami::ModuleContext{"test_controller", ayanami::Config("")}, ctx);
   ayanami::costmap::CostmapControllerExecution exec("test_controller", controller,
                                                     ctx);
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());

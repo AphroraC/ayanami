@@ -11,7 +11,7 @@ namespace costmap_2d {
 
 class LayeredCostmap;
 
-/// Pure virtual base class of costmap layers. Plugins implement updateBounds/updateCosts to read and write the master grid.
+/// Pure virtual base class of costmap layers. Modules implement updateBounds/updateCosts to read and write the master grid.
 class Layer {
  public:
   using Ptr = std::shared_ptr<Layer>;

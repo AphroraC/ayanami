@@ -13,7 +13,7 @@ void PathAlignCritic::onInit() {
   stop_on_failure = false;
 
   forward_point_distance =
-      config().param<double>(dwb_plugin_name,
+      config().param<double>(dwb_module_name,
                              name + ".forward_point_distance", 0.325);
 }
 

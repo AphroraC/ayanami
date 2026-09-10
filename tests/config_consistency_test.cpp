@@ -1,18 +1,18 @@
 // Full config/*.json suite + id<->name consistency check (/ §9).
-// R1 (Controller option a): *_id values are uniformly the plugin full name (including the _recovery suffix),
-// so BT blackboard writes like {spin_id} directly equal the PluginManager/recovery_actions name key,
-// and requestRecovery no longer misses (fixes the historical pitfall of recovery_id not matching the plugin name).
+// R1 (Controller option a): *_id values are uniformly the module full name (including the _recovery suffix),
+// so BT blackboard writes like {spin_id} directly equal the ModuleManager/recovery_actions name key,
+// and requestRecovery no longer misses (fixes the historical pitfall of recovery_id not matching the module name).
 //
 // Test layers:
 // A. Pure config layer: load config/ -> read the costmap_navigation.json ids -> assert each id value
-// equals the name field of the corresponding plugin json (full plugin name).
-// B. Real dlopen: PluginManager<Abstract* family> loads the real module .so files; the loaded names match
+// equals the name field of the corresponding module json (full module name).
+// B. Real dlopen: ModuleManager<Abstract* family> loads the real module .so files; the loaded names match
 // the costmap_navigation.json id values.
 // C. Host init: dlopen host -> initialize(config/) -> enumerate the loaded recovery actions.
 // D. Real requestRecovery calls: full name -> valid TaskHandle; unsuffixed id -> invalid
 // (NOT FOUND; proves negatively that the old unsuffixed id is now truly a miss).
 // E. BT recovery branch: run the real BT tree <Recovery recovery="{spin_id}"/> -> triggers
-// requestRecovery(full name) -> the costmap_spin_recovery plugin is actually invoked
+// requestRecovery(full name) -> the costmap_spin_recovery module is actually invoked
 // (the on_velocity_command angular-velocity events = the runRecovery count).
 //
 // argv: 1=config_dir, 2=host.so, 3=smac.so, 4=savitzky.so, 5=pid.so,
@@ -35,7 +35,7 @@
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/navigation.hpp>
-#include <ayanami/abstract/components/plugin_manager.hpp>
+#include <ayanami/abstract/components/module_manager.hpp>
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_navigation.hpp>
 #include <ayanami/abstract/core/abstract_planner.hpp>
@@ -60,7 +60,21 @@ using ayanami::abstract::AbstractSmoother;
 using ayanami::actions::RecoveryGoal;
 using ayanami::behavior_tree::k_navigation_runtime;
 using ayanami::behavior_tree::k_spin_id;
-using ayanami::components::PluginManager;
+// Blackboard keys the shipped production tree references (see the shipped-tree test).
+using ayanami::behavior_tree::k_backup_id;
+using ayanami::behavior_tree::k_clear_costmap_id;
+using ayanami::behavior_tree::k_controller_frequency;
+using ayanami::behavior_tree::k_failure_context;
+using ayanami::behavior_tree::k_goal;
+using ayanami::behavior_tree::k_goal_revision;
+using ayanami::behavior_tree::k_planner_frequency;
+using ayanami::behavior_tree::k_raw_path;
+using ayanami::behavior_tree::k_raw_path_revision;
+using ayanami::behavior_tree::k_session_id;
+using ayanami::behavior_tree::k_smoother_frequency;
+using ayanami::behavior_tree::k_smoothed_path;
+using ayanami::behavior_tree::k_wait_id;
+using ayanami::components::ModuleManager;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 
@@ -74,7 +88,7 @@ std::string g_backup_so;
 std::string g_wait_so;
 std::string g_clear_so;
 
-// The *_id field set of costmap_navigation.json. After R1, id values == the plugin full name.
+// The *_id field set of costmap_navigation.json. After R1, id values == the module full name.
 struct NavIds {
   std::string planner_id;
   std::string smoother_id;
@@ -164,8 +178,8 @@ NavIds readNavIds() {
   return ids;
 }
 
-/// Reads the name field of a plugin json. module_section is the top-level json section name.
-std::string pluginName(const std::string& config_key,
+/// Reads the name field of a module json. module_section is the top-level json section name.
+std::string moduleName(const std::string& config_key,
                        const std::string& module_section) {
   const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
       "config_navigation"));
@@ -178,8 +192,8 @@ std::string pluginName(const std::string& config_key,
   return cfg.param<std::string>(module_section, "name", "");
 }
 
-/// Locates the plugin json by role in the config_recovery array and reads its name (unified common factory symbol).
-std::string recoveryPluginName(const std::string& role) {
+/// Locates the module json by role in the config_recovery array and reads its name (unified common factory symbol).
+std::string recoveryModuleName(const std::string& role) {
   const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
       "config_navigation"));
   const std::string directory = ayanami::GlobalConfig::instance()->param<std::string>(
@@ -202,7 +216,7 @@ std::string recoveryPluginName(const std::string& role) {
 /// and the test is still responsible for deleting the host.
 CostmapNavigation* createHost(const std::string& config_dir) {
   auto nav = std::dynamic_pointer_cast<AbstractNavigation>(
-      ayanami::ExtensionModule::load_module(g_host_so));
+      ayanami::ExtensionModule::loadModule(g_host_so));
   if (!nav) {
     return nullptr;
   }
@@ -228,7 +242,7 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
   return fn();
 }
 
-// ---- A. Pure config layer: id value == plugin full name ----
+// ---- A. Pure config layer: id value == module full name ----
 
 TEST(ConfigConsistencyTest, allIdsNonEmpty) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
@@ -243,75 +257,81 @@ TEST(ConfigConsistencyTest, allIdsNonEmpty) {
   EXPECT_FALSE(ids.backup_id.empty());
 }
 
-TEST(ConfigConsistencyTest, idsAreFullPluginNames) {
+TEST(ConfigConsistencyTest, idsAreFullModuleNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
 
-  // planner/controller/smoother: name == id (already equal to the plugin name / PluginManager key).
-  EXPECT_EQ(pluginName("config_planner", "planner"), ids.planner_id);
-  EXPECT_EQ(pluginName("config_controller", "controller"), ids.controller_id);
-  EXPECT_EQ(pluginName("config_smoother", "smoother"), ids.smoother_id);
+  // planner/controller/smoother: name == id (already equal to the module name / ModuleManager key).
+  EXPECT_EQ(moduleName("config_planner", "planner"), ids.planner_id);
+  EXPECT_EQ(moduleName("config_controller", "controller"), ids.controller_id);
+  EXPECT_EQ(moduleName("config_smoother", "smoother"), ids.smoother_id);
 
-  // recovery: the id value directly == the plugin name (full plugin name, including the _recovery suffix).
+  // recovery: the id value directly == the module name (full module name, including the _recovery suffix).
   // The BT {spin_id} blackboard write = costmap_spin_recovery -> requestRecovery hits directly.
   EXPECT_EQ(ids.spin_id, "costmap_spin_recovery");
-  EXPECT_EQ(recoveryPluginName("spin"), ids.spin_id);
+  EXPECT_EQ(recoveryModuleName("spin"), ids.spin_id);
 
   EXPECT_EQ(ids.wait_id, "costmap_wait_recovery");
-  EXPECT_EQ(recoveryPluginName("wait"), ids.wait_id);
+  EXPECT_EQ(recoveryModuleName("wait"), ids.wait_id);
 
   EXPECT_EQ(ids.backup_id, "costmap_back_up_recovery");
-  EXPECT_EQ(recoveryPluginName("backup"), ids.backup_id);
+  EXPECT_EQ(recoveryModuleName("backup"), ids.backup_id);
 
-  // clear_costmap_id and recovery_id point to the same plugin (full name).
+  // clear_costmap_id and recovery_id point to the same module (full name).
   EXPECT_EQ(ids.recovery_id, ids.clear_costmap_id);
   EXPECT_EQ(ids.clear_costmap_id, "costmap_clear_costmap_recovery");
-  EXPECT_EQ(recoveryPluginName("clear_costmap"), ids.recovery_id);
+  EXPECT_EQ(recoveryModuleName("clear_costmap"), ids.recovery_id);
 }
 
-// ---- B. Real dlopen: PluginManager loaded names match costmap_navigation.json ----
+// ---- B. Real dlopen: ModuleManager loaded names match costmap_navigation.json ----
 
-TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
+TEST(ConfigConsistencyTest, moduleManagersLoadMatchingNames) {
   ayanami::GlobalConfig::instance(g_config_dir, /*override_path=*/true);
   const NavIds ids = readNavIds();
 
   {
-    PluginManager<AbstractPlanner> mgr;
-    ayanami::components::PluginSpec spec;
-    spec.name = pluginName("config_planner", "planner");
+    ModuleManager<AbstractPlanner> mgr;
+    ayanami::components::ModuleSpec spec;
+    spec.name = moduleName("config_planner", "planner");
     spec.so_name = g_smac_so;
     ASSERT_TRUE(
-        mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractPlanner>) {
-          return true;
-        }));
-    EXPECT_TRUE(mgr.hasPlugin(ids.planner_id));
+        mgr.loadModule(spec,
+                       ayanami::ModuleContext{spec.name, ayanami::Config("")},
+                       [](const std::string&, std::shared_ptr<AbstractPlanner>) {
+                         return true;
+                       }));
+    EXPECT_TRUE(mgr.hasModule(ids.planner_id));
     EXPECT_EQ(mgr.getLoadedNames().size(), 1u);
   }
   {
-    PluginManager<AbstractSmoother> mgr;
-    ayanami::components::PluginSpec spec;
-    spec.name = pluginName("config_smoother", "smoother");
+    ModuleManager<AbstractSmoother> mgr;
+    ayanami::components::ModuleSpec spec;
+    spec.name = moduleName("config_smoother", "smoother");
     spec.so_name = g_savitzky_so;
     ASSERT_TRUE(
-        mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractSmoother>) {
-          return true;
-        }));
-    EXPECT_TRUE(mgr.hasPlugin(ids.smoother_id));
+        mgr.loadModule(spec,
+                       ayanami::ModuleContext{spec.name, ayanami::Config("")},
+                       [](const std::string&, std::shared_ptr<AbstractSmoother>) {
+                         return true;
+                       }));
+    EXPECT_TRUE(mgr.hasModule(ids.smoother_id));
   }
   {
-    PluginManager<AbstractController> mgr;
-    ayanami::components::PluginSpec spec;
-    spec.name = pluginName("config_controller", "controller");
+    ModuleManager<AbstractController> mgr;
+    ayanami::components::ModuleSpec spec;
+    spec.name = moduleName("config_controller", "controller");
     spec.so_name = g_pid_so;
     ASSERT_TRUE(
-        mgr.loadPlugin(spec, [](const std::string&, std::shared_ptr<AbstractController>) {
-          return true;
-        }));
-    EXPECT_TRUE(mgr.hasPlugin(ids.controller_id));
+        mgr.loadModule(spec,
+                       ayanami::ModuleContext{spec.name, ayanami::Config("")},
+                       [](const std::string&, std::shared_ptr<AbstractController>) {
+                         return true;
+                       }));
+    EXPECT_TRUE(mgr.hasModule(ids.controller_id));
   }
   {
-    // All 4 recoveries loaded; each name must == the id value (full plugin name).
-    PluginManager<AbstractRecovery> mgr;
+    // All 4 recoveries loaded; each name must == the id value (full module name).
+    ModuleManager<AbstractRecovery> mgr;
     const struct {
       const char* role;
       const char* so;
@@ -322,43 +342,44 @@ TEST(ConfigConsistencyTest, pluginManagersLoadMatchingNames) {
         {"clear_costmap", g_clear_so.c_str()},
     };
     for (const auto& r : k_rec) {
-      ayanami::components::PluginSpec spec;
-      spec.name = recoveryPluginName(r.role);
+      ayanami::components::ModuleSpec spec;
+      spec.name = recoveryModuleName(r.role);
       spec.so_name = r.so;
-      ASSERT_TRUE(mgr.loadPlugin(
-          spec, [](const std::string&, std::shared_ptr<AbstractRecovery>) {
+      ASSERT_TRUE(mgr.loadModule(
+          spec, ayanami::ModuleContext{spec.name, ayanami::Config("")},
+          [](const std::string&, std::shared_ptr<AbstractRecovery>) {
             return true;
           }))
           << r.role;
     }
-    EXPECT_TRUE(mgr.hasPlugin(ids.spin_id));
-    EXPECT_TRUE(mgr.hasPlugin(ids.backup_id));
-    EXPECT_TRUE(mgr.hasPlugin(ids.wait_id));
-    EXPECT_TRUE(mgr.hasPlugin(ids.clear_costmap_id));
+    EXPECT_TRUE(mgr.hasModule(ids.spin_id));
+    EXPECT_TRUE(mgr.hasModule(ids.backup_id));
+    EXPECT_TRUE(mgr.hasModule(ids.wait_id));
+    EXPECT_TRUE(mgr.hasModule(ids.clear_costmap_id));
     EXPECT_EQ(mgr.getLoadedNames().size(), 4u);
   }
 }
 
 // ---- C. Host init: dlopen host -> initialize(config/) -> loaded names match the json ----
 
-TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentPlugins) {
+TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentModules) {
   CostmapNavigation* host = createHost(g_config_dir);
   ASSERT_NE(host, nullptr);
 
-  // loadPlugins loads via config_planner/.../config_recovery -> createActions.
+  // loadModules loads via config_planner/.../config_recovery -> createActions.
   // pid is already in the costmap family (CostmapController), so the costmap host can inject it;
   // the controller action is created as well (all four costmap families accepted).
   ASSERT_NE(host->navigationServer().plannerAction(), nullptr);
   ASSERT_NE(host->navigationServer().smootherAction(), nullptr);
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
 
-  // recovery: the clear_costmap plugin action pointed to by config_recovery has been created
-  // (loaded name = the clear_costmap_id value, i.e. the full plugin name).
+  // recovery: the clear_costmap module action pointed to by config_recovery has been created
+  // (loaded name = the clear_costmap_id value, i.e. the full module name).
   const NavIds ids = readNavIds();
   ASSERT_NE(host->navigationServer().recoveryAction(ids.clear_costmap_id),
             nullptr);
 
-  // Enumerate the recovery action names; must include the plugin name for clear_costmap.
+  // Enumerate the recovery action names; must include the module name for clear_costmap.
   bool found = false;
   for (const auto& name : host->navigationServer().recoveryActionNames()) {
     if (name == ids.clear_costmap_id) {
@@ -373,13 +394,13 @@ TEST(ConfigConsistencyTest, hostInitializeLoadsConsistentPlugins) {
 
 // ---- D. Real requestRecovery calls: full name -> valid; unsuffixed -> invalid ----
 
-TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
+TEST(ConfigConsistencyTest, requestRecoveryUsesFullModuleName) {
   CostmapNavigation* host = createHost(g_config_dir);
   ASSERT_NE(host, nullptr);
 
   const NavIds ids = readNavIds();
 
-  // Full plugin name (the recovery_id value = costmap_clear_costmap_recovery) -> valid.
+  // Full module name (the recovery_id value = costmap_clear_costmap_recovery) -> valid.
   {
     RecoveryGoal goal;
     goal.recovery_id = ids.recovery_id;
@@ -404,7 +425,7 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
     EXPECT_EQ(task.status(), ayanami::actions::GoalStatus::ABORTED);
     EXPECT_EQ(task.result().error, ayanami::ErrorCode::INVALID_INPUT);
   }
-  // The config_recovery array now loads all 4 recovery plugins (WIP one-config-many-files),
+  // The config_recovery array now loads all 4 recovery modules (WIP one-config-many-files),
   // and the spin full name is loaded too -> valid.
   {
     RecoveryGoal goal;
@@ -420,7 +441,7 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullPluginName) {
   delete host;
 }
 
-// ---- E. BT recovery branch: <Recovery recovery="{spin_id}"/> actually invokes the spin plugin ----
+// ---- E. BT recovery branch: <Recovery recovery="{spin_id}"/> actually invokes the spin module ----
 
 namespace {
 
@@ -440,7 +461,7 @@ void attachSpinObserver() {
   g_spin_velocity_cmds.store(0);
   g_spin_cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [](const TwistStamped& t) {
-        // Each spin recovery tick emits a non-zero angular velocity -> proves the plugin is actually invoked.
+        // Each spin recovery tick emits a non-zero angular velocity -> proves the module is actually invoked.
         if (std::abs(t.twist.angular.z()) > 1e-6) {
           g_spin_velocity_cmds.fetch_add(1);
         }
@@ -457,9 +478,9 @@ void writeFile(const std::filesystem::path& path,
   ofs << content;
 }
 
-// Build a temp config dir: config_recovery points at the spin recovery plugin (full name) so the host
-// loadPlugins loads costmap_spin_recovery into recovery_actions. The other plugin jsons
-// can be omitted (loadPlugins falls back to empty config for missing files, no crash).
+// Build a temp config dir: config_recovery points at the spin recovery module (full name) so the host
+// loadModules loads costmap_spin_recovery into recovery_actions. The other module jsons
+// can be omitted (loadModules falls back to empty config for missing files, no crash).
 std::filesystem::path makeSpinConfigDir() {
   std::filesystem::path dir = std::filesystem::temp_directory_path() /
                               "ayanami_config_consistency_spin";
@@ -488,7 +509,7 @@ std::filesystem::path makeSpinConfigDir() {
              "    \"tick_frequency\": 100.0\n"
              "  }\n");
 
-  // Spin recovery plugin: full name + a real .so. spin_dist is set small to shorten the test.
+  // Spin recovery module: full name + a real .so. spin_dist is set small to shorten the test.
   writeFile(dir / "spin_recovery.json",
              "{\n  \"recovery\": {\n"
              "    \"name\": \"costmap_spin_recovery\",\n"
@@ -496,8 +517,13 @@ std::filesystem::path makeSpinConfigDir() {
                  g_spin_so +
                  "\",\n"
                  "    \"role\": \"clear_costmap\",\n"
+                 // sim_cycle_dt is server-owned (the execution cadence); the rest
+                 // belongs to the module, which reads its own section.
+                 "    \"sim_cycle_dt\": 0.01\n"
+                 "  },\n"
+                 "  \"costmap_spin_recovery\": {\n"
                  "    \"spin_dist\": 0.1,\n    \"max_w\": 1.0,\n"
-                 "    \"sim_cycle_dt\": 0.01,\n    \"collision_radius\": 0.3\n"
+                 "    \"collision_radius\": 0.3\n"
                  "  }\n}\n");
 
   // Minimal global/local costmap (needed by configureCoreMaps; merged into the navigation file).
@@ -543,12 +569,12 @@ std::filesystem::path makeSpinConfigDir() {
 
 }  // namespace
 
-TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinPlugin) {
+TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinModule) {
   const auto dir = makeSpinConfigDir();
   CostmapNavigation* host = createHost(dir.string());
   ASSERT_NE(host, nullptr);
 
-  // The spin plugin was loaded into recovery_actions by loadPlugins (name=costmap_spin_recovery).
+  // The spin module was loaded into recovery_actions by loadModules (name=costmap_spin_recovery).
   ASSERT_NE(host->navigationServer().recoveryAction("costmap_spin_recovery"),
             nullptr);
 
@@ -568,13 +594,79 @@ TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinPlugin) {
   // First tick: onStart -> requestRecovery("costmap_spin_recovery") -> hit -> RUNNING.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
 
-  // spin runRecovery emits angular velocity every frame -> wait for the plugin to be actually invoked (runRecovery count >= 1).
+  // spin runRecovery emits angular velocity every frame -> wait for the module to be actually invoked (runRecovery count >= 1).
   EXPECT_TRUE(waitUntil([&] { return g_spin_velocity_cmds.load() >= 1; }))
-      << "costmap_spin_recovery plugin runRecovery not invoked";
+      << "costmap_spin_recovery module runRecovery not invoked";
 
   host->stop();
   detachSpinObserver();
   delete host;
+}
+
+// ---- The shipped tree XMLs are load-bearing artifacts with no other test coverage ----
+// Every other BT test builds a *copy* of the tree (the extension's embedded default, tests/assets,
+// or an inline constant), so a syntax error or an unregistered node id in config/BT/navigation.xml
+// would ship unnoticed. This test loads the deployed files themselves.
+TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
+  const std::vector<std::string> shipped_trees = {
+      g_config_dir + "/BT/navigation.xml",
+      std::string(AYANAMI_TEST_CONFIG_SENTRY_DIR) + "/BT/navigation.xml",
+  };
+  for (const std::string& xml_path : shipped_trees) {
+    SCOPED_TRACE(xml_path);
+    std::ifstream ifs(xml_path);
+    ASSERT_TRUE(ifs.good()) << "shipped tree XML missing";
+    const std::string text((std::istreambuf_iterator<char>(ifs)),
+                           std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    BT::BehaviorTreeFactory factory;
+    ayanami::behavior_tree::registerNavigationBehaviorTreeNodes(factory);
+    auto bb = BT::Blackboard::create();
+    bb->set<ayanami::geometry_msgs::PoseStamped>(k_goal,
+                                                ayanami::geometry_msgs::PoseStamped{});
+    bb->set<ayanami::nav_msgs::Path>(k_raw_path, ayanami::nav_msgs::Path{});
+    bb->set<ayanami::nav_msgs::Path>(k_smoothed_path, ayanami::nav_msgs::Path{});
+    bb->set<double>(k_planner_frequency, 1.0);
+    bb->set<double>(k_smoother_frequency, 10.0);
+    bb->set<double>(k_controller_frequency, 20.0);
+    bb->set<uint64_t>(k_session_id, 0u);
+    bb->set<uint64_t>(k_raw_path_revision, 0u);
+    bb->set<uint64_t>(k_goal_revision, 0u);
+    bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
+    // The shipped tree references recoveries by role id.
+    bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
+    bb->set<std::string>(k_spin_id, "spin");
+    bb->set<std::string>(k_wait_id, "wait");
+    bb->set<std::string>(k_backup_id, "backup");
+
+    // Building catches malformed XML and unregistered node ids.
+    BT::Tree tree;
+    ASSERT_NO_THROW(tree = factory.createTreeFromText(text, bb))
+        << "shipped tree failed to build";
+    EXPECT_NO_THROW(ayanami::behavior_tree::validateRequiredBlackboardEntries(bb));
+
+    // The smoother branch must gate its own output: the smoother only sees the LOCAL map (family
+    // read contract), so without a tree-level overlay check an overlay-invalid smoothed path reaches
+    // FollowPath unchecked. One IsPathValid per produced path: raw_path + smoothed_path.
+    int smooth_count = 0;
+    int is_path_valid_count = 0;
+    tree.applyVisitor([&](BT::TreeNode* node) {
+      if (node == nullptr) {
+        return;
+      }
+      if (node->registrationName() == "SmoothPath") {
+        ++smooth_count;
+      } else if (node->registrationName() == "IsPathValid") {
+        ++is_path_valid_count;
+      }
+    });
+    EXPECT_EQ(smooth_count, 1);
+    EXPECT_EQ(is_path_valid_count, 2)
+        << "expected one IsPathValid per produced path (raw_path + smoothed_path)";
+    EXPECT_NE(text.find("path=\"{smoothed_path}\""), std::string::npos)
+        << "no IsPathValid is bound to {smoothed_path}";
+  }
 }
 
 }  // namespace

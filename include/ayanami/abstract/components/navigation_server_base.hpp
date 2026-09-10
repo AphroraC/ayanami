@@ -5,7 +5,7 @@
 #include "ayanami/abstract/components/navigation_session_state.hpp"
 #include "ayanami/abstract/components/planner_action.hpp"
 #include "ayanami/abstract/components/planner_execution.hpp"
-#include "ayanami/abstract/components/plugin_manager.hpp"
+#include "ayanami/abstract/components/module_manager.hpp"
 #include "ayanami/abstract/components/recovery_action.hpp"
 #include "ayanami/abstract/components/recovery_execution.hpp"
 #include "ayanami/abstract/components/smoother_action.hpp"
@@ -57,8 +57,23 @@ public:
   /// (a zeroed command is published synchronously by cancel()) and let the
   /// task wind down on its own thread. Used by runtime preemption paths
   /// (halt / recovery start) that run on the BT tick thread and must not
-  /// block on a slow plugin call.
+  /// block on a slow module call.
   virtual void preemptAllControllers() {}
+  /// @brief Module family, for the name queries below.
+  enum class ModuleFamily { Planner, Smoother, Controller, Recovery };
+
+  /// @brief Names of the loaded modules of one family.
+  ///
+  /// The BT-visible name surface: the tree references modules by id (either
+  /// directly or through a recovery role), and building the tree is the last
+  /// moment where an id that resolves to nothing can be reported as a
+  /// configuration error instead of a mid-navigation failure. Empty means "this
+  /// runtime cannot enumerate that family" (test doubles), in which case callers
+  /// skip the membership check.
+  virtual std::vector<std::string> moduleNames(ModuleFamily) const {
+    return {};
+  }
+
   /// @brief Path validity query (consumed by the BT IsPathValid condition
   /// node; the BT-readable surface of the responsibility table's "is the
   /// path stale"). Default = valid iff non-empty; map-family hosts override
@@ -74,10 +89,10 @@ public:
 /**
  * @brief Navigation server base class (no map dependency).
  *
- * Holds the plugin managers, the four Action families and the shared
+ * Holds the module managers, the four Action families and the shared
  * navigation session.
  * Map objects (costmap/gridmap) are injected by derived servers (e.g.
- * CostmapNavigationServer, §5.4) overriding the virtual initialize*Plugin
+ * CostmapNavigationServer, §5.4) overriding the virtual initialize*Module
  * hooks; derived servers override createActions() to build map-aware
  * Actions (production path = costmap_action). The base createActions()
  * assembles abstract Actions via the virtual new*Execution factories (for
@@ -96,12 +111,12 @@ public:
   virtual ~NavigationServerBase();
 
   /// @brief Read the config.json global section -> dlopen each of the 6
-  /// sub-configs + call the virtual initialize*Plugin hooks ->
+  /// sub-configs + call the virtual initialize*Module hooks ->
   /// createActions.
-  void loadPlugins(const std::string& config_path);
+  void loadModules(const std::string& config_path);
 
-  /// @brief Fetch plugins by their default*_ names and assemble the Actions
-  /// (one per plugin; derived servers override to return map-aware Actions,
+  /// @brief Fetch modules by their default*_ names and assemble the Actions
+  /// (one per module; derived servers override to return map-aware Actions,
   /// e.g. CostmapNavigationServer -> Costmap*Action).
   virtual void createActions();
 
@@ -111,15 +126,18 @@ public:
   /// @brief Stop the server: cancel and join all RUNNING actions (idempotent).
   void stop();
 
-  /// @brief Lookup an action of the first three families by plugin id
-  /// (nav2 semantics: every configured plugin gets an action; an empty id
-  /// resolves to the family default = the first configured plugin).
+  /// @brief Lookup an action of the first three families by module id
+  /// (nav2 semantics: every configured module gets an action; an empty id
+  /// resolves to the family default = the first configured module).
   /// Recovery actions remain selectable by their configured recovery id.
   PlannerAction* plannerAction(const std::string& id = "") const;
   SmootherAction* smootherAction(const std::string& id = "") const;
   ControllerAction* controllerAction(const std::string& id = "") const;
   RecoveryAction* recoveryAction(const std::string& name) const;
   std::vector<std::string> recoveryActionNames() const;
+
+  /// @brief Loaded module names per family (see NavigationRuntime::moduleNames).
+  std::vector<std::string> moduleNames(ModuleFamily family) const override;
 
   /// @brief Mainline TaskHandle requests. Planner, smoother and controller each
   /// dispatch to their one configured action; recovery uses recovery_id.
@@ -168,26 +186,26 @@ public:
 
 protected:
   // Key virtual hooks: derived servers override these to inject map
-  // objects. module_config is the plugin's own module json (already
-  // parsed); derived servers use it to build the PluginContext passed to
+  // objects. module_config is the module's own module json (already
+  // parsed); derived servers use it to build the ModuleContext passed to
   // the family-level configure.
-  virtual bool initializePlannerPlugin(
+  virtual bool initializePlannerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractPlanner::Ptr);
-  virtual bool initializeSmootherPlugin(
+  virtual bool initializeSmootherModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractSmoother::Ptr);
-  virtual bool initializeControllerPlugin(
+  virtual bool initializeControllerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractController::Ptr);
-  virtual bool initializeRecoveryPlugin(
+  virtual bool initializeRecoveryModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr);
   // Checker virtual hooks: no map dependency, default return true (extension families).
-  virtual bool initializeGoalCheckerPlugin(
+  virtual bool initializeGoalCheckerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractGoalChecker::Ptr);
-  virtual bool initializeProgressCheckerPlugin(
+  virtual bool initializeProgressCheckerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractProgressChecker::Ptr);
 
@@ -217,15 +235,15 @@ protected:
   virtual void configureRecoveryExecution(
       std::shared_ptr<RecoveryExecution> exec) const;
 
-  /// @brief Shared plugin managers for the four families (+ checkers).
-  PluginManager<ayanami::abstract::AbstractPlanner> planner_plugins;
-  PluginManager<ayanami::abstract::AbstractSmoother> smoother_plugins;
-  PluginManager<ayanami::abstract::AbstractController> controller_plugins;
-  PluginManager<ayanami::abstract::AbstractRecovery> recovery_plugins;
-  PluginManager<ayanami::abstract::AbstractGoalChecker> goal_checker_plugins;
-  PluginManager<ayanami::abstract::AbstractProgressChecker>
-      progress_checker_plugins;
-  // Multi-plugin action maps (nav2 semantics): every configured plugin gets
+  /// @brief Shared module managers for the four families (+ checkers).
+  ModuleManager<ayanami::abstract::AbstractPlanner> planner_modules;
+  ModuleManager<ayanami::abstract::AbstractSmoother> smoother_modules;
+  ModuleManager<ayanami::abstract::AbstractController> controller_modules;
+  ModuleManager<ayanami::abstract::AbstractRecovery> recovery_modules;
+  ModuleManager<ayanami::abstract::AbstractGoalChecker> goal_checker_modules;
+  ModuleManager<ayanami::abstract::AbstractProgressChecker>
+      progress_checker_modules;
+  // Multi-module action maps (nav2 semantics): every configured module gets
   // an action; requests select by goal id, empty = default (first
   // configured).
   std::map<std::string, std::unique_ptr<PlannerAction>> planner_actions;
@@ -240,7 +258,7 @@ protected:
   std::string default_progress_checker;
   // Velocity limit cache (navigation.max_vel_x/max_vel_y/max_vel_theta,
   // parameters non-negative; max_vel_y=0 forbids lateral motion).
-  // loadPlugins reads the cache; the createActions controller execution
+  // loadModules reads the cache; the createActions controller execution
   // factory injects ControllerExecution::setMaximumVelocity. The default
   // Infinity = no clamping (consistent with ControllerExecution defaults).
   double max_vel_x{std::numeric_limits<double>::infinity()};
@@ -275,7 +293,7 @@ protected:
   mutable std::mutex controller_request_mutex;
   mutable std::atomic<uint64_t> next_rejected_id{1};
 
-  /// @brief Build an immediately-failed TaskHandle (invalid plugin id
+  /// @brief Build an immediately-failed TaskHandle (invalid module id
   /// etc.): valid==true, ready==true, status=ABORTED, result.failure
   /// structured failure code.
   template <typename Result>

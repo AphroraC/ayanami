@@ -45,7 +45,7 @@ inline bool clearCostmapArea(const costmap_2d::CostmapWrapper::Ptr& wrapper,
   const double max_x = robot_x + clear_radius;
   const double max_y = robot_y + clear_radius;
 
-  for (const auto& layer : wrapper->get().getPlugins()) {
+  for (const auto& layer : wrapper->get().getModules()) {
     if (auto* static_layer =
             dynamic_cast<costmap_2d_layers::StaticLayer*>(layer.get())) {
       static_layer->addUpdateBounds(min_x, min_y, max_x, max_y);

@@ -19,10 +19,10 @@ namespace components {
  * @brief Action base class: one in-flight task + strict preemption semantics.
  *
  * Single-navigation discipline: each action family runs at most one task at
- * a time (one configured plugin per family; recoveries are per-plugin action
+ * a time (one configured module per family; recoveries are per-module action
  * instances), so the old MBF-style concurrency-slot map has collapsed into a
  * single in-flight record. Each task owns one driver thread (a full runImpl
- * execution); a family's plugin never re-enters (latest-wins strict
+ * execution); a family's module never re-enters (latest-wins strict
  * serialization / max_running==1).
  *
  * Preemption is asynchronous (mbf/nav2 style): start() on a busy family
@@ -31,7 +31,7 @@ namespace components {
  * pending record and returns immediately. When the in-flight driver task
  * fully exits (its execution joined), the teardown chains the pending goal
  * onto a fresh driver thread -- so the tick thread never blocks on a slow
- * plugin call, while the plugin still never re-enters. Use cancelAll() for
+ * module call, while the module still never re-enters. Use cancelAll() for
  * the synchronous stop/destructor path (cancel + wait for everything).
  *
  * Concurrency control: a handoff mutex serializes start/cancel transactions
@@ -98,7 +98,7 @@ class ActionBase {
     }
   }
 
-  /// @brief Cancel the in-flight execution (forwards to the plugin cancel).
+  /// @brief Cancel the in-flight execution (forwards to the module cancel).
   void cancel() {
     std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
     std::vector<GoalHandleType> dropped;
@@ -152,7 +152,7 @@ class ActionBase {
   /// @brief Non-blocking preemption: settle the pending goal, mark the
   /// in-flight execution canceled and return. Used by runtime paths running
   /// on the BT tick thread (halt / recovery start) that must not block on a
-  /// slow plugin call.
+  /// slow module call.
   void preemptAll() {
     std::lock_guard<std::mutex> handoff_lock(handoff_mutex);
     std::vector<GoalHandleType> dropped;
@@ -176,7 +176,7 @@ class ActionBase {
   }
 
   /// @brief Cancel and wait for the in-flight task to finish (used by the
-  /// destructor and the stop/teardown path, where plugin lifetime requires
+  /// destructor and the stop/teardown path, where module lifetime requires
   /// a synchronous shutdown).
   void cancelAll() {
     preemptAll();
@@ -262,7 +262,7 @@ class ActionBase {
   /// @brief Driver task entry (runs on the driver thread): runImpl -> wait
   /// for the execution state machine to finish -> release the in-flight
   /// record; if a pending goal was parked meanwhile, chain it onto a fresh
-  /// driver thread (strict serialization: the new goal enters the plugin
+  /// driver thread (strict serialization: the new goal enters the module
   /// only after this task fully exits).
   void run(const GoalHandleType& goal_handle, ExecutionPtr exec) {
     if (!exec) {
@@ -345,7 +345,7 @@ class ActionBase {
     bool task_done{true};
   };
 
-  /// @brief Single in-flight record: a family's plugin never re-enters.
+  /// @brief Single in-flight record: a family's module never re-enters.
   InFlight task;
   /// @brief Goal parked while a preemption waits for the in-flight task to
   /// exit (one slot: newer goals replace it).

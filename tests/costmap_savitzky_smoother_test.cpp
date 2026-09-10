@@ -79,7 +79,7 @@ std::shared_ptr<CostmapSavitzkySmoother> makeSmoother(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto smoother = std::make_shared<CostmapSavitzkySmoother>();
   smoother->configure(
-      ayanami::PluginContext{"test_savitzky", ayanami::Config("")},
+      ayanami::ModuleContext{"test_savitzky", ayanami::Config("")},
       makeContext(wrapper)->getSharedConstPtr());
   return smoother;
 }
@@ -262,7 +262,7 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
 TEST(CostmapSavitzkySmootherTest, moduleFactoryCreatesSmoother) {
   ASSERT_FALSE(g_module_so.empty());
   auto smoother = std::dynamic_pointer_cast<CostmapSavitzkySmoother>(
-      ayanami::ExtensionModule::load_module(g_module_so));
+      ayanami::ExtensionModule::loadModule(g_module_so));
   ASSERT_NE(smoother, nullptr);
 }
 

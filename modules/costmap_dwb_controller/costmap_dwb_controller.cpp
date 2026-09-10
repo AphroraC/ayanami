@@ -60,23 +60,20 @@ bool transformPose(ayanami::components::RobotStateController* state_controller,
 
 }  // namespace
 
-CostmapDwBLocalPlanner::CostmapDwBLocalPlanner() {
+CostmapDwbController::CostmapDwbController() {
   registerAllCritics();
   registerAllTrajectoryGenerators();
 }
 
-void CostmapDwBLocalPlanner::configure(
-    const PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  dwb_plugin_name = context.name;
-  map_context = std::move(map);
-
-  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
+void CostmapDwbController::configureParameters(
+    const ayanami::ModuleContext& context) {
+  dwb_module_name = context.name;
+  // Parameters are read from the ModuleContext-injected own configuration (the module does not know the global config layout).
   // Param section convention: the section key = the module json "name"
-  // field, delivered as PluginContext::name.
+  // field, delivered as ModuleContext::name.
   module_config = std::make_unique<Config>(std::move(context.config));
   const ayanami::Config& cfg = *module_config;
-  const std::string& section = dwb_plugin_name;
+  const std::string& section = dwb_module_name;
   param.transform_tolerance =
       cfg.param<double>(section, "transform_tolerance", 0.1);
   param.prune_plan = cfg.param<bool>(section, "prune_plan", true);
@@ -98,7 +95,20 @@ void CostmapDwBLocalPlanner::configure(
                                           {});
   param.critics = cfg.param<std::vector<std::string>>(section, "critics", {});
 
-  // Create runtime resources (trajectory generator + critics). Sub-plugin (generator/critic)
+}
+
+void CostmapDwbController::configure(
+    const ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers never go through the loader's
+  // configureParameters call, so bind the parameters here as well;
+  // re-reading the same keys from the same config is idempotent.
+  configureParameters(context);
+  map_context = std::move(map);
+
+  const ayanami::Config& cfg = *module_config;
+
+  // Create runtime resources (trajectory generator + critics). Sub-module (generator/critic)
   // parameters are read by their own initialize.
 
   spdlog::info("Setting transform_tolerance to {}", param.transform_tolerance);
@@ -116,7 +126,7 @@ void CostmapDwBLocalPlanner::configure(
                              param.trajectory_generator_name);
   }
   traj_generator = gen_it->second();
-  traj_generator->initialize(cfg, dwb_plugin_name);
+  traj_generator->initialize(cfg, dwb_module_name);
 
   // The footprint is refreshed from the snapshot every cycle; at initialization critics are loaded
   // with an empty grid/empty footprint, and the costmap/footprint pointers are re-bound by the controller before each cycle's prepare.
@@ -130,7 +140,7 @@ void CostmapDwBLocalPlanner::configure(
   }
 }
 
-std::string CostmapDwBLocalPlanner::resolveCriticClassName(
+std::string CostmapDwbController::resolveCriticClassName(
     std::string base_name) {
   if (base_name.find("Critic") == std::string::npos) {
     base_name = base_name + "Critic";
@@ -155,7 +165,7 @@ std::string CostmapDwBLocalPlanner::resolveCriticClassName(
   return base_name;
 }
 
-void CostmapDwBLocalPlanner::loadCritics() {
+void CostmapDwbController::loadCritics() {
   // loadCritics creates the critic runtime resources within the initialize (configure) call chain;
   // the module-level parameters default_critic_namespaces / critics were already read into param in the constructor.
   const ayanami::Config& cfg = *module_config;
@@ -168,45 +178,57 @@ void CostmapDwBLocalPlanner::loadCritics() {
 
   std::vector<std::string> critic_names = param.critics;
   if (critic_names.empty()) {
-    throw std::runtime_error("No critics defined for " + dwb_plugin_name);
+    throw std::runtime_error("No critics defined for " + dwb_module_name);
   }
 
   for (unsigned int i = 0; i < critic_names.size(); i++) {
-    std::string critic_plugin_name = critic_names[i];
-    std::string plugin_class = cfg.param<std::string>(
-        dwb_plugin_name, critic_plugin_name + ".class", critic_plugin_name);
+    std::string critic_module_name = critic_names[i];
+    std::string module_class = cfg.param<std::string>(
+        dwb_module_name, critic_module_name + ".class", critic_module_name);
 
-    plugin_class = resolveCriticClassName(plugin_class);
+    module_class = resolveCriticClassName(module_class);
 
     // Registry key = the short class name after stripping the namespace
     const std::string k_critic_prefix = "dwb_critics::";
-    std::string registry_key = plugin_class;
+    std::string registry_key = module_class;
     if (registry_key.compare(0, k_critic_prefix.size(), k_critic_prefix) == 0) {
       registry_key = registry_key.substr(k_critic_prefix.size());
     }
     const auto it = criticRegistry().find(registry_key);
     if (it == criticRegistry().end()) {
-      throw std::runtime_error("Unknown critic plugin class: " + plugin_class);
+      throw std::runtime_error("Unknown critic module class: " + module_class);
     }
 
-    TrajectoryCritic::Ptr plugin = it->second();
-    spdlog::info("Using critic \"{}\" ({})", critic_plugin_name, plugin_class);
-    critics.push_back(plugin);
+    TrajectoryCritic::Ptr module = it->second();
+    spdlog::info("Using critic \"{}\" ({})", critic_module_name, module_class);
+    critics.push_back(module);
     try {
       // costmap/footprint are empty at this point: re-bound by the controller before each cycle's prepare
       // (critic::setCostmap + updating the footprint_spec contents); initialization no longer requires
       // a concrete map instance.
-      plugin->initialize(cfg, critic_plugin_name, dwb_plugin_name, nullptr,
+      module->initialize(cfg, critic_module_name, dwb_module_name, nullptr,
                          &footprint_spec);
     } catch (const std::exception& e) {
-      spdlog::error("Couldn't initialize critic plugin!");
+      spdlog::error("Couldn't initialize critic module!");
       throw;
     }
-    spdlog::info("Critic plugin initialized");
+    spdlog::info("Critic module initialized");
   }
 }
 
-bool CostmapDwBLocalPlanner::setPlan(const ayanami::nav_msgs::Path& path) {
+void CostmapDwbController::setGoalTolerances(
+    const ayanami::PoseTolerance& tolerance) {
+  // The framework holds the arrival contract (the goal checker owns it); every
+  // critic that scores against the goal region gets it here, so no critic has
+  // to go looking for the goal checker's config file.
+  for (auto& critic : critics) {
+    if (critic) {
+      critic->setGoalXyTolerance(tolerance.position);
+    }
+  }
+}
+
+bool CostmapDwbController::setPlan(const ayanami::nav_msgs::Path& path) {
   auto path2d = dwb_core::conversions::pathToPath2D(path);
   for (dwb_core::TrajectoryCritic::Ptr& critic : critics) {
     critic->reset();
@@ -218,30 +240,44 @@ bool CostmapDwBLocalPlanner::setPlan(const ayanami::nav_msgs::Path& path) {
   return true;
 }
 
-ResultT<void> CostmapDwBLocalPlanner::computeVelocityCommand(
+ResultT<void> CostmapDwbController::computeVelocityCommand(
     const ayanami::geometry_msgs::PoseStamped& pose,
     const ayanami::geometry_msgs::TwistStamped& velocity,
     ayanami::geometry_msgs::TwistStamped& cmd) {
   // Zeroed at entry (framework discipline).
   ayanami::geometry_msgs::TwistStamped cmd_vel = {};
 
-  // Lock discipline: a local read view under a shared lock (held for the whole scoring cycle), zero copy; the map writer
-  // waits for the lock to write. The view must be a function-local variable -- destroyed at the end of this cycle, releasing the read lock immediately;
-  // storing it as a member would hold the shared lock until plugin destruction, permanently blocking map writers (map drop/rolling/clearing)
-  // (observed root cause of a stall).
   if (!map_context) {
     return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE,
-        "CostmapDwBLocalPlanner: no costmap module");
+        "CostmapDwbController: no costmap module");
   }
-  auto local_view = map_context->lockLocal();
-  if (!local_view.valid()) {
-    return ResultT<void>::failure(
-        ErrorCode::MAP_UNAVAILABLE,
-        "CostmapDwBLocalPlanner: no local costmap available");
-  }
-  local_grid = local_view.grid();
-  local_frame = local_view.frame();
+  // Lock discipline: scoring needs the local map for the whole cycle, and the
+  // read callback is what bounds that need -- the shared lock is acquired for
+  // the callback and released when it returns, so the map writer waits at most
+  // for one control cycle. The old form handed out a view by value, which made
+  // "store it as a member" legal and held the writer off until module
+  // destruction (the observed root cause of a stall).
+  return map_context->readLocal(
+      [&](const ayanami::costmap::CostmapReader& local_view) -> ResultT<void> {
+        if (!local_view.valid()) {
+          return ResultT<void>::failure(
+              ErrorCode::MAP_UNAVAILABLE,
+              "CostmapDwbController: no local costmap available");
+        }
+        local_grid = local_view.grid();
+        local_frame = local_view.frame();
+        return computeVelocityCommandWithMap(pose, velocity, cmd, cmd_vel);
+      });
+}
+
+ResultT<void> CostmapDwbController::computeVelocityCommandWithMap(
+    const ayanami::geometry_msgs::PoseStamped& pose,
+    const ayanami::geometry_msgs::TwistStamped& velocity,
+    ayanami::geometry_msgs::TwistStamped& cmd,
+    ayanami::geometry_msgs::TwistStamped& cmd_vel) {
+  // Zeroed at entry (framework discipline).
+  cmd_vel = ayanami::geometry_msgs::TwistStamped{};
 
   // Refresh the footprint every cycle (critics hold the footprint_spec address; contents are updated in place).
   footprint_spec.clear();
@@ -280,7 +316,7 @@ ResultT<void> CostmapDwBLocalPlanner::computeVelocityCommand(
                          local_frame, pose2d, pose_local)) {
         return ResultT<void>::failure(
             ErrorCode::TRANSFORM_UNAVAILABLE,
-            "CostmapDwBLocalPlanner: unable to transform robot pose into "
+            "CostmapDwbController: unable to transform robot pose into "
             "local costmap frame");
       }
       pose2d = pose_local;
@@ -319,7 +355,7 @@ ResultT<void> CostmapDwBLocalPlanner::computeVelocityCommand(
   }
 }
 
-nav_2d_msgs::Twist2DStamped CostmapDwBLocalPlanner::computeVelocityCommands(
+nav_2d_msgs::Twist2DStamped CostmapDwbController::computeVelocityCommands(
     const nav_2d_msgs::Pose2DStamped& pose,
     const nav_2d_msgs::Twist2D& velocity,
     std::shared_ptr<dwb_msgs::LocalPlanEvaluation>& results) {
@@ -365,7 +401,7 @@ nav_2d_msgs::Twist2DStamped CostmapDwBLocalPlanner::computeVelocityCommands(
   }
 }
 
-void CostmapDwBLocalPlanner::prepareGlobalPlan(
+void CostmapDwbController::prepareGlobalPlan(
     const nav_2d_msgs::Pose2DStamped& pose,
     nav_2d_msgs::Path2D& transformed_plan,
     nav_2d_msgs::Pose2DStamped& goal_pose, bool /*publish_plan*/) {
@@ -380,7 +416,7 @@ void CostmapDwBLocalPlanner::prepareGlobalPlan(
   }
 }
 
-dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::coreScoringAlgorithm(
+dwb_msgs::TrajectoryScore CostmapDwbController::coreScoringAlgorithm(
     const ::geometry_msgs::Pose2D& pose, const nav_2d_msgs::Twist2D velocity,
     std::shared_ptr<dwb_msgs::LocalPlanEvaluation>& results) {
   nav_2d_msgs::Twist2D twist;
@@ -443,7 +479,7 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::coreScoringAlgorithm(
   return best;
 }
 
-dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::scoreTrajectory(
+dwb_msgs::TrajectoryScore CostmapDwbController::scoreTrajectory(
     const dwb_msgs::Trajectory2D& traj, double best_score) {
   dwb_msgs::TrajectoryScore score;
   score.traj = traj;
@@ -473,7 +509,7 @@ dwb_msgs::TrajectoryScore CostmapDwBLocalPlanner::scoreTrajectory(
   return score;
 }
 
-nav_2d_msgs::Path2D CostmapDwBLocalPlanner::transformGlobalPlan(
+nav_2d_msgs::Path2D CostmapDwbController::transformGlobalPlan(
     const nav_2d_msgs::Pose2DStamped& pose) {
   if (global_plan.poses.empty()) {
     throw dwb_core::PlannerException("Received plan with zero length");

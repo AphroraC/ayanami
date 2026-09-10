@@ -12,7 +12,7 @@
 namespace dwb_critics {
 
 void BaseObstacleCritic::onInit() {
-  sum_scores = config().param<bool>(dwb_plugin_name,
+  sum_scores = config().param<bool>(dwb_module_name,
                                      name + ".sum_scores", false);
 }
 

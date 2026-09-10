@@ -1,7 +1,7 @@
 // Re-creates the legacy cancel_responsiveness_test.cpp contract (equivalent rewrite on the new interface).
 //
 // Contract: calling cancel on a RUNNING planner / recovery action must settle the task within a bounded
-// time (ready) with final GoalStatus CANCELED. Slow plugins (makePlan /
+// time (ready) with final GoalStatus CANCELED. Slow modules (makePlan /
 // runRecovery would normally take 200ms) must be released immediately on cancel so the task is ready within 100ms.
 
 #include <gtest/gtest.h>
@@ -142,11 +142,11 @@ TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
         [&] { return planner->started.load(); }));
   }
 
-  // After cancel it must become ready within 100ms (the slow 200ms plugin is interrupted immediately)
+  // After cancel it must become ready within 100ms (the slow 200ms module is interrupted immediately)
   ASSERT_TRUE(task.cancel());
   ASSERT_TRUE(readyWithin(task, 100));
   EXPECT_EQ(task.status(), GoalStatus::CANCELED);
-  // The failure code depends on when the plugin returns; finish races with the plugin thread, so the stable contract is
+  // The failure code depends on when the module returns; finish races with the module thread, so the stable contract is
   // status==CANCELED.
 }
 

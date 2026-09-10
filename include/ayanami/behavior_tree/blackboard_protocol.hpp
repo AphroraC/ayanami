@@ -45,7 +45,19 @@ inline constexpr const char* k_spin_id = "spin_id";
 inline constexpr const char* k_wait_id = "wait_id";
 inline constexpr const char* k_backup_id = "backup_id";
 inline constexpr const char* k_session_id = "session_id";
-inline constexpr const char* k_plan_version = "plan_version";
+// The producer of a path, at the granularity the tree needs to react to:
+// ComputePathToPose advances raw_path_revision when it lands a new raw path,
+// and the smoother branch keys its RateController reset_token off that key.
+// Without a separate revision the smoother would have to watch the live plan
+// version, which it advances itself -- so it could not tell "a new raw path
+// landed" from "I just smoothed", and a content-signature skip was needed to
+// paper over that. Two producers, two revisions.
+//
+// There is deliberately no blackboard mirror of the live plan version: the
+// single authority is NavigationSessionState::currentPlanVersion() (readable
+// from any node through the injected NavigationRuntime). A second, key-shaped
+// copy is how the two-plan-versions confusion started.
+inline constexpr const char* k_raw_path_revision = "raw_path_revision";
 inline constexpr const char* k_goal_revision = "goal_revision";
 inline constexpr const char* k_failure_context = "failure_context";
 
@@ -59,7 +71,7 @@ inline const std::vector<const char*>& requiredBlackboardEntries() {
   static const std::vector<const char*> k_required = {
     k_goal, k_raw_path, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
-    k_session_id, k_plan_version,
+    k_session_id, k_raw_path_revision,
     k_failure_context, k_goal_revision,
   };
   return k_required;

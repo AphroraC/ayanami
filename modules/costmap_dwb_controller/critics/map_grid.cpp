@@ -37,7 +37,7 @@ void MapGridCritic::onInit() {
   stop_on_failure = true;
 
   std::string aggro_str =
-      config().param<std::string>(dwb_plugin_name, name + ".aggregation_type",
+      config().param<std::string>(dwb_module_name, name + ".aggregation_type",
                                   std::string("last"));
   std::transform(aggro_str.begin(), aggro_str.end(), aggro_str.begin(),
                  ::tolower);

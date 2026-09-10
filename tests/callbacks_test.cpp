@@ -89,7 +89,7 @@ TEST(NavigationCallbacksTest, callbackVisibleAcrossSoBoundary) {
   // NavigationCallbacks::on_get_path_result. After this test emits the slot, the counter inside the echo .so
   // must have increased -- proving the slot object is the single instance inside libayanami
   // (key discipline: an inline static must not be used).
-  auto ext = ayanami::ExtensionModule::load_module(g_echo_so);
+  auto ext = ayanami::ExtensionModule::loadModule(g_echo_so);
   ASSERT_NE(ext, nullptr);
   auto hits_fn =
       ayanami::loadModuleFromSo<int(*)()>(g_echo_so, "echoExtensionHits");

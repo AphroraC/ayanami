@@ -13,7 +13,7 @@ namespace ayanami {
  * and the uint32 outcome).
  *
  * Discipline:
- * - The four plugin interfaces (AbstractPlanner/Smoother/Controller/
+ * - The four module interfaces (AbstractPlanner/Smoother/Controller/
  *   Recovery) always return this type;
  * - Each action Result uses the unified field `failure`; None means success
  *   (corresponding
@@ -21,7 +21,7 @@ namespace ayanami {
  * - GoalStatus is retained; message is diagnostic only -- BT/hosts decide on failure only and never parse message.
  */
 // Kept only as a source-compatibility alias for message adapters and old
-// plugins. BT and all new core APIs use ErrorCode directly.
+// modules. BT and all new core APIs use ErrorCode directly.
 using FailureCode = ErrorCode;
 
 
@@ -44,7 +44,7 @@ enum class FailureStage : uint8_t {
  * Recovery) writes the precise failure context to the blackboard
  * `failure_context` (blackboard_protocol.hpp) before returning FAILURE.
  * RecoveryGoal.cause carries this context so the recovery behavior can
- * identify the failure that triggered it (plugin id / failure code /
+ * identify the failure that triggered it (module id / failure code /
  * owning session version).
  *
  * The blackboard entry is replaced wholesale (not incrementally merged):
@@ -53,7 +53,7 @@ enum class FailureStage : uint8_t {
 struct FailureContext {
   FailureStage stage = FailureStage::Unknown;
   ErrorCode code = ErrorCode::NONE;
-  std::string plugin_id;   ///< Logical name of the plugin that triggered the failure
+  std::string module_id;   ///< Logical name of the module that triggered the failure
   std::string message;     ///< Diagnostic message (for logs only; BT/hosts do not parse it)
   uint64_t session_id = 0;  ///< Session the failure belongs to
   uint64_t plan_version = 0;  ///< Plan version the failure belongs to

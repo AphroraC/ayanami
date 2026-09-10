@@ -1,4 +1,4 @@
-// CostmapNavigation host plugin implementation.
+// CostmapNavigation host module implementation.
 //
 // Preemption discipline: bt_pilot.run is a resident blocking tick loop (exits via kill_switch),
 // so navigation_thread is created once and reused. A new goal is applied by the BehaviorTreePilot tick
@@ -10,12 +10,13 @@
 //
 // Destruction chain: ~CostmapNavigation -> stop joins the navigation thread -> navigation_server
 // member destruction (the CostmapNavigationServer base NavigationServerBase calls clearActions first, then
-// clearPlugins); the BT tree (bt_pilot member, declared after the server) is destroyed first, so BT nodes no longer
-// hold stale plugin pointers.
+// clearModules); the BT tree (bt_pilot member, declared after the server) is destroyed first, so BT nodes no longer
+// hold stale module pointers.
 
 #include "costmap_navigation.hpp"
 
 #include "ayanami/costmap/components/costmap_map_family_factory.hpp"
+#include <ayanami/utility/bootstrap.hpp>
 #include "ayanami/costmap/core/costmap_command.hpp"
 
 #include <spdlog/spdlog.h>
@@ -42,29 +43,34 @@ CostmapNavigation::CostmapNavigation()
 CostmapNavigation::~CostmapNavigation() { stop(); }
 
 void CostmapNavigation::initialize(const std::string& config_path) {
-  GlobalConfig::instance(config_path, /*override_path=*/true);
-  ayanami::configureLogging();
+  // bootstrap() owns both the config root and logging for the process.
+  ayanami::bootstrap(config_path);
 
   // The map family factory is constructed by the host (the only creation point of the context); the core assembly chain only knows the abstract factory interface.
   navigation_server->configureCoreMaps(
       config_path, std::make_shared<costmap::CostmapMapFamilyFactory>());
-  // loadPlugins already triggers the 4 virtual initialize*Plugin + createActions internally
+  // loadModules already triggers the 4 virtual initialize*Module + createActions internally
   // (createActions is not explicitly called a second time, avoiding a rebuild of the action map).
-  navigation_server->loadPlugins(config_path);
+  navigation_server->loadModules(config_path);
 
   bt_pilot.configure(config_path);
 
   Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
-  // Production single source: the default navigation tree is registered inline by the BehaviorTreeExtension,
-  // no longer read from a file (config/BT/navigation.xml was deleted). Empty xml -> empty path uses the extension
-  // default tree; tests can still supply custom XML via behavior_tree_xml explicitly.
+  // The tree XML is a config asset (navigation.behavior_tree_xml), resolved
+  // relative to the config directory. The base directory must be the one
+  // GlobalConfig actually resolved to -- passing the package root instead of
+  // the config/ directory makes GlobalConfig normalize to "<root>/config",
+  // so joining the raw argument here would look for BT/navigation.xml one
+  // level too high.
   const std::string xml_rel = nav_cfg.param<std::string>(
       "navigation", "behavior_tree_xml", "");
   const std::string tree_id = nav_cfg.param<std::string>(
       "navigation", "behavior_tree_id", k_default_tree_id);
+  const std::string config_dir =
+      GlobalConfig::instance()->param<std::string>("global", "config_path", ".");
   const std::string xml_path = xml_rel.empty()
                                    ? std::string{}
-                                   : (std::filesystem::path(config_path) /
+                                   : (std::filesystem::path(config_dir) /
                                       xml_rel).string();
 
   // Explicit wiring (bt_pilot configure only reads config; it does not auto-load/set).
@@ -171,7 +177,7 @@ void CostmapNavigation::publishMapForVisualization(
     return;
   }
   ayanami::nav_msgs::OccupancyGrid grid;
-  grid.header.frame_id = wrapper->getGlobalFrame();
+  grid.header.frame_id = wrapper->globalFrame();
   grid.info.resolution = cm->getResolution();
   grid.info.width = cm->getSizeInCellsX();
   grid.info.height = cm->getSizeInCellsY();

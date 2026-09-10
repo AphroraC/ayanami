@@ -17,7 +17,7 @@ namespace dwb_plugins {
 class LimitedAccelGenerator : public StandardTrajectoryGenerator {
 public:
   void initialize(const ayanami::Config& cfg,
-                  const std::string& plugin_name) override;
+                  const std::string& module_name) override;
   void startNewIteration(
       const nav_2d_msgs::Twist2D& current_velocity) override;
 
@@ -33,6 +33,6 @@ protected:
       const nav_2d_msgs::Twist2D& cmd_vel,
       const nav_2d_msgs::Twist2D& start_vel, const double dt) override;
   double acceleration_time;
-  std::string plugin_name;
+  std::string module_name;
 };
 }  // namespace dwb_plugins

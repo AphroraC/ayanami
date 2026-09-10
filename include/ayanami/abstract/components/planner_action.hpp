@@ -60,7 +60,7 @@ public:
   ~PlannerAction() override { cancelAll(); }
 
   /// @brief Mainline: accept a goal and get a TaskHandle straight away.
-  /// When the same execution is running and the plugin supports in-place
+  /// When the same execution is running and the module supports in-place
   /// goal updates, take the latest-wins seam (no cancel / no new
   /// execution); the old goal is settled immediately as CANCELED.
   Task acceptGoal(const Goal& goal) {
@@ -72,7 +72,7 @@ public:
     if (!planner) {
       Result result;
       result.error = ErrorCode::INTERNAL_ERROR;
-      result.message = "Planner plugin is null";
+      result.message = "Planner module is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
       action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,
@@ -161,7 +161,7 @@ protected:
           goal_id = active_goal_id;
           goal = active_goal;
         } else {
-          // This execution was replaced because the plugin does not support
+          // This execution was replaced because the module does not support
           // in-place goal updates. It must complete its own original handle.
           goal_id = gh.id;
           goal = gh.goal;

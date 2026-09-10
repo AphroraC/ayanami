@@ -1,4 +1,4 @@
-// Test plugin: success smoother (SuccessSmoother), exported via the common create_extension_module factory.
+// Test module: success smoother (SuccessSmoother), exported via the common create_extension_module factory.
 
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/messages/failure.hpp>

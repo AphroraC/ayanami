@@ -129,9 +129,9 @@ inline void reportCallbackException() noexcept {
  * @note The static slot objects that need to be shared across .so boundaries
  *       (see NavigationCallbacks) must be defined in libayanami's .cpp, NOT
  *       as inline/static members of a header -- otherwise each .so keeps its
- *       own instance and callbacks registered from plugins silently vanish.
+ *       own instance and callbacks registered from modules silently vanish.
  *       The exception-handler hook above has the same caveat: set it from the
- *       main DSO if plugins should adopt the same logging sink.
+ *       main DSO if modules should adopt the same logging sink.
  */
 template <typename Func>
 class CallbackSlot {

@@ -1,4 +1,4 @@
-// Focused tests (session/version single source + failure context + plugin id + in-place
+// Focused tests (session/version single source + failure context + module id + in-place
 // controller update + dispatch by id + config read only during configure).
 //
 // Coverage:
@@ -7,15 +7,15 @@
 // B. A BT action node writes a precise FailureContext before failing; RecoveryGoal.cause carries the triggering
 // context.
 // C. The pilot resets the failure_context blackboard per session.
-// D. GetPathGoal/SmoothPathGoal/ExePathGoal plugin_id: filled with the default when empty, preserved when explicit.
+// D. GetPathGoal/SmoothPathGoal/ExePathGoal module_id: filled with the default when empty, preserved when explicit.
 // E. Controller in-place plan update end to end (FollowPathNode -> requestPlanUpdate ->
 // ControllerAction::updatePlan): no cancel / no new Execution / no intermediate stop,
 // and the final result carries the newest plan_version.
-// F. NavigationServerBase dispatches multi-plugin configs by id; an invalid id returns a structured failure
+// F. NavigationServerBase dispatches multi-module configs by id; an invalid id returns a structured failure
 // TaskHandle; requests do not re-read the config (config is read only during configure/load).
 //
-// argv: 1=test_planner_plugin.so, 2=test_smoother_plugin.so,
-// 3=test_controller_plugin.so, 4=test_recovery_plugin.so
+// argv: 1=test_planner_module.so, 2=test_smoother_module.so,
+// 3=test_controller_module.so, 4=test_recovery_module.so
 
 #include <gtest/gtest.h>
 
@@ -75,6 +75,58 @@ using ayanami::nav_msgs::Path;
 
 namespace {
 
+/// @brief Declare the four recovery roles the production tree references.
+///
+/// The tree names recoveries by ROLE (spin/wait/backup/clear_costmap), and the BT
+/// extension maps each role to a module through config_recovery. A role nobody
+/// declares resolves to an empty id, which the pilot now refuses to build a tree
+/// with: a recovery that cannot resolve is a configuration error, not something
+/// to discover while the robot is stuck.
+/// @return the JSON array literal for the navigation section's config_recovery.
+std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
+                                   const std::string& module_name,
+                                   const std::string& so_name = "") {
+  const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
+  std::string list;
+  for (const char* role : roles) {
+    const std::string file = std::string("role_") + role + ".json";
+    {
+      std::ofstream ofs(dir / file);
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name
+          << "\", \"role\": \"" << role << "\"";
+      if (!so_name.empty()) {
+        ofs << ", \"so_name\": \"" << so_name << "\"";
+      }
+      // The module's own (empty) parameter section: the loader requires a
+      // section named after the module, so "reads no parameters" is declared
+      // rather than looking like a name/section mismatch.
+      ofs << " }, \"" << module_name << "\": {} }";
+    }
+    if (!list.empty()) {
+      list += ", ";
+    }
+    list += "\"" + file + "\"";
+  }
+  return "[" + list + "]";
+}
+/// @brief Wait until the pilot's tick thread has consumed the goal and produced
+/// this attempt's blackboard. The assertion is on the blackboard rather than on
+/// attemptActive(): with synchronous module mocks the whole tree can reach a
+/// terminal status within a tick, and a finished attempt keeps its blackboard as
+/// the record while the live instance is already gone.
+bool waitUntilPilotAttempt(const ayanami::behavior_tree::BehaviorTreePilot* pilot,
+                           int timeout_ms = 2000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (pilot->blackboard() != nullptr) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
 std::string g_planner_so;
 std::string g_smoother_so;
 std::string g_controller_so;
@@ -127,7 +179,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<std::string>(k_wait_id, "wait");
   bb->set<std::string>(k_backup_id, "backup");
   bb->set<uint64_t>(k_session_id, 0u);
-  bb->set<uint64_t>(k_plan_version, 0u);
+  bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<FailureContext>(k_failure_context, FailureContext{});
 }
@@ -320,15 +372,19 @@ std::filesystem::path makePilotConfigDir() {
   writeJson(dir / "nav.json", std::string(R"({
     "navigation": {
       "behavior_tree_extension": ")") + AYANAMI_TEST_BT_EXT_SO + R"(",
+      "config_recovery": )" + writeRecoveryRoleFiles(dir, "test_recovery") + R"(,
       "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
-
-
+      "behavior_tree_xml": "BT/navigation.xml",
       "planner_frequency": 100.0,
       "smoother_frequency": -1.0,
       "controller_frequency": 20.0,
       "tick_frequency": 100.0
     }
   })");
+  // The tree XML is a required config asset (no embedded fallback).
+  std::filesystem::create_directories(dir / "BT");
+  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
+                             std::filesystem::copy_options::overwrite_existing);
   return dir;
 }
 
@@ -342,7 +398,7 @@ class ImmediateGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::TwistStamped&) override {
     return true;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -357,25 +413,25 @@ class AlwaysTrueProgressChecker
 
 class DispatchServer : public NavigationServerBase {
  public:
-  bool initializePlannerPlugin(
+  bool initializePlannerModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractPlanner::Ptr p) override {
     init_planners.push_back(name);
     return p != nullptr;
   }
-  bool initializeSmootherPlugin(
+  bool initializeSmootherModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractSmoother::Ptr p) override {
     init_smoothers.push_back(name);
     return p != nullptr;
   }
-  bool initializeControllerPlugin(
+  bool initializeControllerModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractController::Ptr p) override {
     init_controllers.push_back(name);
     return p != nullptr;
   }
-  bool initializeRecoveryPlugin(
+  bool initializeRecoveryModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractRecovery::Ptr p) override {
     init_recoveries.push_back(name);
@@ -404,10 +460,14 @@ class DispatchServer : public NavigationServerBase {
   std::vector<std::string> factory_planners, factory_controllers;
 };
 
-std::string pluginJson(const std::string& module, const std::string& name,
+std::string moduleJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
+  // The module's own (empty) parameter section: the loader requires a section
+  // named after the module, so that "this module reads no parameters" is
+  // declared rather than indistinguishable from a name/section mismatch.
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {}\n}\n";
 }
 
 std::filesystem::path makeDispatchConfigDir() {
@@ -428,17 +488,17 @@ std::filesystem::path makeDispatchConfigDir() {
     }
   })");
   writeJson(dir / "planner_a.json",
-             pluginJson("planner", "planner_a", g_planner_so));
+             moduleJson("planner", "planner_a", g_planner_so));
   writeJson(dir / "planner_b.json",
-             pluginJson("planner", "planner_b", g_planner_so));
+             moduleJson("planner", "planner_b", g_planner_so));
   writeJson(dir / "smoother_a.json",
-             pluginJson("smoother", "smoother_a", g_smoother_so));
+             moduleJson("smoother", "smoother_a", g_smoother_so));
   writeJson(dir / "smoother_b.json",
-             pluginJson("smoother", "smoother_b", g_smoother_so));
+             moduleJson("smoother", "smoother_b", g_smoother_so));
   writeJson(dir / "controller_a.json",
-             pluginJson("controller", "controller_a", g_controller_so));
+             moduleJson("controller", "controller_a", g_controller_so));
   writeJson(dir / "controller_b.json",
-             pluginJson("controller", "controller_b", g_controller_so));
+             moduleJson("controller", "controller_b", g_controller_so));
   writeJson(dir / "recovery_a.json",
              "{\n  \"recovery\": {\n    \"name\": \"recovery_a\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
@@ -469,7 +529,7 @@ class FlagGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::TwistStamped&) override {
     return ready.load();
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
   std::atomic<bool> ready{false};
@@ -548,6 +608,7 @@ TEST(SessionStateDispatchTest, pilotAndServerShareSingleSessionState) {
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
 
+  ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
   const auto bb = pilot.blackboard();
   ASSERT_NE(bb, nullptr);
 
@@ -573,9 +634,11 @@ TEST(SessionStateDispatchTest, pilotAndServerShareSingleSessionState) {
   }));
 
   EXPECT_EQ(server->currentSessionId(), sid);
-  uint64_t pv = 42;
-  ASSERT_TRUE(bb->get<uint64_t>(k_plan_version, pv));
-  EXPECT_GE(server->currentPlanVersion(), pv);
+  // The live plan version has exactly one authority (NavigationSessionState,
+  // readable through the runtime); the blackboard no longer mirrors it, so the
+  // pilot and the server must agree on the same counter object.
+  EXPECT_EQ(pilot.sessionState()->currentPlanVersion(),
+            server->currentPlanVersion());
 }
 
 // ========== B. BT nodes write the FailureContext before failing; RecoveryGoal.cause carries it ==========
@@ -606,7 +669,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   ASSERT_TRUE(bb->get<FailureContext>(k_failure_context, ctx));
   EXPECT_EQ(ctx.stage, FailureStage::Planner);
   EXPECT_EQ(ctx.code, ErrorCode::PATH_NOT_FOUND);
-  EXPECT_EQ(ctx.plugin_id, "planner");
+  EXPECT_EQ(ctx.module_id, "planner");
   EXPECT_EQ(ctx.session_id, server->currentSessionId());
   EXPECT_EQ(ctx.plan_version, server->currentPlanVersion());
 
@@ -624,7 +687,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   EXPECT_EQ(server->last_recovery_goal.cause.stage, FailureStage::Planner);
   EXPECT_EQ(server->last_recovery_goal.cause.code,
             ErrorCode::PATH_NOT_FOUND);
-  EXPECT_EQ(server->last_recovery_goal.cause.plugin_id, "planner");
+  EXPECT_EQ(server->last_recovery_goal.cause.module_id, "planner");
 }
 
 // ========== C. The pilot resets failure_context per session ==========
@@ -644,6 +707,7 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
 
+  ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
   const auto bb = pilot.blackboard();
   ASSERT_NE(bb, nullptr);
   uint64_t sid = 0;
@@ -655,7 +719,7 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   FailureContext bogus;
   bogus.stage = FailureStage::Controller;
   bogus.code = ErrorCode::TIMEOUT;
-  bogus.plugin_id = "controller_a";
+  bogus.module_id = "controller_a";
   bb->set<FailureContext>(k_failure_context, bogus);
 
   pilot.beginNavigation(makePose(9.0, 9.0));
@@ -668,19 +732,19 @@ TEST(SessionStateDispatchTest, pilotResetsFailureContextPerSession) {
   ASSERT_TRUE(bb->get<FailureContext>(k_failure_context, reset));
   EXPECT_EQ(reset.stage, FailureStage::Unknown);
   EXPECT_EQ(reset.code, ErrorCode::NONE);
-  EXPECT_TRUE(reset.plugin_id.empty());
+  EXPECT_TRUE(reset.module_id.empty());
   EXPECT_TRUE(reset.message.empty());
 }
 
-/* Legacy multi-plugin dispatch tests are intentionally removed: the public
+/* Legacy multi-module dispatch tests are intentionally removed: the public
  * navigation model has one planner, smoother and controller per server. */
 #if 0
-TEST(SessionStateDispatchTest, pluginIdDefaultedOnlyWhenEmpty) {
+TEST(SessionStateDispatchTest, moduleIdDefaultedOnlyWhenEmpty) {
   auto dir = makeDispatchConfigDir();
   auto server = std::make_shared<DispatchServer>();
-  server->loadPlugins(dir.string());
+  server->loadModules(dir.string());
 
-  {  // Empty plugin_id -> filled with the default planner_a and dispatched to it
+  {  // Empty module_id -> filled with the default planner_a and dispatched to it
     GetPathGoal goal;
     goal.goal = makePose(1.0, 0.0);
     auto task = server->requestPath(goal);
@@ -691,10 +755,10 @@ TEST(SessionStateDispatchTest, pluginIdDefaultedOnlyWhenEmpty) {
   EXPECT_EQ(server->init_planners, (std::vector<std::string>{
                                        "planner_a", "planner_b"}));
 
-  {  // Explicit id preserved (not overwritten with the default); dispatched to the named plugin
+  {  // Explicit id preserved (not overwritten with the default); dispatched to the named module
     GetPathGoal goal;
     goal.goal = makePose(1.0, 0.0);
-    goal.plugin_id = "planner_b";
+    goal.module_id = "planner_b";
     auto task = server->requestPath(goal);
     ASSERT_TRUE(waitReady(task));
     EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
@@ -710,7 +774,7 @@ TEST(SessionStateDispatchTest, pluginIdDefaultedOnlyWhenEmpty) {
   {  // Explicit controller id preserved
     ExePathGoal goal;
     goal.path = makePath(2);
-    goal.plugin_id = "controller_b";
+    goal.module_id = "controller_b";
     auto task = server->requestExecution(goal);
     ASSERT_TRUE(waitReady(task));
     EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
@@ -782,12 +846,12 @@ TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
   ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(zero_cb);
 }
 
-// Recovery remains the only runtime-selectable plugin family.
+// Recovery remains the only runtime-selectable module family.
 #if 0
-TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) {
+TEST(SessionStateDispatchTest, dispatchByModuleIdAndInvalidIsStructuredFailure) {
   auto dir = makeDispatchConfigDir();
   auto server = std::make_shared<DispatchServer>();
-  server->loadPlugins(dir.string());
+  server->loadModules(dir.string());
 
   // multiple loaded configs: 2 loaded for the whole family (1 recovery).
   ASSERT_EQ(server->init_planners.size(), 2u);
@@ -814,13 +878,13 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
   {
     GetPathGoal goal;
     goal.goal = makePose(1.0, 0.0);
-    goal.plugin_id = "does_not_exist";
+    goal.module_id = "does_not_exist";
     assertRejected(server->requestPath(goal));
   }
   {
     SmoothPathGoal goal;
     goal.path = makePath(2);
-    goal.plugin_id = "does_not_exist";
+    goal.module_id = "does_not_exist";
     auto task = server->requestSmoothing(goal);
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
@@ -830,7 +894,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
   {
     ExePathGoal goal;
     goal.path = makePath(2);
-    goal.plugin_id = "does_not_exist";
+    goal.module_id = "does_not_exist";
     auto task = server->requestExecution(goal);
     ASSERT_TRUE(task.valid());
     ASSERT_TRUE(waitReady(task, 200));
@@ -855,7 +919,7 @@ TEST(SessionStateDispatchTest, dispatchByPluginIdAndInvalidIsStructuredFailure) 
   {
     GetPathGoal goal;
     goal.goal = makePose(1.0, 0.0);
-    goal.plugin_id = "planner_a";
+    goal.module_id = "planner_a";
     auto task = server->requestPath(goal);
     ASSERT_TRUE(waitReady(task, 200));
     EXPECT_EQ(task.status(), GoalStatus::SUCCEEDED);
@@ -916,8 +980,8 @@ TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) 
   ExePathGoal g1, g2;
   g1.path = makePath(2);
   g2.path = makePath(2);
-  g1.plugin_id = "controller_a";
-  g2.plugin_id = "controller_b";
+  g1.module_id = "controller_a";
+  g2.module_id = "controller_b";
   g1.session_id = server->currentSessionId();
   g2.session_id = server->currentSessionId();
   auto t1 = server->requestExecution(g1);
@@ -926,7 +990,7 @@ TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) 
   ASSERT_EQ(server->action("controller_b")->executions.load(), 1);
 
   // Category-level exclusivity: controller_b supersedes controller_a even
-  // though they are different plugin instances.
+  // though they are different module instances.
   std::this_thread::sleep_for(std::chrono::milliseconds(40));
   EXPECT_TRUE(t1.ready());
   EXPECT_EQ(t1.status(), GoalStatus::CANCELED);
@@ -977,6 +1041,9 @@ TEST(SessionStateDispatchTest, followPathNodeUpdateMissProcessesCompletedSuccess
   }
   EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
 }
+
+
+
 
 }  // namespace
 

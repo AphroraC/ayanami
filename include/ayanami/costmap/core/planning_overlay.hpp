@@ -39,7 +39,7 @@ struct PlanningOverlay {
   std::string frame;
   /// @brief Robot pose in the overlay frame, resolved at compose time.
   geometry_msgs::PoseStamped robot_pose;
-  bool has_robot_pose{false};
+  bool hasRobotPose{false};
   /// @brief False when the local map could not participate (missing wrapper
   /// or missing local<-global transform): the overlay is global-only and
   /// local obstacles are NOT reflected -- consumers treating the overlay as
@@ -54,7 +54,7 @@ struct PlanningOverlay {
     size_y = 0;
     valid = false;
     local_overlay_valid = false;
-    has_robot_pose = false;
+    hasRobotPose = false;
     robot_pose = geometry_msgs::PoseStamped{};
   }
 

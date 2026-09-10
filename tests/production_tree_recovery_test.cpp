@@ -49,49 +49,6 @@ using ayanami::nav_msgs::Path;
 namespace {
 
 // Verbatim identical to the production tree embedded in navigation_behavior_tree.hpp.
-constexpr const char* k_production_xml = R"XML(
-<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
-  <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
-    <RecoveryNode name="NavigateRecovery" number_of_retries="6">
-      <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
-          <RecoveryNode name="ComputePath" number_of_retries="1">
-            <Sequence>
-               <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
-              <IsPathValid path="{raw_path}"/>
-            </Sequence>
-            <Sequence>
-              <Recovery recovery="{clear_costmap_id}"/>
-            </Sequence>
-          </RecoveryNode>
-        </RateController>
-        <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
-               <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
-        </RateController>
-        <RecoveryNode name="FollowPath" number_of_retries="1">
-           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
-          <Sequence>
-            <Recovery recovery="{clear_costmap_id}"/>
-          </Sequence>
-        </RecoveryNode>
-      </PipelineSequence>
-      <ReactiveFallback name="RecoveryActions">
-        <GoalUpdated goal="{goal}"/>
-         <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
-          <Sequence>
-            <Recovery recovery="{spin_id}"/>
-          </Sequence>
-          <Sequence>
-            <Recovery recovery="{wait_id}"/>
-          </Sequence>
-          <Sequence>
-            <Recovery recovery="{backup_id}"/>
-          </Sequence>
-         </RoundRobin>
-      </ReactiveFallback>
-    </RecoveryNode>
-  </BehaviorTree>
-</root>)XML";
 
 PoseStamped makeGoal() {
   PoseStamped p;
@@ -112,6 +69,22 @@ Path makePath() {
   return p;
 }
 
+/// @brief The smoothed path carries a distinct pose count so MockRuntime can
+/// tell it apart from the raw path when applying per-path validity policy.
+constexpr std::size_t k_smoothed_poses = 2;
+
+Path makeSmoothedPath() {
+  Path p;
+  p.header.frame_id = "map";
+  for (std::size_t i = 0; i < k_smoothed_poses; ++i) {
+    PoseStamped pt;
+    pt.header.frame_id = "map";
+    pt.pose.position = Eigen::Vector3d(-1.0 * static_cast<double>(i), 0.5, 0.0);
+    p.poses.push_back(pt);
+  }
+  return p;
+}
+
 /// @brief Programmable deferred completion: requests enter a pending queue; pump advances their age and settles them per policy.
 class MockRuntime final : public NavigationRuntime {
  public:
@@ -125,6 +98,11 @@ class MockRuntime final : public NavigationRuntime {
   // ---- Policy ----
   int settle_after{2};  // settled after this many pumps
   bool controller_always_fails{true};
+  /// @brief Report the smoothed path as invalid (overlay rejection) while the
+  /// raw path stays valid. The two are told apart by pose count, so the
+  /// smoother branch's IsPathValid can be exercised without also failing the
+  /// planner branch's raw-path check.
+  bool smoothed_path_invalid{false};
 
   // ---- Session/version ----
   std::atomic<uint64_t> session{1};
@@ -187,6 +165,12 @@ class MockRuntime final : public NavigationRuntime {
     return v == plan_version.load();
   }
   void incrementPlanVersion() override { ++plan_version; }
+  bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
+    if (smoothed_path_invalid && path.poses.size() == k_smoothed_poses) {
+      return false;
+    }
+    return !path.poses.empty();
+  }
   bool requestPlanUpdate(
       uint64_t, const ayanami::actions::ExePathGoal&) override {
     return false;
@@ -231,7 +215,7 @@ class MockRuntime final : public NavigationRuntime {
   void settleSmooth(std::shared_ptr<TaskState<SmoothPathResult>> state) {
     typename TaskState<SmoothPathResult>::Completion c;
     c.status = ayanami::actions::GoalStatus::SUCCEEDED;
-    c.result.smoothed_path = makePath();
+    c.result.smoothed_path = makeSmoothedPath();
     // Aligned with production: the result carries the version "at accept time"; only after the node onRunning check passes
     // does incrementPlanVersion run (via the mock incrementPlanVersion).
     stamp(c.result);
@@ -267,6 +251,11 @@ class ProductionTreeRecovery : public ::testing::Test {
  protected:
   void SetUp() override {
     ayanami::behavior_tree::registerNavigationBehaviorTreeNodes(factory);
+    // Load the SHIPPED tree, not a copy: the point of this test is to catch
+    // production regressions (the historical "planner never replans + recovery
+    // storm"), so it must run the policy the robot runs. A local copy would
+    // drift and quietly keep passing.
+    factory.registerBehaviorTreeFromFile(AYANAMI_TEST_BT_XML);
     runtime = std::make_shared<MockRuntime>();
   }
 
@@ -285,26 +274,38 @@ class ProductionTreeRecovery : public ::testing::Test {
     bb->set<std::string>(k_wait_id, "wait");
     bb->set<std::string>(k_backup_id, "backup");
     bb->set<uint64_t>(k_session_id, runtime->currentSessionId());
-    bb->set<uint64_t>(k_plan_version, runtime->currentPlanVersion());
+    bb->set<uint64_t>(k_raw_path_revision, 0u);
     bb->set<uint64_t>(k_goal_revision, 0u);
     bb->set<ayanami::FailureContext>(k_failure_context,
                                      ayanami::FailureContext{});
   }
 
+  /// @brief Build this attempt's tree instance (fresh object + blackboard).
   void buildTree() {
-    tree = factory.createTreeFromText(k_production_xml, bb);
+    writeBlackboard();
+    tree = factory.createTree("NavigateWithReplanningAndSmoothing", bb);
+    instance_alive = true;
     if (std::getenv("AYANAMI_BT_TRACE") != nullptr) {
       logger = std::make_unique<BT::StdCoutLogger>(tree);
     }
   }
 
-  /// @brief Test mirror of the pilot contract: tick once and do the full logical reset when the tree returns a terminal
-  /// status (same as BehaviorTreePilot::run; v4 halt does not reset terminal-cached subtrees, see the
-  /// resetNavigationTreeState comment).
+  /// @brief Test mirror of the pilot contract: one tree INSTANCE per navigation
+  /// attempt. A terminal status ends the attempt, so the next tick starts a
+  /// fresh instance with a fresh blackboard -- exactly what BehaviorTreePilot
+  /// does (releaseTreeInstance + createTreeInstance). The former model kept one
+  /// tree alive and walked it with a full logical reset to emulate this; the
+  /// assertions below are unchanged, which is the point: the observable
+  /// behaviour (replan + re-enter FollowPath after recovery, bounded budget) is
+  /// the same, but nothing has to be reset for it to hold.
   BT::NodeStatus tickTree() {
+    if (!instance_alive) {
+      buildTree();
+    }
     const BT::NodeStatus status = tree.tickExactlyOnce();
     if (status != BT::NodeStatus::RUNNING) {
-      resetNavigationTreeState(tree);
+      tree = BT::Tree{};
+      instance_alive = false;
     }
     return status;
   }
@@ -313,6 +314,7 @@ class ProductionTreeRecovery : public ::testing::Test {
   std::shared_ptr<MockRuntime> runtime;
   BT::Blackboard::Ptr bb;
   BT::Tree tree;
+  bool instance_alive = false;
   std::unique_ptr<BT::StdCoutLogger> logger;
 };
 
@@ -373,6 +375,55 @@ TEST_F(ProductionTreeRecovery, transientControllerFailureRecoversAndSucceeds) {
   // Recovery budget: 1 clear_costmap in the inner FollowPath branch (the outer must not fire).
   EXPECT_LE(runtime->recovery_requests, 1)
       << "recovery=" << runtime->recovery_requests;
+}
+
+// ---- Smoothed-path validation: an overlay-invalid smoothed path must never reach FollowPath ----
+// Rationale: the smoother's own collision check only sees the LOCAL map (family read contract), so it
+// cannot judge the global layer. Before this the tree validated only {raw_path} on the planner branch and
+// handed {smoothed_path} straight to FollowPath -- a smoother could push the path into the global map and
+// the framework would not notice. The invariant under test is the gate, not the recovery ladder.
+TEST_F(ProductionTreeRecovery, invalidSmoothedPathNeverStartsFollowPath) {
+  writeBlackboard();
+  runtime->smoothed_path_invalid = true;
+  runtime->controller_always_fails = false;  // isolate: the controller itself is healthy
+  buildTree();
+
+  for (int i = 0; i < 200; ++i) {
+    tickTree();
+    runtime->pump();
+  }
+
+  EXPECT_EQ(runtime->exe_requests, 0)
+      << "FollowPath was started on a smoothed path the overlay rejected "
+      << "(path=" << runtime->path_requests
+      << " smooth=" << runtime->smooth_requests << ")";
+  // The smoother branch is what failed, so the tree kept replanning and escalated through recovery.
+  EXPECT_GE(runtime->smooth_requests, 1);
+  EXPECT_GE(runtime->path_requests, 2) << "planner never replanned after an invalid smoothed path";
+  EXPECT_GE(runtime->recovery_requests, 1)
+      << "an invalid smoothed path must escalate into the recovery branch";
+}
+
+// ---- Control for the test above: the same setup with a valid smoothed path reaches FollowPath and succeeds.
+// Without this, "exe_requests == 0" could equally well mean the tree is broken for an unrelated reason. ----
+TEST_F(ProductionTreeRecovery, validSmoothedPathReachesFollowPathAndSucceeds) {
+  writeBlackboard();
+  runtime->smoothed_path_invalid = false;
+  runtime->controller_always_fails = false;
+  buildTree();
+
+  BT::NodeStatus status = BT::NodeStatus::RUNNING;
+  for (int i = 0; i < 100; ++i) {
+    status = tickTree();
+    runtime->pump();
+    if (status != BT::NodeStatus::RUNNING) {
+      break;
+    }
+  }
+  EXPECT_EQ(status, BT::NodeStatus::SUCCESS)
+      << "path=" << runtime->path_requests << " smooth=" << runtime->smooth_requests
+      << " exe=" << runtime->exe_requests;
+  EXPECT_GE(runtime->exe_requests, 1);
 }
 
 }  // namespace

@@ -10,10 +10,15 @@
 namespace ayanami {
 namespace modules {
 
-void SimpleGoalChecker::configure(const ayanami::PluginContext& context) {
+
+void SimpleGoalChecker::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // SimpleGoalCheckerParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: this module's json (the file
   // config_goal_checker points to). Param section convention: the section
-  // key = the module json "name" field, delivered as PluginContext::name.
+  // key = the module json "name" field, delivered as ModuleContext::name.
   const std::string& section = context.name;
   param.position_tolerance = context.config.param<double>(
       section, "position_tolerance", param.position_tolerance);
@@ -24,6 +29,15 @@ void SimpleGoalChecker::configure(const ayanami::PluginContext& context) {
   param.angular_tolerance = context.config.param<double>(
       section, "angular_tolerance", param.angular_tolerance);
 }
+
+void SimpleGoalChecker::configure(const ayanami::ModuleContext& context) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
+}
+
 
 void SimpleGoalChecker::reset() { initialized.store(true); }
 
@@ -59,9 +73,9 @@ bool SimpleGoalChecker::isGoalReached(
   return true;
 }
 
-ayanami::abstract::GoalCheckerTolerances SimpleGoalChecker::getTolerances()
+ayanami::GoalCheckerTolerances SimpleGoalChecker::getTolerances()
     const {
-  ayanami::abstract::GoalCheckerTolerances tolerances;
+  ayanami::GoalCheckerTolerances tolerances;
   tolerances.pose.position = param.position_tolerance;
   tolerances.pose.angle = param.angle_tolerance;
   tolerances.velocity.linear = param.linear_tolerance;

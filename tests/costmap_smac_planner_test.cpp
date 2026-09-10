@@ -90,7 +90,7 @@ std::shared_ptr<CostmapMapContext> makeOverlayContext(
 std::shared_ptr<CostmapSmacPlanner> makePlanner(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
+  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
                      makeContext(wrapper)->getSharedConstPtr());
   return planner;
 }
@@ -170,7 +170,7 @@ TEST(CostmapSmacPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
   });
   auto planner = std::make_shared<CostmapSmacPlanner>();
   planner->configure(
-      ayanami::PluginContext{"test_smac", ayanami::Config("")},
+      ayanami::ModuleContext{"test_smac", ayanami::Config("")},
       makeOverlayContext(global_wrapper, local_wrapper)->getSharedConstPtr());
 
   auto start = cellCenter(2, 9);
@@ -211,7 +211,7 @@ TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
   ctx->setFrames("map_o2", "odom_o2", "base_o2");
   ctx->setGlobalCostmap(global_wrapper);
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
+  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
   auto start = cellCenter(2, 9);
@@ -347,7 +347,7 @@ ayanami::nav_msgs::Path plan;
 TEST(CostmapSmacPlannerTest, moduleFactoryCreatesPlanner) {
   ASSERT_FALSE(g_module_so.empty());
   auto planner = std::dynamic_pointer_cast<CostmapSmacPlanner>(
-      ayanami::ExtensionModule::load_module(g_module_so));
+      ayanami::ExtensionModule::loadModule(g_module_so));
   ASSERT_NE(planner, nullptr);
 }
 

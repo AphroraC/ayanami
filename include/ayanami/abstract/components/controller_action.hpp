@@ -64,7 +64,7 @@ public:
     if (!controller) {
       Result result;
       result.error = ErrorCode::INTERNAL_ERROR;
-      result.message = "Controller plugin is null";
+      result.message = "Controller module is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
       action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,

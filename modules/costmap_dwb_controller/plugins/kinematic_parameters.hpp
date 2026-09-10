@@ -78,7 +78,7 @@ class KinematicsHandler {
 public:
   KinematicsHandler();
   ~KinematicsHandler();
-  void initialize(const ayanami::Config& cfg, const std::string& plugin_name);
+  void initialize(const ayanami::Config& cfg, const std::string& module_name);
 
   inline KinematicParameters getKinematics() { return kinematics; }
 
@@ -88,7 +88,7 @@ public:
 
 protected:
   KinematicParameters kinematics;
-  std::string plugin_name;
+  std::string module_name;
 };
 
 }  // namespace dwb_plugins

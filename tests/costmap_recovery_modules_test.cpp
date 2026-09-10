@@ -1,12 +1,12 @@
-// +redesign: modules/costmap*_recovery (the 4 CostmapRecovery-family recovery plugins).
+// +redesign: modules/costmap*_recovery (the 4 CostmapRecovery-family recovery modules).
 //
 // Coverage (cycle-driven + single-publisher architecture):
-// - plugins only return the desired per-cycle velocity; CostmapRecoveryExecution is the single publisher and
+// - modules only return the desired per-cycle velocity; CostmapRecoveryExecution is the single publisher and
 // publishes it per cycle; spin/back_up end/cancel/collision terminal states must emit zeros (behavior tests).
-// - plugins never call on_velocity_command directly / never sleep (behavior + grep-source tests).
+// - modules never call on_velocity_command directly / never sleep (behavior + grep-source tests).
 // - spin completes once the configured spin_dist is covered -> execution RECOVERY_DONE; pure angular velocity while spinning, zero velocity in the terminal state
 // - back_up detects a collision while reversing (lethal on the immutable global snapshot) -> RECOVERY_FAILED,
-// message contains "collision detected" (plugin-layer tick contract)
+// message contains "collision detected" (module-layer tick contract)
 // - wait is driven by execution cycles until wait_duration elapses -> RECOVERY_DONE; cancel mid-way -> CANCELED
 // - clear submits a typed clear command via CostmapCommandPort; the single writer clears the area around the robot
 // to None and the master grid region becomes FREE_SPACE(0) while distant cells stay lethal
@@ -73,10 +73,10 @@ std::string g_clear_so;
 // Module source directory (injected by CMake), used by the grep-source tests.
 std::string g_modules_src;
 
-// Temp config dir (created in main), used to build each module PluginContext.config.
+// Temp config dir (created in main), used to build each module ModuleContext.config.
 std::string g_config_dir;
 
-// Each module's own json (single source of PluginContext.config parameters).
+// Each module's own json (single source of ModuleContext.config parameters).
 std::string moduleConfig(const std::string& json_name) {
   return (std::filesystem::path(g_config_dir) / json_name).string();
 }
@@ -135,7 +135,7 @@ class TestWriterPort : public CostmapCommandPort {
     bool ok = true;
     if (clear_global && global) {
       Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
-      ok = rsc->lookupTransform(global->getGlobalFrame(), robot_frame,
+      ok = rsc->lookupTransform(global->globalFrame(), robot_frame,
                                 ayanami::Timestamp::latest(), p) &&
            ok;
       ok = ayanami::costmap::clearCostmapArea(global, p, command.clear_radius) &&
@@ -143,7 +143,7 @@ class TestWriterPort : public CostmapCommandPort {
     }
     if (clear_local && local) {
       Eigen::Isometry3d p = Eigen::Isometry3d::Identity();
-      ok = rsc->lookupTransform(local->getGlobalFrame(), robot_frame,
+      ok = rsc->lookupTransform(local->globalFrame(), robot_frame,
                                 ayanami::Timestamp::latest(), p) &&
            ok;
       ok = ayanami::costmap::clearCostmapArea(local, p, command.clear_radius) &&
@@ -236,21 +236,21 @@ void waitExecutionState(ayanami::costmap::CostmapRecoveryExecution& exec,
 
 }  // namespace
 
-// ---------- Single-publisher behavior: plugins never call on_velocity_command ----------
+// ---------- Single-publisher behavior: modules never call on_velocity_command ----------
 
-TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
+TEST(CostmapRecoveryModulesTest, modulesDoNotPublishVelocity) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto spin = std::make_shared<CostmapSpinRecovery>();
-  spin->configure(ayanami::PluginContext{"costmap_spin_recovery",
+  spin->configure(ayanami::ModuleContext{"costmap_spin_recovery",
                                          ayanami::Config(moduleConfig("spin.json"))},
                   ctx->getSharedConstPtr());
   auto backup = std::make_shared<CostmapBackUpRecovery>();
-  backup->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+  backup->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
                                            ayanami::Config(moduleConfig("backup.json"))},
                     ctx->getSharedConstPtr());
   auto wait = std::make_shared<CostmapWaitRecovery>();
-  wait->configure(ayanami::PluginContext{"costmap_wait_recovery",
+  wait->configure(ayanami::ModuleContext{"costmap_wait_recovery",
                                          ayanami::Config(moduleConfig("wait.json"))},
                   ctx->getSharedConstPtr());
 
@@ -262,13 +262,13 @@ TEST(CostmapRecoveryModulesTest, pluginsDoNotPublishVelocity) {
   (void)backup->tick(cycle);
   (void)wait->tick(cycle);
 
-  // The plugin tick only drives the cycle logic; it never publishes velocity commands itself.
+  // The module tick only drives the cycle logic; it never publishes velocity commands itself.
   EXPECT_TRUE(emittedIsEmpty())
-      << "recovery plugins must not publish on_velocity_command directly";
+      << "recovery modules must not publish on_velocity_command directly";
   detachVelocityCapture();
 }
 
-TEST(CostmapRecoveryModulesTest, pluginsSourceHasNoDirectPublish) {
+TEST(CostmapRecoveryModulesTest, modulesSourceHasNoDirectPublish) {
   ASSERT_FALSE(g_modules_src.empty());
   const std::vector<std::string> files = {
       "costmap_spin_recovery/costmap_spin_recovery.cpp",
@@ -296,10 +296,13 @@ TEST(CostmapRecoveryModulesTest, spinCompletesWithSuccessViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_spin_recovery",
                                         ayanami::Config(moduleConfig("spin.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
+  // The execution owns the cadence (production: CostmapNavigationServer reads
+  // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
+  exec.setCyclePeriod(std::chrono::milliseconds(10));
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
@@ -314,7 +317,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_spin_recovery",
                                         ayanami::Config(moduleConfig("spin.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
@@ -338,10 +341,13 @@ TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_spin_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_spin_recovery",
                                         ayanami::Config(moduleConfig("spin.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
+  // The execution owns the cadence (production: CostmapNavigationServer reads
+  // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
+  exec.setCyclePeriod(std::chrono::milliseconds(10));
   // max_w=0.3 > the injected cap max_vel_theta=0.1 -> non-zero commands must be zeroed.
   exec.setMaximumVelocity(1.0, 1.0, 0.1);
   exec.start();
@@ -373,7 +379,7 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
   setRobot(2.25, 2.25);
 
   auto rec = std::make_shared<CostmapBackUpRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
                                         ayanami::Config(moduleConfig("backup.json"))},
                  ctx->getSharedConstPtr());
 
@@ -390,10 +396,13 @@ TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapBackUpRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_back_up_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
                                         ayanami::Config(moduleConfig("backup.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("back_up", rec, ctx);
+  // The execution owns the cadence (production: CostmapNavigationServer reads
+  // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
+  exec.setCyclePeriod(std::chrono::milliseconds(10));
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
@@ -409,10 +418,13 @@ TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
 TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapWaitRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_wait_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_wait_recovery",
                                         ayanami::Config(moduleConfig("wait.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("wait", rec, ctx);
+  // The execution owns the cadence (production: CostmapNavigationServer reads
+  // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
+  exec.setCyclePeriod(std::chrono::milliseconds(10));
   const auto start = std::chrono::steady_clock::now();
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
@@ -429,10 +441,13 @@ TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
 TEST(CostmapRecoveryModulesTest, waitCancelReturnsImmediatelyViaExecution) {
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapWaitRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_wait_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_wait_recovery",
                                         ayanami::Config(moduleConfig("wait.json"))},
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("wait", rec, ctx);
+  // The execution owns the cadence (production: CostmapNavigationServer reads
+  // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
+  exec.setCyclePeriod(std::chrono::milliseconds(10));
   exec.start();
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   exec.cancel();
@@ -472,11 +487,11 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
 
   auto port = std::make_shared<TestWriterPort>(
       global, local, &ayanami::components::RobotStateController::instance(),
-      ctx->getRobotFrame());
+      ctx->robotFrame());
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
   auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::PluginContext{"costmap_clear_costmap_recovery",
+  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
                                         ayanami::Config(moduleConfig("clear.json"))},
                  ctx->getSharedConstPtr());
 
@@ -502,16 +517,16 @@ TEST(CostmapRecoveryModulesTest, moduleFactoriesCreateCorrectTypes) {
   ASSERT_FALSE(g_clear_so.empty());
 
   EXPECT_NE(std::dynamic_pointer_cast<CostmapSpinRecovery>(
-                ayanami::ExtensionModule::load_module(g_spin_so)),
+                ayanami::ExtensionModule::loadModule(g_spin_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<CostmapBackUpRecovery>(
-                ayanami::ExtensionModule::load_module(g_backup_so)),
+                ayanami::ExtensionModule::loadModule(g_backup_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<CostmapWaitRecovery>(
-                ayanami::ExtensionModule::load_module(g_wait_so)),
+                ayanami::ExtensionModule::loadModule(g_wait_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<CostmapClearCostmapRecovery>(
-                ayanami::ExtensionModule::load_module(g_clear_so)),
+                ayanami::ExtensionModule::loadModule(g_clear_so)),
             nullptr);
 }
 
@@ -523,7 +538,7 @@ int main(int argc, char** argv) {
   if (argc > 4) g_clear_so = argv[4];
   if (argc > 5) g_modules_src = argv[5];
 
-  // Temp config dir (strictly single-level index): the 4 recovery plugins each declare their "recovery"
+  // Temp config dir (strictly single-level index): the 4 recovery modules each declare their "recovery"
   // section parameters in their own json file; each module reads them explicitly at construction via GlobalConfig::getConfigPath
   // (no thread_local injection). The keys do not collide (short durations ease execution-layer cycle-driven testing;
   // wait_duration=0.1).
@@ -541,8 +556,8 @@ int main(int argc, char** argv) {
       "config_clear_costmap_recovery": "clear.json"
     }})";
   }
-  // Section convention: plugin params live under the json "name" field
-  // (= PluginContext::name); sim_cycle_dt stays in the "recovery" family
+  // Section convention: module params live under the json "name" field
+  // (= ModuleContext::name); sim_cycle_dt is read by the *server* out of the
   // section next to name/so_name/role.
   writeJsonFile(dir / "spin.json", R"({"recovery": {"sim_cycle_dt": 0.01},
       "costmap_spin_recovery": {

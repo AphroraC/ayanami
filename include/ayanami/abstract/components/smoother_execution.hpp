@@ -13,10 +13,10 @@ namespace components {
 /**
  * @brief Path smoothing execution (single in-place run).
  *
- * Responsibility table: the plugin only performs smoothing; a failure is
+ * Responsibility table: the module only performs smoothing; a failure is
  * mapped immediately to an ErrorCode terminal state, and retries are
  * decided by the BT.
- * In-place semantics: the path is passed by value and the plugin modifies
+ * In-place semantics: the path is passed by value and the module modifies
  * it in place; on success getSmoothedPath() returns the smoothed path.
  *
  * State machine: INITIALIZED->STARTED->SMOOTHING->SMOOTHED_PATH (or
@@ -48,7 +48,7 @@ public:
     ExecutionBase::start();
   }
 
-  /// @brief Cancel: set cancel_requested and forward to the smoother plugin (cooperative).
+  /// @brief Cancel: set cancel_requested and forward to the smoother module (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (smoother) smoother->cancel();
@@ -67,7 +67,7 @@ public:
   nav_msgs::Path takeSmoothedPath() { return std::move(path); }
 
 protected:
-  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// @brief Module call hook: by default calls the abstract signature;
   /// map-family executions override it with a typed call (the execution
   /// layer performs map access).
   virtual ResultT<void> callSmoother(nav_msgs::Path& path,
@@ -99,7 +99,7 @@ protected:
         return;
       }
       if (result.ok) {
-        // In-place semantics: the plugin already modified the path member in place; getSmoothedPath is directly valid.
+        // In-place semantics: the module already modified the path member in place; getSmoothedPath is directly valid.
         error = ErrorCode::NONE;
         message = result.message;
         setState(SMOOTHED_PATH, true);

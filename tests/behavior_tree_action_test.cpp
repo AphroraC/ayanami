@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <ayanami/utility/config.hpp>
+
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/extension.hpp>
@@ -15,6 +17,8 @@
 #include <behaviortree_cpp/bt_factory.h>
 
 #include <Eigen/Geometry>
+#include <filesystem>
+#include <fstream>
 
 #include <atomic>
 #include <memory>
@@ -37,6 +41,31 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 namespace {
+
+/// @brief Minimal config dir for the BT extension. The extension resolves its
+/// tree asset itself and has no embedded fallback, so a test that calls
+/// registerTrees() directly must provide a real file on disk.
+std::filesystem::path makeTreeConfigDir() {
+  const auto dir =
+      std::filesystem::temp_directory_path() / "ayanami_bt_ext_cfg";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir / "BT");
+  {
+    std::ofstream ofs(dir / "config.json");
+    ofs << R"({ "global": { "config_navigation": "nav.json" } })";
+  }
+  {
+    std::ofstream ofs(dir / "nav.json");
+    ofs << R"({ "navigation": {
+      "behavior_tree_xml": "BT/navigation.xml",
+      "behavior_tree_id": "NavigateWithReplanningAndSmoothing" } })";
+  }
+  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
+                             std::filesystem::copy_options::overwrite_existing);
+  ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
+  return dir;
+}
+
 
 PoseStamped makePose(double x, double y = 0.0) {
   PoseStamped p;
@@ -79,7 +108,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<std::string>(k_wait_id, "wait");
   bb->set<std::string>(k_backup_id, "backup");
   bb->set<uint64_t>(k_session_id, 0u);
-  bb->set<uint64_t>(k_plan_version, 0u);
+  bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
@@ -139,6 +168,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 
   TaskHandle<SmoothPathResult> requestSmoothing(
       const SmoothPathGoal& goal) override {
+    ++smooth_request_count;
     auto g = goal;
     g.session_id = currentSessionId();
     g.plan_version = currentPlanVersion();
@@ -218,6 +248,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
   int exe_request_count = 0;
 
   int path_request_count = 0;
+  int smooth_request_count = 0;
 
   // In-place plan update record (FollowPathNode via requestPlanUpdate).
   int plan_update_count = 0;
@@ -251,6 +282,24 @@ constexpr const char* k_compute_path_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
     <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+  </BehaviorTree>
+</root>)";
+
+/// Production-shaped smoother branch: a RateController keyed on
+/// {raw_path_revision} wrapping the smoother plus its validation gate. This is
+/// the shape in which the removed content-signature skip used to matter.
+constexpr const char* k_smoother_branch_xml = R"(
+<root BTCPP_format="4">
+  <BehaviorTree ID="main">
+    <PipelineSequence name="seq">
+      <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+      <RateController hz="-1" reset_token="{raw_path_revision}">
+        <Sequence>
+          <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+          <IsPathValid path="{smoothed_path}"/>
+        </Sequence>
+      </RateController>
+    </PipelineSequence>
   </BehaviorTree>
 </root>)";
 
@@ -353,7 +402,7 @@ TEST(BehaviorTreeActionTest, followPathUpdatesPlanInPlaceWhenPlanVersionChanges)
   EXPECT_EQ(server->cancel_count.load(), 0);
 }
 
-TEST(BehaviorTreeActionTest, smoothingSkipsIdenticalInputAndBumpsPerFreshInput) {
+TEST(BehaviorTreeActionTest, everyPlanIsSmoothedAndAdvancesTheLiveVersion) {
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
   server->smooth_result = makePath(3);
@@ -366,8 +415,6 @@ TEST(BehaviorTreeActionTest, smoothingSkipsIdenticalInputAndBumpsPerFreshInput) 
   BT::BehaviorTreeFactory factory;
   registerNavigationBehaviorTreeNodes(factory);
   auto tree = factory.createTreeFromText(k_pipeline_xml, bb);
-  // Drive by status instead of a fixed tick count: cycle 2 completes faster
-  // (the smoother skips an identical input without a request).
   int success_cycles = 0;
   for (int i = 0; i < 8 && success_cycles < 2; ++i) {
     if (tree.tickExactlyOnce() == BT::NodeStatus::SUCCESS) {
@@ -375,11 +422,45 @@ TEST(BehaviorTreeActionTest, smoothingSkipsIdenticalInputAndBumpsPerFreshInput) 
     }
   }
   ASSERT_EQ(success_cycles, 2);
-  // Merged counter: cycle1 = planning(+1) + smoothing(+1); cycle2 replans
-  // the identical mock path -> planning(+1), but the smoother sees an input
-  // identical to the last smoothed one and skips (no bump, no request):
-  // identical input has an identical output.
-  EXPECT_EQ(server->currentPlanVersion(), 3u);
+  // Live plan_version: cycle1 = planning(+1) + smoothing(+1); cycle2 replans
+  // and re-smooths (+1 each). Both producers advance the shared counter -- the
+  // tree distinguishes them by raw_path_revision, not by the live version.
+  EXPECT_EQ(server->currentPlanVersion(), 4u);
+  EXPECT_EQ(server->smooth_request_count, 2);
+}
+
+// ---- Regression guard for the removed content-signature skip ----
+// Re-smoothing used to be gated by an FNV-1a content signature, because the
+// smoother branch's RateController keyed its reset_token on {plan_version} --
+// the very counter smoothing advances -- so the smoother re-triggered on its
+// own output. The skip also silently swallowed legitimate re-smoothing (a
+// different smoother, or changed parameters, on the same path). The branch is
+// now keyed on {raw_path_revision}, which only the planner advances.
+TEST(BehaviorTreeActionTest, smootherRunsOncePerPlanAndNeverSelfTriggers) {
+  auto server = std::make_shared<MockNavServer>();
+  server->path_result = makePath(2);
+  server->smooth_result = makePath(3);
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, server);
+  setRequiredEntries(bb);
+  bb->set<PoseStamped>(k_goal, makePose(1.0, 2.0));
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(k_smoother_branch_xml, bb);
+
+  // This tree has no terminal step, so tick a fixed number of times and
+  // compare request counts: one smoothing round per planning round, and none
+  // in between (a self-trigger would show roughly one smoothing request per
+  // tick after the first plan).
+  for (int i = 0; i < 12; ++i) {
+    (void)tree.tickExactlyOnce();
+  }
+  ASSERT_GE(server->path_request_count, 1);
+  EXPECT_EQ(server->smooth_request_count, server->path_request_count)
+      << "smoother ran " << server->smooth_request_count << " times for "
+      << server->path_request_count << " plans";
 }
 
 TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
@@ -595,9 +676,12 @@ TEST(BehaviorTreeActionTest, defaultEmbeddedXmlLoadsValidatesAndTicks) {
 
   // The default tree comes from the navigation_behavior_tree extension module: common factory load -> cast ->
   // registerNodes + registerTrees -> defaultTreeId builds the tree.
+  // The extension resolves its tree asset from the config (no embedded fallback).
+  makeTreeConfigDir();
+
   BT::BehaviorTreeFactory factory;
   auto ext = std::dynamic_pointer_cast<ayanami::behavior_tree::BehaviorTreeExtension>(
-      ayanami::ExtensionModule::load_module(AYANAMI_TEST_BT_EXT_SO));
+      ayanami::ExtensionModule::loadModule(AYANAMI_TEST_BT_EXT_SO));
   ASSERT_NE(ext, nullptr);
   ext->registerNodes(factory);
   ext->registerTrees(factory);

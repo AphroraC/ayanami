@@ -32,13 +32,13 @@ extern "C" ayanami::abstract::AbstractRecovery* createFakeRecovery() {
 
 }  // namespace
 
-TEST(PluginTeardownNoUB, derivedDestructorCalledOnClearPlugins) {
+TEST(ModuleTeardownNoUB, derivedDestructorCalledOnClearModules) {
   FakeRecovery::dtor_count = 0;
   auto* ptr = createFakeRecovery();
   ASSERT_NE(ptr, nullptr);
   {
-    // PluginManager has no in-memory injection registerPlugin interface (plan bug, see report Concerns);
-    // releasing the shared_ptr here is semantically identical to clearPlugins releasing std::shared_ptr.
+    // ModuleManager has no in-memory injection registerModule interface (plan bug, see report Concerns);
+    // releasing the shared_ptr here is semantically identical to clearModules releasing std::shared_ptr.
     auto shr = std::shared_ptr<ayanami::abstract::AbstractRecovery>(ptr);
     (void)shr;
   }

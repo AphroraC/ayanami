@@ -1,4 +1,4 @@
-// Test plugin: success planner (SuccessPlanner), exported via the common create_extension_module factory.
+// Test module: failing planner (FailingPlanner), exported via the common create_extension_module factory.
 
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -8,19 +8,14 @@
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
-using ayanami::nav_msgs::Path;
 using ayanami::ResultT;
-class SuccessPlanner : public ayanami::abstract::AbstractPlanner {
+class FailingPlanner : public ayanami::abstract::AbstractPlanner {
 public:
-  ResultT<void> makePlan(const PoseStamped& start,
+  ResultT<void> makePlan(const PoseStamped& /*start*/,
                           const PoseStamped& /*goal*/,
                           double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
-    Path plan;
-    plan.header.frame_id = "map";
-    plan.poses.push_back(start);
-    plan.poses.push_back(start);
-    plan_out = std::move(plan);
-    return ResultT<void>::success();
+    return ResultT<void>::failure(ayanami::ErrorCode::PATH_NOT_FOUND,
+                                   "no path found");
   }
   bool cancel() override { return true; }
 };
@@ -28,5 +23,5 @@ public:
 }  // namespace
 
 extern "C" ayanami::ExtensionModule* create_extension_module() {
-  return new SuccessPlanner;
+  return new FailingPlanner;
 }

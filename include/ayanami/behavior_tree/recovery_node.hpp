@@ -1,9 +1,9 @@
 #pragma once
 
+#include "ayanami/behavior_tree/resettable_node.hpp"
 #include <behaviortree_cpp/control_node.h>
 
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
-#include "ayanami/behavior_tree/navigation_node_state.hpp"
 #include "ayanami/messages/failure.hpp"
 
 #include <cstdint>
@@ -38,7 +38,6 @@ namespace behavior_tree {
  * circuit in the recovery branch is free).
  */
 class RecoveryNode : public BT::ControlNode,
-                     public NavigationTreeNodeState,
                      public ResettableNode {
  public:
   RecoveryNode(const std::string& name, const BT::NodeConfig& config)
@@ -115,10 +114,6 @@ class RecoveryNode : public BT::ControlNode,
   /// @brief Logical reset after a tree-life terminal state (v4 halt only
   /// propagates to RUNNING children). The budget token cache is kept
   /// (change-detection semantics, owned by ResettableNode).
-  void resetState() override {
-    retry_count = 0;
-    recovering = false;
-  }
 
  private:
   /// @brief Read the failure context written by the failing child and

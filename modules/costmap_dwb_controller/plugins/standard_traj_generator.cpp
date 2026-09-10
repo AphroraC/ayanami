@@ -13,29 +13,29 @@
 namespace dwb_plugins {
 
 void StandardTrajectoryGenerator::initialize(const ayanami::Config& cfg,
-                                             const std::string& plugin_name) {
-  this->plugin_name = plugin_name;
+                                             const std::string& module_name) {
+  this->module_name = module_name;
   kinematics_handler = std::make_shared<KinematicsHandler>();
-  kinematics_handler->initialize(cfg, plugin_name);
+  kinematics_handler->initialize(cfg, module_name);
   initializeIterator(cfg);
 
-  sim_time = cfg.param<double>(plugin_name, "sim_time", 1.7);
+  sim_time = cfg.param<double>(module_name, "sim_time", 1.7);
   discretize_by_time =
-      cfg.param<bool>(plugin_name, "discretize_by_time", false);
-  time_granularity = cfg.param<double>(plugin_name, "time_granularity", 0.5);
+      cfg.param<bool>(module_name, "discretize_by_time", false);
+  time_granularity = cfg.param<double>(module_name, "time_granularity", 0.5);
   linear_granularity =
-      cfg.param<double>(plugin_name, "linear_granularity", 0.5);
+      cfg.param<double>(module_name, "linear_granularity", 0.5);
   angular_granularity =
-      cfg.param<double>(plugin_name, "angular_granularity", 0.025);
+      cfg.param<double>(module_name, "angular_granularity", 0.025);
   include_last_point =
-      cfg.param<bool>(plugin_name, "include_last_point", true);
+      cfg.param<bool>(module_name, "include_last_point", true);
   limit_vel_cmd_in_traj =
-      cfg.param<bool>(plugin_name, "limit_vel_cmd_in_traj", false);
+      cfg.param<bool>(module_name, "limit_vel_cmd_in_traj", false);
 }
 
 void StandardTrajectoryGenerator::initializeIterator(const ayanami::Config& cfg) {
   velocity_iterator = std::make_shared<XYThetaIterator>();
-  velocity_iterator->initialize(cfg, kinematics_handler, plugin_name);
+  velocity_iterator->initialize(cfg, kinematics_handler, module_name);
 }
 
 void StandardTrajectoryGenerator::startNewIteration(

@@ -31,7 +31,7 @@ using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
 using ayanami::RecoveryStatus;
 
-// ---- Test plugins: record call counts, produce deterministic results, record cancel pass-through ----
+// ---- Test modules: record call counts, produce deterministic results, record cancel pass-through ----
 
 class TestPlanner : public ayanami::abstract::AbstractPlanner {
 public:
@@ -54,7 +54,7 @@ public:
   ResultT<void> computeVelocityCommand(const PoseStamped&,
                                            const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
-    // The plugin only writes linear.x; the remaining fields must be guaranteed initialized by the execution via its pre-publish = {} zeroing
+    // The module only writes linear.x; the remaining fields must be guaranteed initialized by the execution via its pre-publish = {} zeroing
     cmd = TwistStamped{};
     cmd.twist.linear.x() = 0.5;
     return ResultT<void>::success();
@@ -100,7 +100,7 @@ public:
                      const TwistStamped&) override {
     return ++calls >= threshold;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 
@@ -117,7 +117,7 @@ public:
                      const TwistStamped&) override {
     return false;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -164,7 +164,7 @@ public:
 };
 
 /// Returns RUNNING on every cycle while running, until cancelled: verifies the recovery execution enters CANCELED
-/// after cancel and that cancel passes through to the plugin (a tick-state-machine equivalent of the old
+/// after cancel and that cancel passes through to the module (a tick-state-machine equivalent of the old
 /// BlockingRecovery::runRecovery blocking loop: blocking yields to execution cycle driving, semantics unchanged).
 class BlockingRecovery : public ayanami::abstract::AbstractRecovery {
 public:
@@ -294,21 +294,21 @@ TEST(ExecutionSmoother, smoothPathReachesSmoothed) {
   exec.join();
 }
 
-TEST(ExecutionPlanner, cancelForwardsToPlannerPlugin) {
+TEST(ExecutionPlanner, cancelForwardsToPlannerModule) {
   auto planner = std::make_shared<TestPlanner>();
   ayanami::components::PlannerExecution exec(planner);
   exec.cancel();
   EXPECT_TRUE(planner->cancel_called);
 }
 
-TEST(ExecutionSmoother, cancelForwardsToSmootherPlugin) {
+TEST(ExecutionSmoother, cancelForwardsToSmootherModule) {
   auto smoother = std::make_shared<TestSmoother>();
   ayanami::components::SmootherExecution exec(smoother);
   exec.cancel();
   EXPECT_TRUE(smoother->cancel_called);
 }
 
-TEST(ExecutionRecovery, cancelForwardsToRecoveryPlugin) {
+TEST(ExecutionRecovery, cancelForwardsToRecoveryModule) {
   auto recovery = std::make_shared<TestRecovery>();
   ayanami::components::RecoveryExecution exec(recovery);
   exec.cancel();
@@ -328,7 +328,7 @@ TEST(ExecutionRecovery, cancelDuringBlockingRecoveryEndsInCanceledAndForwards) {
   exec.join();
 }
 
-TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToPlugin) {
+TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToModule) {
   auto controller = std::make_shared<NeverReachingController>();
   ayanami::components::ControllerExecution exec(controller);
   exec.setControllerFrequency(500.0);

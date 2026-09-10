@@ -1,13 +1,14 @@
 // modules/costmap_savitzky_smoother -- 7-point Savitzky-Golay path smoothing.
 //
-// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapView (LOCAL master grid;
+// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapReader (LOCAL master grid;
 // family read contract: smoother = local map only).
 // The core is the 7-point SG convolution (nav2 SavitzkyGolaySmoother semantics):
 // - coefficients [-2, 3, 6, 7, 6, 3, -2] / 21; end points fixed; interior points convolved over the window
 // - places with less than a full window at the boundaries use replicated padding (clamped to the end points)
 // - do_refinement: applies refinement_num more filter rounds to the result (bounded by max_duration)
 // - collision check: after smoothing, queries the local costmap point by point; any cost >=
-// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original.
+// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original and still reports
+// SUCCESS -- the rollback is a graceful degradation, not a failure (see the call site).
 // Frames: the path is expressed in its header frame (production: the global
 // costmap frame), the local grid in the local costmap frame (typically
 // odom) -- the grid<-path transform is resolved ONCE per smooth call (no
@@ -79,13 +80,16 @@ void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses)
 }  // namespace
 
 
-void CostmapSavitzkySmoother::configure(
-    const PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout).
+
+void CostmapSavitzkySmoother::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapSavitzkySmootherParam member (whose field initializers are the defaults for keys the
+  // config omits).
+  // Parameters are read from the ModuleContext-injected own configuration (the module does not know the global config layout).
   const Config& file = context.config;
   // Param section convention: the section key = the module json "name"
-  // field, delivered as PluginContext::name.
+  // field, delivered as ModuleContext::name.
   const std::string& section = context.name;
   param.do_refinement =
       file.param<bool>(section, "do_refinement",
@@ -93,8 +97,19 @@ void CostmapSavitzkySmoother::configure(
   param.refinement_num =
       file.param<int>(section, "refinement_num",
                       param.refinement_num);
+}
+
+void CostmapSavitzkySmoother::configure(
+    const ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
   map_context = std::move(map);
 }
+
 
 bool CostmapSavitzkySmoother::cancel() {
   canceled.store(true);
@@ -103,16 +118,23 @@ bool CostmapSavitzkySmoother::cancel() {
 
 ResultT<void> CostmapSavitzkySmoother::smoothPath(
     ayanami::nav_msgs::Path& path, double max_duration) {
-  // Collision checking needs the map (family read contract: smoother reads
-  // the LOCAL map): shared lock held for the whole smoothing call (<10 ms),
-  // zero copy.
-  std::optional<ayanami::costmap::CostmapView> costmap;
   if (!map_context) {
     return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE,
         "CostmapSavitzkySmoother has no costmap module");
   }
-  costmap = map_context->lockLocal();
+  // Collision checking needs the map (family read contract: smoother reads the
+  // LOCAL map). The read callback owns the shared lock for exactly this
+  // smoothing call (<10 ms), zero copy; the writer is never held off longer.
+  return map_context->readLocal(
+      [&](const ayanami::costmap::CostmapReader& costmap) -> ResultT<void> {
+        return smoothPathWithMap(path, max_duration, costmap);
+      });
+}
+
+ResultT<void> CostmapSavitzkySmoother::smoothPathWithMap(
+    ayanami::nav_msgs::Path& path, double max_duration,
+    const ayanami::costmap::CostmapReader& costmap) {
   const ayanami::nav_msgs::Path original = path;
   canceled.store(false);
 
@@ -156,12 +178,11 @@ ResultT<void> CostmapSavitzkySmoother::smoothPath(
   // local grid frame may differ (map vs odom): the grid<-path transform is
   // resolved ONCE per call and applied to the query points; the returned
   // path keeps its original frame untouched.
-  const costmap_2d::Costmap2D* cm = costmap ? costmap->grid() : nullptr;
+  const costmap_2d::Costmap2D* cm = costmap.grid();
   if (cm) {
-    const std::string grid_frame =
-        costmap ? costmap->frame() : std::string{};
+    const std::string grid_frame = costmap.frame();
     const std::string path_frame = path.header.frame_id.empty()
-                                       ? (map_context ? map_context->getGlobalFrame()
+                                       ? (map_context ? map_context->globalFrame()
                                                       : std::string{})
                                        : path.header.frame_id;
     Eigen::Isometry3d grid_from_path = Eigen::Isometry3d::Identity();
@@ -188,9 +209,20 @@ ResultT<void> CostmapSavitzkySmoother::smoothPath(
         continue;
       }
       if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+        // Graceful degradation, NOT a failure: restoring the original path
+        // leaves the caller following the path the planner already produced
+        // and validated. Reporting a failure here would send a pure
+        // smoothing artifact into the recovery ladder (spin/wait/back-up)
+        // instead of simply walking the raw path.
+        //
+        // This check only sees the LOCAL map (family read contract: smoother
+        // reads local), so it cannot judge the global layer. The tree-level
+        // `IsPathValid path="{smoothed_path}"` covers the global+local
+        // overlay for whatever this call returns.
         path = original;
         auto result = ResultT<void>::success();
-        result.message = "collision detected; rolled back to original path";
+        result.message =
+            "local-map collision detected; rolled back to original path";
         return result;
       }
     }

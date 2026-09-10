@@ -21,7 +21,12 @@ class SimpleProgressChecker final : public ayanami::abstract::AbstractProgressCh
  public:
   SimpleProgressChecker() = default;
 
-  void configure(const ayanami::PluginContext& context) override;
+  /// @brief Parameter-loading seam (ExtensionModule): called by the loader
+  /// right after a successful load, and by configure() for callers that build
+  /// the object directly.
+  void configureParameters(const ayanami::ModuleContext& context) override;
+
+  void configure(const ayanami::ModuleContext& context) override;
 
   void reset() override;
 

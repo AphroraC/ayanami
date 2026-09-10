@@ -1,6 +1,3 @@
-<!-- Test asset tree: isomorphic to the production embedded default tree (navigation_behavior_tree.hpp);
-     the RoundRobin variant is deprecated, and its node semantics are covered separately by the
-     RoundRobinResetTest in pipeline_sequence_scenarios_test. -->
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
     <RecoveryNode name="NavigateRecovery" number_of_retries="6" budget_reset_token="{goal_revision}">
@@ -8,7 +5,7 @@
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-              <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
+               <ComputePathToPose goal="{goal}" path="{raw_path}"/>
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
@@ -16,11 +13,14 @@
             </Sequence>
           </RecoveryNode>
         </RateController>
-        <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
-          <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+        <RateController hz="{smoother_frequency}" reset_token="{raw_path_revision}">
+          <Sequence>
+            <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+            <IsPathValid path="{smoothed_path}"/>
+          </Sequence>
         </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">
-          <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
+           <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
           <Sequence>
             <Recovery recovery="{clear_costmap_id}"/>
           </Sequence>
@@ -28,7 +28,7 @@
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
+         <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
           <Sequence>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
@@ -38,7 +38,7 @@
           <Sequence>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
-        </RecoverySequence>
+         </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

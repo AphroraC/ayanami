@@ -66,12 +66,13 @@ add_subdirectory(packages/costmap_server)
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/config.cpp
   src/utility/logging.cpp
+  src/utility/bootstrap.cpp
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
   src/interfaces/transform_store.cpp
   src/abstract/components/execution_base.cpp
-  src/abstract/components/plugin_manager.cpp
+  src/abstract/components/module_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/robot_state_controller.cpp
   src/costmap/components/costmap_navigation_server.cpp
@@ -223,11 +224,11 @@ if(BUILD_TESTING)
     target_link_libraries(callback_slot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME CallbackSlotTest COMMAND callback_slot_test)
 
-    # load_module / ExtensionModule test plugins (.so loaded via dlopen)
-    add_library(dummy_planner_module SHARED tests/plugins/dummy_planner_module.cpp)
+    # loadModule / ExtensionModule test plugins (.so loaded via dlopen)
+    add_library(dummy_planner_module SHARED tests/modules/dummy_planner_module.cpp)
     target_link_libraries(dummy_planner_module PRIVATE ayanami)
     set_target_properties(dummy_planner_module PROPERTIES PREFIX "lib")
-    add_library(dummy_extension_module SHARED tests/plugins/dummy_extension_module.cpp)
+    add_library(dummy_extension_module SHARED tests/modules/dummy_extension_module.cpp)
     target_link_libraries(dummy_extension_module PRIVATE ayanami)
     set_target_properties(dummy_extension_module PROPERTIES PREFIX "lib")
 
@@ -246,7 +247,7 @@ if(BUILD_TESTING)
     # RobotStateController cross-DSO singleton: instance() is defined in a libayanami .cpp,
     # so dlopen'ed plugins (linked against libayanami) and the main binary resolve to the same instance and share state.
     add_library(robot_state_dso_extension SHARED
-      tests/plugins/robot_state_dso_extension.cpp)
+      tests/modules/robot_state_dso_extension.cpp)
     target_link_libraries(robot_state_dso_extension PRIVATE ayanami)
     set_target_properties(robot_state_dso_extension PROPERTIES PREFIX "lib")
 
@@ -264,7 +265,7 @@ if(BUILD_TESTING)
       $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
 
     # NavigationCallbacks cross-.so echo test plugin (added to the slot after dlopen, linked against libayanami)
-    add_library(echo_extension SHARED tests/plugins/echo_extension.cpp)
+    add_library(echo_extension SHARED tests/modules/echo_extension.cpp)
     target_link_libraries(echo_extension PRIVATE ayanami)
     set_target_properties(echo_extension PROPERTIES PREFIX "lib")
 
@@ -285,59 +286,65 @@ if(BUILD_TESTING)
     target_link_libraries(action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME ActionTest COMMAND action_test)
 
-    add_executable(plugin_manager_test tests/plugin_manager_test.cpp)
-    target_link_libraries(plugin_manager_test PRIVATE ayanami GTest::gtest)
-    add_test(NAME PluginManagerTest COMMAND plugin_manager_test
-      $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>)
+    add_executable(module_manager_test tests/module_manager_test.cpp)
+    target_link_libraries(module_manager_test PRIVATE ayanami GTest::gtest)
+    add_test(NAME ModuleManagerTest COMMAND module_manager_test
+      $<TARGET_FILE:dummy_planner_module> $<TARGET_FILE:dummy_extension_module>
+      $<TARGET_FILE:test_stale_api_planner_module>)
 
     # Task 0: BLOCK #2 derived destructors callable through a base pointer (UB from missing virtual ~ in abstract base)
-    add_executable(plugin_teardown_no_ub_test tests/plugin_teardown_no_ub_test.cpp)
-    target_link_libraries(plugin_teardown_no_ub_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
-    add_test(NAME PluginTeardownNoUB COMMAND plugin_teardown_no_ub_test)
+    add_executable(module_teardown_no_ub_test tests/module_teardown_no_ub_test.cpp)
+    target_link_libraries(module_teardown_no_ub_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME ModuleTeardownNoUB COMMAND module_teardown_no_ub_test)
 
     # Task 11: NavigationServerBase (the 4 plugin-family factories live in test plugin .so files; each .so has a single
-    # public create_extension_module factory; typing is done by PluginManager dynamic_cast).
-    add_library(test_planner_plugin SHARED tests/plugins/test_planner_plugin.cpp)
-    target_link_libraries(test_planner_plugin PRIVATE ayanami)
-    set_target_properties(test_planner_plugin PROPERTIES PREFIX "lib")
-    add_library(test_failing_planner_plugin SHARED tests/plugins/test_failing_planner_plugin.cpp)
-    target_link_libraries(test_failing_planner_plugin PRIVATE ayanami)
-    set_target_properties(test_failing_planner_plugin PROPERTIES PREFIX "lib")
-    add_library(test_smoother_plugin SHARED tests/plugins/test_smoother_plugin.cpp)
-    target_link_libraries(test_smoother_plugin PRIVATE ayanami)
-    set_target_properties(test_smoother_plugin PROPERTIES PREFIX "lib")
-    add_library(test_controller_plugin SHARED tests/plugins/test_controller_plugin.cpp)
-    target_link_libraries(test_controller_plugin PRIVATE ayanami)
-    set_target_properties(test_controller_plugin PROPERTIES PREFIX "lib")
-    add_library(test_looping_controller_plugin SHARED tests/plugins/test_looping_controller_plugin.cpp)
-    target_link_libraries(test_looping_controller_plugin PRIVATE ayanami)
-    set_target_properties(test_looping_controller_plugin PROPERTIES PREFIX "lib")
-    add_library(test_recovery_plugin SHARED tests/plugins/test_recovery_plugin.cpp)
-    target_link_libraries(test_recovery_plugin PRIVATE ayanami)
-    set_target_properties(test_recovery_plugin PROPERTIES PREFIX "lib")
+    # public create_extension_module factory; typing is done by ModuleManager dynamic_cast).
+    add_library(test_planner_module SHARED tests/modules/test_planner_module.cpp)
+    target_link_libraries(test_planner_module PRIVATE ayanami)
+    set_target_properties(test_planner_module PROPERTIES PREFIX "lib")
+    add_library(test_failing_planner_module SHARED tests/modules/test_failing_planner_module.cpp)
+    target_link_libraries(test_failing_planner_module PRIVATE ayanami)
+    set_target_properties(test_failing_planner_module PROPERTIES PREFIX "lib")
+    # Interface-version guard: a genuine AbstractPlanner reporting a stale version.
+    add_library(test_stale_api_planner_module SHARED
+      tests/modules/test_stale_api_planner_module.cpp)
+    target_link_libraries(test_stale_api_planner_module PRIVATE ayanami)
+    set_target_properties(test_stale_api_planner_module PROPERTIES PREFIX "lib")
+    add_library(test_smoother_module SHARED tests/modules/test_smoother_module.cpp)
+    target_link_libraries(test_smoother_module PRIVATE ayanami)
+    set_target_properties(test_smoother_module PROPERTIES PREFIX "lib")
+    add_library(test_controller_module SHARED tests/modules/test_controller_module.cpp)
+    target_link_libraries(test_controller_module PRIVATE ayanami)
+    set_target_properties(test_controller_module PROPERTIES PREFIX "lib")
+    add_library(test_looping_controller_module SHARED tests/modules/test_looping_controller_module.cpp)
+    target_link_libraries(test_looping_controller_module PRIVATE ayanami)
+    set_target_properties(test_looping_controller_module PROPERTIES PREFIX "lib")
+    add_library(test_recovery_module SHARED tests/modules/test_recovery_module.cpp)
+    target_link_libraries(test_recovery_module PRIVATE ayanami)
+    set_target_properties(test_recovery_module PROPERTIES PREFIX "lib")
     # Exception injection: a recovery whose start() throws (regression closing the exception path).
-    add_library(test_throwing_recovery_plugin SHARED
-      tests/plugins/test_throwing_recovery_plugin.cpp)
-    target_link_libraries(test_throwing_recovery_plugin PRIVATE ayanami)
-    set_target_properties(test_throwing_recovery_plugin PROPERTIES PREFIX "lib")
+    add_library(test_throwing_recovery_module SHARED
+      tests/modules/test_throwing_recovery_module.cpp)
+    target_link_libraries(test_throwing_recovery_module PRIVATE ayanami)
+    set_target_properties(test_throwing_recovery_module PROPERTIES PREFIX "lib")
 
     add_executable(recovery_exception_test tests/recovery_exception_test.cpp)
     target_link_libraries(recovery_exception_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(recovery_exception_test PRIVATE
-      AYANAMI_TEST_THROWING_RECOVERY_SO="$<TARGET_FILE:test_throwing_recovery_plugin>"
-      AYANAMI_TEST_PLANNER_SO="$<TARGET_FILE:test_planner_plugin>")
+      AYANAMI_TEST_THROWING_RECOVERY_SO="$<TARGET_FILE:test_throwing_recovery_module>"
+      AYANAMI_TEST_PLANNER_SO="$<TARGET_FILE:test_planner_module>")
     add_test(NAME RecoveryException COMMAND recovery_exception_test)
     set_tests_properties(RecoveryException PROPERTIES TIMEOUT 30)
 
     add_executable(navigation_server_test tests/navigation_server_test.cpp)
     target_link_libraries(navigation_server_test PRIVATE ayanami GTest::gtest)
     add_test(NAME NavigationServerTest COMMAND navigation_server_test
-      $<TARGET_FILE:test_planner_plugin>
-      $<TARGET_FILE:test_failing_planner_plugin>
-      $<TARGET_FILE:test_smoother_plugin>
-      $<TARGET_FILE:test_controller_plugin>
-      $<TARGET_FILE:test_recovery_plugin>)
+      $<TARGET_FILE:test_planner_module>
+      $<TARGET_FILE:test_failing_planner_module>
+      $<TARGET_FILE:test_smoother_module>
+      $<TARGET_FILE:test_controller_module>
+      $<TARGET_FILE:test_recovery_module>)
 
     # Task 12: BT control nodes + condition nodes + blackboard protocol
     add_executable(behavior_tree_control_test tests/behavior_tree_control_test.cpp)
@@ -348,7 +355,7 @@ if(BUILD_TESTING)
     add_executable(behavior_tree_action_test tests/behavior_tree_action_test.cpp)
     target_link_libraries(behavior_tree_action_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(behavior_tree_action_test PRIVATE
-      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/tests/assets/navigation.xml"
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml"
       AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME BehaviorTreeActionTest COMMAND behavior_tree_action_test)
 
@@ -357,7 +364,7 @@ if(BUILD_TESTING)
       add_executable(pilot_test tests/pilot_test.cpp)
       target_link_libraries(pilot_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
       target_compile_definitions(pilot_test PRIVATE
-        AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/tests/assets/navigation.xml"
+        AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml"
         AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
       add_test(NAME PilotTest COMMAND pilot_test)
     endif()
@@ -442,15 +449,15 @@ if(BUILD_TESTING)
     add_test(NAME MinorCarryWiring COMMAND minor_carry_wirings_test)
 
     # Task 20: costmap/components (CostmapNavigationServer virtual map injection).
-    # Each test plugin .so has a single public create_extension_module factory.
-    foreach(plugin test_costmap_planner test_costmap_smoother
+    # Each test module .so has a single public create_extension_module factory.
+    foreach(test_module test_costmap_planner test_costmap_smoother
                  test_costmap_controller test_costmap_recovery
                  test_plain_planner test_plain_smoother
                  test_plain_controller test_plain_recovery)
-      add_library(${plugin}_plugin SHARED tests/plugins/${plugin}_plugin.cpp)
-      target_link_libraries(${plugin}_plugin PRIVATE
+      add_library(${test_module}_module SHARED tests/modules/${test_module}_module.cpp)
+      target_link_libraries(${test_module}_module PRIVATE
         ayanami costmap_server::costmap_server)
-      set_target_properties(${plugin}_plugin PROPERTIES PREFIX "lib")
+      set_target_properties(${test_module}_module PROPERTIES PREFIX "lib")
     endforeach()
 
     add_executable(costmap_navigation_server_test
@@ -460,14 +467,14 @@ if(BUILD_TESTING)
     target_compile_definitions(costmap_navigation_server_test PRIVATE
       AYANAMI_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
-      $<TARGET_FILE:test_costmap_planner_plugin>
-      $<TARGET_FILE:test_costmap_smoother_plugin>
-      $<TARGET_FILE:test_costmap_controller_plugin>
-      $<TARGET_FILE:test_costmap_recovery_plugin>
-      $<TARGET_FILE:test_plain_planner_plugin>
-      $<TARGET_FILE:test_plain_smoother_plugin>
-      $<TARGET_FILE:test_plain_controller_plugin>
-      $<TARGET_FILE:test_plain_recovery_plugin>)
+      $<TARGET_FILE:test_costmap_planner_module>
+      $<TARGET_FILE:test_costmap_smoother_module>
+      $<TARGET_FILE:test_costmap_controller_module>
+      $<TARGET_FILE:test_costmap_recovery_module>
+      $<TARGET_FILE:test_plain_planner_module>
+      $<TARGET_FILE:test_plain_smoother_module>
+      $<TARGET_FILE:test_plain_controller_module>
+      $<TARGET_FILE:test_plain_recovery_module>)
 
     # modules/costmap_dwb_controller (DWB, ported from nav2_dwb_controller)
     add_executable(costmap_dwb_controller_test
@@ -523,7 +530,7 @@ if(BUILD_TESTING)
 
     # Task 25: modules/costmap_navigation (AbstractNavigation host + BT preemption zero velocity)
     add_library(navigation_test_controller SHARED
-      tests/plugins/navigation_test_controller.cpp)
+      tests/modules/navigation_test_controller.cpp)
     target_link_libraries(navigation_test_controller PRIVATE
       ayanami costmap_server::costmap_server)
     set_target_properties(navigation_test_controller PROPERTIES PREFIX "lib")
@@ -565,7 +572,7 @@ if(BUILD_TESTING)
     endif()
 
     # Task 26 wrap-up: checker unit tests (AbstractGoalChecker/AbstractProgressChecker abstractions
-    # + SimpleGoalChecker/SimpleProgressChecker modules + PluginManager loading +
+    # + SimpleGoalChecker/SimpleProgressChecker modules + ModuleManager loading +
     # NavigationServerBase createActions injecting ControllerExecution).
     add_executable(checker_test tests/checker_test.cpp)
     target_link_libraries(checker_test PRIVATE
@@ -574,10 +581,10 @@ if(BUILD_TESTING)
     add_test(NAME CheckerTest COMMAND checker_test
       $<TARGET_FILE:simple_goal_checker>
       $<TARGET_FILE:simple_progress_checker>
-      $<TARGET_FILE:test_planner_plugin>
-      $<TARGET_FILE:test_smoother_plugin>
-      $<TARGET_FILE:test_looping_controller_plugin>
-      $<TARGET_FILE:test_recovery_plugin>)
+      $<TARGET_FILE:test_planner_module>
+      $<TARGET_FILE:test_smoother_module>
+      $<TARGET_FILE:test_looping_controller_module>
+      $<TARGET_FILE:test_recovery_module>)
 
     # Task 26: full config/*.json set + id<->name consistency check (spec §6.6/§9).
     # Requires dlopen'ing the host module + real algorithm module .so files for reverse-resolution assertions.
@@ -586,7 +593,8 @@ if(BUILD_TESTING)
       ayanami costmap_navigation costmap_server::costmap_server
       GTest::gtest GTest::gtest_main)
     target_compile_definitions(config_consistency_test PRIVATE
-      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
+      AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>"
+      AYANAMI_TEST_CONFIG_SENTRY_DIR="${CMAKE_SOURCE_DIR}/config_sentry")
     add_test(NAME ConfigConsistencyTest COMMAND config_consistency_test
       "${CMAKE_SOURCE_DIR}/config"
       $<TARGET_FILE:costmap_navigation>
@@ -637,6 +645,8 @@ if(BUILD_TESTING)
       tests/extension_module_factory_test.cpp)
     target_link_libraries(extension_module_factory_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(extension_module_factory_test PRIVATE
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
     add_test(NAME ExtensionModuleFactoryTest COMMAND extension_module_factory_test
       $<TARGET_FILE:costmap_navigation>
       $<TARGET_FILE:costmap_dwb_controller>
@@ -657,12 +667,13 @@ if(BUILD_TESTING)
     target_link_libraries(session_state_dispatch_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(session_state_dispatch_test PRIVATE
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml"
       AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME SessionStateDispatchTest COMMAND session_state_dispatch_test
-      $<TARGET_FILE:test_planner_plugin>
-      $<TARGET_FILE:test_smoother_plugin>
-      $<TARGET_FILE:test_controller_plugin>
-      $<TARGET_FILE:test_recovery_plugin>)
+      $<TARGET_FILE:test_planner_module>
+      $<TARGET_FILE:test_smoother_module>
+      $<TARGET_FILE:test_controller_module>
+      $<TARGET_FILE:test_recovery_module>)
 
     # Dedicated tests for PipelineSequence / RecoveryNode / RateController reset key scenarios
     # (nav2 semantics: planner+controller in parallel, replanning does not interrupt tracking, recovery retries).
@@ -676,7 +687,7 @@ if(BUILD_TESTING)
     # re-smooths + controller follows the new path in place (rviz preemption scenario regression, production default tree).
     foreach(role PLANNER SMOOTHER CONTROLLER)
       add_library(goal_update_${role} SHARED
-        tests/plugins/goal_update_follow_plugins.cpp)
+        tests/modules/goal_update_follow_modules.cpp)
       target_link_libraries(goal_update_${role} PRIVATE ayanami)
       target_compile_definitions(goal_update_${role} PRIVATE
         AYANAMI_GOAL_UPDATE_ROLE_${role})
@@ -687,6 +698,7 @@ if(BUILD_TESTING)
     target_link_libraries(goal_update_follow_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
     target_compile_definitions(goal_update_follow_test PRIVATE
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml"
       AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>"
       AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO="$<TARGET_FILE:goal_update_PLANNER>"
       AYANAMI_TEST_GOAL_UPDATE_SMOOTHER_SO="$<TARGET_FILE:goal_update_SMOOTHER>"
@@ -700,6 +712,8 @@ if(BUILD_TESTING)
       tests/production_tree_recovery_test.cpp)
     target_link_libraries(production_tree_recovery_test PRIVATE
       ayanami GTest::gtest GTest::gtest_main)
+    target_compile_definitions(production_tree_recovery_test PRIVATE
+      AYANAMI_TEST_BT_XML="${CMAKE_SOURCE_DIR}/config/BT/navigation.xml")
     add_test(NAME ProductionTreeRecovery COMMAND production_tree_recovery_test)
 
     # local_window_rolling_test: local rolling window follows the robot (regression for the stall bug).

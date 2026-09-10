@@ -1,7 +1,7 @@
 // CostmapNavigationServer main implementation.
 //
 // Lifecycle discipline (/): the base NavigationServerBase destructor first
-// stops -> resets actions -> clearPlugins.
+// stops -> resets actions -> clearModules.
 //
 // Obstacle observation discipline: no global NavigationCallbacks input slot
 // is registered anymore (output/observation layering); the host
@@ -17,6 +17,7 @@
 // recompute within its recompute window, leaving no stale bands.
 
 #include "ayanami/costmap/components/costmap_map_family_factory.hpp"
+#include <ayanami/utility/bootstrap.hpp>
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
 
 #include <costmap_2d_layers/inflation_layer.hpp>
@@ -102,7 +103,7 @@ bool robotDiagDue(std::atomic<std::chrono::steady_clock::time_point>& last) {
 }
 
 // Command port implementation: hands typed write commands to the sole
-// writer (this server) for execution. Recovery plugins only hold the
+// writer (this server) for execution. Recovery modules only hold the
 // CostmapCommandPort interface and never touch the mutable wrapper/layer.
 class CommandPortImpl : public CostmapCommandPort {
  public:
@@ -137,18 +138,18 @@ void CostmapNavigationServer::configureCoreMaps(
                                : std::make_shared<CostmapMapFamilyFactory>();
   // Double configureCoreMaps guard. When a built context already exists,
   // re-entry is ignored: rebuilding would replace costmap_context and leave
-  // the wrapper references of already-injected plugins dangling (after the
-  // old context is replaced by the new object, plugins still point at the
+  // the wrapper references of already-injected modules dangling (after the
+  // old context is replaced by the new object, modules still point at the
   // old wrapper).
   if (costmap_context &&
       (costmap_context->globalCostmap() || costmap_context->localCostmap())) {
     spdlog::warn(
-        "configureCoreMaps called twice, ignoring; existing plugins would be "
+        "configureCoreMaps called twice, ignoring; existing modules would be "
         "orphaned by context replace");
     return;
   }
 
-  GlobalConfig::instance(config_path, /*override_path=*/true);
+  ayanami::bootstrap(config_path);
   // The costmap params were merged into the config_navigation file (the original costmap.json was removed).
   Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
   const Config& cfg = nav_cfg;
@@ -172,22 +173,6 @@ void CostmapNavigationServer::configureCoreMaps(
       nav_cfg.param<std::string>("navigation", "robot_frame", "base_link");
   const double resolution =
       cfg.param<double>("costmap", "resolution", k_default_resolution);
-
-  // Consistency validation against config_ros.json::robot_frame.
-  // Skipped when config_ros was not loaded (GlobalConfig has no config_ros
-  // mapping).
-  const std::string ros_config =
-      GlobalConfig::getConfigPath("config_ros");
-  Config ros_cfg(ros_config);
-  const std::string ros_frame =
-      ros_cfg.param<std::string>("ayanami_ros", "robot_frame", std::string{});
-  if (!ros_frame.empty()) {
-    if (robot_frame != ros_frame) {
-      spdlog::error("robot_frame mismatch: navigation '" + robot_frame +
-                    "' vs ayanami_ros '" + ros_frame + "'");
-    }
-    assert(robot_frame == ros_frame);
-  }
 
   // ---- global: StaticLayer + SimpleObstacleLayer + InflationLayer ----
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
@@ -388,7 +373,7 @@ void CostmapNavigationServer::configureCoreMaps(
   costmap_context->setFootprint(footprint);
   // The map write command port is exposed via the context
   // (AbstractMapContext::commandPort):
-  // family plugins such as recovery fetch it from the map context at
+  // family modules such as recovery fetch it from the map context at
   // configure time instead of side-path injection.
   costmap_context->setCommandPort(command_port);
 
@@ -408,14 +393,14 @@ void CostmapNavigationServer::configureCoreMaps(
   has_last_local_robot = false;
 }
 
-// ---- Virtual initialize*Plugin hooks: costmap family injection ----
+// ---- Virtual initialize*Module hooks: costmap family injection ----
 
-bool CostmapNavigationServer::initializePlannerPlugin(
+bool CostmapNavigationServer::initializePlannerModule(
     const std::string& name, const ayanami::Config& module_config,
     ayanami::abstract::AbstractPlanner::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
-        "CostmapNavigationServer::initializePlannerPlugin('{}'): costmap "
+        "CostmapNavigationServer::initializePlannerModule('{}'): costmap "
         "context not configured (call configureCoreMaps first)",
         name);
     return false;
@@ -423,22 +408,22 @@ bool CostmapNavigationServer::initializePlannerPlugin(
   auto cast = std::dynamic_pointer_cast<CostmapPlanner>(ptr);
   if (!cast) {
     spdlog::error(
-        "CostmapNavigationServer::initializePlannerPlugin('{}'): plugin is "
+        "CostmapNavigationServer::initializePlannerModule('{}'): module is "
         "not a CostmapPlanner (costmap family interface mismatch)",
         name);
     return false;
   }
-  cast->configure(ayanami::PluginContext{name, module_config},
+  cast->configure(ayanami::ModuleContext{name, module_config},
                   costmap_context->getSharedConstPtr());
   return true;
 }
 
-bool CostmapNavigationServer::initializeSmootherPlugin(
+bool CostmapNavigationServer::initializeSmootherModule(
     const std::string& name, const ayanami::Config& module_config,
     ayanami::abstract::AbstractSmoother::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
-        "CostmapNavigationServer::initializeSmootherPlugin('{}'): costmap "
+        "CostmapNavigationServer::initializeSmootherModule('{}'): costmap "
         "context not configured (call configureCoreMaps first)",
         name);
     return false;
@@ -446,48 +431,48 @@ bool CostmapNavigationServer::initializeSmootherPlugin(
   auto cast = std::dynamic_pointer_cast<CostmapSmoother>(ptr);
   if (!cast) {
     spdlog::error(
-        "CostmapNavigationServer::initializeSmootherPlugin('{}'): plugin is "
+        "CostmapNavigationServer::initializeSmootherModule('{}'): module is "
         "not a CostmapSmoother (costmap family interface mismatch)",
         name);
     return false;
   }
-  cast->configure(ayanami::PluginContext{name, module_config},
+  cast->configure(ayanami::ModuleContext{name, module_config},
                   costmap_context->getSharedConstPtr());
   return true;
 }
 
-bool CostmapNavigationServer::initializeControllerPlugin(
+bool CostmapNavigationServer::initializeControllerModule(
     const std::string& name, const ayanami::Config& module_config,
     ayanami::abstract::AbstractController::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
-        "CostmapNavigationServer::initializeControllerPlugin('{}'): costmap "
+        "CostmapNavigationServer::initializeControllerModule('{}'): costmap "
         "context not configured (call configureCoreMaps first)",
         name);
     return false;
   }
   // Strict costmap family constraint: only CostmapController is accepted;
-  // plain AbstractControllers are no longer allowed (costmap_pid now derives
+  // plain AbstractControllers are no longer allowed (costmap_pid_controller now derives
   // from CostmapController).
   auto cast = std::dynamic_pointer_cast<CostmapController>(ptr);
   if (!cast) {
     spdlog::error(
-        "CostmapNavigationServer::initializeControllerPlugin('{}'): plugin is "
+        "CostmapNavigationServer::initializeControllerModule('{}'): module is "
         "not a CostmapController (costmap family interface mismatch)",
         name);
     return false;
   }
-  cast->configure(ayanami::PluginContext{name, module_config},
+  cast->configure(ayanami::ModuleContext{name, module_config},
                   costmap_context->getSharedConstPtr());
   return true;
 }
 
-bool CostmapNavigationServer::initializeRecoveryPlugin(
+bool CostmapNavigationServer::initializeRecoveryModule(
     const std::string& name, const ayanami::Config& module_config,
     ayanami::abstract::AbstractRecovery::Ptr ptr) {
   if (!costmap_context) {
     spdlog::error(
-        "CostmapNavigationServer::initializeRecoveryPlugin('{}'): costmap "
+        "CostmapNavigationServer::initializeRecoveryModule('{}'): costmap "
         "context not configured (call configureCoreMaps first)",
         name);
     return false;
@@ -495,14 +480,14 @@ bool CostmapNavigationServer::initializeRecoveryPlugin(
   auto cast = std::dynamic_pointer_cast<CostmapRecovery>(ptr);
   if (!cast) {
     spdlog::error(
-        "CostmapNavigationServer::initializeRecoveryPlugin('{}'): plugin is "
+        "CostmapNavigationServer::initializeRecoveryModule('{}'): module is "
         "not a CostmapRecovery (costmap family interface mismatch)",
         name);
     return false;
   }
-  cast->configure(ayanami::PluginContext{name, module_config},
+  cast->configure(ayanami::ModuleContext{name, module_config},
                   costmap_context->getSharedConstPtr());
-  // Stash the module config so createActions can inject per-plugin
+  // Stash the module config so createActions can inject per-module
   // execution settings (tick cycle period).
   recovery_configs.erase(name);
   recovery_configs.emplace(name, module_config);
@@ -520,11 +505,11 @@ void CostmapNavigationServer::createActions() {
   controller_actions.clear();
   recovery_actions.clear();
 
-  // planner/smoother/controller: one Costmap*Action per loaded plugin
-  // (Costmap*Execution carrying the ctx; nav2 multi-plugin semantics:
+  // planner/smoother/controller: one Costmap*Action per loaded module
+  // (Costmap*Execution carrying the ctx; nav2 multi-module semantics:
   // requests select by goal id, empty id = default = first configured).
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    auto planner = planner_plugins.getPlugin(name);
+  for (const auto& name : planner_modules.getLoadedNames()) {
+    auto planner = planner_modules.getModule(name);
     if (!planner) {
       continue;
     }
@@ -538,8 +523,8 @@ void CostmapNavigationServer::createActions() {
                   default_planner);
   }
 
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    auto smoother = smoother_plugins.getPlugin(name);
+  for (const auto& name : smoother_modules.getLoadedNames()) {
+    auto smoother = smoother_modules.getModule(name);
     if (!smoother) {
       continue;
     }
@@ -555,8 +540,8 @@ void CostmapNavigationServer::createActions() {
 
   // controller: CostmapControllerExecution + checker/velocity-limit/real
   // pose-source assembly.
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    auto controller = controller_plugins.getPlugin(name);
+  for (const auto& name : controller_modules.getLoadedNames()) {
+    auto controller = controller_modules.getModule(name);
     if (!controller) {
       continue;
     }
@@ -574,9 +559,9 @@ void CostmapNavigationServer::createActions() {
   }
 
   // recovery: CostmapRecoveryExecution + velocity-limit assembly +
-  // per-plugin tick cycle period (recovery.sim_cycle_dt, seconds).
-  for (const auto& name : recovery_plugins.getLoadedNames()) {
-    auto recovery = recovery_plugins.getPlugin(name);
+  // per-module tick cycle period (recovery.sim_cycle_dt, seconds).
+  for (const auto& name : recovery_modules.getLoadedNames()) {
+    auto recovery = recovery_modules.getModule(name);
     if (!recovery) {
       continue;
     }
@@ -669,8 +654,8 @@ void CostmapNavigationServer::markObstaclesInFrame(
   }
   auto& robot_state_controller =
       ayanami::components::RobotStateController::instance();
-  const std::string& global_frame = costmap_context->getGlobalFrame();
-  const std::string& local_frame = costmap_context->getLocalFrame();
+  const std::string& global_frame = costmap_context->globalFrame();
+  const std::string& local_frame = costmap_context->localFrame();
   const bool have_stamp = !stamp.isLatest();
 
   // Per-map stamping: each costmap is stamped in its own frame (global =
@@ -743,7 +728,7 @@ void CostmapNavigationServer::markObstaclesInFrame(
         double robot_yaw = 0.0;
         Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
         if (robot_state_controller.lookupTransform(
-                map_frame, costmap_context->getRobotFrame(),
+                map_frame, costmap_context->robotFrame(),
                 ayanami::Timestamp::latest(), T_robot,
                 k_tf_lookup_timeout_s)) {
           robot_x = T_robot.translation().x();
@@ -758,14 +743,14 @@ void CostmapNavigationServer::markObstaclesInFrame(
             spdlog::debug(
                 "markObstacles: robot pose OK {}<-(robot_frame={}) "
                 "trans=({:.3f},{:.3f})",
-                map_frame, costmap_context->getRobotFrame(), robot_x, robot_y);
+                map_frame, costmap_context->robotFrame(), robot_x, robot_y);
           }
         } else {
           if (robotDiagDue(robot_diag_at)) {
             spdlog::warn(
                 "markObstacles: robot pose FAIL {}<-(robot_frame={}); "
                 "has_last={} (rolling windows keep the last pose)",
-                map_frame, costmap_context->getRobotFrame(), has_last);
+                map_frame, costmap_context->robotFrame(), has_last);
           }
           if (has_last) {
             robot_x = last_x;
@@ -865,10 +850,10 @@ void CostmapNavigationServer::updateRollingWindows() {
       costmap_context->localCostmap()->isRollingWindow() &&
       now - last_local_roll >= local_roll_period) {
     last_local_roll = now;
-    const std::string& local_frame = costmap_context->getLocalFrame();
+    const std::string& local_frame = costmap_context->localFrame();
     Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
     if (robot_state_controller.lookupTransform(
-            local_frame, costmap_context->getRobotFrame(),
+            local_frame, costmap_context->robotFrame(),
             ayanami::Timestamp::latest(), t_robot, k_tf_lookup_timeout_s)) {
       has_last_local_robot = true;
       last_local_robot_x = t_robot.translation().x();
@@ -889,10 +874,10 @@ void CostmapNavigationServer::updateRollingWindows() {
       costmap_context->globalCostmap()->isRollingWindow() &&
       now - last_global_roll >= global_roll_period) {
     last_global_roll = now;
-    const std::string& global_frame = costmap_context->getGlobalFrame();
+    const std::string& global_frame = costmap_context->globalFrame();
     Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
     if (robot_state_controller.lookupTransform(
-            global_frame, costmap_context->getRobotFrame(),
+            global_frame, costmap_context->robotFrame(),
             ayanami::Timestamp::latest(), t_robot, k_tf_lookup_timeout_s)) {
       const double gx = t_robot.translation().x();
       const double gy = t_robot.translation().y();
@@ -918,8 +903,8 @@ bool CostmapNavigationServer::executeClearCommand(
   }
   auto& robot_state_controller =
       ayanami::components::RobotStateController::instance();
-  const std::string& global_frame = costmap_context->getGlobalFrame();
-  const std::string& local_frame = costmap_context->getLocalFrame();
+  const std::string& global_frame = costmap_context->globalFrame();
+  const std::string& local_frame = costmap_context->localFrame();
 
   const bool clear_global =
       command.affected_maps == "global" || command.affected_maps == "both";
@@ -935,12 +920,12 @@ bool CostmapNavigationServer::executeClearCommand(
     }
     Eigen::Isometry3d robot_pose = Eigen::Isometry3d::Identity();
     if (!robot_state_controller.lookupTransform(
-            frame, costmap_context->getRobotFrame(),
+            frame, costmap_context->robotFrame(),
             ayanami::Timestamp::latest(), robot_pose)) {
       return false;
     }
     // Sole writer: clear the dynamic layer + recompute + updateMap. The
-    // mutable layers/master grid are never exposed to recovery plugins.
+    // mutable layers/master grid are never exposed to recovery modules.
     return clearCostmapArea(wrapper, robot_pose, radius);
   };
 

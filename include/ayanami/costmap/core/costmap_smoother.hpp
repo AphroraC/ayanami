@@ -11,16 +11,16 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief Path smoothing plugin base class (costmap family, MBF-style
+ * @brief Path smoothing module base class (costmap family, MBF-style
  * layering).
  *
  * On top of abstract::AbstractSmoother (zero-map pure virtual interface),
  * only the map-family injection point is added:
- * - configure(context, map): injects the plugin logical name + its own
+ * - configure(context, map): injects the module logical name + its own
  *   config + a const pointer to the map module.
  * - smoothPath(...): the abstract pure virtual in-place signature; when
  *   collision checking is needed, the implementation reads the LOCAL map
- *   under a lock internally via map->lockLocal() (zero copy, no copies or
+ *   under a lock internally via map->readLocal() (zero copy, no copies or
  *   snapshots); a path expressed in another frame (production: the global
  *   costmap frame) is transformed into the local frame once per call.
  */
@@ -28,7 +28,7 @@ class CostmapSmoother : public ayanami::abstract::AbstractSmoother {
  public:
   using Ptr = std::shared_ptr<CostmapSmoother>;
 
-  virtual void configure(const PluginContext& context,
+  virtual void configure(const ModuleContext& context,
                          CostmapMapContext::ConstPtr map) = 0;
 };
 

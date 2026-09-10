@@ -14,17 +14,28 @@ namespace ayanami {
 namespace modules {
 
 
-void CostmapWaitRecovery::configure(
-    const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  (void)map;  // wait does not read the map.
+
+void CostmapWaitRecovery::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapWaitRecoveryParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.wait_duration = context.config.param<double>(
       context.name, "wait_duration", param.wait_duration);
-  param.sim_cycle_dt =
-      context.config.param<double>(
-          "recovery", "sim_cycle_dt", param.sim_cycle_dt);
 }
+
+void CostmapWaitRecovery::configure(
+    const ayanami::ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  (void)map;  // wait does not read the map.
+  configureParameters(context);
+}
+
 
 void CostmapWaitRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
@@ -34,9 +45,14 @@ void CostmapWaitRecovery::setBehaviorParams(
   }
 }
 
+void CostmapWaitRecovery::setCyclePeriod(double seconds) {
+  // Framework input, not a config value: the execution owns the tick cadence.
+  cycle_dt = std::max(seconds, 1e-6);
+}
+
 void CostmapWaitRecovery::start() {
   canceled.store(false);
-  const double dt = std::max(param.sim_cycle_dt, 1e-6);
+  const double dt = std::max(cycle_dt, 1e-6);
   remaining_frames = static_cast<int>(std::ceil(
       std::max(param.wait_duration, 0.0) / dt));
 }

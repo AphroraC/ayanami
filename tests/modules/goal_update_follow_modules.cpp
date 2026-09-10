@@ -1,11 +1,11 @@
-// Test plugin family dedicated to goal_update_follow_test.
+// Test module family dedicated to goal_update_follow_test.
 //
 // One source file expanded by AYANAMI_GOAL_UPDATE_ROLE_{PLANNER,SMOOTHER,CONTROLLER} into
 // three roles, each producing one .so (a single common factory create_extension_module per .so).
 //
 // Cross-DSO observation: each of the three .so files embeds its own Probe singleton, exported via extern "C"
 // ayanami_goal_update_probe; the test executable dlopens the same path, dlsyms
-// the pointer, and directly asserts plugin-internal behavior (makePlan goal / smoothed endpoint / setPlan endpoint).
+// the pointer, and directly asserts module-internal behavior (makePlan goal / smoothed endpoint / setPlan endpoint).
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_planner.hpp>
@@ -93,7 +93,7 @@ extern "C" ayanami::ExtensionModule* create_extension_module() {
 #elif defined(AYANAMI_GOAL_UPDATE_ROLE_CONTROLLER)
 
 /// Recording controller: setPlan records the tracked path endpoint (arrival is decided by the execution
-/// goal_checker; the plugin itself never declares arrival).
+/// goal_checker; the module itself never declares arrival).
 class ProbeController : public ayanami::abstract::AbstractController {
  public:
   bool setPlan(const ayanami::nav_msgs::Path& plan) override {

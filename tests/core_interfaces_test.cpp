@@ -128,7 +128,7 @@ TEST(CoreAbstractNavigation, lifecycleAndSetGoal) {
 
 TEST(CoreCostmapMapContext, defaultCurrentTrue) {
   CostmapMapContext ctx;
-  EXPECT_TRUE(ctx.isCurrent());
+  EXPECT_TRUE(ctx.current());
 }
 
 TEST(CoreCostmapMapContext, framesAndRobotPose) {
@@ -137,9 +137,9 @@ TEST(CoreCostmapMapContext, framesAndRobotPose) {
   ayanami::components::RobotStateController::instance().setTransform(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
-  EXPECT_EQ(ctx.getLocalFrame(), "odom");
-  EXPECT_EQ(ctx.getRobotFrame(), "base_link");
+  EXPECT_EQ(ctx.globalFrame(), "map");
+  EXPECT_EQ(ctx.localFrame(), "odom");
+  EXPECT_EQ(ctx.robotFrame(), "base_link");
   // Robot state query single facade: RobotStateController (map context no
   // longer exposes pose queries).
   const auto pose =

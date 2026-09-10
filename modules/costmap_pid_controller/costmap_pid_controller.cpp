@@ -17,6 +17,8 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/utility/config.hpp>
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -96,15 +98,48 @@ double CostmapPidController::PidAxis::compute(double error, double dt) {
 
 CostmapPidController::CostmapPidController() = default;
 
-void CostmapPidController::configure(
-    const PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout);
+void CostmapPidController::setGoalTolerances(
+    const ayanami::PoseTolerance& tolerance) {
+  if (!goal_tolerances) {
+    // Log the effective bound once per run, at the moment the contract first
+    // arrives: a silently tightening clamp is exactly the kind of thing that
+    // makes "why did it stop 5 cm short?" unexplainable from the logs.
+    if (tolerance.position < param.goal_tolerance) {
+      spdlog::info(
+          "CostmapPidController: honoring the goal checker's tighter XY "
+          "tolerance ({:.3f} m) over goal_tolerance ({:.3f} m)",
+          tolerance.position, param.goal_tolerance);
+    }
+    if (tolerance.angle > 1.5707963267948966) {
+      spdlog::warn(
+          "CostmapPidController: goal checker angle tolerance is {:.3f} rad "
+          "(> pi/2); the heading contract is effectively vacuous, so arrival "
+          "will be decided on position alone",
+          tolerance.angle);
+    }
+  }
+  goal_tolerances = tolerance;
+}
+
+double CostmapPidController::goalToleranceXy() const {
+  if (!goal_tolerances) {
+    return param.goal_tolerance;
+  }
+  return std::min(param.goal_tolerance, goal_tolerances->position);
+}
+
+
+void CostmapPidController::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapPidControllerParam member (whose field initializers are the defaults for keys the
+  // config omits).
+  // Parameters are read from the ModuleContext-injected own configuration (the module does not know the global config layout);
   // missing keys keep the default values.
   {
     const Config& file = context.config;
     // Param section convention: the section key = the module json "name"
-    // field, delivered as PluginContext::name.
+    // field, delivered as ModuleContext::name.
     const std::string& section = context.name;
     param.max_vel_x = file.param<double>(section, "max_vel_x",
                                          param.max_vel_x);
@@ -150,8 +185,8 @@ void CostmapPidController::configure(
                                          param.mode);
   }
 
-  // Pure path tracker does not read the map: to satisfy the costmap family contract it only holds the map pointer.
-  map_context = std::move(map);
+  // The PID gains are derived state: applying them here keeps the module fully
+  // usable once its parameters are loaded, without needing a map binding.
 
   pid_x.kp = param.kp_v;
   pid_x.ki = param.ki_v;
@@ -163,6 +198,19 @@ void CostmapPidController::configure(
   pid_w.ki = param.ki_w;
   pid_w.kd = param.kd_w;
 }
+
+void CostmapPidController::configure(
+    const ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
+  // Pure path tracker does not read the map: to satisfy the costmap family contract it only holds the map pointer.
+  map_context = std::move(map);
+}
+
 
 bool CostmapPidController::setPlan(const nav_msgs::Path& plan) {
   if (plan.poses.empty()) {
@@ -204,8 +252,10 @@ ResultT<void> CostmapPidController::computeVelocityCommand(
   const double dt = std::max(param.default_dt, 1e-6);
 
   // Arrival is entirely the execution layer goal_checker's responsibility; the PID itself uses param's
-  // goal_tolerance (its own param) as the XY bound for stopping linear velocity.
-  const double xy_tol = param.goal_tolerance;
+  // goal_tolerance (its own param) as the XY bound for stopping linear velocity. The injected arrival
+  // contract is an upper bound: stopping farther out than the checker's XY tolerance would leave the
+  // robot aligning its heading outside the acceptance region, where isGoalReached never fires.
+  const double xy_tol = goalToleranceXy();
 
   // ---- Position already inside the goal XY tolerance: stop linear velocity, only the angular PID aligns the goal heading ----
   // (the goal_checker in the execution layer finally declares arrival)

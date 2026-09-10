@@ -14,7 +14,7 @@ namespace interfaces {
  *
  * The slot objects' static members are defined exactly once in libayanami's
  * src/interfaces/callbacks.cpp (not inline, key discipline): otherwise each
- * .so would hold its own instance, and callbacks added by plugins and
+ * .so would hold its own instance, and callbacks added by modules and
  * emitted by the core would land on different objects, silently failing.
  *
  * Division of labor: the mainline control flow goes through BT nodes

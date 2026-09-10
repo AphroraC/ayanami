@@ -19,7 +19,7 @@ namespace costmap {
  * - postRun: checkDeactivate() idempotently deactivates the local costmap;
  * - safetyCheck: local wrapper isCurrent(); when not current the base loop
  *   publishes zeroed stop commands (no velocity);
- * - callController: per-cycle typed call into CostmapController; the plugin
+ * - callController: per-cycle typed call into CostmapController; the module
  *   reads the local master grid under a lock internally (shared lock,
  *   released at cycle end).
  */
@@ -61,7 +61,7 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
     if (!typed) {
       return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
-          "CostmapControllerExecution: plugin is not a CostmapController");
+          "CostmapControllerExecution: module is not a CostmapController");
     }
     if (!ctx) {
       return ResultT<void>::failure(

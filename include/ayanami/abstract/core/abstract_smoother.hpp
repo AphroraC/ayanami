@@ -5,6 +5,7 @@
 #include "ayanami/types.hpp"
 #include "ayanami/utility/extension_module.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -12,7 +13,7 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief Path smoother plugin abstraction (MBF-style layering).
+ * @brief Path smoother module abstraction (MBF-style layering).
  *
  * Zero map types: the interface contains no map parameters. In-place
  * semantics: smooth the given path directly; on success the path has been
@@ -21,6 +22,15 @@ namespace abstract {
 class AbstractSmoother : public virtual ExtensionModule {
  public:
   using Ptr = std::shared_ptr<AbstractSmoother>;
+
+  /// @brief Interface version of this family, as compiled into the module.
+  /// Bump on ANY change to this header's virtual surface: the loader compares
+  /// the value a .so reports against the one it was built with and refuses a
+  /// mismatch (two modules agreeing on class names but disagreeing on layout is
+  /// exactly the failure RTTI cannot catch).
+  static constexpr std::uint32_t kApiVersion = 1;
+  std::uint32_t apiVersion() const override { return kApiVersion; }
+
 
   virtual ~AbstractSmoother() = default;
 

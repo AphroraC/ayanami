@@ -10,12 +10,12 @@
 namespace dwb_plugins {
 void XYThetaIterator::initialize(const ayanami::Config& cfg,
                                  KinematicsHandler::Ptr kinematics,
-                                 const std::string& plugin_name) {
+                                 const std::string& module_name) {
   kinematics_handler = kinematics;
 
-  vx_samples = cfg.param<int>(plugin_name, "vx_samples", 20);
-  vy_samples = cfg.param<int>(plugin_name, "vy_samples", 5);
-  vtheta_samples = cfg.param<int>(plugin_name, "vtheta_samples", 20);
+  vx_samples = cfg.param<int>(module_name, "vx_samples", 20);
+  vy_samples = cfg.param<int>(module_name, "vy_samples", 5);
+  vtheta_samples = cfg.param<int>(module_name, "vtheta_samples", 20);
 }
 
 void XYThetaIterator::startNewIteration(

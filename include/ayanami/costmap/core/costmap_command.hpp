@@ -15,7 +15,7 @@ namespace costmap {
  * (CostmapNavigationServer) for execution: the writer resolves the robot
  * pose in each target map's frame, clears the dynamic obstacle layer
  * within clear_radius and recomputes (updateMap -> publish a new epoch).
- * Recovery plugins themselves never touch the mutable wrapper / layer.
+ * Recovery modules themselves never touch the mutable wrapper / layer.
  */
 struct ClearCostmapCommand {
   std::string affected_maps = "both";  ///< "global" | "local" | "both"
@@ -29,7 +29,7 @@ struct ClearCostmapCommand {
  *
  * Derives from map::MapCommandPort and is exposed in a map-family-agnostic
  * form via AbstractMapContext::commandPort(); the implementation (writer
- * side) is provided only by CostmapNavigationServer; plugins just hold this
+ * side) is provided only by CostmapNavigationServer; modules just hold this
  * interface and submit, hence "map mutation only through command port".
  */
 class CostmapCommandPort : public map::MapCommandPort {

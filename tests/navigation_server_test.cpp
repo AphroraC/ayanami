@@ -34,7 +34,7 @@ namespace {
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
-// Read by main from argv (ctest passes the $<TARGET_FILE:...> of each test plugin)
+// Read by main from argv (ctest passes the $<TARGET_FILE:...> of each test module)
 std::string g_planner_so;
 std::string g_fail_planner_so;
 std::string g_smoother_so;
@@ -64,7 +64,7 @@ class ImmediateGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::TwistStamped&) override {
     return true;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -81,25 +81,25 @@ class TestNavServer : public ayanami::components::NavigationServerBase {
 public:
   using NavigationServerBase::NavigationServerBase;
 
-  bool initializePlannerPlugin(
+  bool initializePlannerModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractPlanner::Ptr p) override {
     init_names.push_back("planner:" + name);
     return p != nullptr;
   }
-  bool initializeSmootherPlugin(
+  bool initializeSmootherModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractSmoother::Ptr p) override {
     init_names.push_back("smoother:" + name);
     return p != nullptr;
   }
-  bool initializeControllerPlugin(
+  bool initializeControllerModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractController::Ptr p) override {
     init_names.push_back("controller:" + name);
     return p != nullptr;
   }
-  bool initializeRecoveryPlugin(
+  bool initializeRecoveryModule(
       const std::string& name, const ayanami::Config& /*module_config*/,
       ayanami::abstract::AbstractRecovery::Ptr p) override {
     init_names.push_back("recovery:" + name);
@@ -142,14 +142,18 @@ private:
   std::vector<std::string> factory_names;
 };
 
-// Child plugin json (name/so_name; the factory is uniformly create_extension_module).
-std::string pluginJson(const std::string& module, const std::string& name,
+// Child module json (name/so_name; the factory is uniformly create_extension_module).
+std::string moduleJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
+  // The module's own (empty) parameter section: the loader requires a section
+  // named after the module, so that "this module reads no parameters" is
+  // declared rather than indistinguishable from a name/section mismatch.
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {}\n}\n";
 }
 
-/// Generates a temp config dir; the planner so can be a success or failure plugin (for the requestPath failure contract).
+/// Generates a temp config dir; the planner so can be a success or failure module (for the requestPath failure contract).
 std::filesystem::path makeConfigDir(const std::string& planner_so) {
   auto dir = makeTempDir() / ("cfg" + planner_so);
   std::filesystem::remove_all(dir);
@@ -159,7 +163,7 @@ std::filesystem::path makeConfigDir(const std::string& planner_so) {
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
-  // Plugin file pointers live uniformly in the navigation section; module id = the name in each module json.
+  // Module file pointers live uniformly in the navigation section; module id = the name in each module json.
   writeJson(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
@@ -168,15 +172,15 @@ std::filesystem::path makeConfigDir(const std::string& planner_so) {
              "    \"config_recovery\": [\"recovery.json\"]\n"
              "  }\n}\n");
   writeJson(dir / "planner.json",
-             pluginJson("planner", "test_planner", planner_so));
+             moduleJson("planner", "test_planner", planner_so));
   writeJson(dir / "smoother.json",
-             pluginJson("smoother", "test_smoother", g_smoother_so));
+             moduleJson("smoother", "test_smoother", g_smoother_so));
   writeJson(dir / "controller.json",
-             pluginJson("controller", "test_controller", g_controller_so));
+             moduleJson("controller", "test_controller", g_controller_so));
   writeJson(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             g_recovery_so + "\"\n  }\n}\n");
+             g_recovery_so + "\"\n  },\n  \"test_recovery\": {}\n}\n");
   return dir;
 }
 
@@ -335,7 +339,7 @@ class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::TwistStamped&) override {
     return false;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -353,7 +357,7 @@ class RecoveryTestControllerAction : public ayanami::components::ControllerActio
   }
 };
 
-/// Installs the 4 actions directly (no loadPlugins): mainly to exercise requestRecovery exclusivity +
+/// Installs the 4 actions directly (no loadModules): mainly to exercise requestRecovery exclusivity +
 /// the cancelAll* action maps of the three families.
 class RecoveryExclusiveServer : public ayanami::components::NavigationServerBase {
  public:
@@ -388,10 +392,10 @@ inline bool waitFlag(const std::atomic<bool>& flag, int max_ms = 3000) {
 
 }  // namespace
 
-TEST(NavigationServerBaseTest, loadPluginsSucceedsAndCreatesActions) {
+TEST(NavigationServerBaseTest, loadModulesSucceedsAndCreatesActions) {
   auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   ASSERT_NE(server.plannerAction(), nullptr);
   ASSERT_NE(server.smootherAction(), nullptr);
@@ -399,14 +403,14 @@ TEST(NavigationServerBaseTest, loadPluginsSucceedsAndCreatesActions) {
   ASSERT_NE(server.recoveryAction("test_recovery"), nullptr);
   ASSERT_EQ(server.recoveryAction("missing"), nullptr);
 
-  // The virtual initialize*Plugin chain was invoked (including name pass-through)
+  // The virtual initialize*Module chain was invoked (including name pass-through)
   ASSERT_EQ(server.initNames().size(), 4u);
 }
 
 TEST(NavigationServerBaseTest, requestPathSucceedsAndFillsSessionAndVersion) {
   auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   server.bumpSessionId();  // session=1, plan_version zeroed (new-session semantics)
   server.incrementPlanVersion();  // plan_version=1
@@ -436,7 +440,7 @@ TEST(NavigationServerBaseTest, requestExecutionAndRecoveryAndSmoothingSucceed) {
                            Eigen::Isometry3d::Identity());
   auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   {
     ayanami::actions::ExePathGoal goal;
@@ -468,7 +472,7 @@ TEST(NavigationServerBaseTest, requestExecutionAndRecoveryAndSmoothingSucceed) {
 TEST(NavigationServerBaseTest, plannerResultCallbackDoesNotScheduleRecovery) {
   auto dir = makeConfigDir(g_fail_planner_so);
   TestNavServer server;
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   std::atomic<int> recovery_goal_hits{0};
   int cb = ayanami::interfaces::NavigationCallbacks::on_recovery_goal.add(
@@ -504,7 +508,7 @@ TEST(NavigationServerBaseTest, destructorStopsActionsAndDoesNotCrash) {
   auto dir = makeConfigDir(g_planner_so);
   {
     TestNavServer server;
-    server.loadPlugins(dir.string());
+    server.loadModules(dir.string());
 
     ayanami::actions::GetPathGoal goal;
     goal.start = pose("map", 0.0, 0.0);
@@ -517,7 +521,7 @@ TEST(NavigationServerBaseTest, destructorStopsActionsAndDoesNotCrash) {
     server.start();
     server.stop();
   }
-  // End of scope -> destruction: stop -> reset actions -> clearPlugins, no hang
+  // End of scope -> destruction: stop -> reset actions -> clearModules, no hang
 }
 
 TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption) {
@@ -530,7 +534,7 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
                            Eigen::Isometry3d::Identity());
   recovery_exclusive::RecoveryExclusiveServer server(coord);
 
-  // 1. Start three blocking tasks (they block after entering the plugin).
+  // 1. Start three blocking tasks (they block after entering the module).
   ayanami::actions::GetPathGoal pgoal;
   pgoal.start = pose("map", 0.0, 0.0);
   pgoal.goal = pose("map", 1.0, 1.0);

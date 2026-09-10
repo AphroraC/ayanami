@@ -31,7 +31,7 @@ using ayanami::ResultT;
 using ayanami::RecoveryCycleData;
 using ayanami::RecoveryStatus;
 using ayanami::costmap::CostmapMapContext;
-using ayanami::costmap::CostmapView;
+using ayanami::costmap::CostmapReader;
 
 /// @brief Feed one robot pose edge into the RobotStateController singleton
 /// (the context queries it directly -- the framework-wide TF surface).
@@ -73,7 +73,7 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
 
   virtual ~TestCostmapPlanner() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_context = std::move(map);
@@ -83,7 +83,8 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::PoseStamped&, double, ayanami::nav_msgs::Path& plan_out) override {
     ++plan_calls;
-    got_view = map_context && map_context->lockGlobal().valid();
+    got_view = map_context && map_context->readGlobal(
+                                 [](const CostmapReader& r) { return r.valid(); });
     plan_out = ayanami::nav_msgs::Path{};
     return ResultT<void>::success();
   }
@@ -99,14 +100,15 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
 
   virtual ~TestCostmapSmoother() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_context = std::move(map);
   }
 
   ResultT<void> smoothPath(ayanami::nav_msgs::Path& path, double) override {
-    got_view = map_context && map_context->lockGlobal().valid();
+    got_view = map_context && map_context->readGlobal(
+                                 [](const CostmapReader& r) { return r.valid(); });
     return ResultT<void>::success();
   }
 
@@ -121,7 +123,7 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
 
   virtual ~TestCostmapController() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_context = std::move(map);
@@ -130,7 +132,8 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   ResultT<void> computeVelocityCommand(
       const ayanami::geometry_msgs::PoseStamped&,
       const ayanami::geometry_msgs::TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
-    got_view = map_context && map_context->lockLocal().valid();
+    got_view = map_context && map_context->readLocal(
+                                 [](const CostmapReader& r) { return r.valid(); });
     cmd = ayanami::geometry_msgs::TwistStamped{};
     return ResultT<void>::success();
   }
@@ -147,14 +150,15 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
 
   virtual ~TestCostmapRecovery() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     init_name = context.name;
     map_context = std::move(map);
   }
 
   ResultT<void> tick(RecoveryCycleData& cycle) override {
-    got_view = map_context && map_context->lockGlobal().valid();
+    got_view = map_context && map_context->readGlobal(
+                                 [](const CostmapReader& r) { return r.valid(); });
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;
     cycle = std::move(data);
@@ -171,14 +175,14 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
 
 TEST(CostmapMapContextTest, frameGettersReturnConfiguredFrames) {
   CostmapMapContext ctx;
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
-  EXPECT_EQ(ctx.getLocalFrame(), "odom");
-  EXPECT_EQ(ctx.getRobotFrame(), "base_link");
+  EXPECT_EQ(ctx.globalFrame(), "map");
+  EXPECT_EQ(ctx.localFrame(), "odom");
+  EXPECT_EQ(ctx.robotFrame(), "base_link");
 
   ctx.setFrames("map_a", "odom_a", "base_footprint");
-  EXPECT_EQ(ctx.getGlobalFrame(), "map_a");
-  EXPECT_EQ(ctx.getLocalFrame(), "odom_a");
-  EXPECT_EQ(ctx.getRobotFrame(), "base_footprint");
+  EXPECT_EQ(ctx.globalFrame(), "map_a");
+  EXPECT_EQ(ctx.localFrame(), "odom_a");
+  EXPECT_EQ(ctx.robotFrame(), "base_footprint");
 }
 
 TEST(CostmapMapContextTest, exposesConstSharedMapAndLockedReadAccess) {
@@ -190,7 +194,8 @@ TEST(CostmapMapContextTest, exposesConstSharedMapAndLockedReadAccess) {
   ASSERT_TRUE(read_only);
   EXPECT_EQ(read_only.get(), context.get());
 
-  const auto size = read_only->readGlobal([](const costmap_2d::Costmap2D& grid) {
+  const auto size = read_only->readGlobal([](const CostmapReader& reader) {
+    const costmap_2d::Costmap2D& grid = *reader.grid();
     return std::pair<unsigned int, unsigned int>{grid.getSizeInCellsX(),
                                                   grid.getSizeInCellsY()};
   });
@@ -200,12 +205,12 @@ TEST(CostmapMapContextTest, exposesConstSharedMapAndLockedReadAccess) {
 
 // ---------- isCurrent ----------
 
-TEST(CostmapMapContextTest, isCurrentTrueWithoutWrappers) {
+TEST(CostmapMapContextTest, currentTrueWithoutWrappers) {
   CostmapMapContext ctx;
-  EXPECT_TRUE(ctx.isCurrent());
+  EXPECT_TRUE(ctx.current());
 }
 
-TEST(CostmapMapContextTest, isCurrentForwardsToWrappers) {
+TEST(CostmapMapContextTest, currentForwardsToWrappers) {
   auto global = makeWrapper(makeGrid());
   auto local = makeWrapper(makeGrid());
 
@@ -213,12 +218,12 @@ TEST(CostmapMapContextTest, isCurrentForwardsToWrappers) {
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
 
-  EXPECT_TRUE(ctx.isCurrent());
+  EXPECT_TRUE(ctx.current());
   global->setCurrent(false);
-  EXPECT_FALSE(ctx.isCurrent());
+  EXPECT_FALSE(ctx.current());
   global->setCurrent(true);
   local->setCurrent(false);
-  EXPECT_FALSE(ctx.isCurrent());
+  EXPECT_FALSE(ctx.current());
 }
 
 TEST(CostmapMapContextTest, isCurrentWithNullWrapperIgnoresIt) {
@@ -227,10 +232,10 @@ TEST(CostmapMapContextTest, isCurrentWithNullWrapperIgnoresIt) {
 
   CostmapMapContext ctx;
   ctx.setLocalCostmap(local);
-  EXPECT_FALSE(ctx.isCurrent());
+  EXPECT_FALSE(ctx.current());
 
   ctx.setLocalCostmap(nullptr);
-  EXPECT_TRUE(ctx.isCurrent());
+  EXPECT_TRUE(ctx.current());
 }
 
 // ---------- Lock-read view (zero-copy direct read under a shared lock) ----------
@@ -242,10 +247,19 @@ TEST(CostmapMapContextTest, globalViewExposesGridData) {
   CostmapMapContext ctx;
   ctx.setGlobalCostmap(global);
 
-  const CostmapView view = ctx.lockGlobal();
-  ASSERT_TRUE(view.valid());
-  EXPECT_EQ(view.grid()->getCost(1, 1), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_EQ(view.frame(), "map");
+  bool valid = false;
+  unsigned char cell = 0;
+  std::string frame;
+  ctx.readGlobal([&](const CostmapReader& reader) {
+    valid = reader.valid();
+    if (valid) {
+      cell = reader.grid()->getCost(1, 1);
+      frame = reader.frame();
+    }
+  });
+  ASSERT_TRUE(valid);
+  EXPECT_EQ(cell, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(frame, "map");
 }
 
 TEST(CostmapMapContextTest, writerBlocksWhileReaderHoldsView) {
@@ -259,11 +273,15 @@ TEST(CostmapMapContextTest, writerBlocksWhileReaderHoldsView) {
   std::atomic<bool> writer_done{false};
 
   std::thread reader([&] {
-    const CostmapView view = ctx.lockGlobal();
-    reader_holding.store(true);
-    while (!release_reader.load()) {
-      std::this_thread::yield();
-    }
+    // The read callback is the only way to hold the map lock, so the "reader
+    // holds it while the writer waits" scenario is expressed by staying inside
+    // the callback until the test says otherwise.
+    ctx.readGlobal([&](const CostmapReader&) {
+      reader_holding.store(true);
+      while (!release_reader.load()) {
+        std::this_thread::yield();
+      }
+    });
   });
   while (!reader_holding.load()) {
     std::this_thread::yield();
@@ -283,16 +301,24 @@ TEST(CostmapMapContextTest, writerBlocksWhileReaderHoldsView) {
   writer.join();
   EXPECT_TRUE(writer_done.load());
 
-  const auto cost = ctx.readGlobal([](const costmap_2d::Costmap2D& grid) {
+  const auto cost = ctx.readGlobal([](const CostmapReader& reader) {
+    const costmap_2d::Costmap2D& grid = *reader.grid();
     return grid.getCost(2, 2);
   });
   EXPECT_EQ(cost, costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapMapContextTest, localViewWithoutWrapperIsInvalid) {
+TEST(CostmapMapContextTest, localReaderWithoutWrapperIsInvalid) {
   CostmapMapContext ctx;
-  const CostmapView view = ctx.lockLocal();
-  EXPECT_FALSE(view.valid());
+  // A missing map still runs the callback, with an invalid reader: the caller
+  // decides, rather than the framework silently skipping the read.
+  bool called = false;
+  ctx.readLocal([&](const CostmapReader& reader) {
+    called = true;
+    EXPECT_FALSE(reader.valid());
+    EXPECT_EQ(reader.grid(), nullptr);
+  });
+  EXPECT_TRUE(called);
 }
 
 // ---------- robot state query (single facade = RobotStateController; the map context no longer exposes pose queries) ----------
@@ -323,10 +349,19 @@ TEST(CostmapMapContextTest, viewResolvesRobotPose) {
   ctx.setFrames("pose_map", "pose_odom", "pose_base");
   ctx.setGlobalCostmap(global);
 
-  const CostmapView view = ctx.lockGlobal();
-  ASSERT_TRUE(view.has_robot_pose());
-  EXPECT_DOUBLE_EQ(view.robot_pose().pose.position.x(), 3.0);
-  EXPECT_DOUBLE_EQ(view.robot_pose().pose.position.y(), 4.0);
+  double pose_x = 0.0;
+  double pose_y = 0.0;
+  bool has_pose = false;
+  ctx.readGlobal([&](const CostmapReader& reader) {
+    has_pose = reader.hasRobotPose();
+    if (has_pose) {
+      pose_x = reader.robot_pose().pose.position.x();
+      pose_y = reader.robot_pose().pose.position.y();
+    }
+  });
+  ASSERT_TRUE(has_pose);
+  EXPECT_DOUBLE_EQ(pose_x, 3.0);
+  EXPECT_DOUBLE_EQ(pose_y, 4.0);
 }
 
 TEST(CostmapMapContextTest, viewRobotPoseStampedInOwnFrame) {
@@ -347,19 +382,35 @@ TEST(CostmapMapContextTest, viewRobotPoseStampedInOwnFrame) {
   ctx.setLocalCostmap(makeWrapperFrame("locF"));
   ctx.setGlobalCostmap(makeWrapperFrame("mapF"));
 
-  const CostmapView lview = ctx.lockLocal();
-  ASSERT_TRUE(lview.valid());
-  EXPECT_EQ(lview.frame(), "locF");
-  ASSERT_TRUE(lview.has_robot_pose());
-  EXPECT_EQ(lview.robot_pose().header.frame_id, "locF");
-  EXPECT_DOUBLE_EQ(lview.robot_pose().pose.position.x(), 5.0);
-  EXPECT_DOUBLE_EQ(lview.robot_pose().pose.position.y(), 4.0);
-  const CostmapView gview = ctx.lockGlobal();
-  ASSERT_TRUE(gview.valid());
-  EXPECT_EQ(gview.frame(), "mapF");
-  ASSERT_TRUE(gview.has_robot_pose());
-  EXPECT_EQ(gview.robot_pose().header.frame_id, "mapF");
-  EXPECT_DOUBLE_EQ(gview.robot_pose().pose.position.x(), 3.0);
+  std::string local_frame;
+  std::string local_pose_frame;
+  double local_x = 0.0;
+  double local_y = 0.0;
+  ctx.readLocal([&](const CostmapReader& reader) {
+    ASSERT_TRUE(reader.valid());
+    local_frame = reader.frame();
+    ASSERT_TRUE(reader.hasRobotPose());
+    local_pose_frame = reader.robot_pose().header.frame_id;
+    local_x = reader.robot_pose().pose.position.x();
+    local_y = reader.robot_pose().pose.position.y();
+  });
+  EXPECT_EQ(local_frame, "locF");
+  EXPECT_EQ(local_pose_frame, "locF");
+  EXPECT_DOUBLE_EQ(local_x, 5.0);
+  EXPECT_DOUBLE_EQ(local_y, 4.0);
+  std::string global_frame;
+  std::string global_pose_frame;
+  double global_x = 0.0;
+  ctx.readGlobal([&](const CostmapReader& reader) {
+    ASSERT_TRUE(reader.valid());
+    global_frame = reader.frame();
+    ASSERT_TRUE(reader.hasRobotPose());
+    global_pose_frame = reader.robot_pose().header.frame_id;
+    global_x = reader.robot_pose().pose.position.x();
+  });
+  EXPECT_EQ(global_frame, "mapF");
+  EXPECT_EQ(global_pose_frame, "mapF");
+  EXPECT_DOUBLE_EQ(global_x, 3.0);
 }
 
 TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
@@ -372,7 +423,7 @@ TEST(CostmapCoreTest, costmapPlannerInitializeAndViewMakePlan) {
 
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->configure(ayanami::PluginContext{"test_planner", ayanami::Config("")},
+  cast->configure(ayanami::ModuleContext{"test_planner", ayanami::Config("")},
                   ctx->getSharedConstPtr());
   EXPECT_EQ(planner->init_name, "test_planner");
 
@@ -396,7 +447,7 @@ TEST(CostmapCoreTest, costmapSmootherInitializeAndViewSmoothPath) {
 
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+  cast->configure(ayanami::ModuleContext{"test_smoother", ayanami::Config("")},
                   ctx->getSharedConstPtr());
   EXPECT_EQ(smoother->init_name, "test_smoother");
 
@@ -417,7 +468,7 @@ TEST(CostmapCoreTest, costmapControllerInitializeAndViewCompute) {
 
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setLocalCostmap(makeWrapper(makeGrid()));
-  cast->configure(ayanami::PluginContext{"test_controller", ayanami::Config("")},
+  cast->configure(ayanami::ModuleContext{"test_controller", ayanami::Config("")},
                   ctx->getSharedConstPtr());
   EXPECT_EQ(controller->init_name, "test_controller");
 
@@ -440,7 +491,7 @@ TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
 
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->configure(ayanami::PluginContext{"test_recovery", ayanami::Config("")},
+  cast->configure(ayanami::ModuleContext{"test_recovery", ayanami::Config("")},
                   ctx->getSharedConstPtr());
   EXPECT_EQ(recovery->init_name, "test_recovery");
 
@@ -457,10 +508,10 @@ TEST(CostmapMapContextTest, costmapInterfaceOnly) {
   CostmapMapContext ctx;
   // Family-level surface: frame names / freshness -- no capability enum,
   // no locks, no robot-state queries on the abstract interface.
-  EXPECT_EQ(ctx.getGlobalFrame(), "map");
-  EXPECT_EQ(ctx.getLocalFrame(), "odom");
-  EXPECT_EQ(ctx.getRobotFrame(), "base_link");
-  EXPECT_TRUE(ctx.isCurrent());
+  EXPECT_EQ(ctx.globalFrame(), "map");
+  EXPECT_EQ(ctx.localFrame(), "odom");
+  EXPECT_EQ(ctx.robotFrame(), "base_link");
+  EXPECT_TRUE(ctx.current());
 
   // Isolated frame names avoid interference with the map/base_link TF injected by other cases.
   ctx.setFrames("isolated_map", "isolated_odom", "isolated_base");

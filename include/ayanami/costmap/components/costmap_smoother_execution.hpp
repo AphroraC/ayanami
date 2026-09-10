@@ -17,7 +17,7 @@ namespace costmap {
  * Binds a costmap context on top of SmootherExecution:
  * - preRun/postRun: checkActivate/checkDeactivate (global costmap);
  * - safetyCheck: global wrapper isCurrent();
- * - callSmoother: typed in-place call into CostmapSmoother; the plugin reads the map under a lock internally as needed.
+ * - callSmoother: typed in-place call into CostmapSmoother; the module reads the map under a lock internally as needed.
  */
 class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
  public:
@@ -55,7 +55,7 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
     if (!typed) {
       return ResultT<void>::failure(
           ErrorCode::INTERNAL_ERROR,
-          "CostmapSmootherExecution: plugin is not a CostmapSmoother");
+          "CostmapSmootherExecution: module is not a CostmapSmoother");
     }
     if (!ctx) {
       return ResultT<void>::failure(

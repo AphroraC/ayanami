@@ -181,7 +181,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<std::string>(k_wait_id, "wait");
   bb->set<std::string>(k_backup_id, "back_up");
   bb->set<uint64_t>(k_session_id, 0u);
-  bb->set<uint64_t>(k_plan_version, 0u);
+  bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
 }
@@ -216,11 +216,11 @@ constexpr const char* k_exhaustion_tree_xml = R"(
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RoundRobin name="RecoveryActions">
+        <RecoverySequence name="RecoveryActions">
           <Sequence><Recovery recovery="{spin_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{wait_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{backup_id}"/>  <AlwaysFailure/></Sequence>
-        </RoundRobin>
+        </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

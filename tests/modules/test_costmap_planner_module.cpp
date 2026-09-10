@@ -1,4 +1,4 @@
-// Test plugin: costmap-family planner (SoCostmapPlanner), common factory export.
+// Test module: costmap-family planner (SoCostmapPlanner), common factory export.
 
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -12,7 +12,7 @@ using ayanami::nav_msgs::Path;
 using ayanami::ResultT;
 class SoCostmapPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void configure(const ayanami::PluginContext& /*context*/,
+  void configure(const ayanami::ModuleContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   ResultT<void> makePlan(const PoseStamped& /*start*/, const PoseStamped& /*goal*/,
                           double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {

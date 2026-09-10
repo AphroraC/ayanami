@@ -13,16 +13,16 @@ namespace ayanami {
  * Repeated openSo of the same so_name is deduplicated via the module registry with an incremented reference count, returning the same handle.
  *
  * @return opaque handle, or nullptr on failure (spdlog::error logged).
- * @note Handles are NEVER dlclose'd -- the plugin lifetime equals the process
+ * @note Handles are NEVER dlclose'd -- the module lifetime equals the process
  * lifetime (; teardown discipline in §4.5). RTLD_NODELETE keeps
  *       the image resident, so even a future dlclose hookup stays safe.
  *
  * @note Unload preparation (the unload logic itself is not implemented yet;
  *       gates = LoadedModule::unloadable() /
- *       ExtensionModule::can_unload()). Preconditions for future silent
+ *       ExtensionModule::canUnload()). Preconditions for future silent
  *       unloading:
  *       1) all actions canceled and joined (NavigationServerBase::stop);
- *       2) all plugin instances destructed (clearPlugins);
+ *       2) all module instances destructed (clearModules);
  *       3) all ExtensionModule shared_ptrs of the module released
  *          (moduleHandleRefs down to zero);
  *       4) dlclose only allowed after the unloadable() gate opens.

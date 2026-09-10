@@ -35,7 +35,7 @@ namespace components {
  * every publish, fixing a historical dirty-memory bug;
  * publishStopCommand() also clears explicitly.
  *
- * Failure semantics (responsibility table): when the plugin returns a
+ * Failure semantics (responsibility table): when the module returns a
  * failure code or an invalid command, the execution layer publishes a
  * zeroed command and keeps looping (the execution itself keeps no retry
  * count); only when patience > 0 and no valid command has appeared for
@@ -128,7 +128,7 @@ public:
   double getControllerFrequency() const { return controller_frequency; }
 
   /// @brief Patience (seconds, nav2 failure_tolerance semantics): the time
-  /// without a valid command (plugin failure/invalid command) or with a
+  /// without a valid command (module failure/invalid command) or with a
   /// failed safety check (stale map) that is tolerated before a terminal
   /// state is reported. 0 = fail on the first bad cycle; negative (default
   /// -1) = tolerate forever, matching the old "disabled" behavior. Retry and
@@ -177,7 +177,7 @@ public:
     feedback_callback = std::move(callback);
   }
 
-  /// @brief Inject the goal-checker plugin (wired by NavigationServerBase createActions).
+  /// @brief Inject the goal-checker module (wired by NavigationServerBase createActions).
   void setGoalChecker(ayanami::abstract::AbstractGoalChecker::Ptr checker) {
     goal_checker = std::move(checker);
   }
@@ -186,7 +186,7 @@ public:
     return goal_checker;
   }
 
-  /// @brief Inject the progress-checker plugin (same as above, consumed at runtime).
+  /// @brief Inject the progress-checker module (same as above, consumed at runtime).
   void setProgressChecker(
       ayanami::abstract::AbstractProgressChecker::Ptr checker) {
     progress_checker = std::move(checker);
@@ -207,7 +207,7 @@ public:
   }
 
   /// @brief Cancel: set cancel_requested -> forward to the controller
-  /// plugin -> publish a zeroed stop command -> notify to wake
+  /// module -> publish a zeroed stop command -> notify to wake
   /// waitForStateUpdate.
   void cancel() override {
     cancel_requested = true;
@@ -217,8 +217,8 @@ public:
   }
 
 protected:
-  /// @brief Plugin call hook: by default calls the abstract signature;
-  /// map-family executions override it per cycle with a typed call (plugins
+  /// @brief Module call hook: by default calls the abstract signature;
+  /// map-family executions override it per cycle with a typed call (modules
   /// never touch map modules).
   virtual ResultT<void> callController(
       const geometry_msgs::PoseStamped& pose,
@@ -255,6 +255,13 @@ protected:
     }
 
     try {
+      // Arrival contract: the goal checker owns it, so push its pose
+      // tolerance into the controller before the cycle loop. Without this the
+      // controller would hold station at its own configure-time distance,
+      // which is unreachable if the checker's tolerance is tighter.
+      if (controller) {
+        controller->setGoalTolerances(goal_checker->getTolerances().pose);
+      }
       while (true) {
         if (cancel_requested) {
           error = ErrorCode::CANCELED;
@@ -379,12 +386,12 @@ protected:
 
         setState(PLANNING, false);
 
-        // Zero-before-publish discipline: the buffer is cleared before the plugin call and overwritten on plugin success.
+        // Zero-before-publish discipline: the buffer is cleared before the module call and overwritten on module success.
         geometry_msgs::TwistStamped cmd_vel = {};
         const ResultT<void> result =
             callController(robot_pose, robot_velocity, cmd_vel);
 
-        // Cancel/stop during the plugin call: do not publish this round's
+        // Cancel/stop during the module call: do not publish this round's
         // command (prevents leaking a stale velocity command at recovery
         // startup); CANCELED/STOPPED is settled uniformly at the top of the
         // next loop round.

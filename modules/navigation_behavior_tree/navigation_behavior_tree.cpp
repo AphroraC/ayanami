@@ -22,39 +22,35 @@ void NavigationBehaviorTreeExtension::registerNodes(
 
 std::vector<std::string> NavigationBehaviorTreeExtension::registerTrees(
     BT::BehaviorTreeFactory& factory) const {
-  // The tree XML is a config asset (navigation.behavior_tree_xml, resolved
-  // relative to the config directory); the embedded copy is the fallback so
-  // the extension alone is still enough to run.
-  std::string xml_file;
-  std::string directory;
-  if (GlobalConfig::instance()) {
-    Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
-    xml_file = nav_cfg.param<std::string>("navigation", "behavior_tree_xml",
-                                          "");
-    directory = GlobalConfig::instance()->param<std::string>(
-        "global", "config_path", ".");
+  // The tree XML is the extension's only source of navigation policy: it is a
+  // config asset (navigation.behavior_tree_xml, resolved relative to the config
+  // directory) and it must exist. The extension used to keep a copy embedded as a
+  // fallback, which made a missing deployment file invisible -- the stack would
+  // come up running a policy that no file on disk described, and the embedded
+  // copy could drift from the shipped one without anything noticing. One source,
+  // and a missing one is a startup error.
+  const Config nav_cfg(GlobalConfig::getConfigPath("config_navigation"));
+  const std::string xml_file =
+      nav_cfg.param<std::string>("navigation", "behavior_tree_xml", "");
+  if (xml_file.empty()) {
+    throw std::runtime_error(
+        "NavigationBehaviorTreeExtension: navigation.behavior_tree_xml is not "
+        "configured; there is no built-in default tree to fall back on");
   }
-  bool loaded = false;
-  if (!xml_file.empty()) {
-    const std::filesystem::path p(xml_file);
-    const std::string xml_path =
-        p.is_absolute()
-            ? xml_file
-            : (std::filesystem::path(directory) / xml_file).string();
-    std::error_code ec;
-    if (std::filesystem::exists(xml_path, ec)) {
-      factory.registerBehaviorTreeFromFile(xml_path);
-      loaded = true;
-    } else {
-      spdlog::warn(
-          "NavigationBehaviorTreeExtension: behavior_tree_xml '{}' not "
-          "found, falling back to the embedded default tree",
-          xml_path);
-    }
+  const std::filesystem::path path(xml_file);
+  const std::string directory = GlobalConfig::instance()->param<std::string>(
+      "global", "config_path", ".");
+  const std::string resolved =
+      path.is_absolute() ? xml_file : (std::filesystem::path(directory) / xml_file).string();
+  std::error_code ec;
+  if (!std::filesystem::exists(resolved, ec)) {
+    throw std::runtime_error(
+        "NavigationBehaviorTreeExtension: behavior_tree_xml '" + resolved +
+        "' does not exist");
   }
-  if (!loaded) {
-    factory.registerBehaviorTreeFromText(k_default_tree_xml);
-  }
+  factory.registerBehaviorTreeFromFile(resolved);
+  spdlog::info("NavigationBehaviorTreeExtension: registered tree(s) from {}",
+               resolved);
   return {k_default_tree_id};
 }
 
@@ -66,9 +62,9 @@ NavigationBehaviorTreeExtension::requiredBlackboardEntries() const {
 
 namespace {
 
-/// @brief Role -> plugin logical name mapping from the ordered
+/// @brief Role -> module logical name mapping from the ordered
 /// config_recovery family: each module json declares recovery.role; the
-/// tree references plugins by role id ("<role>_id"), never by what the
+/// tree references modules by role id ("<role>_id"), never by what the
 /// recovery actually does. Returns the mapping in config order.
 std::map<std::string, std::string> recoveryRoleMapping() {
   std::map<std::string, std::string> role_to_name;
@@ -76,19 +72,9 @@ std::map<std::string, std::string> recoveryRoleMapping() {
     return role_to_name;
   }
   Config cfg(GlobalConfig::getConfigPath("config_navigation"));
-  std::vector<std::string> recovery_files;
-  try {
-    recovery_files =
-        cfg.param<std::vector<std::string>>("navigation", "config_recovery", {});
-  } catch (const std::exception&) {
-  }
-  if (recovery_files.empty()) {
-    const std::string single =
-        cfg.param<std::string>("navigation", "config_recovery", "");
-    if (!single.empty()) {
-      recovery_files.push_back(single);
-    }
-  }
+  // Single string or array of strings: one shared helper.
+  const std::vector<std::string> recovery_files =
+      cfg.paramStringOrList("navigation", "config_recovery");
   const std::string directory =
       GlobalConfig::instance()->param<std::string>(
           "global", "config_path", ".");
@@ -115,7 +101,7 @@ std::map<std::string, std::string> recoveryRoleMapping() {
 
 void NavigationBehaviorTreeExtension::provideBlackboardEntries(
     BT::Blackboard::Ptr blackboard) const {
-  // Role mapping: the tree references plugins by role id ("<role>_id"),
+  // Role mapping: the tree references modules by role id ("<role>_id"),
   // never by what the recovery actually does. Every role key the default
   // tree references is provided (empty string when undeclared) so tree
   // creation never fails on assembly; an undeclared role only surfaces when

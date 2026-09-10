@@ -1,4 +1,4 @@
-// Test plugin: non-costmap-family smoother (PlainSmoother), verifies the costmap host reject path.
+// Test module: non-costmap-family smoother (PlainSmoother), verifies the costmap host reject path.
 
 #include <ayanami/abstract/core/abstract_smoother.hpp>
 #include <ayanami/messages/failure.hpp>

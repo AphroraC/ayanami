@@ -2,7 +2,7 @@
 //
 // Contract (latest_wins / strong preemption): on the same slot (PlannerAction always uses slot 0), first acceptGoal A
 // (blocking, never completes); a second acceptGoal B on the same slot preempts A -> A is preempted immediately, its TaskHandle
-// turns CANCELED (within bounded time), B becomes ACTIVE RUNNING and finally SUCCEEDED. Plugins never
+// turns CANCELED (within bounded time), B becomes ACTIVE RUNNING and finally SUCCEEDED. Modules never
 // run concurrently (max_running==1), and B makePlan enters only after A makePlan has exited
 // (strictly start-after-join, deterministic, no reentrancy). The planning call count is bounded (no spin).
 
@@ -46,7 +46,7 @@ public:
     while (running_now > observed &&
            !max_running.compare_exchange_weak(observed, running_now)) {}
     if (seq == 2) {
-      // Data for the deterministic assertion: when the second makePlan enters, the first must have already exited the plugin.
+      // Data for the deterministic assertion: when the second makePlan enters, the first must have already exited the module.
       exit_before_second_entry.store(exited_calls.load());
     }
     {
@@ -230,12 +230,12 @@ TEST(LatestWins, sameSlotSecondGoalEjectsFirstPromptly) {
   ASSERT_TRUE(readyWithin(second, 2000));
   EXPECT_EQ(second.status(), GoalStatus::SUCCEEDED);
 
-  // Strong serialization (latest_wins / MBF preemption contract): plugins never reenter concurrently.
+  // Strong serialization (latest_wins / MBF preemption contract): modules never reenter concurrently.
   // ActionBase::start strictly cancels+joins the old slot thread first and only starts the new slot thread after the old
-  // execution has fully exited, so same-slot plugin runs are deterministically serial: max_running must be 1.
+  // execution has fully exited, so same-slot module runs are deterministically serial: max_running must be 1.
   EXPECT_EQ(planner->max_running.load(), 1);
   EXPECT_EQ(planner->running.load(), 0);
-  // Deterministic entry order: when the second makePlan (B) enters, the first (A) must have already exited the plugin.
+  // Deterministic entry order: when the second makePlan (B) enters, the first (A) must have already exited the module.
   EXPECT_GE(planner->exit_before_second_entry.load(), 1);
 
   // No spin: the call count is bounded (linear in the number of submissions, far below unbounded retries).
@@ -257,7 +257,7 @@ TEST(LatestWins, setNewGoalPlannerHundredGoalsSingleExecutionLatestWins) {
   tasks.push_back(action.acceptGoal(first));
   ASSERT_TRUE(tasks.front().valid());
 
-  // Wait for the first execution thread to enter the plugin (goals 2..100 afterwards all take the in-place setNewGoal path).
+  // Wait for the first execution thread to enter the module (goals 2..100 afterwards all take the in-place setNewGoal path).
   {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(2000);
@@ -287,10 +287,10 @@ TEST(LatestWins, setNewGoalPlannerHundredGoalsSingleExecutionLatestWins) {
 
   // Only one execution thread (created by the first; no rebuild/cancel/join/new thread).
   EXPECT_EQ(action.executions_created.load(), 1);
-  // The plugin setNewGoal was called 99 times (in-place preemption of goals 2..100).
+  // The module setNewGoal was called 99 times (in-place preemption of goals 2..100).
   EXPECT_EQ(planner->set_goal_calls.load(), kGoals - 1);
 
-  // Plugin max concurrency 1 (driven by a single execution thread, never reentered).
+  // Module max concurrency 1 (driven by a single execution thread, never reentered).
   EXPECT_EQ(planner->max_running.load(), 1);
 
   // Release: the execution thread adopts the latest (goal 100) and succeeds.

@@ -1,4 +1,4 @@
-// Test plugin: costmap-family smoother (SoCostmapSmoother), common factory export.
+// Test module: costmap-family smoother (SoCostmapSmoother), common factory export.
 
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -11,7 +11,7 @@ using ayanami::nav_msgs::Path;
 using ayanami::ResultT;
 class SoCostmapSmoother : public ayanami::costmap::CostmapSmoother {
  public:
-  void configure(const ayanami::PluginContext& /*context*/,
+  void configure(const ayanami::ModuleContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   ResultT<void> smoothPath(Path& path, double /*max_duration*/) override {
     path.header.frame_id = "map";

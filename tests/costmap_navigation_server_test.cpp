@@ -1,10 +1,10 @@
-// CostmapNavigationServer -- virtual initialize*Plugin injection
+// CostmapNavigationServer -- virtual initialize*Module injection
 // costmap_context + new*Execution factories + configureCoreMaps + handleObstacle* map updates.
 //
 // Coverage:
 // - configureCoreMaps builds the global/local CostmapMapContext + StaticLayer/InflationLayer/SimpleObstacleLayer
-// - loadPlugins triggers the virtual initialize*Plugin -> dynamic_pointer_cast<Costmap*> -> configure(ctx, map)
-// - fail case: a non-costmap-family plugin -> initialize*Plugin false + loadPlugins creates no action
+// - loadModules triggers the virtual initialize*Module -> dynamic_pointer_cast<Costmap*> -> configure(ctx, map)
+// - fail case: a non-costmap-family module -> initialize*Module false + loadModules creates no action
 // - new*Execution returns Costmap*Execution (bound to the global/local wrapper)
 // - handleObstaclePointCloud goes through TransformStore into SimpleObstacleLayer + InflationLayer recompute
 // (old obstacles and old inflation bands are cleared with clearArea; no stale leak)
@@ -61,7 +61,7 @@ using ayanami::RecoveryStatus;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 
-// Read by main from argv (ctest passes the $<TARGET_FILE:...> of each test plugin).
+// Read by main from argv (ctest passes the $<TARGET_FILE:...> of each test module).
 std::string g_test_planner_so;
 std::string g_test_smoother_so;
 std::string g_test_controller_so;
@@ -87,14 +87,18 @@ void writeJson(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::string pluginJson(const std::string& module, const std::string& name,
+std::string moduleJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
+  // The module's own (empty) parameter section: the loader requires a section
+  // named after the module, so that "this module reads no parameters" is
+  // declared rather than indistinguishable from a name/section mismatch.
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {}\n}\n";
 }
 
 /// Generates a temp config dir: the config.json global section contains config_costmap; each of the 4 families can
-/// point at either a costmap-family success plugin or a non-costmap plugin (failure path).
+/// point at either a costmap-family success module or a non-costmap module (failure path).
 std::filesystem::path makeConfigDir(
     const std::string& planner_so,
     const std::string& smoother_so,
@@ -104,7 +108,7 @@ std::filesystem::path makeConfigDir(
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
 
-  // The config_* plugin file pointers live uniformly in the navigation section of navigation.json (single source).
+  // The config_* module file pointers live uniformly in the navigation section of navigation.json (single source).
   writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\"\n"
@@ -118,16 +122,17 @@ std::filesystem::path makeConfigDir(
              "  }\n}\n");
 
   writeJson(dir / "planner.json",
-             pluginJson("planner", "test_costmap_planner", planner_so));
+             moduleJson("planner", "test_costmap_planner", planner_so));
   writeJson(dir / "smoother.json",
-             pluginJson("smoother", "test_costmap_smoother", smoother_so));
+             moduleJson("smoother", "test_costmap_smoother", smoother_so));
   writeJson(dir / "controller.json",
-             pluginJson("controller", "test_costmap_controller",
+             moduleJson("controller", "test_costmap_controller",
                          controller_so));
   writeJson(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_costmap_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             recovery_so + "\"\n  }\n}\n");
+             recovery_so +
+             "\"\n  },\n  \"test_costmap_recovery\": {}\n}\n");
 
   // 20x20 all-empty PGM static map (all 255 -> FREE_SPACE). The config deliberately declares 7x9 to
   // verify that a non-rolling global master is always determined by the PGM geometry.
@@ -147,7 +152,7 @@ std::filesystem::path makeConfigDir(
   // 20x20 @ 0.5m -> 10m x 10m. local inflation_radius=1.5 -> 3 cells.
   // Costmap parameters are merged into navigation.json (the old costmap.json was removed).
   // Note: this is the final content of navigation.json (overriding the earlier config_* versions);
-  // it must also carry the plugin file pointers.
+  // it must also carry the module file pointers.
   {
     std::ofstream nav(dir / "navigation.json");
     nav << "{\n  \"navigation\": {\n"
@@ -187,7 +192,7 @@ std::filesystem::path makeConfigDir(
 /// Finds the SimpleObstacleLayer inside the local wrapper LayeredCostmap (for test observation).
 costmap_2d_layers::SimpleObstacleLayer* findObstacleLayer(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
-  for (const auto& layer : wrapper->get().getPlugins()) {
+  for (const auto& layer : wrapper->get().getModules()) {
     if (auto* obs =
             dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(layer.get())) {
       return obs;
@@ -204,7 +209,7 @@ class TestCostmapPlanner : public ayanami::costmap::CostmapPlanner {
 
   virtual ~TestCostmapPlanner() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
@@ -234,7 +239,7 @@ class TestCostmapSmoother : public ayanami::costmap::CostmapSmoother {
   std::string init_name;
   virtual ~TestCostmapSmoother() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
@@ -248,7 +253,7 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
   std::string init_name;
   virtual ~TestCostmapController() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
@@ -266,7 +271,7 @@ class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
   std::string init_name;
   virtual ~TestCostmapRecovery() override = default;
 
-  void configure(const ayanami::PluginContext& context,
+  void configure(const ayanami::ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr) override {
     init_name = context.name;
   }
@@ -344,17 +349,17 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   ASSERT_NE(server.costmapContext(), nullptr);
   ASSERT_NE(server.globalCostmap(), nullptr);
   ASSERT_NE(server.localCostmap(), nullptr);
-  EXPECT_EQ(server.costmapContext()->getGlobalFrame(), "map");
-  EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
+  EXPECT_EQ(server.costmapContext()->globalFrame(), "map");
+  EXPECT_EQ(server.costmapContext()->robotFrame(), "base_link");
   // Frame single-source consistency: global wrapper in the global frame,
   // local wrapper in the local frame; RSC configured with the same names.
   {
-    EXPECT_EQ(server.globalCostmap()->getGlobalFrame(), "map");
-    EXPECT_EQ(server.localCostmap()->getGlobalFrame(),
-              server.costmapContext()->getLocalFrame());
+    EXPECT_EQ(server.globalCostmap()->globalFrame(), "map");
+    EXPECT_EQ(server.localCostmap()->globalFrame(),
+              server.costmapContext()->localFrame());
     auto& rsc = ayanami::components::RobotStateController::instance();
-    EXPECT_EQ(rsc.getGlobalFrame(), server.costmapContext()->getGlobalFrame());
-    EXPECT_EQ(rsc.getRobotFrame(), server.costmapContext()->getRobotFrame());
+    EXPECT_EQ(rsc.globalFrame(), server.costmapContext()->globalFrame());
+    EXPECT_EQ(rsc.robotFrame(), server.costmapContext()->robotFrame());
   }
   EXPECT_DOUBLE_EQ(server.globalCostmap()->get().getCostmap()->getOriginX(),
                    -5.0);
@@ -363,13 +368,13 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   EXPECT_EQ(server.globalCostmap()->get().getCostmap()->getSizeInCellsX(), 20u);
   EXPECT_EQ(server.globalCostmap()->get().getCostmap()->getSizeInCellsY(), 20u);
   // map_context is injected (AbstractMapContext layer); the pose resolves through RobotStateController.
-  EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_link");
+  EXPECT_EQ(server.costmapContext()->robotFrame(), "base_link");
 
   // global: StaticLayer + SimpleObstacleLayer + InflationLayer
   bool has_static = false;
   bool has_global_obstacle = false;
   bool has_global_inflation = false;
-  for (const auto& layer : server.globalCostmap()->get().getPlugins()) {
+  for (const auto& layer : server.globalCostmap()->get().getModules()) {
     if (dynamic_cast<costmap_2d_layers::StaticLayer*>(layer.get())) {
       has_static = true;
     }
@@ -387,7 +392,7 @@ TEST(CostmapNavigationServerTest, configureCoreMapsBuildsContextAndLayers) {
   // local: SimpleObstacleLayer + InflationLayer
   bool has_obstacle = false;
   bool has_local_inflation = false;
-  for (const auto& layer : server.localCostmap()->get().getPlugins()) {
+  for (const auto& layer : server.localCostmap()->get().getModules()) {
     if (dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(layer.get())) {
       has_obstacle = true;
     }
@@ -466,104 +471,104 @@ TEST(CostmapNavigationServerTest, robotRadiusBuildsCircularFootprint) {
               0.12 * std::cos(M_PI / 16.0), 1e-6);
 }
 
-// ---------------- Virtual initialize*Plugin ----------------
+// ---------------- Virtual initialize*Module ----------------
 
-TEST(CostmapNavigationServerTest, initializePlannerPluginInjectsContext) {
+TEST(CostmapNavigationServerTest, initializePlannerModuleInjectsContext) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto planner = std::make_shared<TestCostmapPlanner>();
   ayanami::abstract::AbstractPlanner::Ptr base = planner;
-  EXPECT_TRUE(server.initializePlannerPlugin("my_planner", ayanami::Config(""), base));
+  EXPECT_TRUE(server.initializePlannerModule("my_planner", ayanami::Config(""), base));
 
   EXPECT_EQ(planner->init_name, "my_planner");
 }
 
-TEST(CostmapNavigationServerTest, initializePlannerPluginRejectsNonCostmapPlanner) {
+TEST(CostmapNavigationServerTest, initializePlannerModuleRejectsNonCostmapPlanner) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractPlanner>();
-  EXPECT_FALSE(server.initializePlannerPlugin("plain", ayanami::Config(""), plain));
+  EXPECT_FALSE(server.initializePlannerModule("plain", ayanami::Config(""), plain));
 }
 
-TEST(CostmapNavigationServerTest, initializeSmootherPluginInjectsContext) {
+TEST(CostmapNavigationServerTest, initializeSmootherModuleInjectsContext) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto smoother = std::make_shared<TestCostmapSmoother>();
   ayanami::abstract::AbstractSmoother::Ptr base = smoother;
-  EXPECT_TRUE(server.initializeSmootherPlugin("my_smoother", ayanami::Config(""), base));
+  EXPECT_TRUE(server.initializeSmootherModule("my_smoother", ayanami::Config(""), base));
   EXPECT_EQ(smoother->init_name, "my_smoother");
 }
 
-TEST(CostmapNavigationServerTest, initializeSmootherPluginRejectsNonCostmapSmoother) {
+TEST(CostmapNavigationServerTest, initializeSmootherModuleRejectsNonCostmapSmoother) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractSmoother>();
-  EXPECT_FALSE(server.initializeSmootherPlugin("plain", ayanami::Config(""), plain));
+  EXPECT_FALSE(server.initializeSmootherModule("plain", ayanami::Config(""), plain));
 }
 
-TEST(CostmapNavigationServerTest, initializeControllerPluginInjectsContext) {
+TEST(CostmapNavigationServerTest, initializeControllerModuleInjectsContext) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto controller = std::make_shared<TestCostmapController>();
   ayanami::abstract::AbstractController::Ptr base = controller;
-  EXPECT_TRUE(server.initializeControllerPlugin("my_controller", ayanami::Config(""), base));
+  EXPECT_TRUE(server.initializeControllerModule("my_controller", ayanami::Config(""), base));
   EXPECT_EQ(controller->init_name, "my_controller");
 }
 
-TEST(CostmapNavigationServerTest, initializeControllerPluginRejectsNonCostmapController) {
+TEST(CostmapNavigationServerTest, initializeControllerModuleRejectsNonCostmapController) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   // A plain AbstractController is no longer admitted (the fallback was removed).
   auto plain = std::make_shared<PlainAbstractController>();
-  EXPECT_FALSE(server.initializeControllerPlugin("plain", ayanami::Config(""), plain));
+  EXPECT_FALSE(server.initializeControllerModule("plain", ayanami::Config(""), plain));
 }
 
-TEST(CostmapNavigationServerTest, initializeRecoveryPluginInjectsContext) {
+TEST(CostmapNavigationServerTest, initializeRecoveryModuleInjectsContext) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto recovery = std::make_shared<TestCostmapRecovery>();
   ayanami::abstract::AbstractRecovery::Ptr base = recovery;
-  EXPECT_TRUE(server.initializeRecoveryPlugin("my_recovery", ayanami::Config(""), base));
+  EXPECT_TRUE(server.initializeRecoveryModule("my_recovery", ayanami::Config(""), base));
   EXPECT_EQ(recovery->init_name, "my_recovery");
 }
 
-TEST(CostmapNavigationServerTest, initializeRecoveryPluginRejectsNonCostmapRecovery) {
+TEST(CostmapNavigationServerTest, initializeRecoveryModuleRejectsNonCostmapRecovery) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
 
   auto plain = std::make_shared<PlainAbstractRecovery>();
-  EXPECT_FALSE(server.initializeRecoveryPlugin("plain", ayanami::Config(""), plain));
+  EXPECT_FALSE(server.initializeRecoveryModule("plain", ayanami::Config(""), plain));
 }
 
-TEST(CostmapNavigationServerTest, initializePlannerPluginFailsWithoutConfiguredMaps) {
+TEST(CostmapNavigationServerTest, initializePlannerModuleFailsWithoutConfiguredMaps) {
   CostmapNavigationServer server;  // configureCoreMaps not called (minor 1)
   auto planner = std::make_shared<TestCostmapPlanner>();
-  EXPECT_FALSE(server.initializePlannerPlugin("p", ayanami::Config(""), planner));
-  EXPECT_FALSE(server.initializeSmootherPlugin("s", ayanami::Config(""), nullptr));
+  EXPECT_FALSE(server.initializePlannerModule("p", ayanami::Config(""), planner));
+  EXPECT_FALSE(server.initializeSmootherModule("s", ayanami::Config(""), nullptr));
 }
 
-// ---------------- loadPlugins end to end ----------------
+// ---------------- loadModules end to end ----------------
 
-TEST(CostmapNavigationServerTest, loadPluginsLoadsCostmapPluginsAndCreatesActions) {
+TEST(CostmapNavigationServerTest, loadModulesLoadsCostmapModulesAndCreatesActions) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   ASSERT_NE(server.plannerAction(), nullptr);
   ASSERT_NE(server.smootherAction(), nullptr);
@@ -572,31 +577,82 @@ TEST(CostmapNavigationServerTest, loadPluginsLoadsCostmapPluginsAndCreatesAction
   ASSERT_EQ(server.recoveryAction("missing"), nullptr);
 }
 
-TEST(CostmapNavigationServerTest, loadPluginsWithNonCostmapPlannerFails) {
-  auto dir = makeConfigDir(g_plain_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
+// A module the config explicitly names must load: a stack that silently comes
+// up without its configured planner only fails later, as an unexplained
+// INVALID_INPUT when a goal arrives. The rejection is therefore fatal at
+// startup AND the message must name the module and the reason.
+TEST(CostmapNavigationServerTest, loadModulesRejectedByFamilyHookIsFatal) {
+  auto dir = makeConfigDir(g_plain_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  server.loadPlugins(dir.string());
 
-  // planner dynamic_pointer_cast fails -> not registered -> plannerAction not created
+  try {
+    server.loadModules(dir.string());
+    FAIL() << "a configured planner that is not a CostmapPlanner must abort loading";
+  } catch (const std::runtime_error& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("planner"), std::string::npos) << what;
+    // The module loaded as an AbstractPlanner, so the manager's own type check
+    // passed; the refusal comes from the costmap family's init hook (the
+    // family-level cast lives there, next to the map it injects), and the
+    // manager reports it as such.
+    EXPECT_NE(what.find("rejected by the family init hook"), std::string::npos)
+        << what;
+    EXPECT_NE(what.find("test_costmap_planner"), std::string::npos) << what;
+  }
+  // Nothing was registered for the family that failed.
   EXPECT_EQ(server.plannerAction(), nullptr);
-  // The other families load normally
-  ASSERT_NE(server.controllerAction(), nullptr);
-  ASSERT_NE(server.smootherAction(), nullptr);
 }
 
-TEST(CostmapNavigationServerTest, loadPluginsRejectsAllPlainAbstractPlugins) {
-  // All four plain abstract families rejected -> none of the four actions is created.
+TEST(CostmapNavigationServerTest, loadModulesRejectsAllPlainAbstractModules) {
+  // All four families are plain abstract modules -> the first one (planner)
+  // already aborts loading; none of the four actions exists afterwards.
   auto dir = makeConfigDir(g_plain_planner_so, g_plain_smoother_so,
                              g_plain_controller_so, g_plain_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  server.loadPlugins(dir.string());
+  EXPECT_THROW(server.loadModules(dir.string()), std::runtime_error);
 
   EXPECT_EQ(server.plannerAction(), nullptr);
   EXPECT_EQ(server.smootherAction(), nullptr);
   EXPECT_EQ(server.controllerAction(), nullptr);
   EXPECT_EQ(server.recoveryAction("test_costmap_recovery"), nullptr);
+}
+
+// An unopenable .so is the clearest deployment error: the config names a module
+// that is not installed. It must be reported as such (not as a type mismatch).
+TEST(CostmapNavigationServerTest, loadModulesWithMissingSoIsFatalAndNamed) {
+  auto dir = makeConfigDir("libayanami_nonexistent_module.so", g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+
+  try {
+    server.loadModules(dir.string());
+    FAIL() << "a configured planner whose .so is absent must abort loading";
+  } catch (const std::runtime_error& e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("dlopen/factory failed"), std::string::npos) << what;
+  }
+  EXPECT_EQ(server.plannerAction(), nullptr);
+}
+
+// The shipped configuration must actually load all families through the real
+// path. This is not a tautology: no other test puts config/ through loadModules
+// (the other tests build temp configs), so a shipped module json naming a .so
+// that is not deployed, a module whose interface version drifted, or a parameter
+// key that no longer exists would otherwise only surface on the robot.
+TEST(CostmapNavigationServerTest, shippedConfigLoadsAllFamilies) {
+  CostmapNavigationServer server;
+  server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
+  ASSERT_NO_THROW(server.loadModules(AYANAMI_TEST_CONFIG_DIR))
+      << "the shipped config must load: see the critical log for the reason";
+
+  EXPECT_NE(server.plannerAction(), nullptr);
+  EXPECT_NE(server.smootherAction(), nullptr);
+  EXPECT_NE(server.controllerAction(), nullptr);
+  EXPECT_FALSE(server.recoveryActionNames().empty());
 }
 
 // ---------------- createActions production path = Costmap*Action ----------------
@@ -636,7 +692,7 @@ TEST(CostmapNavigationServerTest, createActionsBuildsCostmapActions) {
                            g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   ASSERT_NE(server.plannerAction(), nullptr);
   ASSERT_NE(server.smootherAction(), nullptr);
@@ -663,7 +719,7 @@ TEST(CostmapNavigationServerTest, costmapActionCreatesCostmapExecutions) {
                            g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   auto planner = std::make_shared<TestCostmapPlanner>();
   auto smoother = std::make_shared<TestCostmapSmoother>();
@@ -745,7 +801,7 @@ TEST(CostmapNavigationServerTest, smacPlanAvoidsObservedGlobalObstacle) {
   server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
 
 auto planner = std::make_shared<ayanami::modules::CostmapSmacPlanner>();
-  planner->configure(ayanami::PluginContext{"smac", ayanami::Config("")},
+  planner->configure(ayanami::ModuleContext{"smac", ayanami::Config("")},
                      server.costmapContext()->getSharedConstPtr());
   auto start = ayanami::geometry_msgs::PoseStamped::fromIsometry(
       "map", Eigen::Isometry3d::Identity());
@@ -913,7 +969,7 @@ TEST(CostmapNavigationServerTest, destructorStopsActionsAndDoesNotCrash) {
   {
     CostmapNavigationServer server;
     server.configureCoreMaps(dir.string());
-    server.loadPlugins(dir.string());
+    server.loadModules(dir.string());
 
     ayanami::actions::GetPathGoal goal;
     goal.start = ayanami::geometry_msgs::PoseStamped::fromIsometry(
@@ -930,7 +986,7 @@ TEST(CostmapNavigationServerTest, destructorStopsActionsAndDoesNotCrash) {
     server.start();
     server.stop();
   }
-  // End of scope -> destruction: base-class stop/reset/clearPlugins,
+  // End of scope -> destruction: base-class stop/reset/clearModules,
   // no hang.
 }
 

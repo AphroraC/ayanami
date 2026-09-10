@@ -1,7 +1,7 @@
 // recovery_exception_test: exception-path closure regression (high-priority defect #1).
 //
 // Locks the behavioral contracts for three exception scenarios:
-// 1. a recovery plugin whose start throws -> the task settles as ABORTED/INTERNAL_ERROR within bounded time
+// 1. a recovery module whose start throws -> the task settles as ABORTED/INTERNAL_ERROR within bounded time
 // (the driving task no longer hangs) and recovery_exclusive is released (later planner requests
 // no longer get RESOURCE_BUSY);
 // 2. an exception escaping ExecutionBase::run -> the runTask backstop sets the k_aborted terminal state;
@@ -11,7 +11,7 @@
 
 #include <ayanami/abstract/components/action_base.hpp>
 #include <ayanami/abstract/components/execution_base.hpp>
-#include <ayanami/abstract/components/plugin_manager.hpp>
+#include <ayanami/abstract/components/module_manager.hpp>
 #include <ayanami/abstract/components/recovery_action.hpp>
 #include <ayanami/abstract/components/recovery_execution.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
@@ -135,11 +135,14 @@ namespace {
 
 class RecoveryExceptionServer : public ayanami::components::NavigationServerBase {
  public:
-  void loadPlugins(const std::string& recovery_so,
+  void loadModules(const std::string& recovery_so,
                    const std::string& planner_so) {
     default_planner = "success_planner";
-    planner_plugins.loadPlugin({default_planner, planner_so}, {});
-    recovery_plugins.loadPlugin({"throwing_recovery", recovery_so}, {});
+    // No config file: these test modules read no parameters.
+    const ayanami::ModuleContext no_config{"test", ayanami::Config("")};
+    planner_modules.loadModule({default_planner, planner_so}, no_config, {});
+    recovery_modules.loadModule({"throwing_recovery", recovery_so}, no_config,
+                                {});
     createActions();
   }
 };
@@ -148,7 +151,7 @@ class RecoveryExceptionServer : public ayanami::components::NavigationServerBase
 
 TEST(RecoveryExceptionTest, failedRecoveryReleasesExclusiveResourceProtocol) {
   RecoveryExceptionServer server;
-  server.loadPlugins(AYANAMI_TEST_THROWING_RECOVERY_SO, AYANAMI_TEST_PLANNER_SO);
+  server.loadModules(AYANAMI_TEST_THROWING_RECOVERY_SO, AYANAMI_TEST_PLANNER_SO);
   server.start();
 
   RecoveryGoal goal;

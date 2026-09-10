@@ -25,11 +25,11 @@ public:
 
   /**
    * @brief Initialize parameters as needed
-   * @param cfg Config to read parameters from (json section: plugin_name)
-   * @param plugin_name The parameter namespace of this plugin
+   * @param cfg Config to read parameters from (json section: module_name)
+   * @param module_name The parameter namespace of this module
    */
   virtual void initialize(const ayanami::Config& cfg,
-                          const std::string& plugin_name) = 0;
+                          const std::string& module_name) = 0;
   virtual void reset() {}
   /**
    * @brief Start a new iteration based on the current velocity

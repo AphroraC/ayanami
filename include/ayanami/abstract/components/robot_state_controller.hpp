@@ -8,6 +8,7 @@
 #include <Eigen/Geometry>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 
 namespace ayanami {
@@ -81,9 +82,9 @@ class RobotStateController {
   /// @brief Clear the cached velocity (for tests, to simulate a timeout).
   void resetVelocity();
 
-  std::string getGlobalFrame() const;
-  std::string getLocalFrame() const;
-  std::string getRobotFrame() const;
+  std::string globalFrame() const;
+  std::string localFrame() const;
+  std::string robotFrame() const;
   double getVelocityTimeout() const;
 
  private:
@@ -97,7 +98,9 @@ class RobotStateController {
   /// @brief Call with the lock held: latest velocity (zero velocity when stale).
   geometry_msgs::TwistStamped velocityLocked() const;
 
-  mutable std::mutex mutex;
+  /// @brief Read-mostly guard: readers take shared_lock, writers
+  /// exclusive_lock (see the class Thread safety note).
+  mutable std::shared_mutex mutex;
   std::string global_frame{"map"};
   std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};

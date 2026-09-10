@@ -6,7 +6,7 @@ namespace interfaces {
 // Slot object definitions -- exactly one copy inside libayanami (key
 // discipline).
 // inline static is not used: otherwise each .so would hold its own instance,
-// and callbacks added by plugins and emitted by the core would land on
+// and callbacks added by modules and emitted by the core would land on
 // different objects, silently failing across .so boundaries.
 
 CallbackSlot<void(const ayanami::actions::GetPathGoal&)> NavigationCallbacks::on_get_path_goal;

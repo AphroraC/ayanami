@@ -158,27 +158,33 @@ TEST(BehaviorTreeControlTest, recoverySequenceAdvancesOnFailureAndStopsOnSuccess
   EXPECT_EQ(mocks[1]->tick_count, 1);
 }
 
-TEST(BehaviorTreeControlTest, recoverySequenceRestartsFromFirstAfterSuccess) {
-  // Sequential recovery semantics: one recovery succeeding -> overall SUCCESS (the outer RecoveryNode returns to the
-  // main task); the next entry into the recovery branch restarts from the first recovery (recovery rounds after escaping).
+TEST(BehaviorTreeControlTest, recoverySequenceRotatesAcrossSuccesses) {
+  // Rotating recovery semantics (nav2 RoundRobin): the cursor keeps
+  // advancing across successes, so consecutive recovery rounds rotate
+  // through the means instead of repeating the first one.
   auto factory = makeFactory();
   factory.registerNodeType<RecoverySequence>("RecoverySequence");
   auto tree = factory.createTreeFromText(R"(
 <root BTCPP_format="4"><BehaviorTree ID="main">
-  <RecoverySequence><MockChild name="first"/><MockChild name="second"/></RecoverySequence>
+  <RecoverySequence><MockChild name="first"/><MockChild name="second"/><MockChild name="third"/></RecoverySequence>
 </BehaviorTree></root>)", BT::Blackboard::create());
   auto mocks = collectMocks(tree);
-  ASSERT_EQ(mocks.size(), 2u);
+  ASSERT_EQ(mocks.size(), 3u);
 
-  // Round 1: first fails, second succeeds -> overall SUCCESS.
+  // Round 1: first fails, second succeeds -> cursor advances PAST second.
   mocks[0]->status_fn = [] { return BT::NodeStatus::FAILURE; };
   mocks[1]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
+  mocks[2]->status_fn = [] { return BT::NodeStatus::SUCCESS; };
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(mocks[0]->tick_count, 1);
+  EXPECT_EQ(mocks[1]->tick_count, 1);
+  EXPECT_EQ(mocks[2]->tick_count, 0);
 
-  // Round 2 (stuck again after escaping): restarts from first.
+  // Round 2: enters at THIRD (rotated), not at first.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
-  EXPECT_EQ(mocks[0]->tick_count, 2);
-  EXPECT_EQ(mocks[1]->tick_count, 2);
+  EXPECT_EQ(mocks[0]->tick_count, 1);
+  EXPECT_EQ(mocks[1]->tick_count, 1);
+  EXPECT_EQ(mocks[2]->tick_count, 1);
 }
 
 TEST(BehaviorTreeControlTest, recoverySequenceExhaustsToFailure) {

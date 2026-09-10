@@ -28,7 +28,7 @@ TEST(LoadModuleTest, missingReturnsNull) {
 }
 
 TEST(ExtensionModuleTest, loadViaCreateExtensionModule) {
-  auto ext = ayanami::ExtensionModule::load_module(g_dummy_extension_so);
+  auto ext = ayanami::ExtensionModule::loadModule(g_dummy_extension_so);
   ASSERT_NE(ext, nullptr);
 }
 

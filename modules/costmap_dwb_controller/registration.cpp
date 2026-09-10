@@ -67,7 +67,7 @@ void registerAllCritics() {
     return std::make_shared<dwb_critics::TwirlingCritic>();
   };
   // MapGridCritic is an abstract base class (validCellToQueue could be instantiated but is not exported, matching nav2's
-  // default_critics.xml: 10 exported plugins).
+  // default_critics.xml: 10 exported modules).
 }
 
 void registerAllTrajectoryGenerators() {

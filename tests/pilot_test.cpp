@@ -55,6 +55,41 @@ static bool waitUntilCondition(const std::function<bool()>& predicate,
 
 namespace {
 
+/// @brief Declare the four recovery roles the production tree references.
+///
+/// The tree names recoveries by ROLE (spin/wait/backup/clear_costmap), and the BT
+/// extension maps each role to a module through config_recovery. A role nobody
+/// declares resolves to an empty id, which the pilot now refuses to build a tree
+/// with: a recovery that cannot resolve is a configuration error, not something
+/// to discover while the robot is stuck.
+/// @return the JSON array literal for the navigation section's config_recovery.
+std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
+                                   const std::string& module_name,
+                                   const std::string& so_name = "") {
+  const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
+  std::string list;
+  for (const char* role : roles) {
+    const std::string file = std::string("role_") + role + ".json";
+    {
+      std::ofstream ofs(dir / file);
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name
+          << "\", \"role\": \"" << role << "\"";
+      if (!so_name.empty()) {
+        ofs << ", \"so_name\": \"" << so_name << "\"";
+      }
+      // The module's own (empty) parameter section: the loader requires a
+      // section named after the module, so "reads no parameters" is declared
+      // rather than looking like a name/section mismatch.
+      ofs << " }, \"" << module_name << "\": {} }";
+    }
+    if (!list.empty()) {
+      list += ", ";
+    }
+    list += "\"" + file + "\"";
+  }
+  return "[" + list + "]";
+}
+
 PoseStamped makePose(double x, double y = 0.0) {
   PoseStamped p;
   p.header.frame_id = "map";
@@ -249,11 +284,7 @@ std::filesystem::path makeConfigDir() {
         "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
 
 
-        "recovery_id": "test_recovery",
-        "clear_costmap_id": "clear_costmap",
-        "spin_id": "spin",
-        "wait_id": "wait",
-        "backup_id": "backup",
+        "config_recovery": )" + writeRecoveryRoleFiles(dir, "test_recovery") + R"(,
         "planner_frequency": 100.0,
         "smoother_frequency": -1.0,
         "controller_frequency": 20.0,
@@ -261,6 +292,11 @@ std::filesystem::path makeConfigDir() {
       }
     })";
   }
+  // The tree XML is a required config asset (no embedded fallback): copy the
+  // shipped one in, so the fixture tests the same tree the robot runs.
+  std::filesystem::create_directories(dir / "BT");
+  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
+                             std::filesystem::copy_options::overwrite_existing);
   return dir;
 }
 
@@ -306,6 +342,25 @@ bool waitForActiveGoal(const Server& server, int timeout_ms = 1000) {
   return false;
 }
 
+
+/// @brief Wait until the pilot's tick thread has consumed the goal and produced
+/// this attempt's blackboard. The assertion is on the blackboard rather than on
+/// attemptActive(): with synchronous module mocks the whole tree can reach a
+/// terminal status within a tick, and a finished attempt keeps its blackboard as
+/// the record while the live instance is already gone.
+bool waitUntilPilotAttempt(const ayanami::behavior_tree::BehaviorTreePilot* pilot,
+                           int timeout_ms = 2000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (pilot->blackboard() != nullptr) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
 }  // namespace
 
 TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
@@ -329,6 +384,9 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
 
+  // One instance per attempt: the tick thread creates the tree and its
+  // blackboard when it consumes the goal, so wait for that before inspecting.
+  ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
   const auto bb = pilot.blackboard();
   ASSERT_NE(bb, nullptr);
 
@@ -350,6 +408,93 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
   EXPECT_GE(vel_count.load(), 1);
 }  // vel_cb destructor unsubscribes automatically
 
+// The central claim of one-instance-per-attempt: nothing carries over. A second
+// navigation attempt builds a fresh tree on a fresh blackboard, which is what
+// makes RateController single-shot caches, RecoveryNode retry budgets and the
+// RecoverySequence cursor unable to leak -- the failure mode the deleted
+// resident-tree reset protocol existed to prevent.
+// A tree that references a recovery role nobody declares must be refused while
+// the tree is being built, not when the recovery branch finally runs -- the old
+// behaviour left the id empty and only failed once the robot was already stuck.
+// The refusal is reported as this attempt's navigation result and observed here
+// through the session callback.
+TEST(BehaviorTreePilotTest, undeclaredRecoveryRoleRefusesToBuildTheTree) {
+  const auto dir = makeConfigDir();
+  {
+    // Same config, minus the recovery role declarations: every Recovery node in
+    // the tree now resolves to an empty id.
+    std::ofstream ofs(dir / "costmap_navigation.json");
+    ofs << R"({ "navigation": {
+      "behavior_tree_extension": ")" AYANAMI_TEST_BT_EXT_SO R"(",
+      "behavior_tree_xml": "BT/navigation.xml",
+      "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
+      "planner_frequency": 100.0, "smoother_frequency": -1.0,
+      "controller_frequency": 20.0, "tick_frequency": 100.0 } })";
+  }
+  auto server = std::make_shared<MockNavServer>();
+  BehaviorTreePilot pilot;
+  pilot.configure(dir.string());
+  pilot.loadFromFile("", "");
+  pilot.setNavigationRuntime(server);
+
+  std::atomic<int> results{0};
+  ayanami::actions::NavigationResult last;
+  ayanami::CallbackSubscription cb =
+      ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
+          [&](const ayanami::actions::NavigationResult& r) {
+            last = r;
+            results.fetch_add(1);
+          });
+
+  pilot.beginNavigation(makePose(1.0, 2.0));
+  PilotRunner runner(&pilot);
+  for (int i = 0; i < 500 && results.load() == 0; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(results.load(), 1) << "the refused attempt must be reported";
+  EXPECT_EQ(last.status, ayanami::actions::GoalStatus::ABORTED);
+  EXPECT_EQ(pilot.blackboard(), nullptr)
+      << "a refused attempt must not leave a usable attempt behind";
+}
+
+TEST(BehaviorTreePilotTest, secondAttemptGetsAFreshBlackboard) {
+  const auto dir = makeConfigDir();
+  auto server = std::make_shared<MockNavServer>();
+  server->path_result = makePath(2);
+  server->smooth_result = makePath(2);
+
+  BehaviorTreePilot pilot;
+  pilot.configure(dir.string());
+  pilot.loadFromFile("", "");
+  pilot.setNavigationRuntime(server);
+
+  // One runner for both attempts: stop() is a process-lifetime kill switch.
+  PilotRunner runner(&pilot);
+  pilot.beginNavigation(makePose(1.0, 2.0));
+  ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
+  const auto first_bb = pilot.blackboard();
+  ASSERT_NE(first_bb, nullptr);
+
+  // Let the first attempt reach a terminal status: a goal arriving while the
+  // tree is still running is a REVISION (same instance), which is a different
+  // path from "a new attempt".
+  for (int i = 0; i < 1000 && pilot.attemptActive(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_FALSE(pilot.attemptActive())
+      << "first attempt did not finish; the rest of this test would be a revision test";
+
+  pilot.beginNavigation(makePose(3.0, 4.0));
+  for (int i = 0; i < 1000 && pilot.blackboard() == first_bb; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_NE(pilot.blackboard(), first_bb)
+      << "a new navigation attempt must start from a fresh blackboard";
+  // The finished attempt's record is still readable (the blackboard is kept, the
+  // tree is not).
+  ASSERT_NE(pilot.blackboard(), nullptr);
+}
+
 TEST(BehaviorTreePilotTest, newGoalRevisesTaskWithoutStoppingController) {
   const auto dir = makeConfigDir();
   auto server = std::make_shared<MockNavServer>();
@@ -365,6 +510,9 @@ TEST(BehaviorTreePilotTest, newGoalRevisesTaskWithoutStoppingController) {
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
 
+  // One instance per attempt: the tick thread creates the tree and its
+  // blackboard when it consumes the goal, so wait for that before inspecting.
+  ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
   const auto bb = pilot.blackboard();
   ASSERT_NE(bb, nullptr);
 

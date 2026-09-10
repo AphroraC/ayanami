@@ -34,10 +34,10 @@ inline void writeFailureContext(const BT::TreeNode& node,
   // blackboard (debugging required gdb); log one line here (failures are
   // low-frequency events, warn level does not flood; message is diagnostic
   // only, decisions still look only at code).
-  spdlog::warn("[bt] stage={} failure: code={} msg='{}' plugin='{}' "
+  spdlog::warn("[bt] stage={} failure: code={} msg='{}' module='{}' "
                "session={} pv={}",
                static_cast<int>(context.stage), static_cast<int>(context.code),
-               context.message, context.plugin_id, context.session_id,
+               context.message, context.module_id, context.session_id,
                context.plan_version);
 }
 
@@ -54,36 +54,6 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
   }
 }
 
-/// @brief Stable content signature of a path (FNV-1a over the pose bits).
-/// Used by SmoothPath to skip re-smoothing an identical input: the merged
-/// monotonic plan_version is bumped by BOTH planning and smoothing, so the
-/// counter alone cannot serve as the "new raw path" trigger.
-inline uint64_t pathSignature(const nav_msgs::Path& path) {
-  uint64_t hash = 1469598103934665603ull;  // FNV-1a 64-bit offset basis
-  constexpr uint64_t k_prime = 1099511628211ull;
-  auto mix = [&hash](double value) {
-    uint64_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value), "64-bit double expected");
-    std::memcpy(&bits, &value, sizeof(bits));
-    hash ^= bits;
-    hash *= k_prime;
-  };
-  hash ^= path.poses.size();
-  hash *= k_prime;
-  for (const auto& pose : path.poses) {
-    const auto& p = pose.pose.position;
-    const auto& q = pose.pose.orientation;
-    mix(p.x());
-    mix(p.y());
-    mix(p.z());
-    mix(q.w());
-    mix(q.x());
-    mix(q.y());
-    mix(q.z());
-  }
-  return hash;
-}
-
 /**
  * @brief Common async skeleton of the four navigation action nodes
  * (CRTP template-method pattern; collapses the former per-node boilerplate).
@@ -98,7 +68,7 @@ inline uint64_t pathSignature(const nav_msgs::Path& path) {
  * - fail(): writes the structured FailureContext (stage/label from the
  *   derived node) before returning FAILURE.
  *
- * Derived nodes only provide: stage + plugin label, ports -> goal assembly,
+ * Derived nodes only provide: stage + module label, ports -> goal assembly,
  * the request* call, and the success side effects (output ports / version
  * bump). Decisions look only at ErrorCode; message is diagnostic.
  */
@@ -121,14 +91,14 @@ class NavigationActionNode : public BT::StatefulActionNode {
 
   /// @brief FailureStage for the FailureContext (Planner/Smoother/...).
   FailureStage stage() const { return static_cast<const Derived*>(this)->stageImpl(); }
-  /// @brief Plugin label for the FailureContext ("planner"/... or the
+  /// @brief Module label for the FailureContext ("planner"/... or the
   /// dynamic recovery id).
-  std::string pluginLabel() const { return static_cast<const Derived*>(this)->labelImpl(); }
+  std::string moduleLabel() const { return static_cast<const Derived*>(this)->labelImpl(); }
   /// @brief Read the input ports into the request. false = INVALID_INPUT.
   bool assembleGoal(GoalT& goal) { return static_cast<Derived*>(this)->assembleGoalImpl(goal); }
   /// @brief Dispatch the request (requestPath/requestSmoothing/...). The
   /// server stamps session_id/plan_version; the *_id fields select the
-  /// plugin (empty = family default).
+  /// module (empty = family default).
   Task submit(const GoalT& goal) { return static_cast<Derived*>(this)->submitImpl(goal); }
   /// @brief Success side effects (write output ports, bump plan_version...).
   BT::NodeStatus onSuccess(const ResultT& result) { return static_cast<Derived*>(this)->onSuccessImpl(result); }
@@ -162,7 +132,7 @@ class NavigationActionNode : public BT::StatefulActionNode {
     ctx.stage = stage();
     ctx.code = code;
     ctx.message = message;
-    ctx.plugin_id = pluginLabel();
+    ctx.module_id = moduleLabel();
     ctx.session_id = session_id;
     ctx.plan_version = plan_version;
     writeFailureContext(*this, ctx);
@@ -244,10 +214,14 @@ class NavigationActionNode : public BT::StatefulActionNode {
  * mainline).
  *
  * Ports: goal={goal} (input), planner_id (input, empty = family default),
- * path={raw_path} (output). On success the node bumps the shared monotonic
- * plan_version (planning +1); the smoother branch re-smooths by content
- * signature and bumps it again (+1), and the controller follows via in-place
- * updatePlan. The planner_id port + goal-level selection mirror nav2 (a
+ * path={raw_path} (output). On success the node advances the live plan_version
+ * (planning +1, so the controller picks the new path up via in-place
+ * updatePlan) AND the raw_path_revision blackboard key, which is what the
+ * smoother branch keys its re-smoothing off. The revision is written straight
+ * to the blackboard instead of through an output port: a port only exists when
+ * the tree binds it, so routing the revision through one would make "the
+ * smoother never re-runs" the silent failure mode of a tree that forgot the
+ * binding. The planner_id port + goal-level selection mirror nav2 (a
  * PlannerSelector node writes the blackboard key the port binds to).
  */
 class ComputePathToPoseNode
@@ -263,10 +237,8 @@ class ComputePathToPoseNode
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal"),
-      BT::InputPort<std::string>("planner_id", "", "planner plugin id"),
+      BT::InputPort<std::string>("planner_id", "", "planner module id"),
       BT::OutputPort<nav_msgs::Path>("path", "planned path"),
-      BT::OutputPort<uint64_t>(k_plan_version,
-                               "plan version after the planning bump"),
     };
   }
 
@@ -314,11 +286,19 @@ class ComputePathToPoseNode
 
   BT::NodeStatus onSuccessImpl(const actions::GetPathResult& result) {
     setOutput("path", result.path);
+    // Live version: drives the running controller's in-place plan update and
+    // the stale-result policy.
     nav_server->incrementPlanVersion();
-    // Publish the bumped version: the smoother branch RateController binds
-    // its reset_token to {plan_version} so a fresh plan re-runs smoothing
-    // (the SmoothPath signature skip filters the smoothing's own bump).
-    setOutput(k_plan_version, nav_server->currentPlanVersion());
+    // Producer-scoped revision: the smoother branch's RateController binds its
+    // reset_token here, so a new raw path re-runs smoothing while smoothing's
+    // own plan_version bump cannot re-trigger it. Read-modify-write straight
+    // on the blackboard keeps the counter monotonic without holding state in
+    // the node (the tree is resident across goals; the pilot rewrites this key
+    // per round) and without depending on a port binding.
+    const auto& blackboard = config().blackboard;
+    uint64_t revision = 0;
+    (void)blackboard->get<uint64_t>(k_raw_path_revision, revision);
+    blackboard->set<uint64_t>(k_raw_path_revision, revision + 1);
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -330,11 +310,11 @@ class ComputePathToPoseNode
  * @brief SmoothPath one-shot async action.
  *
  * Ports: input_path={raw_path} (input), smoother_id (input, empty =
- * default), path={smoothed_path} (output). On success the node bumps
- * plan_version again (smoothing +1). Because the counter no longer
- * distinguishes a new raw path from its own bump, re-smoothing is gated by
- * content: an input whose signature matches the last smoothed one returns
- * SUCCESS without a request (identical input has an identical output).
+ * default), path={smoothed_path} (output). On success the node advances the
+ * live plan_version (smoothing +1) so the controller adopts the smoothed
+ * path. Re-smoothing is driven by the smoother branch's RateController
+ * reset_token bound to {raw_path_revision}: only the planner advances that
+ * key, so this node's own version bump cannot re-trigger it.
  */
 class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
                                                   actions::SmoothPathGoal,
@@ -348,7 +328,7 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<nav_msgs::Path>("input_path", "path to smooth"),
-      BT::InputPort<std::string>("smoother_id", "", "smoother plugin id"),
+      BT::InputPort<std::string>("smoother_id", "", "smoother module id"),
       BT::OutputPort<nav_msgs::Path>("path", "smoothed path"),
     };
   }
@@ -361,7 +341,6 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
       return false;
     }
     (void)getInput("smoother_id", goal.smoother_id);
-    pending_signature = pathSignature(goal.path);
     return true;
   }
 
@@ -373,25 +352,11 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
   /// itself, so only the session freshness is enforced here.
   bool acceptsResultImpl(const actions::SmoothPathResult&) const { return true; }
 
-  std::optional<BT::NodeStatus> skipSubmit(const actions::SmoothPathGoal&) {
-    if (pending_signature == last_smoothed_signature) {
-      // Already smoothed this exact input: skip (SUCCESS, no version bump --
-      // identical input has an identical output).
-      return BT::NodeStatus::SUCCESS;
-    }
-    return std::nullopt;
-  }
-
   BT::NodeStatus onSuccessImpl(const actions::SmoothPathResult& result) {
     setOutput("path", result.smoothed_path);
-    last_smoothed_signature = pending_signature;
     nav_server->incrementPlanVersion();
     return BT::NodeStatus::SUCCESS;
   }
-
- private:
-  uint64_t pending_signature{0};
-  uint64_t last_smoothed_signature{0};
 };
 
 /**
@@ -420,7 +385,7 @@ class FollowPathNode : public NavigationActionNode<FollowPathNode,
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<nav_msgs::Path>("path", "path to follow"),
-      BT::InputPort<std::string>("controller_id", "", "controller plugin id"),
+      BT::InputPort<std::string>("controller_id", "", "controller module id"),
       BT::InputPort<double>("frequency", 20.0, "controller frequency in Hz"),
     };
   }
@@ -497,7 +462,7 @@ class FollowPathNode : public NavigationActionNode<FollowPathNode,
  *
  * Ports: recovery={recovery_id}/{clear_costmap_id}/{spin_id}/{wait_id}/
  * {backup_id} (input, XML `<Recovery recovery="{...}"/>`), plus per-run
- * override params (NaN = not provided, keep the plugin configure defaults).
+ * override params (NaN = not provided, keep the module configure defaults).
  * The RecoveryGoal.cause = the blackboard failure_context -- consumed THEN
  * CLEARED: the slot is a single shared blackboard key, so leaving it set
  * would let a later recovery read a stale cause.
@@ -513,7 +478,7 @@ class RecoveryActionNode : public NavigationActionNode<RecoveryActionNode,
 
   static BT::PortsList providedPorts() {
     return {
-      BT::InputPort<std::string>("recovery", "recovery plugin id"),
+      BT::InputPort<std::string>("recovery", "recovery module id"),
       BT::InputPort<double>("target_yaw",
                             std::numeric_limits<double>::quiet_NaN(),
                             "override spin target angle [rad]"),

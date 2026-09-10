@@ -11,6 +11,8 @@
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 
 #include <cstdlib>
+#include <mutex>
+#include <shared_mutex>
 
 namespace ayanami {
 namespace components {
@@ -24,7 +26,7 @@ void RobotStateController::initialize(const std::string& global,
                                      const std::string& local,
                                      const std::string& robot,
                                      double velocity_timeout) {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_lock<std::shared_mutex> lock(mutex);
   global_frame = global;
   local_frame = local;
   robot_frame = robot;
@@ -34,14 +36,14 @@ void RobotStateController::initialize(const std::string& global,
 
 void RobotStateController::setVelocity(
     const geometry_msgs::TwistStamped& velocity) {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_lock<std::shared_mutex> lock(mutex);
   last_velocity = velocity;
   last_velocity_at = std::chrono::steady_clock::now();
 }
 
 void RobotStateController::setOdometry(
     const geometry_msgs::TwistStamped& odometry) {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_lock<std::shared_mutex> lock(mutex);
   odometry_buffer.push_back(odometry);
   last_velocity = odometry;
   last_velocity_at = std::chrono::steady_clock::now();
@@ -50,7 +52,7 @@ void RobotStateController::setOdometry(
 bool RobotStateController::getOdometry(
     const ayanami::Timestamp& stamp,
     geometry_msgs::TwistStamped& odometry) const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   if (odometry_buffer.empty()) {
     return false;
   }
@@ -79,7 +81,7 @@ void RobotStateController::setTransform(
     const std::string& parent, const std::string& child,
     ayanami::Timestamp stamp, const Eigen::Isometry3d& transform,
     bool is_static) {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_lock<std::shared_mutex> lock(mutex);
   ayanami::interfaces::TransformStore::instance().setTransform(
       parent, child, stamp, transform, is_static);
 }
@@ -88,7 +90,7 @@ bool RobotStateController::lookupTransform(
     const std::string& target, const std::string& source,
     ayanami::Timestamp stamp, Eigen::Isometry3d& transform,
     double timeout) const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return ayanami::interfaces::TransformStore::instance().lookupTransform(
       target, source, stamp, transform, timeout);
 }
@@ -118,7 +120,7 @@ geometry_msgs::TwistStamped RobotStateController::velocityLocked() const {
 bool RobotStateController::getRobotState(
     geometry_msgs::PoseStamped& pose,
     geometry_msgs::TwistStamped& velocity) const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   if (!poseFromTransformStore(pose)) {
     return false;
   }
@@ -127,19 +129,19 @@ bool RobotStateController::getRobotState(
 }
 
 geometry_msgs::PoseStamped RobotStateController::getRobotPose() const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   geometry_msgs::PoseStamped pose;
   poseFromTransformStore(pose);
   return pose;
 }
 
 geometry_msgs::TwistStamped RobotStateController::getRobotVelocity() const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return velocityLocked();
 }
 
 bool RobotStateController::hasFreshVelocity() const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   if (!last_velocity) {
     return false;
   }
@@ -148,27 +150,27 @@ bool RobotStateController::hasFreshVelocity() const {
 }
 
 void RobotStateController::resetVelocity() {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::unique_lock<std::shared_mutex> lock(mutex);
   last_velocity.reset();
 }
 
-std::string RobotStateController::getGlobalFrame() const {
-  std::lock_guard<std::mutex> lock(mutex);
+std::string RobotStateController::globalFrame() const {
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return global_frame;
 }
 
-std::string RobotStateController::getLocalFrame() const {
-  std::lock_guard<std::mutex> lock(mutex);
+std::string RobotStateController::localFrame() const {
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return local_frame;
 }
 
-std::string RobotStateController::getRobotFrame() const {
-  std::lock_guard<std::mutex> lock(mutex);
+std::string RobotStateController::robotFrame() const {
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return robot_frame;
 }
 
 double RobotStateController::getVelocityTimeout() const {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::shared_lock<std::shared_mutex> lock(mutex);
   return velocity_timeout_s;
 }
 

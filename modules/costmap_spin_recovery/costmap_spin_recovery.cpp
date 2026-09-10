@@ -2,7 +2,7 @@
 //
 // Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). Each cycle returns a pure angular velocity
 // suggestion (angular.z = max_w); RecoveryExecution acts as the sole publisher, publishing per cycle and
-// zeroing on the final state. The plugin neither loops/wait on its own nor bypass-publishes velocity commands. M1 headless
+// zeroing on the final state. The module neither loops/wait on its own nor bypass-publishes velocity commands. M1 headless
 // has no real base: it does not depend on actual base motion; SUCCESS is returned after spinning for spin_dist/max_w seconds.
 // Collision detection (immutable global snapshot, any cell >= 253 near the robot) -> FAILED(RecoveryFailed).
 
@@ -27,23 +27,32 @@ bool poseToIsometry(const ayanami::geometry_msgs::PoseStamped& pose,
 }
 
 
-void CostmapSpinRecovery::configure(
-    const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+
+void CostmapSpinRecovery::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapSpinRecoveryParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: the recovery section of this module's json (the file config_recovery points to).
   param.spin_dist =
       context.config.param<double>(context.name, "spin_dist", param.spin_dist);
   param.max_w =
       context.config.param<double>(context.name, "max_w", param.max_w);
-  // sim_cycle_dt is a framework-level execution param: it lives in the
-  // "recovery" family section next to name/so_name/role (the server injects
-  // the same value into the RecoveryExecution cycle period).
-  param.sim_cycle_dt = context.config.param<double>(
-      "recovery", "sim_cycle_dt", param.sim_cycle_dt);
   param.collision_radius = context.config.param<double>(
       context.name, "collision_radius", param.collision_radius);
+}
+
+void CostmapSpinRecovery::configure(
+    const ayanami::ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
   map_context = std::move(map);
 }
+
 
 void CostmapSpinRecovery::setBehaviorParams(
     const ayanami::RecoveryBehaviorParams& params) {
@@ -53,16 +62,30 @@ void CostmapSpinRecovery::setBehaviorParams(
   }
 }
 
+void CostmapSpinRecovery::setCyclePeriod(double seconds) {
+  // Framework input, not a config value: the execution owns the tick cadence.
+  cycle_dt = std::max(seconds, 1e-6);
+}
+
 void CostmapSpinRecovery::start() {
   canceled.store(false);
-  const double dt = std::max(param.sim_cycle_dt, 1e-6);
+  const double dt = std::max(cycle_dt, 1e-6);
   remaining_frames = static_cast<int>(std::ceil(
       std::max(param.spin_dist, 0.0) / std::max(param.max_w, 1e-6) / dt));
 }
 
 ResultT<void> CostmapSpinRecovery::tick(RecoveryCycleData& cycle) {
-  // Hold the shared lock to read the map (released at the end of the cycle), zero copy.
-  auto costmap = map_context->lockGlobal();
+  // The read callback owns the shared lock for its duration, zero copy: the map
+  // is readable for exactly this cycle and the writer is never held off longer.
+  return map_context->readGlobal(
+      [&](const ayanami::costmap::CostmapReader& costmap) -> ResultT<void> {
+        return tickWithMap(cycle, costmap);
+      });
+}
+
+ResultT<void> CostmapSpinRecovery::tickWithMap(
+    RecoveryCycleData& cycle,
+    const ayanami::costmap::CostmapReader& costmap) {
   const std::string frame =
       costmap.frame().empty() ? std::string("map") : costmap.frame();
 
@@ -74,7 +97,7 @@ ResultT<void> CostmapSpinRecovery::tick(RecoveryCycleData& cycle) {
   // Take the robot pose once (M1 headless has no base motion, treat as static; resolved by the read view).
   ::Eigen::Isometry3d robot_pose = ::Eigen::Isometry3d::Identity();
   const bool have_pose =
-      costmap.has_robot_pose() &&
+      costmap.hasRobotPose() &&
       poseToIsometry(costmap.robot_pose(), robot_pose);
   if (have_pose && collisionNearRobot(costmap, robot_pose)) {
     return ResultT<void>::failure(ErrorCode::RECOVERY_FAILED,
@@ -100,7 +123,7 @@ bool CostmapSpinRecovery::cancel() {
 }
 
 bool CostmapSpinRecovery::collisionNearRobot(
-    const ayanami::costmap::CostmapView& costmap,
+    const ayanami::costmap::CostmapReader& costmap,
     const ::Eigen::Isometry3d& robot_pose) const {
   const costmap_2d::Costmap2D* grid = costmap.grid();
   if (!grid) {

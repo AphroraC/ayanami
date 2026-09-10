@@ -1,4 +1,4 @@
-// Test plugin: costmap-family recovery (SoCostmapRecovery), common factory export.
+// Test module: costmap-family recovery (SoCostmapRecovery), common factory export.
 //
 // The old API runRecovery returned success in one shot; under the new protocol the first tick cycle returns the SUCCESS
 // terminal state (the original one-shot semantics preserved).
@@ -16,7 +16,7 @@ using ayanami::RecoveryStatus;
 
 class SoCostmapRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void configure(const ayanami::PluginContext& /*context*/,
+  void configure(const ayanami::ModuleContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr /*map*/) override {}
   ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;

@@ -204,14 +204,17 @@ bool nearestValidGoal(const ayanami::costmap::PlanningOverlay& overlay,
 
 }  // namespace
 
-void CostmapSmacPlanner::configure(
-    const PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
-  // Parameters are read from the PluginContext-injected own configuration (the plugin does not know the global config layout);
+
+void CostmapSmacPlanner::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapSmacPlannerParam member (whose field initializers are the defaults for keys the
+  // config omits).
+  // Parameters are read from the ModuleContext-injected own configuration (the module does not know the global config layout);
   // missing config keys keep the default values.
   const Config& file = context.config;
   // Param section convention: the section key = the module json "name"
-  // field, delivered as PluginContext::name.
+  // field, delivered as ModuleContext::name.
   const std::string& section = context.name;
   param.use_diagonal = file.param<bool>(section, "use_diagonal",
                                         param.use_diagonal);
@@ -226,8 +229,19 @@ void CostmapSmacPlanner::configure(
   param.use_final_approach =
       file.param<bool>(section, "use_final_approach",
                        param.use_final_approach);
+}
+
+void CostmapSmacPlanner::configure(
+    const ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
   map_context = std::move(map);
 }
+
 
 bool CostmapSmacPlanner::cancel() {
   canceled.store(true);
@@ -270,7 +284,7 @@ ResultT<void> CostmapSmacPlanner::makePlan(
 
   // Interface contract (AbstractPlanner): `start` is always a fully resolved
   // pose -- the execution layer substitutes the current robot pose for an
-  // empty start before the plugin is called.
+  // empty start before the module is called.
   const geometry_msgs::PoseStamped& start_pose = start;
 
   if (!start_pose.header.frame_id.empty() && !goal.header.frame_id.empty() &&

@@ -1,18 +1,19 @@
 // NavigationServerBase main implementation.
 //
 // Lifecycle discipline: the destructor first stops all actions (cancel +
-// join slot threads), then resets the action maps, then clearPlugins
-// releases the plugin objects (destructed while the dlopen handles are
+// join slot threads), then resets the action maps, then clearModules
+// releases the module objects (destructed while the dlopen handles are
 // still alive).
 // Zero ROS includes (red line §5.7).
 //
 // Dispatch discipline: planner/smoother/controller support multiple loaded
-// plugin configs (in the main config.json's global section the config_*
+// module configs (in the main config.json's global section the config_*
 // string-or-list is already array-capable),
-// Planner, smoother and controller each use one configured plugin/action.
+// Planner, smoother and controller each use one configured module/action.
 // Recovery remains an ordered set of independently addressable actions.
 
 #include "ayanami/abstract/components/navigation_server_base.hpp"
+#include <ayanami/utility/bootstrap.hpp>
 
 #include "ayanami/utility/config.hpp"
 
@@ -45,30 +46,18 @@ std::string loadedNames(const ActionMap& actions) {
   return out;
 }
 
-// Plugin file family enumeration: in config_navigation's navigation
+// Module file family enumeration: in config_navigation's navigation
 // section, navigation[family_key] is a single string or a string array (an
-// array means a multi-plugin file family; currently only config_recovery
+// array means a multi-module file family; currently only config_recovery
 // uses it). Returns full paths resolved relative to config_path (absolute
 // paths kept as-is).
 std::vector<std::string> moduleConfigFiles(const ayanami::Config& navigation,
                                            const std::string& family_key) {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
-  std::vector<std::string> entries;
-  if (navigation.hasParam("navigation", family_key)) {
-    try {
-      entries = navigation.param<std::vector<std::string>>(
-          "navigation", family_key, {});
-    } catch (const std::exception&) {
-      // navigation[family_key] is a single string.
-    }
-    if (entries.empty()) {
-      const std::string single =
-          navigation.param<std::string>("navigation", family_key, "");
-      if (!single.empty()) {
-        entries.push_back(single);
-      }
-    }
-  }
+  // One helper for the "single string or array of strings" spelling, which used
+  // to be hand-written (try vector, fall back to string) at every call site.
+  const std::vector<std::string> entries =
+      navigation.paramStringOrList("navigation", family_key);
   const std::string directory =
       g->param<std::string>("global", "config_path", ".");
   std::vector<std::string> paths;
@@ -88,31 +77,53 @@ NavigationServerBase::~NavigationServerBase() {
   smoother_actions.clear();
   controller_actions.clear();
   recovery_actions.clear();
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    if (auto plugin = planner_plugins.getPlugin(name)) plugin->cleanup();
+  for (const auto& name : planner_modules.getLoadedNames()) {
+    if (auto module = planner_modules.getModule(name)) module->cleanup();
   }
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    if (auto plugin = smoother_plugins.getPlugin(name)) plugin->cleanup();
+  for (const auto& name : smoother_modules.getLoadedNames()) {
+    if (auto module = smoother_modules.getModule(name)) module->cleanup();
   }
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    if (auto plugin = controller_plugins.getPlugin(name)) plugin->cleanup();
+  for (const auto& name : controller_modules.getLoadedNames()) {
+    if (auto module = controller_modules.getModule(name)) module->cleanup();
   }
-  for (const auto& name : recovery_plugins.getLoadedNames()) {
-    if (auto plugin = recovery_plugins.getPlugin(name)) plugin->cleanup();
+  for (const auto& name : recovery_modules.getLoadedNames()) {
+    if (auto module = recovery_modules.getModule(name)) module->cleanup();
   }
-  planner_plugins.clearPlugins();
-  smoother_plugins.clearPlugins();
-  controller_plugins.clearPlugins();
-  recovery_plugins.clearPlugins();
-  goal_checker_plugins.clearPlugins();
-  progress_checker_plugins.clearPlugins();
+  planner_modules.clearModules();
+  smoother_modules.clearModules();
+  controller_modules.clearModules();
+  recovery_modules.clearModules();
+  goal_checker_modules.clearModules();
+  progress_checker_modules.clearModules();
 }
 
-void NavigationServerBase::loadPlugins(const std::string& config_path) {
-  ayanami::GlobalConfig::instance(config_path, /*override_path=*/true);
+namespace {
+
+/// @brief Fail-fast for a module the config explicitly names.
+///
+/// A navigation stack that silently starts without its configured planner or
+/// controller is worse than one that refuses to start: the omission only
+/// surfaces later, as an unexplained INVALID_INPUT when a goal finally arrives.
+/// The manager records WHY it failed, so the message distinguishes "the .so is
+/// not deployed" from "the .so was built against a different interface".
+template <typename ManagerT>
+void requireLoaded(const ManagerT& manager, const std::string& family,
+                   const std::string& name) {
+  if (manager.getModule(name)) {
+    return;
+  }
+  const std::string detail = manager.lastFailureMessage();
+  spdlog::critical("{} module '{}' failed to load: {}", family, name, detail);
+  throw std::runtime_error(family + " module failed to load: " + detail);
+}
+
+}  // namespace
+
+void NavigationServerBase::loadModules(const std::string& config_path) {
+  ayanami::bootstrap(config_path);
 
   // Module id single source of truth = each module json's own name field:
-  // the first three families each load exactly one plugin, with no separate
+  // the first three families each load exactly one module, with no separate
   // *_id config keys; recovery is an ordered file family (config_recovery
   // vector).
   ayanami::Config nav_cfg(
@@ -145,7 +156,7 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
   velocity_timeout =
       nav_cfg.param<double>("navigation", "velocity_timeout", 0.25);
 
-  // planner/smoother/controller each have exactly one configured plugin.
+  // planner/smoother/controller each have exactly one configured module.
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("planner", "name", "");
@@ -155,11 +166,13 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (default_planner.empty()) {
       default_planner = name;
     }
-    planner_plugins.loadSingleFromConfig(
+    planner_modules.loadSingleFromConfig(
         cfg, "planner", name,
-        [this, cfg](const std::string& loaded_name, AbstractPlanner::Ptr plugin) {
-          return initializePlannerPlugin(loaded_name, cfg, std::move(plugin));
+        [this, cfg](const std::string& loaded_name,
+                    AbstractPlanner::Ptr module) {
+          return initializePlannerModule(loaded_name, cfg, std::move(module));
         });
+    requireLoaded(planner_modules, "planner", name);
   }
   // smoother
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_smoother")) {
@@ -171,11 +184,13 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (default_smoother.empty()) {
       default_smoother = name;
     }
-    smoother_plugins.loadSingleFromConfig(
+    smoother_modules.loadSingleFromConfig(
         cfg, "smoother", name,
-        [this, cfg](const std::string& loaded_name, AbstractSmoother::Ptr plugin) {
-          return initializeSmootherPlugin(loaded_name, cfg, std::move(plugin));
+        [this, cfg](const std::string& loaded_name,
+                    AbstractSmoother::Ptr module) {
+          return initializeSmootherModule(loaded_name, cfg, std::move(module));
         });
+    requireLoaded(smoother_modules, "smoother", name);
   }
   // controller
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_controller")) {
@@ -187,24 +202,30 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (default_controller.empty()) {
       default_controller = name;
     }
-    controller_plugins.loadSingleFromConfig(
+    controller_modules.loadSingleFromConfig(
         cfg, "controller", name,
-        [this, cfg](const std::string& loaded_name, AbstractController::Ptr plugin) {
-          return initializeControllerPlugin(loaded_name, cfg, std::move(plugin));
+        [this, cfg](const std::string& loaded_name,
+                    AbstractController::Ptr module) {
+          return initializeControllerModule(loaded_name, cfg,
+                                           std::move(module));
         });
+    requireLoaded(controller_modules, "controller", name);
   }
-  // recovery (ordered config_recovery file family; the order is the RecoverySequence declaration order)
+  // recovery (ordered config_recovery file family; the order is the
+  // recovery rotation declaration order)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_recovery")) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
     if (!name.empty()) recovery_sequence.push_back(name);
-    recovery_plugins.loadSingleFromConfig(
+    recovery_modules.loadSingleFromConfig(
         cfg, "recovery", name,
-        [this, cfg](const std::string& loaded_name, AbstractRecovery::Ptr plugin) {
-          return initializeRecoveryPlugin(loaded_name, cfg, std::move(plugin));
+        [this, cfg](const std::string& loaded_name,
+                    AbstractRecovery::Ptr module) {
+          return initializeRecoveryModule(loaded_name, cfg, std::move(module));
         });
+    requireLoaded(recovery_modules, "recovery", name);
   }
-  // goal checker (single plugin; params injected via PluginContext)
+  // goal checker (single module; params injected via ModuleContext)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_goal_checker")) {
     ayanami::Config cfg(path);
     const std::string name =
@@ -215,14 +236,16 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (default_goal_checker.empty()) {
       default_goal_checker = name;
     }
-    goal_checker_plugins.loadSingleFromConfig(
+    goal_checker_modules.loadSingleFromConfig(
         cfg, "goal_checker", name,
         [this, cfg](const std::string& loaded_name,
-               AbstractGoalChecker::Ptr plugin) {
-          return initializeGoalCheckerPlugin(loaded_name, cfg, std::move(plugin));
+                    AbstractGoalChecker::Ptr module) {
+          return initializeGoalCheckerModule(loaded_name, cfg,
+                                            std::move(module));
         });
+    requireLoaded(goal_checker_modules, "goal_checker", name);
   }
-  // progress checker (single plugin; params injected via PluginContext)
+  // progress checker (single module; params injected via ModuleContext)
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_progress_checker")) {
     ayanami::Config cfg(path);
     const std::string name =
@@ -233,31 +256,58 @@ void NavigationServerBase::loadPlugins(const std::string& config_path) {
     if (default_progress_checker.empty()) {
       default_progress_checker = name;
     }
-    progress_checker_plugins.loadSingleFromConfig(
+    progress_checker_modules.loadSingleFromConfig(
         cfg, "progress_checker", name,
         [this, cfg](const std::string& loaded_name,
-               AbstractProgressChecker::Ptr plugin) {
-          return initializeProgressCheckerPlugin(loaded_name, cfg,
-                                                 std::move(plugin));
+                    AbstractProgressChecker::Ptr module) {
+          return initializeProgressCheckerModule(loaded_name, cfg,
+                                                std::move(module));
         });
+    requireLoaded(progress_checker_modules, "progress_checker", name);
   }
 
   createActions();
 }
 
+std::vector<std::string> NavigationServerBase::moduleNames(
+    ModuleFamily family) const {
+  std::vector<std::string> names;
+  auto collect = [&names](const auto& action_map) {
+    names.reserve(action_map.size());
+    for (const auto& entry : action_map) {
+      names.push_back(entry.first);
+    }
+  };
+  switch (family) {
+    case ModuleFamily::Planner:
+      collect(planner_actions);
+      break;
+    case ModuleFamily::Smoother:
+      collect(smoother_actions);
+      break;
+    case ModuleFamily::Controller:
+      collect(controller_actions);
+      break;
+    case ModuleFamily::Recovery:
+      collect(recovery_actions);
+      break;
+  }
+  return names;
+}
+
 void NavigationServerBase::start() {
   if (running.exchange(true)) return;
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    if (auto plugin = planner_plugins.getPlugin(name)) plugin->activate();
+  for (const auto& name : planner_modules.getLoadedNames()) {
+    if (auto module = planner_modules.getModule(name)) module->activate();
   }
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    if (auto plugin = smoother_plugins.getPlugin(name)) plugin->activate();
+  for (const auto& name : smoother_modules.getLoadedNames()) {
+    if (auto module = smoother_modules.getModule(name)) module->activate();
   }
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    if (auto plugin = controller_plugins.getPlugin(name)) plugin->activate();
+  for (const auto& name : controller_modules.getLoadedNames()) {
+    if (auto module = controller_modules.getModule(name)) module->activate();
   }
-  for (const auto& name : recovery_plugins.getLoadedNames()) {
-    if (auto plugin = recovery_plugins.getPlugin(name)) plugin->activate();
+  for (const auto& name : recovery_modules.getLoadedNames()) {
+    if (auto module = recovery_modules.getModule(name)) module->activate();
   }
 }
 
@@ -275,17 +325,17 @@ void NavigationServerBase::stop() {
   for (auto& kv : recovery_actions) {
     if (kv.second) kv.second->cancelAll();
   }
-  for (const auto& name : recovery_plugins.getLoadedNames()) {
-    if (auto plugin = recovery_plugins.getPlugin(name)) plugin->deactivate();
+  for (const auto& name : recovery_modules.getLoadedNames()) {
+    if (auto module = recovery_modules.getModule(name)) module->deactivate();
   }
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    if (auto plugin = controller_plugins.getPlugin(name)) plugin->deactivate();
+  for (const auto& name : controller_modules.getLoadedNames()) {
+    if (auto module = controller_modules.getModule(name)) module->deactivate();
   }
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    if (auto plugin = smoother_plugins.getPlugin(name)) plugin->deactivate();
+  for (const auto& name : smoother_modules.getLoadedNames()) {
+    if (auto module = smoother_modules.getModule(name)) module->deactivate();
   }
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    if (auto plugin = planner_plugins.getPlugin(name)) plugin->deactivate();
+  for (const auto& name : planner_modules.getLoadedNames()) {
+    if (auto module = planner_modules.getModule(name)) module->deactivate();
   }
 }
 
@@ -295,18 +345,18 @@ void NavigationServerBase::createActions() {
   controller_actions.clear();
   recovery_actions.clear();
 
-  // planner/smoother/controller/recovery: one action per loaded plugin
-  // (nav2 multi-plugin semantics). default_* is the FIRST configured plugin;
+  // planner/smoother/controller/recovery: one action per loaded module
+  // (nav2 multi-module semantics). default_* is the FIRST configured module;
   // requests select by goal id, empty id = default.
-  for (const auto& name : planner_plugins.getLoadedNames()) {
-    auto planner = planner_plugins.getPlugin(name);
+  for (const auto& name : planner_modules.getLoadedNames()) {
+    auto planner = planner_modules.getModule(name);
     if (!planner) {
       continue;
     }
     auto action = std::make_unique<PlannerAction>(planner);
     action->setExecutionFactory([this, name]() {
       return std::shared_ptr<PlannerExecution>(
-          newPlannerExecution(name, planner_plugins.getPlugin(name)));
+          newPlannerExecution(name, planner_modules.getModule(name)));
     });
     planner_actions[name] = std::move(action);
   }
@@ -317,15 +367,15 @@ void NavigationServerBase::createActions() {
                   default_planner);
   }
 
-  for (const auto& name : smoother_plugins.getLoadedNames()) {
-    auto smoother = smoother_plugins.getPlugin(name);
+  for (const auto& name : smoother_modules.getLoadedNames()) {
+    auto smoother = smoother_modules.getModule(name);
     if (!smoother) {
       continue;
     }
     auto action = std::make_unique<SmootherAction>(smoother);
     action->setExecutionFactory([this, name]() {
       return std::shared_ptr<SmootherExecution>(
-          newSmootherExecution(name, smoother_plugins.getPlugin(name)));
+          newSmootherExecution(name, smoother_modules.getModule(name)));
     });
     smoother_actions[name] = std::move(action);
   }
@@ -336,15 +386,15 @@ void NavigationServerBase::createActions() {
                   default_smoother);
   }
 
-  for (const auto& name : controller_plugins.getLoadedNames()) {
-    auto controller = controller_plugins.getPlugin(name);
+  for (const auto& name : controller_modules.getLoadedNames()) {
+    auto controller = controller_modules.getModule(name);
     if (!controller) {
       continue;
     }
     auto action = std::make_unique<ControllerAction>(controller);
     action->setExecutionFactory([this, name]() {
       auto exec = std::shared_ptr<ControllerExecution>(
-          newControllerExecution(name, controller_plugins.getPlugin(name)));
+          newControllerExecution(name, controller_modules.getModule(name)));
       configureControllerExecution(exec);
       return exec;
     });
@@ -357,36 +407,36 @@ void NavigationServerBase::createActions() {
                   default_controller);
   }
 
-  for (const auto& name : recovery_plugins.getLoadedNames()) {
-    auto recovery = recovery_plugins.getPlugin(name);
+  for (const auto& name : recovery_modules.getLoadedNames()) {
+    auto recovery = recovery_modules.getModule(name);
     if (!recovery) {
       continue;
     }
     auto action = std::make_unique<RecoveryAction>(recovery);
     action->setExecutionFactory([this, name]() {
       auto exec = std::shared_ptr<RecoveryExecution>(newRecoveryExecution(
-          name, recovery_plugins.getPlugin(name)));
+          name, recovery_modules.getModule(name)));
       configureRecoveryExecution(exec);
       return exec;
     });
     recovery_actions[name] = std::move(action);
   }
   if (recovery_actions.empty()) {
-    spdlog::warn("NavigationServerBase::createActions: no recovery plugins loaded");
+    spdlog::warn("NavigationServerBase::createActions: no recovery modules loaded");
   }
 }
 
 void NavigationServerBase::configureControllerExecution(
     std::shared_ptr<ControllerExecution> exec) const {
-  // Goal/progress checker plugin injection (consumed by the execution at runtime).
-  if (auto checker = goal_checker_plugins.getPlugin(default_goal_checker)) {
+  // Goal/progress checker module injection (consumed by the execution at runtime).
+  if (auto checker = goal_checker_modules.getModule(default_goal_checker)) {
     exec->setGoalChecker(std::move(checker));
   } else if (!default_goal_checker.empty()) {
     spdlog::warn("NavigationServerBase: goal checker '{}' not loaded",
                  default_goal_checker);
   }
   if (auto checker =
-          progress_checker_plugins.getPlugin(default_progress_checker)) {
+          progress_checker_modules.getModule(default_progress_checker)) {
     exec->setProgressChecker(std::move(checker));
   } else if (!default_progress_checker.empty()) {
     spdlog::warn("NavigationServerBase: progress checker '{}' not loaded",
@@ -413,7 +463,7 @@ void NavigationServerBase::configureRecoveryExecution(
   // zeroes invalid commands.
   exec->setMaximumVelocity(max_vel_x, max_vel_y, max_vel_theta);
   // Recovery patience (navigation.recovery_patience): framework-level
-  // per-run timeout so a recovery plugin without self-limiting cannot stay
+  // per-run timeout so a recovery module without self-limiting cannot stay
   // RUNNING forever.
   exec->setRecoveryPatience(recovery_patience);
 }
@@ -481,7 +531,7 @@ TaskHandle<ayanami::actions::GetPathResult> NavigationServerBase::requestPath(
   }
   if (!action) {
     // Explicit unknown id -> structured rejection (nav2/MBF semantics);
-    // an empty-id miss means the family has no plugin at all.
+    // an empty-id miss means the family has no module at all.
     return rejectedHandle<ayanami::actions::GetPathResult>(
         goal.planner_id.empty() ? ErrorCode::RESOURCE_BUSY
                                 : ErrorCode::INVALID_INPUT,
@@ -565,13 +615,13 @@ NavigationServerBase::requestRecovery(
                   goal.recovery_id);
     return rejectedHandle<ayanami::actions::RecoveryResult>(
         ErrorCode::INVALID_INPUT,
-        "unknown recovery plugin id: " + goal.recovery_id, currentSessionId(),
+        "unknown recovery module id: " + goal.recovery_id, currentSessionId(),
         currentPlanVersion());
   }
   // Stop the controller after validating the recovery id. Non-blocking:
   // the preemption marks the controller canceled (cancel() already
   // published a zeroed command synchronously) and the task winds down on
-  // its own thread, so the BT tick thread never blocks on a slow plugin
+  // its own thread, so the BT tick thread never blocks on a slow module
   // call.
   preemptAllControllers();
   ayanami::actions::RecoveryGoal g = goal;
@@ -594,7 +644,7 @@ NavigationServerBase::requestRecovery(
 bool NavigationServerBase::requestPlanUpdate(
     uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) {
   // The in-place update addresses the goal by id: search every loaded
-  // controller action (the goal may run on a non-default plugin).
+  // controller action (the goal may run on a non-default module).
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
   for (auto& kv : controller_actions) {
     if (kv.second && kv.second->updatePlan(goal_id, goal.path,
@@ -611,7 +661,7 @@ bool NavigationServerBase::requestPlanUpdate(
 void NavigationServerBase::cancelAllControllers() {
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
   // Preemption/new-session/halt discipline: cancel the ENTIRE controller
-  // action map -- with multiple controller plugins, tasks beyond the default
+  // action map -- with multiple controller modules, tasks beyond the default
   // id must stop too, otherwise stale velocity output remains.
   for (auto& kv : controller_actions) {
     if (kv.second) kv.second->cancelAll();
@@ -676,7 +726,7 @@ std::shared_ptr<NavigationSessionState> NavigationServerBase::sessionState()
   return session_state;
 }
 
-// ---- Semantics: a structured-failure TaskHandle for an invalid plugin id ----
+// ---- Semantics: a structured-failure TaskHandle for an invalid module id ----
 
 template <typename Result>
 TaskHandle<Result> NavigationServerBase::rejectedHandle(
@@ -697,45 +747,45 @@ TaskHandle<Result> NavigationServerBase::rejectedHandle(
 
 // ---- Virtual hook default implementations ----
 
-bool NavigationServerBase::initializePlannerPlugin(
+bool NavigationServerBase::initializePlannerModule(
     const std::string& name, const ayanami::Config&, AbstractPlanner::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeSmootherPlugin(
+bool NavigationServerBase::initializeSmootherModule(
     const std::string& name, const ayanami::Config&, AbstractSmoother::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeControllerPlugin(
+bool NavigationServerBase::initializeControllerModule(
     const std::string& name, const ayanami::Config&, AbstractController::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeRecoveryPlugin(
+bool NavigationServerBase::initializeRecoveryModule(
     const std::string& name, const ayanami::Config&, AbstractRecovery::Ptr) {
   (void)name;
   return true;
 }
 
-bool NavigationServerBase::initializeGoalCheckerPlugin(
+bool NavigationServerBase::initializeGoalCheckerModule(
     const std::string& name, const ayanami::Config& module_config,
     AbstractGoalChecker::Ptr ptr) {
-  // checkers have no map dependency: the default hook injects the PluginContext directly (derived servers may override).
+  // checkers have no map dependency: the default hook injects the ModuleContext directly (derived servers may override).
   if (ptr) {
-    ptr->configure(ayanami::PluginContext{name, module_config});
+    ptr->configure(ayanami::ModuleContext{name, module_config});
   }
   return true;
 }
 
-bool NavigationServerBase::initializeProgressCheckerPlugin(
+bool NavigationServerBase::initializeProgressCheckerModule(
     const std::string& name, const ayanami::Config& module_config,
     AbstractProgressChecker::Ptr ptr) {
   if (ptr) {
-    ptr->configure(ayanami::PluginContext{name, module_config});
+    ptr->configure(ayanami::ModuleContext{name, module_config});
   }
   return true;
 }

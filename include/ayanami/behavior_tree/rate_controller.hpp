@@ -1,9 +1,9 @@
 #pragma once
 
+#include "ayanami/behavior_tree/resettable_node.hpp"
 #include <behaviortree_cpp/decorator_node.h>
 #include <spdlog/spdlog.h>
 
-#include "ayanami/behavior_tree/navigation_node_state.hpp"
 
 #include <chrono>
 #include <functional>
@@ -24,7 +24,6 @@ namespace behavior_tree {
  * time deterministically.
  */
 class RateController : public BT::DecoratorNode,
-                    public NavigationTreeNodeState,
                     public ResettableNode {
  public:
   using ClockFn = std::function<BT::TimePoint()>;
@@ -114,20 +113,13 @@ class RateController : public BT::DecoratorNode,
     last_status = BT::NodeStatus::FAILURE;
   }
 
-  /// @brief Logical reset after a tree-life terminal state (the pilot calls
-  /// resetNavigationTreeState).
+  /// @brief Clear the single-shot cache so the next tick starts a fresh round.
   ///
-  /// BT.CPP v4's ControlNode::haltChildren only calls haltNode on children
-  /// with status==RUNNING; subtrees in a terminal state (SUCCESS/FAILURE
-  /// cache) are not halted -- in the resident-tree model the cache flags
-  /// must be reset explicitly by the pilot at tree-life end, otherwise the
-  /// planner/smoother branches never re-execute (root cause of the recovery
-  /// storm bug). The reset_token cache is kept (change-detection
-  /// semantics).
-  void resetState() override {
-    started = false;
-    last_status = BT::NodeStatus::FAILURE;
-  }
+  /// Called from two places: halt() (BT.CPP v4's haltChildren only reaches
+  /// RUNNING children) and the reset_token change path. The reset_token cache
+  /// itself is deliberately kept -- it is change-detection state, not round
+  /// state. There is no tree-life reset any more: the pilot builds a new tree
+  /// per navigation attempt, so nothing crosses between attempts.
 
  private:
   ClockFn clock_fn;

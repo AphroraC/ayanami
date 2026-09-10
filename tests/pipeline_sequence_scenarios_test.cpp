@@ -384,21 +384,22 @@ TEST(RecoveryNodeBudgetTest, tokenChangeResetsBudget) {
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
 }
 
-// ---- H3 resident-tree reset protocol: RoundRobin / RecoverySequence reset_token ----
+// ---- H3 resident-tree reset protocol: RecoverySequence reset_token ----
 
-TEST(RoundRobinResetTest, tokenChangeRestartsCursorAndHaltsInFlightChild) {
+TEST(RecoverySequenceResetTest, tokenChangeRestartsCursorAndHaltsInFlightChild) {
   BT::BehaviorTreeFactory factory;
-  factory.registerNodeType<ayanami::behavior_tree::RoundRobin>("RoundRobin");
+  factory.registerNodeType<ayanami::behavior_tree::RecoverySequence>(
+      "RecoverySequence");
   factory.registerNodeType<MockChild>("MockChild");
   auto bb = BT::Blackboard::create();
   bb->set<uint64_t>("goal_revision", 0u);
   auto tree = factory.createTreeFromText(R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
-    <RoundRobin name="rr" reset_token="{goal_revision}">
+    <RecoverySequence name="rs" reset_token="{goal_revision}">
       <MockChild name="first"/>
       <MockChild name="second"/>
-    </RoundRobin>
+    </RecoverySequence>
   </BehaviorTree>
 </root>)", bb);
   auto mocks = collectMocks(tree);
@@ -418,42 +419,6 @@ TEST(RoundRobinResetTest, tokenChangeRestartsCursorAndHaltsInFlightChild) {
   EXPECT_EQ(mocks[0]->tick_count, 2);
   EXPECT_EQ(mocks[1]->halt_count, 1);
   EXPECT_EQ(mocks[1]->tick_count, 1);
-}
-
-TEST(RecoverySequenceResetTest, tokenChangeRestartsFromFirstRecovery) {
-  BT::BehaviorTreeFactory factory;
-  factory.registerNodeType<ayanami::behavior_tree::RecoverySequence>("RecoverySequence");
-  factory.registerNodeType<MockChild>("MockChild");
-  auto bb = BT::Blackboard::create();
-  bb->set<uint64_t>("goal_revision", 0u);
-  auto tree = factory.createTreeFromText(R"(
-<root BTCPP_format="4">
-  <BehaviorTree ID="main">
-    <RecoverySequence name="rs" reset_token="{goal_revision}">
-      <MockChild name="first"/>
-      <MockChild name="second"/>
-    </RecoverySequence>
-  </BehaviorTree>
-</root>)", bb);
-  auto mocks = collectMocks(tree);
-  ASSERT_EQ(mocks.size(), 2u);
-  MockChild* first = mocks[0];
-  mocks[0]->status_fn = [first] {
-    return first->tick_count <= 1 ? BT::NodeStatus::FAILURE
-                                  : BT::NodeStatus::SUCCESS;
-  };
-  mocks[1]->status_fn = [] { return BT::NodeStatus::RUNNING; };
-
-  // tick1: first FAILURE -> second RUNNING (cursor 1, recovery in progress).
-  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  EXPECT_EQ(mocks[0]->tick_count, 1);
-  EXPECT_EQ(mocks[1]->tick_count, 1);
-
-  // New navigation round: the cursor resets and restarts from first (first is available again this round).
-  bb->set<uint64_t>("goal_revision", 1u);
-  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
-  EXPECT_EQ(mocks[0]->tick_count, 2);
-  EXPECT_EQ(mocks[1]->halt_count, 1);
 }
 
 }  // namespace

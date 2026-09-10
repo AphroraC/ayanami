@@ -184,8 +184,8 @@ Path makeXPath(double goal_x = 9.0) {
 
 std::shared_ptr<CostmapPidController> makeController() {
   auto ctl = std::make_shared<CostmapPidController>();
-  // New API: parameters are injected via PluginContext.config (this module json).
-  ctl->configure(ayanami::PluginContext{
+  // New API: parameters are injected via ModuleContext.config (this module json).
+  ctl->configure(ayanami::ModuleContext{
                      "test_pid",
                      ayanami::Config((g_module_dir /
                                       "costmap_pid_controller.json").string())},
@@ -226,11 +226,11 @@ TEST(MinorCarryWiring, emptyStartResolvedToRobotPoseAtExecutionLayer) {
                    T_robot);
 
   auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::PluginContext{"test_smac", ayanami::Config("")},
+  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
   // Interface contract: an EMPTY start is resolved to the latest robot pose
-  // by the execution layer (PlannerExecution), never by the plugin.
+  // by the execution layer (PlannerExecution), never by the module.
   ayanami::components::PlannerExecution exec(planner);
   const PoseStamped start;  // default constructed: zero translation + empty frame
   const PoseStamped goal = cellCenter(17, 17);
@@ -271,9 +271,9 @@ TEST(MinorCarryWiring, robotFrameSingleSourceFromCostmapNavigationJson) {
 
   ASSERT_NE(server.costmapContext(), nullptr);
   // costmap.json has no robot_frame -> single source = costmap_navigation.json.
-  EXPECT_EQ(server.costmapContext()->getRobotFrame(), "base_footprint");
+  EXPECT_EQ(server.costmapContext()->robotFrame(), "base_footprint");
   // RobotStateController is the single configured robot-state source.
-  EXPECT_EQ(ayanami::components::RobotStateController::instance().getRobotFrame(),
+  EXPECT_EQ(ayanami::components::RobotStateController::instance().robotFrame(),
             "base_footprint");
 }
 

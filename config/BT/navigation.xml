@@ -5,7 +5,7 @@
         <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
           <RecoveryNode name="ComputePath" number_of_retries="1">
             <Sequence>
-               <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
+               <ComputePathToPose goal="{goal}" path="{raw_path}"/>
               <IsPathValid path="{raw_path}"/>
             </Sequence>
             <Sequence>
@@ -13,8 +13,11 @@
             </Sequence>
           </RecoveryNode>
         </RateController>
-        <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
-               <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+        <RateController hz="{smoother_frequency}" reset_token="{raw_path_revision}">
+          <Sequence>
+            <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
+            <IsPathValid path="{smoothed_path}"/>
+          </Sequence>
         </RateController>
         <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}">
            <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"/>
@@ -25,7 +28,7 @@
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-         <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
+         <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
           <Sequence>
             <Recovery recovery="{spin_id}"/>
           </Sequence>
@@ -35,7 +38,7 @@
           <Sequence>
             <Recovery recovery="{backup_id}"/>
           </Sequence>
-         </RoundRobin>
+         </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>

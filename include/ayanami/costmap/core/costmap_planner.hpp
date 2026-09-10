@@ -11,16 +11,16 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief Global planning plugin base class (costmap family, MBF-style
+ * @brief Global planning module base class (costmap family, MBF-style
  * layering).
  *
  * On top of abstract::AbstractPlanner (zero-map pure virtual interface),
  * only the map-family injection point is added:
- * - configure(context, map): plugin logical name + its own config + the
+ * - configure(context, map): module logical name + its own config + the
  *   costmap map module (owned by the host, injected as a const smart
- *   pointer; the plugin never modifies the map).
+ *   pointer; the module never modifies the map).
  * - makePlan(...): the abstract pure virtual signature; the implementation
- *   reads the map through its held map's lockGlobal() (RAII shared lock +
+ *   reads the map through its held map's readGlobal() callback (shared lock +
  *   zero copy), holding the lock for a single planning call (<10ms); the
  *   map writer waits for the lock to write.
  */
@@ -28,7 +28,7 @@ class CostmapPlanner : public ayanami::abstract::AbstractPlanner {
  public:
   using Ptr = std::shared_ptr<CostmapPlanner>;
 
-  virtual void configure(const PluginContext& context,
+  virtual void configure(const ModuleContext& context,
                          CostmapMapContext::ConstPtr map) = 0;
 };
 

@@ -1,6 +1,6 @@
-// Test plugin: a recovery whose start throws (for exception-path closure regression).
+// Test module: a recovery whose start throws (for exception-path closure regression).
 //
-// Reproduces the original scenario of high-priority defect #1: a plugin start exception used to leave RecoveryExecution
+// Reproduces the original scenario of high-priority defect #1: a module start exception used to leave RecoveryExecution
 // stuck in the STARTED intermediate state -> the action-driving task polled forever -> recovery_exclusive deadlock.
 
 #include <ayanami/abstract/core/abstract_recovery.hpp>

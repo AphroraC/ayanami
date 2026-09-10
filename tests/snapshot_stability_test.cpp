@@ -1,9 +1,9 @@
-// Concurrent execution: a slow reader holds the shared lock via CostmapMapContext::lockGlobal and reads the
-// master grid directly (zero-copy CostmapView), mutually excluded and serialized against a concurrent obstacle writer (the only writer,
+// Concurrent execution: a slow reader holds the shared lock inside CostmapMapContext::readGlobal and reads the
+// master grid directly (zero copy), mutually excluded and serialized against a concurrent obstacle writer (the only writer,
 // writing under the unique lock).
 //
 // Assertions:
-// - while the reader holds lockGlobal the writer blocks in unique_lock; after the reader releases, the writer completes
+// - while the reader is inside the read callback the writer blocks in unique_lock; after it returns, the writer completes
 // its write (monotonic clock timestamps prove lock exclusivity);
 // - the grid content read under the lock is consistent (no tearing), and the writer multi-round writes are not starved by the slow reader;
 // - after the writer publishes, the reader re-reads (shared lock) and sees the new data (direct read at acquire time / after release).
@@ -55,20 +55,22 @@ class Gate {
   bool opened{false};
 };
 
-/// Slow-reader smoother: smoothPath holds the shared lock via lockGlobal (building a view) to simulate
+/// Slow-reader smoother: smoothPath holds the shared lock by staying inside the map read callback to simulate
 /// a slow read (sleep). While locked it samples two cells to record tearing pairs; after release it records a monotonic
 /// clock timestamp (compared against the writer unique-lock acquisition timestamp to prove the writer blocked until the reader released).
 class SlowSmoother : public ayanami::costmap::CostmapSmoother {
  public:
-  void configure(const ayanami::PluginContext& /*context*/,
+  void configure(const ayanami::ModuleContext& /*context*/,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override {
     this->map = std::move(map);
   }
 
   ResultT<void> smoothPath(Path& path, double) override {
     ++calls;
-    {
-      const auto view = map->lockGlobal();
+    // The read callback is the only way to hold the map lock: staying inside it
+    // (including the sleep) is what simulates the slow reader the writer must
+    // wait for.
+    map->readGlobal([&](const ayanami::costmap::CostmapReader& view) {
       reader_started.set();
       if (view.valid() && view.grid()->inBounds(3u, 3u) &&
           view.grid()->inBounds(3u, 4u)) {
@@ -79,9 +81,10 @@ class SlowSmoother : public ayanami::costmap::CostmapSmoother {
           ++torn_pairs;
         }
       }
-      // Simulates the slow reader: the writer waits exclusively while the lock is held.
+      // Simulates the slow reader: the writer waits exclusively while the lock
+      // is held.
       std::this_thread::sleep_for(hold_duration);
-    }
+    });
     reader_released.store(
         std::chrono::steady_clock::now().time_since_epoch().count());
     return ResultT<void>::success();
@@ -134,7 +137,7 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
 
   auto smoother = std::make_shared<SlowSmoother>();
   smoother->hold_duration = std::chrono::milliseconds(200);
-  smoother->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+  smoother->configure(ayanami::ModuleContext{"test_smoother", ayanami::Config("")},
                       ctx->getSharedConstPtr());
   ayanami::costmap::CostmapSmootherExecution exec("test_smoother", smoother,
                                                   ctx);
@@ -183,7 +186,7 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
 
   auto smoother = std::make_shared<SlowSmoother>();
   smoother->hold_duration = std::chrono::milliseconds(1);
-  smoother->configure(ayanami::PluginContext{"test_smoother", ayanami::Config("")},
+  smoother->configure(ayanami::ModuleContext{"test_smoother", ayanami::Config("")},
                       ctx->getSharedConstPtr());
   ayanami::costmap::CostmapSmootherExecution exec("test_smoother", smoother,
                                                   ctx);
@@ -205,7 +208,7 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
     }
   });
 
-  // Slow reader: samples via multiple execution lockGlobal rounds.
+  // Slow reader: samples via multiple read-callback rounds owned by the execution.
   for (int i = 0; i < 30; ++i) {
     exec.smoothPath(makePath(), 10.0);
     exec.join();

@@ -63,7 +63,7 @@ public:
     if (!recovery) {
       Result result;
       result.error = ErrorCode::INTERNAL_ERROR;
-      result.message = "Recovery plugin is null";
+      result.message = "Recovery module is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
       action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,

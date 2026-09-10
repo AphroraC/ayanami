@@ -1,4 +1,4 @@
-// Test plugin: non-costmap-family recovery (PlainRecovery), verifies the costmap host reject path.
+// Test module: non-costmap-family recovery (PlainRecovery), verifies the costmap host reject path.
 //
 // The old API runRecovery returned Canceled in one shot; under the new protocol the first tick cycle returns
 // the cancelled terminal state (the original one-shot semantics preserved).

@@ -45,7 +45,7 @@ void* openSo(const std::string& so_name) {
     spdlog::error("failed to load shared object '{}': {}", so_name, dlerror());
     return nullptr;
   }
-  // Handles are never dlclosed: the plugin lifetime equals the process lifetime.
+  // Handles are never dlclosed: the module lifetime equals the process lifetime.
   registry.emplace(so_name, handle);
   moduleRefCounts()[so_name] = 1;
   return handle;

@@ -24,12 +24,25 @@ class CostmapSavitzkySmoother final : public ayanami::costmap::CostmapSmoother {
   // The smoother family base class has no virtual destructor; the derived class adds one (without override).
   virtual ~CostmapSavitzkySmoother() = default;
 
-  void configure(const PluginContext& context,
+  /// @brief Parameter-loading seam (ExtensionModule): called by the loader
+  /// right after a successful load, and by configure() for callers that build
+  /// the object directly.
+  void configureParameters(const ayanami::ModuleContext& context) override;
+
+  void configure(const ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   /// @brief In-place smoothing: modifies path directly; restores the original path on failure/rollback.
   ResultT<void> smoothPath(ayanami::nav_msgs::Path& path,
                            double max_duration) override;
+
+ private:
+  /// @brief smoothPath() body with the local map already read-locked.
+  ResultT<void> smoothPathWithMap(ayanami::nav_msgs::Path& path,
+                                  double max_duration,
+                                  const ayanami::costmap::CostmapReader& map);
+
+ public:
 
   bool cancel() override;
 

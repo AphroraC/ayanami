@@ -10,15 +10,15 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief nav2-style plugin selector (PlannerSelector/ControllerSelector/
+ * @brief nav2-style module selector (PlannerSelector/ControllerSelector/
  * SmootherSelector are the same class registered under three names).
  *
- * Mirrors nav2's selector semantics minus the ROS topic: the selected plugin
+ * Mirrors nav2's selector semantics minus the ROS topic: the selected module
  * id is published to the output port each tick. The value comes from
  * (in priority):
  * 1. the input port `override_id` when it is bound to a blackboard entry
  *    that exists and is non-empty (a host/extension/test can hot-switch the
- *    plugin by writing that blackboard key externally, which is the
+ *    module by writing that blackboard key externally, which is the
  *    ROS-free analogue of nav2's selector topic);
  * 2. the `default_id` input port (typically a literal in the tree XML).
  * A change of the effective selection is logged once.
@@ -29,16 +29,16 @@ namespace behavior_tree {
  *   ...
  *   <ComputePathToPose goal="{goal}" planner_id="{planner_id}" .../>
  */
-class PluginSelectorNode : public BT::SyncActionNode {
+class ModuleSelectorNode : public BT::SyncActionNode {
  public:
-  PluginSelectorNode(const std::string& name, const BT::NodeConfig& config)
+  ModuleSelectorNode(const std::string& name, const BT::NodeConfig& config)
     : BT::SyncActionNode(name, config) {}
 
   static BT::PortsList providedPorts() {
     return {
-      BT::InputPort<std::string>("default_id", "", "fallback plugin id"),
+      BT::InputPort<std::string>("default_id", "", "fallback module id"),
       BT::InputPort<std::string>("override_id", "", "optional blackboard key an external writer updates to hot-switch"),
-      BT::OutputPort<std::string>("selected_id", "the effective plugin id"),
+      BT::OutputPort<std::string>("selected_id", "the effective module id"),
     };
   }
 
@@ -52,7 +52,7 @@ class PluginSelectorNode : public BT::SyncActionNode {
     }
     if (selected != last_selected) {
       last_selected = selected;
-      spdlog::info("[bt] {} selected plugin id '{}'", name(), selected);
+      spdlog::info("[bt] {} selected module id '{}'", name(), selected);
     }
     setOutput("selected_id", selected);
     return BT::NodeStatus::SUCCESS;

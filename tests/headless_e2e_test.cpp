@@ -1,6 +1,6 @@
 // (M1 finale): headless E2E full-pipeline test.
 //
-// No real chassis/ROS: assembles the whole chain via the dlopen libayanami_costmap_navigation.so host plugin:
+// No real chassis/ROS: assembles the whole chain via the dlopen libayanami_costmap_navigation.so host module:
 // initialize -> start -> setGoal -> BT (smac planner -> savitzky smoother ->
 // controller) -> cmd_vel emitted via the on_velocity_command bypass; periodic virtual pointclouds
 // (out-of-map obstacles do not affect planning); also verifies the on_costmap_visualization bypass fires.
@@ -36,6 +36,41 @@
 #include <ayanami/utility/extension_module.hpp>
 
 namespace {
+
+/// @brief Declare the four recovery roles the production tree references.
+///
+/// The tree names recoveries by ROLE (spin/wait/backup/clear_costmap), and the BT
+/// extension maps each role to a module through config_recovery. A role nobody
+/// declares resolves to an empty id, which the pilot now refuses to build a tree
+/// with: a recovery that cannot resolve is a configuration error, not something
+/// to discover while the robot is stuck.
+/// @return the JSON array literal for the navigation section's config_recovery.
+std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
+                                   const std::string& module_name,
+                                   const std::string& so_name = "") {
+  const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
+  std::string list;
+  for (const char* role : roles) {
+    const std::string file = std::string("role_") + role + ".json";
+    {
+      std::ofstream ofs(dir / file);
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name
+          << "\", \"role\": \"" << role << "\"";
+      if (!so_name.empty()) {
+        ofs << ", \"so_name\": \"" << so_name << "\"";
+      }
+      // The module's own (empty) parameter section: the loader requires a
+      // section named after the module, so "reads no parameters" is declared
+      // rather than looking like a name/section mismatch.
+      ofs << " }, \"" << module_name << "\": {} }";
+    }
+    if (!list.empty()) {
+      list += ", ";
+    }
+    list += "\"" + file + "\"";
+  }
+  return "[" + list + "]";
+}
 
 using ayanami::abstract::AbstractNavigation;
 using ayanami::geometry_msgs::PoseStamped;
@@ -104,10 +139,14 @@ void write_file(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::string pluginJson(const std::string& module, const std::string& name,
+std::string moduleJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
+  // The module's own (empty) parameter section: the loader requires a section
+  // named after the module, so that "this module reads no parameters" is
+  // declared rather than indistinguishable from a name/section mismatch.
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {}\n}\n";
 }
 
 /// Full config suite (mirrors the complete set). static_map points to tests/assets
@@ -133,7 +172,8 @@ std::filesystem::path makeConfigDir() {
         << "    \"config_planner\": \"planner.json\",\n"
         << "    \"config_smoother\": \"smoother.json\",\n"
         << "    \"config_controller\": \"controller.json\",\n"
-        << "    \"config_recovery\": [\"recovery.json\"],\n"
+        << "    \"config_recovery\": "
+        << writeRecoveryRoleFiles(dir, "test_spin", g_spin_so) << ",\n"
         << "    \"config_goal_checker\": \"goal_checker.json\",\n"
         << "    \"config_progress_checker\": \"progress_checker.json\",\n"
         << "    \"clear_costmap_id\": \"test_spin\",\n"
@@ -149,24 +189,28 @@ std::filesystem::path makeConfigDir() {
   }
 
   write_file(dir / "planner.json",
-             pluginJson("planner", "test_planner", g_smac_so));
+             moduleJson("planner", "test_planner", g_smac_so));
   write_file(dir / "smoother.json",
-             pluginJson("smoother", "test_smoother", g_savitzky_so));
+             moduleJson("smoother", "test_smoother", g_savitzky_so));
   write_file(dir / "controller.json",
-             pluginJson("controller", "test_controller",
+             moduleJson("controller", "test_controller",
                          g_test_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
-             "\"\n  }\n}\n");
-  // goal/progress checker plugins (the execution needs injected checkers; missing ones are judged
+             "\"\n  },\n  \"test_spin\": {}\n}\n");
+  // goal/progress checker modules (the execution needs injected checkers; missing ones are judged
   // InternalError). Parameters merged into the same json (modules read them explicitly via config_goal_checker /
   // config_progress_checker; the progress required_movement is set small to
   // simulate a robot that must keep judging progress, avoiding a false NoProgress from the 5s stationary window).
   write_file(dir / "goal_checker.json",
              "{\n  \"goal_checker\": {\n"
              "    \"name\": \"simple_goal_checker\",\n"
-             "    \"so_name\": \"" + g_goal_checker_so + "\",\n"
+             "    \"so_name\": \"" + g_goal_checker_so + "\"\n"
+             "  },\n"
+             // The module reads its own section (ModuleContext::name), not the
+             // family one: parameters left in the family section are inert.
+             "  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.10,\n"
              "    \"angle_tolerance\": 0.20,\n"
              "    \"linear_tolerance\": 0.10,\n"
@@ -175,7 +219,9 @@ std::filesystem::path makeConfigDir() {
   write_file(dir / "progress_checker.json",
              "{\n  \"progress_checker\": {\n"
              "    \"name\": \"simple_progress_checker\",\n"
-             "    \"so_name\": \"" + g_progress_checker_so + "\",\n"
+             "    \"so_name\": \"" + g_progress_checker_so + "\"\n"
+             "  },\n"
+             "  \"simple_progress_checker\": {\n"
              "    \"required_movement\": 0.1,\n"
              "    \"movement_angle_required\": 0.2,\n"
              "    \"time_period\": 5.0\n"
@@ -252,11 +298,11 @@ std::filesystem::path makeConfigDir() {
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RoundRobin name="RecoveryActions">
+        <RecoverySequence name="RecoveryActions">
           <Sequence><Recovery recovery="{spin_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{wait_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{backup_id}"/>  <AlwaysFailure/></Sequence>
-        </RoundRobin>
+        </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>
@@ -321,8 +367,8 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
   detachCollectors();
 
   // 3. Load the host via the common factory -> AbstractNavigation::Ptr (typed cast, 4)
-  auto host_ext = ayanami::ExtensionModule::load_module(g_host_so);
-  ASSERT_NE(host_ext, nullptr) << "load_module failed: " << g_host_so;
+  auto host_ext = ayanami::ExtensionModule::loadModule(g_host_so);
+  ASSERT_NE(host_ext, nullptr) << "loadModule failed: " << g_host_so;
   AbstractNavigation::Ptr nav =
       std::dynamic_pointer_cast<AbstractNavigation>(std::move(host_ext));
   ASSERT_NE(nav, nullptr);

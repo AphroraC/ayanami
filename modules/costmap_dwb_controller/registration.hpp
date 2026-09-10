@@ -1,5 +1,5 @@
 // registration.hpp -- static registries for critics / trajectory generators (the ayanami
-// replacement for pluginlib: all sub-plugins are compiled into the module .so, looked up by short class name).
+// replacement for pluginlib: all sub-modules are compiled into the module .so, looked up by short class name).
 #pragma once
 
 #include <functional>

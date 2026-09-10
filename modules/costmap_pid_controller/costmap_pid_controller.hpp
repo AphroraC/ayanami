@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <ayanami/costmap/core/costmap_controller.hpp>
@@ -39,8 +40,13 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   virtual ~CostmapPidController() = default;
 
   /// @brief costmap family injection contract. The algorithm does not read the map and only holds the map module pointer;
-  /// parameters are read from the PluginContext-injected own configuration.
-  void configure(const PluginContext& context,
+  /// parameters are read from the ModuleContext-injected own configuration.
+  /// @brief Parameter-loading seam (ExtensionModule): called by the loader
+  /// right after a successful load, and by configure() for callers that build
+  /// the object directly.
+  void configureParameters(const ayanami::ModuleContext& context) override;
+
+  void configure(const ModuleContext& context,
                  ayanami::costmap::CostmapMapContext::ConstPtr map) override;
 
   ResultT<void> computeVelocityCommand(
@@ -51,6 +57,11 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   bool setPlan(const nav_msgs::Path& plan) override;
 
   bool cancel() override;
+
+  /// @brief Arrival contract pushed by the execution layer from the goal
+  /// checker. Treated as an upper bound on the "stop translating and align
+  /// heading" distance (see goalToleranceXy).
+  void setGoalTolerances(const ayanami::PoseTolerance& tolerance) override;
 
  private:
   struct CostmapPidControllerParam {
@@ -89,11 +100,17 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   };
 
   void resetTrackingState();
+  /// @brief Effective XY bound for stopping linear velocity: the tighter of
+  /// param.goal_tolerance and the injected checker tolerance.
+  double goalToleranceXy() const;
   double limitAcceleration(double last_vel, double cmd_vel, double max_acc,
                            double max_decel, double dt) const;
   double distanceDecay(double distance, double target_velocity) const;
 
   CostmapPidControllerParam param;
+  /// @brief Arrival contract injected per run by the execution layer; unset
+  /// when the controller runs standalone (params alone decide the bound).
+  std::optional<ayanami::PoseTolerance> goal_tolerances;
   nav_msgs::Path plan;
   geometry_msgs::PoseStamped goal;
   geometry_msgs::PoseStamped last_pose;

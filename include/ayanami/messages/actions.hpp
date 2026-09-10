@@ -17,16 +17,16 @@ namespace actions {
 // does not parse it). Every Goal/Result carries session_id / plan_version
 // for BT nodes onRunning race checks.
 //
-// Plugin selection: the first three families support multiple configured
-// plugins (nav2 semantics). The *_id goal field selects the plugin at
+// Module selection: the first three families support multiple configured
+// modules (nav2 semantics). The *_id goal field selects the module at
 // request time; an empty id falls back to the family default (the first
-// configured plugin), which is also what single-plugin configs use.
+// configured module), which is also what single-module configs use.
 
 struct GetPathGoal {
   ayanami::geometry_msgs::PoseStamped start;
   ayanami::geometry_msgs::PoseStamped goal;
   double tolerance = 0.1;
-  /// @brief Planner plugin id (nav2 goal-level selection; empty = default).
+  /// @brief Planner module id (nav2 goal-level selection; empty = default).
   std::string planner_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
@@ -38,7 +38,6 @@ struct GetPathResult {
   ErrorCode error = ErrorCode::NONE;
   std::string message;
   ayanami::nav_msgs::Path path;
-  double cost = 0.0;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
   using Ptr = std::shared_ptr<GetPathResult>;
@@ -57,7 +56,7 @@ struct GetPathFeedback {
 struct SmoothPathGoal {
   ayanami::nav_msgs::Path path;
   double max_duration = 2.0;
-  /// @brief Smoother plugin id (nav2 goal-level selection; empty = default).
+  /// @brief Smoother module id (nav2 goal-level selection; empty = default).
   std::string smoother_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
@@ -85,7 +84,7 @@ struct SmoothPathFeedback {
 
 struct ExePathGoal {
   ayanami::nav_msgs::Path path;
-  /// @brief Controller plugin id (nav2 goal-level selection; empty = default).
+  /// @brief Controller module id (nav2 goal-level selection; empty = default).
   std::string controller_id;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;
@@ -120,7 +119,7 @@ struct RecoveryGoal {
   std::string recovery_id;
   /// @brief The failure context that triggered this recovery action (injected from the blackboard by the BT Recovery node).
   ayanami::FailureContext cause;
-  /// @brief Per-run override params (nullopt field = the plugin configure-time default).
+  /// @brief Per-run override params (nullopt field = the module configure-time default).
   ayanami::RecoveryBehaviorParams behavior;
   uint64_t session_id = 0;
   uint64_t plan_version = 0;

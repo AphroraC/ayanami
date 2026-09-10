@@ -109,7 +109,7 @@ class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const TwistStamped&) override {
     return reached();
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 
@@ -315,7 +315,7 @@ TEST(PlannerAction, preemptSameSlotJoinsOldGoalBeforeNewStarts) {
   EXPECT_EQ(first.status(), ayanami::actions::GoalStatus::CANCELED);
   ASSERT_TRUE(waitReady(second));
   EXPECT_EQ(second.status(), ayanami::actions::GoalStatus::SUCCEEDED);
-  // Serial: the second starts only after the first is joined (plugins never run concurrently)
+  // Serial: the second starts only after the first is joined (modules never run concurrently)
   EXPECT_EQ(planner->calls.load(), 2);
 }
 

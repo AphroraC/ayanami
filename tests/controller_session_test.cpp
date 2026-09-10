@@ -74,7 +74,7 @@ class LambdaGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const TwistStamped&) override {
     return reached();
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 

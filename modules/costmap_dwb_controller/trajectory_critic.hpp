@@ -19,7 +19,7 @@ namespace dwb_core {
  * @class TrajectoryCritic
  * @brief Evaluates a Trajectory2D to produce a score
  *
- * This class defines the plugin interface for the TrajectoryCritic which
+ * This class defines the module interface for the TrajectoryCritic which
  * gives scores to trajectories, where lower numbers are better, but negative
  * scores are considered invalid.
  *
@@ -37,14 +37,25 @@ public:
   virtual ~TrajectoryCritic() {}
 
   /**
+   * @brief Arrival contract pushed by the controller, which receives it from
+   * the goal checker (the single owner of the arrival decision).
+   *
+   * Exists so a critic can compare its own engagement radius against the real
+   * acceptance region instead of resolving another module's config file: the
+   * value arrives through the framework, not through the config layout.
+   * Default: no-op, for critics whose scoring does not depend on it.
+   */
+  virtual void setGoalXyTolerance(double tolerance) { (void)tolerance; }
+
+  /**
    * @brief Initialize the critic with appropriate pointers and parameters
    *
    * The name and costmap are stored as member variables.
-   * The scale parameter is read from <plugin_name>.<name>.scale (default 1.0, matching nav2 semantics).
+   * The scale parameter is read from <module_name>.<name>.scale (default 1.0, matching nav2 semantics).
    *
-   * @param cfg Module configuration (json section dwb_plugin_name)
+   * @param cfg Module configuration (json section dwb_module_name)
    * @param name The name of this critic
-   * @param ns The namespace of the planner (dwb_plugin_name)
+   * @param ns The namespace of the planner (dwb_module_name)
    * @param costmap Pointer to the local costmap
    * @param footprint Robot footprint spec (used by critics such as ObstacleFootprint)
    */
@@ -54,9 +65,9 @@ public:
     this->name = name;
     this->costmap = costmap;
     this->footprint = footprint;
-    dwb_plugin_name = ns;
+    dwb_module_name = ns;
     this->cfg = &cfg;
-    scale = cfg.param<double>(dwb_plugin_name, name + ".scale", 1.0);
+    scale = cfg.param<double>(dwb_module_name, name + ".scale", 1.0);
     onInit();
   }
   virtual void onInit() {}
@@ -113,7 +124,7 @@ public:
 
 protected:
   std::string name;
-  std::string dwb_plugin_name;
+  std::string dwb_module_name;
   const costmap_2d::Costmap2D* costmap;
   const std::vector<geometry_msgs::Point>* footprint{nullptr};
   const ayanami::Config* cfg{nullptr};

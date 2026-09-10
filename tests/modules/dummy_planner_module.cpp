@@ -5,9 +5,9 @@
 
 namespace {
 
-/// Supplement: a real plugin returning AbstractPlanner* (for PluginManager loading).
+/// Supplement: a real module returning AbstractPlanner* (for ModuleManager loading).
 /// createDummyModule remains a pure dlopen smoke symbol (returns int, only for
-/// low-level load_module tests, no algorithm/navigation loading).
+/// low-level loadModule tests, no algorithm/navigation loading).
 class DummyPlanner : public ayanami::abstract::AbstractPlanner {
 public:
   ayanami::ResultT<void> makePlan(
@@ -25,7 +25,7 @@ public:
 
 extern "C" int createDummyModule() { return 42; }
 
-/// Common factory: returns ExtensionModule* (typed by PluginManager via dynamic_pointer_cast).
+/// Common factory: returns ExtensionModule* (typed by ModuleManager via dynamic_pointer_cast).
 extern "C" ayanami::ExtensionModule* create_extension_module() {
   return new DummyPlanner;
 }

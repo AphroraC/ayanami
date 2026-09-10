@@ -1,10 +1,10 @@
 #pragma once
 
+#include "ayanami/behavior_tree/resettable_node.hpp"
 #include "ayanami/behavior_tree/action_nodes.hpp"
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
 #include "ayanami/behavior_tree/condition_nodes.hpp"
 #include "ayanami/behavior_tree/pipeline_sequence.hpp"
-#include "ayanami/behavior_tree/navigation_node_state.hpp"
 #include "ayanami/behavior_tree/rate_controller.hpp"
 #include "ayanami/behavior_tree/recovery_node.hpp"
 #include "ayanami/behavior_tree/selector_nodes.hpp"
@@ -22,12 +22,15 @@ namespace ayanami {
 namespace behavior_tree {
 
 /**
- * @brief RoundRobin (retained node): polls children with a memory cursor.
+ * @brief RecoverySequence (retained node): polls recovery children with a
+ * ROTATING memory cursor (nav2 RoundRobin semantics; the production
+ * recovery branch -- spin -> wait -> backup rotation).
  *
  * - Current child RUNNING -> overall RUNNING, cursor stays (next tick ticks
  *   it again);
  * - Current child SUCCESS -> cursor moves to the next (mod count) and the
- *   node returns SUCCESS;
+ *   node returns SUCCESS -- the cursor keeps advancing across successes, so
+ *   consecutive recoveries rotate instead of repeating the first one;
  * - Current child FAILURE -> move to the next; if all were tried and still
  *   FAILURE -> overall FAILURE.
  *
@@ -37,17 +40,16 @@ namespace behavior_tree {
  * goals (nav2 avoids this naturally via full tree rebuilds; a resident tree
  * must reset explicitly).
  */
-class RoundRobin : public BT::ControlNode,
-                    public NavigationTreeNodeState,
+class RecoverySequence : public BT::ControlNode,
                     public ResettableNode {
  public:
-  RoundRobin(const std::string& name, const BT::NodeConfig& config)
+  RecoverySequence(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config), current_child_idx(0) {}
 
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<uint64_t>("reset_token", 0,
-                              "revision that resets the round-robin cursor"),
+                              "revision that resets the recovery cursor"),
     };
   }
 
@@ -83,101 +85,14 @@ class RoundRobin : public BT::ControlNode,
   }
 
   /// @brief Logical reset after a tree-life terminal state (v4 halt only propagates to RUNNING children).
-  void resetState() override { current_child_idx = 0; }
 
  private:
   size_t current_child_idx;
   uint64_t reset_token{0};
 };
 
-/// Tries recovery children in declaration order. A successful recovery returns
-/// SUCCESS to its parent so the surrounding RecoveryNode retries navigation;
-/// a failed recovery advances to the next child.
-///
-/// reset_token (resident-tree reset protocol): when the token changes,
-/// reset the cursor and halt in-flight children; a new navigation round
-/// restarts from the first recovery (the previous cursor is not carried
-/// over).
-class RecoverySequence : public BT::ControlNode,
-                       public NavigationTreeNodeState,
-                       public ResettableNode {
- public:
-  RecoverySequence(const std::string& name, const BT::NodeConfig& config)
-      : BT::ControlNode(name, config), current_child_idx(0) {}
-
-  static BT::PortsList providedPorts() {
-    return {
-      BT::InputPort<uint64_t>("reset_token", 0,
-                              "revision that resets the recovery cursor"),
-    };
-  }
-
-  BT::NodeStatus tick() override {
-    if (consumeResetToken(*this, "reset_token")) {
-      haltChildren();
-      current_child_idx = 0;
-    }
-    while (current_child_idx < childrenCount()) {
-      const auto status = children_nodes_[current_child_idx]->executeTick();
-      if (status == BT::NodeStatus::RUNNING) return status;
-      if (status == BT::NodeStatus::SUCCESS) {
-        haltChildren();
-        current_child_idx = 0;
-        return BT::NodeStatus::SUCCESS;
-      }
-      if (status != BT::NodeStatus::FAILURE) return status;
-      children_nodes_[current_child_idx]->haltNode();
-      ++current_child_idx;
-    }
-    haltChildren();
-    current_child_idx = 0;
-    return BT::NodeStatus::FAILURE;
-  }
-
-  void halt() override {
-    BT::ControlNode::halt();
-    current_child_idx = 0;
-  }
-
-  /// @brief Logical reset after a tree-life terminal state (v4 halt only propagates to RUNNING children).
-  void resetState() override { current_child_idx = 0; }
-
- private:
-  std::size_t current_child_idx;
-  uint64_t reset_token{0};
-};
-
-/// @brief Full logical reset after a tree-life terminal state (the pilot
-/// calls it when a tick returns non-RUNNING).
-///
-/// BT.CPP v4 changed the halt semantics: ControlNode::haltChildren only
-/// calls haltNode on children with status==RUNNING; subtrees cached in a
-/// terminal state (SUCCESS/FAILURE) are not reset -- in the resident-tree
-/// model the planner/smoother RateController caches, RecoveryNode retry
-/// counters, and RecoverySequence/RoundRobin cursors would leak across tree
-/// lives, causing "planner never replans + recovery storm" (captured with a
-/// rosbag in rviz field tests). This function is the equivalent of nav2's
-/// (BT.CPP v3) strong halt semantics: reset each node's internal state
-/// without touching the BT state machine (executeTick already auto-resets).
-inline void resetNavigationTreeState(BT::Tree& tree) {
-  tree.applyVisitor([](BT::TreeNode* node) {
-    if (auto* n = dynamic_cast<NavigationTreeNodeState*>(node)) {
-      n->resetState();
-    }
-    // v3-style strong halt for the tree-life boundary: BT.CPP v4 returns a
-    // terminal node's cached SUCCESS/FAILURE without re-ticking it, so every
-    // non-IDLE node must go back to IDLE or the next tree life never
-    // re-executes it (root cause of "planner never replans"). At a tree-life
-    // terminal state no child is RUNNING, so no in-flight onHalted work is
-    // lost by resetting the status directly.
-    if (node->status() != BT::NodeStatus::IDLE) {
-      node->haltNode();
-    }
-  });
-}
-
 /// @brief Register the navigation BT node classes (retained nodes +
-/// control/condition nodes + plugin selectors).
+/// control/condition nodes + module selectors).
 /// Action nodes receive NavigationRuntime::Ptr via the blackboard
 /// (action_nodes.hpp).
 ///
@@ -195,66 +110,18 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   // condition nodes
   factory.registerNodeType<IsPathValid>("IsPathValid");
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
-  // Control nodes (+ RoundRobin)
+  // Control nodes
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
-  factory.registerNodeType<RoundRobin>("RoundRobin");
+  // rotating recovery sequence (nav2 RoundRobin semantics, production name)
   factory.registerNodeType<RecoverySequence>("RecoverySequence");
-  // plugin selectors (nav2 PlannerSelector/ControllerSelector analogues;
+  // module selectors (nav2 PlannerSelector/ControllerSelector analogues;
   // one class under three names, output feeds the *_id action ports)
-  factory.registerNodeType<PluginSelectorNode>("PlannerSelector");
-  factory.registerNodeType<PluginSelectorNode>("ControllerSelector");
-  factory.registerNodeType<PluginSelectorNode>("SmootherSelector");
+  factory.registerNodeType<ModuleSelectorNode>("PlannerSelector");
+  factory.registerNodeType<ModuleSelectorNode>("ControllerSelector");
+  factory.registerNodeType<ModuleSelectorNode>("SmootherSelector");
 }
 
-/**
- * @brief Registration-time enforcement of the resident-tree reset protocol
- * (build-time check, no longer a convention).
- *
- * The resident tree relies on every custom control/decorator node
- * implementing NavigationTreeNodeState: at a tree-life terminal state the
- * pilot walk calls resetState() (plus a v3-style strong halt) to clear
- * terminal-cached internal state (single-shot caches, retry counters,
- * round-robin cursors). BT.CPP v4 halt only resets RUNNING children, so a
- * third-party node holding terminal state WITHOUT the interface would
- * silently leak it across tree lives -- the historical "planner never
- * replans + recovery storm" failure mode.
- *
- * This walk instantiates every registered non-builtin Control/Decorator
- * node once (empty config) and throws when it does not implement
- * NavigationTreeNodeState, so a violating extension fails at tree build,
- * not in the field.
- */
-inline void validateTreeNodeStateProtocol(BT::BehaviorTreeFactory& factory) {
-  // builtinNodes() is a set in BT.CPP v4; manifests() a map id -> manifest.
-  const std::set<std::string> builtin = factory.builtinNodes();
-  for (const auto& entry : factory.manifests()) {
-    const BT::TreeNodeManifest& manifest = entry.second;
-    const bool is_builtin = builtin.count(manifest.registration_ID) != 0;
-    if (is_builtin || (manifest.type != BT::NodeType::CONTROL &&
-                       manifest.type != BT::NodeType::DECORATOR)) {
-      continue;
-    }
-    BT::NodeConfig config;
-    auto node = factory.instantiateTreeNode(manifest.registration_ID,
-                                            manifest.registration_ID,
-                                            config);
-    if (node == nullptr) {
-      throw BT::RuntimeError("validateTreeNodeStateProtocol: node '" +
-                             manifest.registration_ID + "' failed to build");
-    }
-    if (dynamic_cast<NavigationTreeNodeState*>(node.get()) == nullptr) {
-      throw BT::RuntimeError(
-          "validateTreeNodeStateProtocol: control/decorator node '" +
-          manifest.registration_ID +
-          "' does not implement NavigationTreeNodeState -- resident-tree "
-          "reset protocol cannot reset its internal state; implement the "
-          "interface (resetState) or the node will leak terminal state "
-          "across tree lives");
-    }
-  }
-}
-
-} // namespace behavior_tree
-} // namespace ayanami
+}  // namespace behavior_tree
+}  // namespace ayanami

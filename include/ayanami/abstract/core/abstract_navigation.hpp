@@ -13,9 +13,9 @@ namespace ayanami {
 namespace abstract {
 
 /**
- * @brief Host navigation plugin entry point.
+ * @brief Host navigation module entry point.
  *
- * The ROS-side dlopen host plugin (e.g. CostmapNavigation) forwards inputs
+ * The ROS-side dlopen host module (e.g. CostmapNavigation) forwards inputs
  * only through this interface: initialize/start/stop/spinOnce/setGoal +
  * setPointcloud/setLaserScan; internally it holds the full
  * NavigationServerBase + BehaviorTreePilot stack.
@@ -26,7 +26,7 @@ public:
 
   virtual ~AbstractNavigation() = default;
 
-  /// @brief Load configuration from config_path and initialize all components/plugins.
+  /// @brief Load configuration from config_path and initialize all components/modules.
   virtual void initialize(const std::string& config_path) = 0;
 
   /// @brief Start the internal loops (resident BT tree / subscriptions).

@@ -47,14 +47,14 @@ bool OscillationCritic::CommandTrend::hasSignFlipped() {
 
 void OscillationCritic::onInit() {
   oscillation_reset_dist =
-      config().param<double>(dwb_plugin_name,
+      config().param<double>(dwb_module_name,
                              name + ".oscillation_reset_dist", 0.05);
   oscillation_reset_dist_sq = oscillation_reset_dist * oscillation_reset_dist;
   oscillation_reset_angle =
-      config().param<double>(dwb_plugin_name,
+      config().param<double>(dwb_module_name,
                              name + ".oscillation_reset_angle", 0.2);
   oscillation_reset_time =
-      config().param<double>(dwb_plugin_name,
+      config().param<double>(dwb_module_name,
                              name + ".oscillation_reset_time", -1.0);
 
   /**
@@ -63,7 +63,7 @@ void OscillationCritic::onInit() {
    * (the min_speed_xy / min_trans_vel legacy-compatibility branch has no counterpart in the json config model; omitted)
    */
   x_only_threshold =
-      config().param<double>(dwb_plugin_name,
+      config().param<double>(dwb_module_name,
                              name + ".x_only_threshold", 0.05);
 
   reset();

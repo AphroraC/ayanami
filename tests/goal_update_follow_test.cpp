@@ -1,7 +1,7 @@
 // goal_update_follow_test: end-to-end regression for delivering a new goal while navigation is in progress.
 //
 // Reproduces and locks the rviz-scenario bug ("the new goal was replanned, but the robot does not follow the new path"):
-// a resident default tree + a real NavigationServerBase + real plugin execution threads; goal2 is delivered while the
+// a resident default tree + a real NavigationServerBase + real module execution threads; goal2 is delivered while the
 // controller is tracking the goal1 path, asserting:
 // 1. the planner immediately replans for goal2 (planned_goal updated);
 // 2. the smoother re-smooths the new path (smoothed_goal updated) -- the fix: the smoother branch uses
@@ -43,12 +43,47 @@
 
 namespace {
 
+/// @brief Declare the four recovery roles the production tree references.
+///
+/// The tree names recoveries by ROLE (spin/wait/backup/clear_costmap), and the BT
+/// extension maps each role to a module through config_recovery. A role nobody
+/// declares resolves to an empty id, which the pilot now refuses to build a tree
+/// with: a recovery that cannot resolve is a configuration error, not something
+/// to discover while the robot is stuck.
+/// @return the JSON array literal for the navigation section's config_recovery.
+std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
+                                   const std::string& module_name,
+                                   const std::string& so_name = "") {
+  const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
+  std::string list;
+  for (const char* role : roles) {
+    const std::string file = std::string("role_") + role + ".json";
+    {
+      std::ofstream ofs(dir / file);
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name
+          << "\", \"role\": \"" << role << "\"";
+      if (!so_name.empty()) {
+        ofs << ", \"so_name\": \"" << so_name << "\"";
+      }
+      // The module's own (empty) parameter section: the loader requires a
+      // section named after the module, so "reads no parameters" is declared
+      // rather than looking like a name/section mismatch.
+      ofs << " }, \"" << module_name << "\": {} }";
+    }
+    if (!list.empty()) {
+      list += ", ";
+    }
+    list += "\"" + file + "\"";
+  }
+  return "[" + list + "]";
+}
+
 using ayanami::behavior_tree::BehaviorTreePilot;
 using ayanami::components::ControllerExecution;
 using ayanami::components::NavigationServerBase;
 using ayanami::geometry_msgs::PoseStamped;
 
-/// Field-by-field identical POD layout to the one in tests/plugins/goal_update_follow_plugins.cpp.
+/// Field-by-field identical POD layout to the one in tests/modules/goal_update_follow_modules.cpp.
 /// Each .so embeds its own Probe singleton (static instances are isolated per DSO) and writes only its own role fields;
 /// the test takes a pointer from each of the three .so files and reads the respective fields.
 struct GoalUpdateProbe {
@@ -72,7 +107,7 @@ GoalUpdateProbe* loadProbe(const std::string& so_path) {
   return fn ? fn() : nullptr;
 }
 
-// ---- Test-only checkers (implemented directly in the test binary, not loaded as plugins) ----
+// ---- Test-only checkers (implemented directly in the test binary, not loaded as modules) ----
 
 class NeverArrivedGoalChecker : public ayanami::abstract::AbstractGoalChecker {
  public:
@@ -82,7 +117,7 @@ class NeverArrivedGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const ayanami::geometry_msgs::TwistStamped&) override {
     return false;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -94,19 +129,22 @@ class AlwaysProgressChecker
   bool check(const PoseStamped&) override { return true; }
 };
 
-// ---- Test server: loads the goal_update plugin family via the protected PluginManager ----
+// ---- Test server: loads the goal_update module family via the protected ModuleManager ----
 
 class GoalUpdateTestServer : public NavigationServerBase {
  public:
-  void loadTestPlugins(const std::string& planner_so,
+  void loadTestModules(const std::string& planner_so,
                        const std::string& smoother_so,
                        const std::string& controller_so) {
     default_planner = "straight_planner";
     default_smoother = "probe_smoother";
     default_controller = "probe_controller";
-    planner_plugins.loadPlugin({default_planner, planner_so}, {});
-    smoother_plugins.loadPlugin({default_smoother, smoother_so}, {});
-    controller_plugins.loadPlugin({default_controller, controller_so}, {});
+    // No config file: these probe modules read no parameters.
+    const ayanami::ModuleContext no_config{"test", ayanami::Config("")};
+    planner_modules.loadModule({default_planner, planner_so}, no_config, {});
+    smoother_modules.loadModule({default_smoother, smoother_so}, no_config, {});
+    controller_modules.loadModule({default_controller, controller_so}, no_config,
+                                  {});
     createActions();
   }
 
@@ -151,6 +189,9 @@ std::filesystem::path makeConfigDir() {
     ofs << R"({
       "navigation": {
         "behavior_tree_extension": ")" AYANAMI_TEST_BT_EXT_SO R"(",
+        "behavior_tree_xml": "BT/navigation.xml",
+        "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
+        "config_recovery": )" + writeRecoveryRoleFiles(dir, "test_recovery") + R"(,
         "planner_frequency": -1.0,
         "smoother_frequency": -1.0,
         "controller_frequency": 20.0,
@@ -158,6 +199,11 @@ std::filesystem::path makeConfigDir() {
       }
     })";
   }
+  // The tree XML is a required config asset (no embedded fallback): copy the
+  // shipped one in, so the fixture tests the same tree the robot runs.
+  std::filesystem::create_directories(dir / "BT");
+  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
+                             std::filesystem::copy_options::overwrite_existing);
   return dir;
 }
 
@@ -220,7 +266,7 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
                            Eigen::Isometry3d::Identity(), true);
 
   auto server = std::make_shared<GoalUpdateTestServer>();
-  server->loadTestPlugins(AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO,
+  server->loadTestModules(AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO,
                           AYANAMI_TEST_GOAL_UPDATE_SMOOTHER_SO,
                           AYANAMI_TEST_GOAL_UPDATE_CONTROLLER_SO);
   server->start();
@@ -297,7 +343,7 @@ TEST(GoalUpdateFollowTest, plannerAndSmootherFireOncePerFreshPlan) {
                            Eigen::Isometry3d::Identity(), true);
 
   auto server = std::make_shared<GoalUpdateTestServer>();
-  server->loadTestPlugins(AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO,
+  server->loadTestModules(AYANAMI_TEST_GOAL_UPDATE_PLANNER_SO,
                           AYANAMI_TEST_GOAL_UPDATE_SMOOTHER_SO,
                           AYANAMI_TEST_GOAL_UPDATE_CONTROLLER_SO);
   server->start();

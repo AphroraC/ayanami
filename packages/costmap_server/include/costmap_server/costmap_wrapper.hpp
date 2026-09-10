@@ -25,8 +25,8 @@ namespace costmap_2d {
  *   <10 ms, so the writer simply waits for readers to release; lockForWrite() measures that wait
  *   and emits a throttled warning when it exceeds the threshold, so a misbehaving reader that
  *   starves the map writer becomes observable instead of silently stalling map updates.
- * - Readers (planner/smoother/controller/recovery plugins and visualization): take a
- *   shared lock via CostmapMapContext::lockGlobal()/lockLocal()/readGlobal()/readLocal() and read the
+ * - Readers (planner/smoother/controller/recovery modules and visualization): take a
+ *   shared lock via CostmapMapContext::readGlobal()/readLocal() and read the
  *   master grid directly, with no copy and no snapshot.
  * - isCurrent()/setCurrent(): independent of the lock (atomic bool), used by execution
  *   safetyCheck.
@@ -116,7 +116,7 @@ class CostmapWrapper {
   LayeredCostmap& get() { return *layered_costmap; }
   const LayeredCostmap& get() const { return *layered_costmap; }
 
-  const std::string& getGlobalFrame() const { return global_frame; }
+  const std::string& globalFrame() const { return global_frame; }
 
   bool isRollingWindow() const {
     return layered_costmap ? layered_costmap->isRolling() : false;

@@ -1,9 +1,9 @@
 {
   "controller": {
-    "name": "costmap_pid",
+    "name": "costmap_pid_controller",
     "so_name": "libayanami_costmap_pid_controller.so"
   },
-  "costmap_pid": {
+  "costmap_pid_controller": {
     "max_vel_x": 2.0,
     "max_vel_theta": 1.0,
     "max_acc_x": 1.0,

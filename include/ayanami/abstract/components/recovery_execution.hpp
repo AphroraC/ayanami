@@ -25,7 +25,7 @@ namespace components {
  * RECOVERY_FAILED/CANCELED/STOPPED/INTERNAL_ERROR/PAT_EXCEEDED).
  *
  * This execution is the sole velocity command publisher during recovery:
- * the plugin tick() only returns the desired velocity for this cycle
+ * the module tick() only returns the desired velocity for this cycle
  * (optional), and the execution layer validates finite + max_vel before
  * publishing; non-motion recoveries (velocity=nullopt) publish nothing.
  * All terminal paths -- success/failure/cancel/timeout/exception --
@@ -59,7 +59,7 @@ public:
     return static_cast<RecoveryState>(state.load());
   }
 
-  /// @brief Cancel: set cancel_requested and forward to the recovery plugin (cooperative).
+  /// @brief Cancel: set cancel_requested and forward to the recovery module (cooperative).
   void cancel() override {
     cancel_requested = true;
     if (recovery) recovery->cancel();
@@ -81,7 +81,7 @@ public:
     return std::chrono::steady_clock::now() - start_time > recovery_patience;
   }
 
-  /// @brief Cycle period (default 10ms, aligned with the plugin sim_cycle_dt). Only >0 takes effect.
+  /// @brief Cycle period (default 10ms, aligned with the module sim_cycle_dt). Only >0 takes effect.
   void setCyclePeriod(std::chrono::microseconds period) {
     if (period.count() > 0) cycle_period = period;
   }
@@ -101,9 +101,9 @@ public:
   }
 
 protected:
-  /// @brief Plugin call hook: by default calls the abstract signature;
+  /// @brief Module call hook: by default calls the abstract signature;
   /// map-family executions override it with a typed call (the execution
-  /// layer performs map access; plugins never touch map modules).
+  /// layer performs map access; modules never touch map modules).
   virtual ResultT<void> callRecoveryTick(RecoveryCycleData& cycle) {
     return recovery->tick(cycle);
   }
@@ -114,7 +114,7 @@ protected:
     // would drop a cancel that just happened after start (TOCTOU).
     setState(STARTED, false);
     start_time = std::chrono::steady_clock::now();
-    // Plugin start/setBehaviorParams get the same exception-fallback
+    // Module start/setBehaviorParams get the same exception-fallback
     // protection as tick: if a start exception escapes run, the state
     // machine would stop in the intermediate STARTED state and the action
     // driver task would never observe a terminal state -> recovery mutex
@@ -123,6 +123,13 @@ protected:
     try {
       if (recovery) {
         recovery->setBehaviorParams(behavior_params);
+        // The cadence this loop will drive the module at: pushed before start()
+        // so a module can size its run up front, instead of reading a framework
+        // parameter out of its own config file.
+        // cycle_period is microseconds -- convert, or the module is told its
+        // cadence is ~10000 seconds and sizes every run to a single frame.
+        recovery->setCyclePeriod(
+            std::chrono::duration<double>(cycle_period).count());
         recovery->start();
       }
       setState(RECOVERING, false);
@@ -148,7 +155,7 @@ protected:
 
         RecoveryCycleData cycle;
         const ResultT<void> outcome = callRecoveryTick(cycle);
-        // If a cancel happens during the cycle call, cancellation wins (for blocking recoveries / plugins that forward cancels).
+        // If a cancel happens during the cycle call, cancellation wins (for blocking recoveries / modules that forward cancels).
         if (cancel_requested) {
           error = ErrorCode::CANCELED;
           publishStopCommand();

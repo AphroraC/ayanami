@@ -12,7 +12,7 @@
 
 namespace costmap_2d {
 
-/// Host of the master costmap: owns the master grid plus the plugin layer list; each cycle updateMap drives every layer
+/// Host of the master costmap: owns the master grid plus the module layer list; each cycle updateMap drives every layer
 /// through updateBounds -> updateCosts to write layer data back into the master grid.
 class LayeredCostmap {
  public:
@@ -31,15 +31,15 @@ class LayeredCostmap {
                        track_unknown ? NO_INFORMATION : FREE_SPACE);
     this->size_locked = size_locked;
     initialized = true;
-    for (auto& plugin : plugins) {
-      plugin->matchSize();
+    for (auto& module : modules) {
+      module->matchSize();
     }
   }
 
-  void addLayer(const Layer::Ptr& plugin) {
-    if (plugin) {
-      plugin->initialize(this, plugin->getName());
-      plugins.push_back(plugin);
+  void addLayer(const Layer::Ptr& module) {
+    if (module) {
+      module->initialize(this, module->getName());
+      modules.push_back(module);
     }
   }
 
@@ -55,7 +55,7 @@ class LayeredCostmap {
     double max_x = std::numeric_limits<double>::lowest();
     double max_y = std::numeric_limits<double>::lowest();
 
-    updateBoundsForLayers(plugins, robot_x, robot_y, robot_yaw, min_x, min_y,
+    updateBoundsForLayers(modules, robot_x, robot_y, robot_yaw, min_x, min_y,
                           max_x, max_y);
 
     if (min_x > max_x || min_y > max_y) {
@@ -82,12 +82,12 @@ class LayeredCostmap {
                       static_cast<unsigned int>(min_j),
                       static_cast<unsigned int>(max_i),
                       static_cast<unsigned int>(max_j));
-    updateCostsForLayers(plugins, costmap, min_i, min_j, max_i, max_j);
+    updateCostsForLayers(modules, costmap, min_i, min_j, max_i, max_j);
   }
 
   bool isCurrent() const {
-    for (const auto& plugin : plugins) {
-      if (plugin->isEnabled() && !plugin->isCurrent()) {
+    for (const auto& module : modules) {
+      if (module->isEnabled() && !module->isCurrent()) {
         return false;
       }
     }
@@ -121,7 +121,7 @@ class LayeredCostmap {
     } else {
       inscribed_radius = 0.0;
     }
-    for (auto& plugin : plugins) plugin->onFootprintChanged();
+    for (auto& module : modules) module->onFootprintChanged();
   }
 
   const Footprint& getFootprint() const { return footprint; }
@@ -145,8 +145,8 @@ class LayeredCostmap {
   bool isInitialized() const { return initialized; }
   bool isSizeLocked() const { return size_locked; }
 
-  std::vector<Layer::Ptr>& getPlugins() { return plugins; }
-  const std::vector<Layer::Ptr>& getPlugins() const { return plugins; }
+  std::vector<Layer::Ptr>& getModules() { return modules; }
+  const std::vector<Layer::Ptr>& getModules() const { return modules; }
 
  private:
   static void updateBoundsForLayers(const std::vector<Layer::Ptr>& layers,
@@ -182,7 +182,7 @@ class LayeredCostmap {
   double miny{0.0};
   double maxx{0.0};
   double maxy{0.0};
-  std::vector<Layer::Ptr> plugins;
+  std::vector<Layer::Ptr> modules;
   Footprint footprint;
   double inscribed_radius{0.0};
   double circumscribed_radius{0.0};

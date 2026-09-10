@@ -34,7 +34,7 @@ DONE_WITH_CONCERNS
    **不含** `navigation` 段内容 (sub-config 不 merge)。按字面实现会恒回退 `base_link`,
    使 `RobotFrameSingleSourceFromCostmapNavigationJson` (期望 `base_footprint`) 无法通过。
    改为 codebase 既有模式 `Config nav_cfg(GlobalConfig::get_config_path("config_navigation"))`
-   + `nav_cfg.param("navigation","robot_frame","base_link")` (与 loadPlugins/pilot 一致),
+   + `nav_cfg.param("navigation","robot_frame","base_link")` (与 loadModules/pilot 一致),
    语义仍为 "robot_frame 单一来源 = costmap_navigation.json"。若 T10 打算让 config.json
    内联 navigation 段, 后续可切回字面形式。
 

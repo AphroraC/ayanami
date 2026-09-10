@@ -164,7 +164,22 @@ std::optional<T> Config::param(const std::string& module_name,
     return std::nullopt;
   }
 
-  return traits<T>::convert(parameter->get<typename traits<T>::InType>());
+  // The key exists and someone asked for it: record that before interpreting
+  // the value, so the audit reports "declared but never read" rather than
+  // "declared and unreadable" for a value of the wrong type.
+  recordConsumed(module_name, param_name);
+  // A type mismatch (say an int where a string is expected) must degrade the
+  // same way a missing key does. nlohmann signals it as an exception, and that
+  // exception used to escape configure()/configureParameters() through callers
+  // that had no reason to catch it -- a typo in one json key could take down
+  // loading with no context about which key it was.
+  try {
+    return traits<T>::convert(parameter->get<typename traits<T>::InType>());
+  } catch (const std::exception& e) {
+    spdlog::error("param {}/{}: cannot read as the requested type ({})",
+                  module_name, param_name, e.what());
+    return std::nullopt;
+  }
 }
 
 template <typename T>
@@ -180,12 +195,13 @@ T Config::param(const std::string& module_name, const std::string& param_name,
 }
 
 template <typename T>
-T Config::param_cast(const std::string& module_name,
+T Config::paramCast(const std::string& module_name,
                      const std::string& param_name) const {
   const auto found = param<T>(module_name, param_name);
   if (!found) {
-    spdlog::critical("param {}/{} not found", module_name, param_name);
-    abort();
+    throw std::runtime_error("required config parameter '" + module_name +
+                             "/" + param_name +
+                             "' is missing or has the wrong type");
   }
   return *found;
 }
@@ -202,7 +218,7 @@ void Config::overrideParam(const std::string& module_name,
       const std::string& module_name, const std::string& param_name) const;    \
   template TYPE Config::param(const std::string&, const std::string&,          \
                               const TYPE&) const;                              \
-  template TYPE Config::param_cast(const std::string&, const std::string&)     \
+  template TYPE Config::paramCast(const std::string&, const std::string&)      \
       const;                                                                   \
   template void Config::overrideParam(const std::string&, const std::string&, \
                                        const TYPE&);

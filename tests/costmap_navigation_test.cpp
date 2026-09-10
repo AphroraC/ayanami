@@ -1,9 +1,9 @@
-// modules/costmap_navigation (AbstractNavigation host plugin).
+// modules/costmap_navigation (AbstractNavigation host module).
 //
-// M1 key milestone: assembling all core library components (CostmapNavigationServer + the 4 plugin families +
-// BehaviorTreePilot) into the dlopen entry plugin. This test:
+// M1 key milestone: assembling all core library components (CostmapNavigationServer + the 4 module families +
+// BehaviorTreePilot) into the dlopen entry module. This test:
 // - ExtensionModule loads libayanami_costmap_navigation.so
-// - initialize: configureCoreMaps + loadPlugins (dlopen smac/savitzky/spin
+// - initialize: configureCoreMaps + loadModules (dlopen smac/savitzky/spin
 // real algorithm modules + a test controller) + createActions + pilot wiring (
 // configure -> loadFromFile -> setNavigationRuntime)
 // - start publishes the first visualization (the on_costmap_visualization bypass is captured)
@@ -42,6 +42,59 @@
 
 namespace {
 
+/// @brief Declare the four recovery roles the production tree references.
+///
+/// The tree names recoveries by ROLE (spin/wait/backup/clear_costmap), and the BT
+/// extension maps each role to a module through config_recovery. A role nobody
+/// declares resolves to an empty id, which the pilot now refuses to build a tree
+/// with: a recovery that cannot resolve is a configuration error, not something
+/// to discover while the robot is stuck.
+/// @return the JSON array literal for the navigation section's config_recovery.
+std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
+                                   const std::string& module_name,
+                                   const std::string& so_name = "") {
+  const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
+  std::string list;
+  for (const char* role : roles) {
+    const std::string file = std::string("role_") + role + ".json";
+    {
+      std::ofstream ofs(dir / file);
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name
+          << "\", \"role\": \"" << role << "\"";
+      if (!so_name.empty()) {
+        ofs << ", \"so_name\": \"" << so_name << "\"";
+      }
+      // The module's own (empty) parameter section: the loader requires a
+      // section named after the module, so "reads no parameters" is declared
+      // rather than looking like a name/section mismatch.
+      ofs << " }, \"" << module_name << "\": {} }";
+    }
+    if (!list.empty()) {
+      list += ", ";
+    }
+    list += "\"" + file + "\"";
+  }
+  return "[" + list + "]";
+}
+
+/// @brief Wait until the pilot's tick thread has consumed the goal and produced
+/// this attempt's blackboard. The assertion is on the blackboard rather than on
+/// attemptActive(): with synchronous module mocks the whole tree can reach a
+/// terminal status within a tick, and a finished attempt keeps its blackboard as
+/// the record while the live instance is already gone.
+bool waitUntilPilotAttempt(const ayanami::behavior_tree::BehaviorTreePilot* pilot,
+                           int timeout_ms = 2000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (pilot->blackboard() != nullptr) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
 using ayanami::behavior_tree::k_raw_path;
 using ayanami::behavior_tree::k_goal_revision;
 using ayanami::behavior_tree::k_session_id;
@@ -51,7 +104,7 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 using ayanami::nav_msgs::Path;
 
-// argv: module .so + 7 plugin .so files (smac/savitzky/pid/test_controller/spin/
+// argv: module .so + 7 module .so files (smac/savitzky/pid/test_controller/spin/
 // goal_checker/progress_checker).
 std::string g_module_so;
 std::string g_smac_so;
@@ -104,17 +157,22 @@ void write_file(const std::filesystem::path& path,
   ofs << content;
 }
 
-std::string pluginJson(const std::string& module, const std::string& name,
+std::string moduleJson(const std::string& module, const std::string& name,
                         const std::string& so_name) {
+  // The module's own (empty) parameter section: the loader requires a section
+  // named after the module, so that "this module reads no parameters" is
+  // declared rather than indistinguishable from a name/section mismatch.
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  }\n}\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {}\n}\n";
 }
 
 /// Unclosed version (to be concatenated with the module parameter section into a single file).
-std::string pluginJsonOpen(const std::string& module, const std::string& name,
+std::string moduleJsonOpen(const std::string& module, const std::string& name,
                              const std::string& so_name) {
   return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n";
+         "\",\n    \"so_name\": \"" + so_name + "\"\n  },\n  \"" + name +
+         "\": {},\n";
 }
 
 /// Generates a temp config dir. so_name uses the real module absolute path injected via argv.
@@ -130,19 +188,19 @@ std::filesystem::path makeConfigDir() {
              "  }\n}\n");
 
   write_file(dir / "planner.json",
-             pluginJsonOpen("planner", "test_planner", g_smac_so) +
+             moduleJsonOpen("planner", "test_planner", g_smac_so) +
              "  \"test_planner\": {\n"
              "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
              "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
              "    \"neutral_cost\": 1.0,\n    \"use_final_approach\": false\n"
              "  }\n}\n");
   write_file(dir / "smoother.json",
-             pluginJsonOpen("smoother", "test_smoother", g_savitzky_so) +
+             moduleJsonOpen("smoother", "test_smoother", g_savitzky_so) +
              "  \"test_smoother\": {\n"
              "    \"do_refinement\": true,\n    \"refinement_num\": 2\n"
              "  }\n}\n");
   write_file(dir / "controller.json",
-             pluginJson("controller", "test_controller", g_test_controller_so));
+             moduleJson("controller", "test_controller", g_test_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_spin\",\n"
              "    \"role\": \"spin\",\n    \"so_name\": \"" + g_spin_so +
@@ -153,9 +211,9 @@ std::filesystem::path makeConfigDir() {
              "    \"spin_dist\": 1.57,\n    \"max_w\": 0.5,\n"
              "    \"collision_radius\": 0.3\n"
              "  }\n}\n");
-  // goal/progress checker plugins (the execution needs injected checkers; missing ones are judged InternalError).
+  // goal/progress checker modules (the execution needs injected checkers; missing ones are judged InternalError).
   write_file(dir / "goal_checker.json",
-             pluginJsonOpen("goal_checker", "simple_goal_checker",
+             moduleJsonOpen("goal_checker", "simple_goal_checker",
                          g_goal_checker_so) +
              "  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.10,\n"
@@ -164,7 +222,7 @@ std::filesystem::path makeConfigDir() {
              "    \"angular_tolerance\": 0.10\n"
              "  }\n}\n");
   write_file(dir / "progress_checker.json",
-             pluginJsonOpen("progress_checker", "simple_progress_checker",
+             moduleJsonOpen("progress_checker", "simple_progress_checker",
                          g_progress_checker_so) +
              "  \"simple_progress_checker\": {\n"
              "    \"required_movement\": 0.1,\n"
@@ -198,7 +256,8 @@ std::filesystem::path makeConfigDir() {
         << "    \"config_controller\": \"controller.json\",\n"
         << "    \"config_goal_checker\": \"goal_checker.json\",\n"
         << "    \"config_progress_checker\": \"progress_checker.json\",\n"
-        << "    \"config_recovery\": [\"recovery.json\"],\n"
+        << "    \"config_recovery\": "
+        << writeRecoveryRoleFiles(dir, "test_spin", g_spin_so) << ",\n"
         << "    \"clear_costmap_id\": \"test_spin\",\n"
         << "    \"spin_id\": \"test_spin\",\n"
         << "    \"wait_id\": \"test_spin\",\n"
@@ -265,11 +324,11 @@ std::filesystem::path makeConfigDir() {
       </PipelineSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RoundRobin name="RecoveryActions">
+        <RecoverySequence name="RecoveryActions">
           <Sequence><Recovery recovery="{spin_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{wait_id}"/>    <AlwaysFailure/></Sequence>
           <Sequence><Recovery recovery="{backup_id}"/>  <AlwaysFailure/></Sequence>
-        </RoundRobin>
+        </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>
@@ -357,7 +416,7 @@ bool waitUntil(const Fn& fn, int timeout_ms = 3000) {
 /// and the test is still responsible for deleting the host.
 CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
   auto nav = std::dynamic_pointer_cast<ayanami::abstract::AbstractNavigation>(
-      ayanami::ExtensionModule::load_module(g_module_so));
+      ayanami::ExtensionModule::loadModule(g_module_so));
   EXPECT_NE(nav, nullptr);
   if (!nav) {
     return nullptr;
@@ -373,24 +432,27 @@ CostmapNavigation* createHost(const std::filesystem::path& config_dir) {
   return host;
 }
 
+
+
+
 }  // namespace
 
-// ---------------- Host assembly (configureCoreMaps + loadPlugins +) ----------------
+// ---------------- Host assembly (configureCoreMaps + loadModules +) ----------------
 
 TEST(CostmapNavigationTest, dlopenAllAlgorithmModulesLoad) {
   // All 4 real algorithm module .so files go through the common create_extension_module factory and obtain the correct
-  // plugin family type via typed dynamic_pointer_cast.
+  // module family type via typed dynamic_pointer_cast.
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapPlanner>(
-                ayanami::ExtensionModule::load_module(g_smac_so)),
+                ayanami::ExtensionModule::loadModule(g_smac_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapSmoother>(
-                ayanami::ExtensionModule::load_module(g_savitzky_so)),
+                ayanami::ExtensionModule::loadModule(g_savitzky_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::abstract::AbstractController>(
-                ayanami::ExtensionModule::load_module(g_pid_so)),
+                ayanami::ExtensionModule::loadModule(g_pid_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapRecovery>(
-                ayanami::ExtensionModule::load_module(g_spin_so)),
+                ayanami::ExtensionModule::loadModule(g_spin_so)),
             nullptr);
 }
 
@@ -404,7 +466,7 @@ TEST(CostmapNavigationTest, initializeBuildsFullStack) {
   ASSERT_NE(host->navigationServer().globalCostmap(), nullptr);
   ASSERT_NE(host->navigationServer().localCostmap(), nullptr);
 
-  // loadPlugins: planner/smoother/controller/recovery actions built
+  // loadModules: planner/smoother/controller/recovery actions built
   ASSERT_NE(host->navigationServer().plannerAction(), nullptr);
   ASSERT_NE(host->navigationServer().smootherAction(), nullptr);
   ASSERT_NE(host->navigationServer().controllerAction(), nullptr);
@@ -412,7 +474,9 @@ TEST(CostmapNavigationTest, initializeBuildsFullStack) {
 
   // pilot is configured + loadFromFile + setNavigationRuntime
   // (loadFromFile validated the 17 blackboard entries -> tree built)
-  ASSERT_NE(host->pilot().blackboard(), nullptr);
+  // The stack is wired once the pilot's factory is built; the per-attempt
+  // blackboard appears when the first goal is consumed (see setGoalRunsBt...).
+  EXPECT_TRUE(host->pilot().ready());
 
   host->stop();
   delete host;
@@ -469,6 +533,7 @@ TEST(CostmapNavigationTest, setGoalRunsBtAndEmitsVelocity) {
 
   host->setGoal(makePose(2.0, 0.0));
 
+  ASSERT_TRUE(waitUntilPilotAttempt(&host->pilot()));
   const auto bb = host->pilot().blackboard();
   ASSERT_NE(bb, nullptr);
 
@@ -504,6 +569,7 @@ TEST(CostmapNavigationTest, newGoalKeepsControllerAndSameSessionTree) {
   giveRobotStaticPose();
 
   host->setGoal(makePose(2.0, 0.0));
+  ASSERT_TRUE(waitUntilPilotAttempt(&host->pilot()));
   const auto bb = host->pilot().blackboard();
   ASSERT_NE(bb, nullptr);
 
@@ -547,7 +613,7 @@ TEST(CostmapNavigationTest, destructorDoesNotCrash) {
     host->start();
     host->setGoal(makePose(2.0, 0.0));
     // End of scope -> delete: stop joins the nav thread -> pilot stop -> server stop
-    // (clearActions runs before clearPlugins, so BT nodes no longer hold stale plugin pointers)
+    // (clearActions runs before clearModules, so BT nodes no longer hold stale module pointers)
     delete host;
   }
 }

@@ -55,7 +55,7 @@ std::shared_ptr<ayanami::costmap::CostmapMapContext> makeContext(
 /// Blocks until cancelled: keeps the execution inside run so the preRun/postRun activation state can be observed.
 class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
  public:
-  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
+  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
   ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
                           double, ayanami::nav_msgs::Path& plan_out) override {
     calls++;
@@ -86,7 +86,7 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
 
 class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
+  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
   ResultT<void> tick(RecoveryCycleData& cycle) override {
     calls++;
     {
@@ -114,7 +114,7 @@ class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
 
 class TestController : public ayanami::costmap::CostmapController {
  public:
-  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
+  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
   ResultT<void> computeVelocityCommand(const PoseStamped&,
                                            const TwistStamped&, ayanami::geometry_msgs::TwistStamped& cmd) override {
     calls++;
@@ -135,7 +135,7 @@ class NeverGoalChecker : public ayanami::abstract::AbstractGoalChecker {
                      const TwistStamped&) override {
     return false;
   }
-  ayanami::abstract::GoalCheckerTolerances getTolerances() const override {
+  ayanami::GoalCheckerTolerances getTolerances() const override {
     return {};
   }
 };
@@ -154,7 +154,7 @@ class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
 
 class TestRecovery : public ayanami::costmap::CostmapRecovery {
  public:
-  void configure(const ayanami::PluginContext&, CostmapMapContext::ConstPtr) override {}
+  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
   ResultT<void> tick(RecoveryCycleData& cycle) override {
     RecoveryCycleData data;
     data.status = RecoveryStatus::SUCCESS;

@@ -1,10 +1,10 @@
 // Checker unit tests: AbstractGoalChecker / AbstractProgressChecker abstractions +
-// SimpleGoalChecker / SimpleProgressChecker modules + PluginManager<Checker family>
+// SimpleGoalChecker / SimpleProgressChecker modules + ModuleManager<Checker family>
 // dlopen loading + NavigationServerBase injection (createActions -> ControllerExecution).
 //
 // argv: 1=simple_goal_checker.so, 2=simple_progress_checker.so,
-// 3=test_planner_plugin.so, 4=test_smoother_plugin.so,
-// 5=test_looping_controller_plugin.so, 6=test_recovery_plugin.so
+// 3=test_planner_module.so, 4=test_smoother_module.so,
+// 5=test_looping_controller_module.so, 6=test_recovery_module.so
 
 #include <gtest/gtest.h>
 
@@ -18,7 +18,7 @@
 #include <thread>
 
 #include <ayanami/abstract/components/navigation_server_base.hpp>
-#include <ayanami/abstract/components/plugin_manager.hpp>
+#include <ayanami/abstract/components/module_manager.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <simple_goal_checker/simple_goal_checker.hpp>
@@ -30,7 +30,7 @@ namespace {
 using ayanami::abstract::AbstractGoalChecker;
 using ayanami::abstract::AbstractProgressChecker;
 using ayanami::components::NavigationServerBase;
-using ayanami::components::PluginManager;
+using ayanami::components::ModuleManager;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::SimpleGoalChecker;
@@ -78,7 +78,7 @@ std::filesystem::path makeModuleConfigDir() {
   const auto dir = makeTempDir() / "module_cfg";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
-  // The parameter section has the same name as the plugin (injected via PluginContext at configure time).
+  // The parameter section has the same name as the module (injected via ModuleContext at configure time).
   write_file(dir / "simple_goal_checker.json",
              "{\n  \"simple_goal_checker\": {\n"
              "    \"position_tolerance\": 0.1,\n"
@@ -95,11 +95,11 @@ std::filesystem::path makeModuleConfigDir() {
   return dir;
 }
 
-/// Direct module tests inject uniformly: call configure(PluginContext) explicitly after construction.
-ayanami::PluginContext checkerContext(const std::filesystem::path& dir,
+/// Direct module tests inject uniformly: call configure(ModuleContext) explicitly after construction.
+ayanami::ModuleContext checkerContext(const std::filesystem::path& dir,
                                       const std::string& json_name,
                                       const std::string& name) {
-  return ayanami::PluginContext{name, ayanami::Config((dir / json_name).string())};
+  return ayanami::ModuleContext{name, ayanami::Config((dir / json_name).string())};
 }
 
 TEST(SimpleGoalCheckerTest, reachedWithinTolerances) {
@@ -179,36 +179,81 @@ TEST(SimpleProgressCheckerTest, angleMovementCountsAsProgress) {
   EXPECT_TRUE(checker.check(pose(0.0, 0.0, 1.0)));
 }
 
-// --- PluginManager<Checker family> dlopen loading ---
+// --- ModuleManager<Checker family> dlopen loading ---
 
-TEST(CheckerPluginManagerTest, loadGoalCheckerFromSo) {
-  PluginManager<AbstractGoalChecker> mgr;
-  ayanami::components::PluginSpec spec;
+TEST(CheckerModuleManagerTest, loadGoalCheckerFromSo) {
+  ModuleManager<AbstractGoalChecker> mgr;
+  ayanami::components::ModuleSpec spec;
   spec.name = "simple_goal_checker";
   spec.so_name = g_goal_checker_so;
-  ASSERT_TRUE(mgr.loadPlugin(
-      spec, [](const std::string&,
-               std::shared_ptr<AbstractGoalChecker> plugin) {
-        return plugin != nullptr;
+  // Loading-focused test: parameters are covered by the checker's own tests,
+  // so an empty config is enough here (the module keeps its defaults).
+  ASSERT_TRUE(mgr.loadModule(
+      spec, ayanami::ModuleContext{spec.name, ayanami::Config("")},
+      [](const std::string&, std::shared_ptr<AbstractGoalChecker> module) {
+        return module != nullptr;
       }));
-  ASSERT_TRUE(mgr.hasPlugin("simple_goal_checker"));
-  auto checker = mgr.getPlugin("simple_goal_checker");
+  ASSERT_TRUE(mgr.hasModule("simple_goal_checker"));
+  auto checker = mgr.getModule("simple_goal_checker");
   ASSERT_NE(checker, nullptr);
   EXPECT_TRUE(checker->isGoalReached(pose(0.0, 0.0), pose(0.01, 0.0),
                                      twist(0.0, 0.0)));
 }
 
-TEST(CheckerPluginManagerTest, loadProgressCheckerFromSo) {
-  PluginManager<AbstractProgressChecker> mgr;
-  ayanami::components::PluginSpec spec;
+TEST(CheckerModuleManagerTest, loadProgressCheckerFromSo) {
+  ModuleManager<AbstractProgressChecker> mgr;
+  ayanami::components::ModuleSpec spec;
   spec.name = "simple_progress_checker";
   spec.so_name = g_progress_checker_so;
-  ASSERT_TRUE(mgr.loadPlugin(
-      spec, [](const std::string&,
-               std::shared_ptr<AbstractProgressChecker> plugin) {
-        return plugin != nullptr;
+  ASSERT_TRUE(mgr.loadModule(
+      spec, ayanami::ModuleContext{spec.name, ayanami::Config("")},
+      [](const std::string&, std::shared_ptr<AbstractProgressChecker> module) {
+        return module != nullptr;
       }));
-  ASSERT_TRUE(mgr.hasPlugin("simple_progress_checker"));
+  ASSERT_TRUE(mgr.hasModule("simple_progress_checker"));
+}
+
+// ---- Parameter loading happens after a successful load, not at construction ----
+// The factory stays argument-free; the loader hands the module its context once
+// the object exists and was accepted. This asserts the sequencing is real: the
+// module is loaded through ModuleManager only (no configure() call), and its
+// behaviour already reflects the configured values rather than the field
+// defaults on SimpleGoalCheckerParam.
+TEST(CheckerModuleManagerTest, loaderInjectsParametersWithoutConfigureCall) {
+  const auto dir = makeTempDir() / "loader_params";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  // Deliberately far from the defaults (0.10 m / 0.20 rad): accepting a 4 m
+  // offset is only possible if the config was actually read.
+  write_file(dir / "goal_checker.json",
+             "{\n  \"goal_checker\": {\n"
+             "    \"name\": \"loader_probe_checker\",\n"
+             "    \"so_name\": \"" + g_goal_checker_so + "\"\n"
+             "  },\n"
+             "  \"loader_probe_checker\": {\n"
+             "    \"position_tolerance\": 5.0,\n"
+             "    \"angle_tolerance\": 3.0,\n"
+             "    \"linear_tolerance\": 0.1,\n"
+             "    \"angular_tolerance\": 0.1\n"
+             "  }\n}\n");
+
+  ModuleManager<AbstractGoalChecker> mgr;
+  ASSERT_TRUE(mgr.loadSingleFromConfig(
+      ayanami::Config((dir / "goal_checker.json").string()), "goal_checker",
+      "loader_probe_checker",
+      [](const std::string&, std::shared_ptr<AbstractGoalChecker> module) {
+        return module != nullptr;
+      }));
+
+  auto checker = mgr.getModule("loader_probe_checker");
+  ASSERT_NE(checker, nullptr);
+  const auto tolerances = checker->getTolerances();
+  EXPECT_DOUBLE_EQ(tolerances.pose.position, 5.0)
+      << "the loader must read the module's parameters before use";
+  EXPECT_DOUBLE_EQ(tolerances.pose.angle, 3.0);
+  // Behaviour follows: 4 m away is inside the configured 5 m tolerance.
+  EXPECT_TRUE(checker->isGoalReached(pose(0.0, 0.0), pose(4.0, 0.0),
+                                     twist(0.0, 0.0)));
 }
 
 // --- NavigationServerBase: createActions injection -> ControllerExecution ----
@@ -227,7 +272,7 @@ class ExposedControllerExecution
 };
 
 /// Derived server: captures the execution from each newControllerExecution (non-owning) so tests
-/// can assert checker injection. The checker is loaded by the base loadPlugins (default override accepted).
+/// can assert checker injection. The checker is loaded by the base loadModules (default override accepted).
 class CheckerNavServer : public NavigationServerBase {
  public:
   // Weak capture: the Action slot owns the execution lifetime (safe to access while the task is RUNNING).
@@ -247,10 +292,10 @@ class CheckerNavServer : public NavigationServerBase {
 
 
   bool goalCheckerLoaded(const std::string& name) const {
-    return goal_checker_plugins.hasPlugin(name);
+    return goal_checker_modules.hasModule(name);
   }
   bool progressCheckerLoaded(const std::string& name) const {
-    return progress_checker_plugins.hasPlugin(name);
+    return progress_checker_modules.hasModule(name);
   }
 };
 
@@ -261,7 +306,7 @@ std::filesystem::path makeServerConfigDir() {
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\"\n"
              "  }\n}\n");
-  // Plugin file pointers live uniformly in the navigation section (single source), no separate *_id keys.
+  // Module file pointers live uniformly in the navigation section (single source), no separate *_id keys.
   write_file(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
              "    \"config_planner\": \"planner.json\",\n"
@@ -277,28 +322,33 @@ std::filesystem::path makeServerConfigDir() {
              "    \"recovery_patience\": 2.5\n"
              "  }\n}\n");
 
-  auto pluginJson = [](const std::string& module, const std::string& name,
+  auto moduleJson = [](const std::string& module, const std::string& name,
                         const std::string& so) {
+    // Includes the module's own (empty) parameter section: the loader requires
+    // a section named after the module, so "reads no parameters" must be
+    // declared rather than look like a name/section mismatch.
     return "{\n  \"" + module + "\": {\n    \"name\": \"" + name +
-           "\",\n    \"so_name\": \"" + so + "\"\n  }\n}\n";
+           "\",\n    \"so_name\": \"" + so + "\"\n  },\n  \"" + name +
+           "\": {}\n}\n";
   };
 
   write_file(dir / "planner.json",
-             pluginJson("planner", "test_planner", g_planner_so));
+             moduleJson("planner", "test_planner", g_planner_so));
   write_file(dir / "smoother.json",
-             pluginJson("smoother", "test_smoother", g_smoother_so));
+             moduleJson("smoother", "test_smoother", g_smoother_so));
   write_file(dir / "controller.json",
-             pluginJson("controller", "test_controller",
+             moduleJson("controller", "test_controller",
                          g_looping_controller_so));
   write_file(dir / "recovery.json",
              "{\n  \"recovery\": {\n    \"name\": \"test_recovery\",\n"
              "    \"role\": \"clear_costmap\",\n    \"so_name\": \"" +
-             g_recovery_so + "\"\n  }\n}\n");
+             g_recovery_so +
+             "\"\n  },\n  \"test_recovery\": {}\n}\n");
   write_file(dir / "goal_checker.json",
-             pluginJson("goal_checker", "simple_goal_checker",
+             moduleJson("goal_checker", "simple_goal_checker",
                          g_goal_checker_so));
   write_file(dir / "progress_checker.json",
-             pluginJson("progress_checker", "simple_progress_checker",
+             moduleJson("progress_checker", "simple_progress_checker",
                          g_progress_checker_so));
   return dir;
 }
@@ -314,10 +364,10 @@ bool waitReady(Task& t, int max_ms = 3000) {
 TEST(CheckerServerInjectionTest, controllerExecutionGetsCheckers) {
   CheckerNavServer server;
   auto dir = makeServerConfigDir();
-  server.loadPlugins(dir.string());
+  server.loadModules(dir.string());
 
   ASSERT_NE(server.controllerAction(), nullptr);
-  // The checker plugins are loaded and the default ids resolved.
+  // The checker modules are loaded and the default ids resolved.
   EXPECT_TRUE(server.goalCheckerLoaded("simple_goal_checker"));
   EXPECT_TRUE(server.progressCheckerLoaded("simple_progress_checker"));
 

@@ -63,7 +63,7 @@ public:
     if (!smoother) {
       Result result;
       result.error = ErrorCode::INTERNAL_ERROR;
-      result.message = "Smoother plugin is null";
+      result.message = "Smoother module is null";
       result.session_id = goal.session_id;
       result.plan_version = goal.plan_version;
       action_server->publishResult(gh->id, ayanami::actions::GoalStatus::ABORTED,

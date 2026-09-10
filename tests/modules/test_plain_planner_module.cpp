@@ -1,4 +1,4 @@
-// Test plugin: failing planner (FailingPlanner), exported via the common create_extension_module factory.
+// Test module: non-costmap-family planner (PlainPlanner), verifies the costmap host reject path.
 
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -9,8 +9,8 @@ namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::ResultT;
-class FailingPlanner : public ayanami::abstract::AbstractPlanner {
-public:
+class PlainPlanner : public ayanami::abstract::AbstractPlanner {
+ public:
   ResultT<void> makePlan(const PoseStamped& /*start*/,
                           const PoseStamped& /*goal*/,
                           double /*tolerance*/, ayanami::nav_msgs::Path& plan_out) override {
@@ -23,5 +23,5 @@ public:
 }  // namespace
 
 extern "C" ayanami::ExtensionModule* create_extension_module() {
-  return new FailingPlanner;
+  return new PlainPlanner;
 }

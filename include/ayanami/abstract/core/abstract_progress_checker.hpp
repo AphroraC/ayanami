@@ -4,13 +4,14 @@
 #include "ayanami/types.hpp"
 #include "ayanami/utility/extension_module.hpp"
 
+#include <cstdint>
 #include <memory>
 
 namespace ayanami {
 namespace abstract {
 
 /**
- * @brief Progress checker plugin abstraction (modeled after MBF
+ * @brief Progress checker module abstraction (modeled after MBF
  * AbstractProgressChecker).
  *
  * Tracks whether the robot is making headway: within the configured time
@@ -22,12 +23,21 @@ class AbstractProgressChecker : public virtual ExtensionModule {
  public:
   using Ptr = std::shared_ptr<AbstractProgressChecker>;
 
+  /// @brief Interface version of this family, as compiled into the module.
+  /// Bump on ANY change to this header's virtual surface: the loader compares
+  /// the value a .so reports against the one it was built with and refuses a
+  /// mismatch (two modules agreeing on class names but disagreeing on layout is
+  /// exactly the failure RTTI cannot catch).
+  static constexpr std::uint32_t kApiVersion = 1;
+  std::uint32_t apiVersion() const override { return kApiVersion; }
+
+
   virtual ~AbstractProgressChecker() = default;
 
-  /// @brief Inject the plugin logical name + its own config (the module
+  /// @brief Inject the module logical name + its own config (the module
   /// json pointed to by config_{progress_checker}). Parameters are read
-  /// uniformly from here; plugins do not read the global config index.
-  virtual void configure(const ayanami::PluginContext& context) {
+  /// uniformly from here; modules do not read the global config index.
+  virtual void configure(const ayanami::ModuleContext& context) {
     (void)context;
   }
 

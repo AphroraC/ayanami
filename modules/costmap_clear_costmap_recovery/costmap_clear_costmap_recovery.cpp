@@ -3,7 +3,7 @@
 // Pure C++ (zero ROS): unified recovery protocol (start/tick/finish). On the first cycle it builds a typed
 // ClearCostmapCommand and submits it via CostmapCommandPort to the single writer
 // (CostmapNavigationServer) to execute the clear, followed by SUCCESS (no motion, zero velocity).
-// The plugin does not sleep on its own and never directly touches mutable wrappers / layers.
+// The module does not sleep on its own and never directly touches mutable wrappers / layers.
 
 #include "costmap_clear_costmap_recovery.hpp"
 
@@ -13,23 +13,37 @@ namespace modules {
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 
-void CostmapClearCostmapRecovery::configure(
-    const ayanami::PluginContext& context,
-    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+
+void CostmapClearCostmapRecovery::configureParameters(const ayanami::ModuleContext& context) {
+  // Parameter loading, separated from configuration: the loader calls this
+  // right after a successful load, and every value lands in the module's own
+  // CostmapClearCostmapRecoveryParam member (whose field initializers are the defaults for keys the
+  // config omits).
   // Single source of parameters: this module's json (the file
   // config_recovery points to). Param section convention: the section key =
-  // the module json "name" field, delivered as PluginContext::name.
+  // the module json "name" field, delivered as ModuleContext::name.
   const std::string& section = context.name;
   param.clear_radius =
       context.config.param<double>(section, "clear_radius", param.clear_radius);
   param.affected_maps = context.config.param<std::string>(
       section, "affected_maps", param.affected_maps);
+}
+
+void CostmapClearCostmapRecovery::configure(
+    const ayanami::ModuleContext& context,
+    ayanami::costmap::CostmapMapContext::ConstPtr map) {
+  // Direct-construction callers (tests, or a host that builds the object
+  // itself) never go through the loader's configureParameters call, so bind
+  // the parameters here as well. Re-reading the same keys from the same
+  // config is idempotent.
+  configureParameters(context);
   name = context.name;
   // The map write-command port is obtained via the map context (AbstractMapContext::commandPort).
   command_port =
       std::dynamic_pointer_cast<CostmapCommandPort>(
           map ? map->commandPort() : nullptr);
 }
+
 
 void CostmapClearCostmapRecovery::start() {
   canceled.store(false);

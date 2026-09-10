@@ -1,4 +1,5 @@
-// Test plugin: non-costmap-family controller (PlainController), verifies the costmap host reject path.
+// Test module: a controller that never reaches the goal (LoopingController), exported via the common
+// create_extension_module factory.
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/messages/failure.hpp>
@@ -11,8 +12,8 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::nav_msgs::Path;
 using ayanami::ResultT;
-class PlainController : public ayanami::abstract::AbstractController {
- public:
+class LoopingController : public ayanami::abstract::AbstractController {
+public:
   ResultT<void> computeVelocityCommand(const PoseStamped& /*pose*/,
                                            const TwistStamped& /*velocity*/, ayanami::geometry_msgs::TwistStamped& cmd) override {
     cmd = TwistStamped{};
@@ -26,5 +27,5 @@ class PlainController : public ayanami::abstract::AbstractController {
 }  // namespace
 
 extern "C" ayanami::ExtensionModule* create_extension_module() {
-  return new PlainController;
+  return new LoopingController;
 }

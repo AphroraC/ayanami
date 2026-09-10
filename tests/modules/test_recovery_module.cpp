@@ -1,4 +1,4 @@
-// Test plugin: success recovery (SuccessRecovery), exported via the common create_extension_module factory.
+// Test module: success recovery (SuccessRecovery), exported via the common create_extension_module factory.
 //
 // The old API runRecovery returned success in one shot; under the new protocol start prepares and the first tick
 // cycle returns the SUCCESS terminal state (the original one-shot semantics preserved).

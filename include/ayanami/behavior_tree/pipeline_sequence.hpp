@@ -3,7 +3,6 @@
 #include <behaviortree_cpp/control_node.h>
 #include <spdlog/spdlog.h>
 
-#include "ayanami/behavior_tree/navigation_node_state.hpp"
 
 #include <cstddef>
 #include <stdexcept>
@@ -21,8 +20,7 @@ namespace behavior_tree {
  * - Any child FAILURE -> halt all children and return FAILURE;
  * - All SUCCESS -> reset back to the beginning and return SUCCESS.
  */
-class PipelineSequence : public BT::ControlNode,
-                         public NavigationTreeNodeState {
+class PipelineSequence : public BT::ControlNode {
  public:
   PipelineSequence(const std::string& name, const BT::NodeConfig& config)
     : BT::ControlNode(name, config), current_child_idx(0) {}
@@ -58,10 +56,6 @@ class PipelineSequence : public BT::ControlNode,
     current_child_idx = 0;
   }
 
-  /// @brief Logical reset after a tree-life terminal state (v4 halt only
-  /// propagates to RUNNING children, see the
-  /// RateController::resetState comment).
-  void resetState() override { current_child_idx = 0; }
 
  private:
   size_t current_child_idx;

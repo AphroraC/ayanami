@@ -35,11 +35,11 @@ namespace costmap {
  * navfn/planner combination).
  *
  * On top of NavigationServerBase (map-free):
- * - Overrides the virtual initialize*Plugin hooks:
+ * - Overrides the virtual initialize*Module hooks:
  *   dynamic_pointer_cast to the costmap family interfaces
  *   (CostmapPlanner/Smoother/Controller/Recovery); on failure (not a
- *   costmap-family plugin) spdlog::error + return false (not registered).
- *   Algorithm plugins receive only name-based initialization; no
+ *   costmap-family module) spdlog::error + return false (not registered).
+ *   Algorithm modules receive only name-based initialization; no
  *   CostmapMapContext is injected -- all map access goes through lock-based
  *   direct reads in the executions.
  * - Overrides createActions(): the production path constructs Costmap*Action
@@ -94,17 +94,17 @@ class CostmapNavigationServer
     return map_family_factory;
   }
 
-  // ---- Virtual initialize*Plugin overrides: costmap family injection ----
-  bool initializePlannerPlugin(
+  // ---- Virtual initialize*Module overrides: costmap family injection ----
+  bool initializePlannerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractPlanner::Ptr) override;
-  bool initializeSmootherPlugin(
+  bool initializeSmootherModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractSmoother::Ptr) override;
-  bool initializeControllerPlugin(
+  bool initializeControllerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractController::Ptr) override;
-  bool initializeRecoveryPlugin(
+  bool initializeRecoveryModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractRecovery::Ptr) override;
 
@@ -139,7 +139,7 @@ class CostmapNavigationServer
     return costmap_context ? costmap_context->localCostmap() : nullptr;
   }
 
-  /// @brief Map change command port (write commands such as clear; recovery plugins submit through it).
+  /// @brief Map change command port (write commands such as clear; recovery modules submit through it).
   CostmapCommandPort::Ptr commandPort() const { return command_port; }
 
   /// @brief Execute one clear-costmap command (sole-writer path: mutate the
@@ -171,8 +171,8 @@ class CostmapNavigationServer
   CostmapMapContext::Ptr costmap_context;
   CostmapCommandPort::Ptr command_port;
   ayanami::map::MapFamilyFactory::Ptr map_family_factory;
-  /// @brief Per-recovery module configs (stashed by initializeRecoveryPlugin,
-  /// consumed by createActions to inject per-plugin execution settings such
+  /// @brief Per-recovery module configs (stashed by initializeRecoveryModule,
+  /// consumed by createActions to inject per-module execution settings such
   /// as the tick cycle period).
   std::map<std::string, ayanami::Config> recovery_configs;
 

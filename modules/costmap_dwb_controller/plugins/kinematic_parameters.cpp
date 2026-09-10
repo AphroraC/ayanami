@@ -11,31 +11,31 @@ KinematicsHandler::KinematicsHandler() {}
 KinematicsHandler::~KinematicsHandler() {}
 
 void KinematicsHandler::initialize(const ayanami::Config& cfg,
-                                   const std::string& plugin_name) {
-  this->plugin_name = plugin_name;
+                                   const std::string& module_name) {
+  this->module_name = module_name;
 
-  kinematics.min_vel_x = cfg.param<double>(plugin_name, "min_vel_x", 0.0);
-  kinematics.min_vel_y = cfg.param<double>(plugin_name, "min_vel_y", 0.0);
-  kinematics.max_vel_x = cfg.param<double>(plugin_name, "max_vel_x", 0.0);
-  kinematics.max_vel_y = cfg.param<double>(plugin_name, "max_vel_y", 0.0);
+  kinematics.min_vel_x = cfg.param<double>(module_name, "min_vel_x", 0.0);
+  kinematics.min_vel_y = cfg.param<double>(module_name, "min_vel_y", 0.0);
+  kinematics.max_vel_x = cfg.param<double>(module_name, "max_vel_x", 0.0);
+  kinematics.max_vel_y = cfg.param<double>(module_name, "max_vel_y", 0.0);
   kinematics.max_vel_theta =
-      cfg.param<double>(plugin_name, "max_vel_theta", 0.0);
+      cfg.param<double>(module_name, "max_vel_theta", 0.0);
   kinematics.min_speed_xy =
-      cfg.param<double>(plugin_name, "min_speed_xy", 0.0);
+      cfg.param<double>(module_name, "min_speed_xy", 0.0);
   kinematics.max_speed_xy =
-      cfg.param<double>(plugin_name, "max_speed_xy", 0.0);
+      cfg.param<double>(module_name, "max_speed_xy", 0.0);
   kinematics.min_speed_theta =
-      cfg.param<double>(plugin_name, "min_speed_theta", 0.0);
-  kinematics.acc_lim_x = cfg.param<double>(plugin_name, "acc_lim_x", 0.0);
-  kinematics.acc_lim_y = cfg.param<double>(plugin_name, "acc_lim_y", 0.0);
+      cfg.param<double>(module_name, "min_speed_theta", 0.0);
+  kinematics.acc_lim_x = cfg.param<double>(module_name, "acc_lim_x", 0.0);
+  kinematics.acc_lim_y = cfg.param<double>(module_name, "acc_lim_y", 0.0);
   kinematics.acc_lim_theta =
-      cfg.param<double>(plugin_name, "acc_lim_theta", 0.0);
+      cfg.param<double>(module_name, "acc_lim_theta", 0.0);
   kinematics.decel_lim_x =
-      cfg.param<double>(plugin_name, "decel_lim_x", 0.0);
+      cfg.param<double>(module_name, "decel_lim_x", 0.0);
   kinematics.decel_lim_y =
-      cfg.param<double>(plugin_name, "decel_lim_y", 0.0);
+      cfg.param<double>(module_name, "decel_lim_y", 0.0);
   kinematics.decel_lim_theta =
-      cfg.param<double>(plugin_name, "decel_lim_theta", 0.0);
+      cfg.param<double>(module_name, "decel_lim_theta", 0.0);
 
   kinematics.base_max_vel_x = kinematics.max_vel_x;
   kinematics.base_max_vel_y = kinematics.max_vel_y;
