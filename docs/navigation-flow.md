@@ -23,11 +23,11 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
 - 首个 goal：`session_state->startNewSession()`（session+1，plan_version=0），
   `goal_revision = 0`。
 - 后续 goal：`++goal_revision`（同一会话内的目标修订）。
-- 重写黑板：`goal / goal_revision / session_id / plan_version /
+- 重写黑板：`goal / goal_revision / session_id / raw_path_revision /
   failure_context(清零)`。
 - goal_revision 的变化同时是树上 planner RateController 与
-  RecoverySequence/RoundRobin 的 **reset_token**（新导航轮重置游标与缓存）；
-  smoother 分支的 reset_token 是 {plan_version}（规划落地即重平滑）。
+  RecoverySequence 的 **reset_token**（新导航轮重置游标与缓存）；
+  smoother 分支的 reset_token 是 {raw_path_revision}（规划落地即重平滑）。
 
 ## 3. 规划 → 平滑 → 跟随（Pipeline 流水线）
 
@@ -39,13 +39,13 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
     <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
       <RecoveryNode name="ComputePath" number_of_retries="1">
         <Sequence>
-          <ComputePathToPose goal="{goal}" path="{raw_path}" plan_version="{plan_version}"/>
+          <ComputePathToPose goal="{goal}" path="{raw_path}"/>
           <IsPathValid path="{raw_path}"/>
         </Sequence>
         <Sequence><Recovery recovery="{clear_costmap_id}"/></Sequence>
       </RecoveryNode>
     </RateController>
-    <RateController hz="{smoother_frequency}" reset_token="{plan_version}">
+    <RateController hz="{smoother_frequency}" reset_token="{raw_path_revision}">
       <SmoothPath input_path="{raw_path}" path="{smoothed_path}"/>
     </RateController>
     <RecoveryNode name="FollowPath" number_of_retries="1">
@@ -55,11 +55,11 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
   </PipelineSequence>
   <ReactiveFallback name="RecoveryActions">
     <GoalUpdated goal="{goal}"/>
-    <RoundRobin name="RecoveryActions" reset_token="{goal_revision}">
+    <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
       <Sequence><Recovery recovery="{spin_id}"/></Sequence>
       <Sequence><Recovery recovery="{wait_id}"/></Sequence>
       <Sequence><Recovery recovery="{backup_id}"/></Sequence>
-    </RoundRobin>
+    </RecoverySequence>
   </ReactiveFallback>
 </RecoveryNode>
 ```
@@ -68,12 +68,12 @@ loop 线程（50Hz）├─ drainPendingGoal()  # 每周期最多投递最新一
 
 | BT 节点 | onStart | onRunning |
 |---|---|---|
-| ComputePathToPose | `requestPath`，注册 `onComplete → emitWakeUpSignal` | goal 端口变化 → 重发请求；session 校验（版本陈旧拒绝不适用于 planner，它自己是版本推进者）；成功写 `raw_path` + `plan_version++` 并写黑板 |
+| ComputePathToPose | `requestPath`，注册 `onComplete → emitWakeUpSignal` | goal 端口变化 → 重发请求；session 校验（版本陈旧拒绝不适用于 planner，它自己是版本推进者）；成功写 `raw_path`，并推进 `raw_path_revision`（黑板）+ 实时版本 |
 | SmoothPath | `requestSmoothing` | session 校验；输入签名与上次一致时直接 SUCCESS（跳过重复平滑）；成功写 `smoothed_path` 并 `incrementPlanVersion` |
 | FollowPath | `requestExecution`（记录 submitted_plan_version） | **先查 task.ready()**；plan_version 变化 → `requestPlanUpdate`（in-place，不 cancel）——update miss 时不误报失败，重查已完成结果或下一 tick 重试 |
 | Recovery | `requestRecovery`（cause=黑板 failure_context；支持按次覆盖端口 target_yaw/backup_distance/backup_speed/wait_duration） | 成功即 SUCCESS |
 
-**plan_version 纪律**：SmoothPath 成功后才 `incrementPlanVersion`；
+**版本纪律**：SmoothPath 成功后才 `incrementPlanVersion`；
 FollowPath 发现有新版本时对运行中的 controller 执行 in-place `updatePlan`
 （无 cancel/无新 Execution/无中间零速），机器人持续跟随旧路径直到新路径
 落地——这就是"已重规划但机器人不跟随"问题的修复机制。
@@ -105,17 +105,18 @@ FollowPath 发现有新版本时对运行中的 controller 执行 in-place `upda
 
 - **requestRecovery 独占**：CAS `recovery_exclusive`（true=占住）→ 校验
   recovery_id → `preemptAllControllers()`（非阻塞：cancel 内已同步发零速，
-  任务自行收尾，BT tick 线程不阻塞等慢插件）→ acceptGoal →
+  任务自行收尾，BT tick 线程不阻塞等慢模块）→ acceptGoal →
   `task.onComplete(释放互斥)`（**listener 先于 future 发布**，杜绝"BT 已见
   完成但互斥未释放"的竞态窗口）。恢复期间其余 request* 返回
   `RESOURCE_BUSY` 结构化拒绝；RESOURCE_BUSY 归类为**可恢复**（瞬时态，
   交恢复分支重试）。
-- RecoveryExecution 驱动插件统一协议 `start → tick×N → finish`，是恢复期间
-  **唯一速度发布者**（插件 tick 只返回期望速度 optional，执行层校验
+- RecoveryExecution 驱动模块统一协议 `start → tick×N → finish`，是恢复期间
+  **唯一速度发布者**（模块 tick 只返回期望速度 optional，执行层校验
   finite+max_vel 后发布；终态一律先零速）。
 - 恢复成功后外层 RecoveryNode `++retry_count` 并 `resetChildren()`，回到
-  主任务重试；预算耗尽树返回 FAILURE，pilot 调 `resetNavigationTreeState()`
-  后进入全新树生命（planner 重新规划）。
+  主任务重试；预算耗尽树返回 FAILURE，pilot 释放本尝试的树实例
+  （`releaseTreeInstance`）——下一次 `beginNavigation` 会建一棵全新的树
+  （planner 从零重新规划，也不继承任何节点状态）。
 
 ## 6. 完成与失败
 
@@ -131,7 +132,7 @@ FollowPath 发现有新版本时对运行中的 controller 执行 in-place `upda
 
 | 场景 | nav2 | ayanami |
 |---|---|---|
-| 目标抢占 | preemption + 新树 | 常驻树 + goal_revision reset_token + 邮箱 |
+| 目标抢占 | preemption + 新树 | 树实例按尝试新建 + goal_revision reset_token + 邮箱 |
 | 重规划 | RateController 1Hz | RateController hz 可配（1.0），单发模式由 reset_token 补偿 |
 | 恢复 | RecoveryNode + ClearCostmap 服务 | RecoveryNode 语义一致 + 命令端口清图 |
 | 代价图失同步 | 手动/恢复清除 | 累计旋转/平移自动清全局动态层 |

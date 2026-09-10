@@ -87,7 +87,7 @@
 
 | # | 坑 | 位置 | 状态 |
 |---|---|---|---|
-| P1 | BT.CPP v4 `haltChildren` 只对 RUNNING child 生效，终态缓存子树不重置 → 常驻树下 planner 永不重规划 + 恢复风暴 | BT.CPP v4 语义 + behavior_tree/* | 已修：resetState() + resetNavigationTreeState（pilot 终端调用）；直驱树的代码必须复刻该契约 |
+| P1 | BT.CPP v4 `haltChildren` 只对 RUNNING child 生效，终态缓存子树不重置 → 常驻树下 planner 永不重规划 + 恢复风暴 | BT.CPP v4 语义 + behavior_tree/* | **已从根上消除**：树实例改为每次导航尝试新建（树生命期 == 树实例），不再需要任何复位协议。直驱树的代码同样改为「每次尝试建新树」即可 |
 | P2 | fast_tf 动态边同时间戳 set 不覆盖（emplace 语义） | thirdparty/fast_tf | 已知；测试代码需用递增时间戳 |
 | P3 | fast_tf "新父帧+已存在子帧"直接 set 抛 cannot merge unconnected trees | thirdparty/fast_tf | 按同步边序挂载（map←odom 先行） |
 | P4 | tf2 带超时等待以 ros::Time（sim time）计时，/clock 停摆时无限阻塞 | ayanami_ros sync | 已修：timeout=0（诊断兜底） |
@@ -96,9 +96,37 @@
 | P7 | amcl_odom DIFF 分支把方差当 sigma 传 pf_ran_gaussian（缺 sqrt）→ 纯旋转噪声 ~12× 过小 | amcl_odom.cpp:168-173 | 已修 alpha1=1.0 参数补偿 |
 | P8 | AMCL 参数须用 `initial_pose_a`（非 _yaw），否则内部 NaN 不发布 map→odom | amcl_diff.launch | 已修 |
 | P9 | 多个残留 roslaunch/gzserver 同发同名 TF → 帧缺失/乱序（ayanami 日志会提示） | 环境 | 重启前彻底 pkill |
-| P10 | 二次 configureCoreMaps 会替换 context 使插件指针悬挂 | costmap_navigation_server.cpp | 已加守护（warn + return） |
+| P10 | 二次 configureCoreMaps 会替换 context 使模块指针悬挂 | costmap_navigation_server.cpp | 已加守护（warn + return） |
+| P11 | 持地图锁做 TF 查询（map 锁 → robot-state 锁），与 composePlanningOverlay 自述的写者纪律相反 | costmap_map_context.hpp buildReader | 已修：机器人位姿在**加锁之前**解析。无回归测试（timeout=0 的查询不可观测），靠代码审查保证 |
+| P12 | 平滑器只看得见 local 图，其产物此前没有任何树级校验 → 平滑可以把路径推进全局图的障碍里 | config/BT/navigation.xml + costmap_savitzky_smoother | 已修：smoother 分支补 `IsPathValid path="{smoothed_path}"`；平滑器自身的碰撞回滚仍是 SUCCESS（优雅降级，不是失败） |
+| P13 | 到达容差两处独立配置，出厂值 angle_tolerance=2.6 rad 使朝向检查失效（只否掉 31 度的圆） | simple_goal_checker.json + 控制器 | 已修机制：容差**单一来源**（checker 经执行层下推给控制器，控制器视其为上界）；数值按保守处理未改，启动日志会点名该过宽配置 |
+| P14 | 模块 json 的参数写在**家族段**里 → 模块读自己的段读不到，静默跑默认值 | 多处夹具 | 已加校验：加载时要求存在以模块名命名的参数段，缺失即拒绝；另有「未消费键」审计 |
+| P15 | 树引用的恢复角色无人声明 → 黑板键为空串，错误只在**恢复分支真的被派发时**出现（机器人已卡住） | pilot 建树 | 已修：建树期解析每个 Recovery/`*_id` 端口，空引用或未加载的 id 即拒绝该树；建树异常被 pilot 捕获（否则 tick 线程上的未捕获异常会 terminate 进程） |
 
 ## 案例复盘（塑造当前设计的真实事故）
+
+### 案例 E：`catkin_add_gtest` 的测试二进制不会随 `catkin build` 重建
+
+`catkin_add_gtest` 生成的可执行文件带 `EXCLUDE_FROM_ALL`，因此普通
+`catkin build ayanami_ros` **从不重建它们**——改完测试源码跑 `ctest`，跑的是旧
+二进制，绿灯毫无意义。已在 `ayanami_ros/CMakeLists.txt` 里把每个测试目标拉回
+`all`。核心包用的是 `add_executable`，本来就在 `all` 里，所以只有 ROS 包有这个问题。
+
+**教训**：验证「测试通过」之前，先确认二进制比源码新。
+
+### 案例 F：跑 ROS 测试时主机没有 master，测试全部超时
+
+`~/.bashrc` 里 `ROS_MASTER_URI` 指向 11311，而那个端口上没有 master（它原被 VS Code
+占用）。需要 ROS 初始化的测试会站在 master 重试上（表现为「超时」而不是失败）。
+按 AGENTS.md 的约定自起一个：
+
+```bash
+ROS_MASTER_URI=http://localhost:11313 roscore -p 11313 &
+ROS_MASTER_URI=http://localhost:11313 ctest --timeout 120
+```
+
+顺带说明：有 master 时这 6 个测试只需 ~4 秒，无 master 时要 ~55 秒——耗时本身就是
+诊断信号。
 
 ### 案例 A：恢复风暴（28 次恢复、FollowPath 零重入、原地转圈）
 
@@ -113,7 +141,7 @@
 
 - 现象：两次实验都在 x≈-1.47 停住——恰好是局部窗口（钉死在原点的 3×3m）
   西边缘；DWB 前进轨迹全部出界无效。
-- 根因：dwb 插件把持有 RAII 读锁的 `CostmapView` 存成成员 → 局部图写者
+- 根因：dwb 模块把持有 RAII 读锁的读视图存成成员 → 局部图写者
   （落图/滚动/清图）永久阻塞 → 窗口永不滚动。
 - 修复：视图改函数局部（锁生命周期 = 单次规划周期）；
   local_window_rolling_test 锁定。
@@ -142,7 +170,7 @@
 ### 案例 C：controller 恢复间隙漏发旧速度
 
 - 现象：recovery 启动瞬间可能漏出一条旧速度命令。
-- 修复：插件调用返回后、发布前复查 `cancel_requested/should_exit`；
+- 修复：模块调用返回后、发布前复查 `cancel_requested/should_exit`；
   `setMaxRetries` 删除（重试归 BT），patience 保留（对标 nav2
   failure_tolerance）。
 

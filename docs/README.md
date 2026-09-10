@@ -1,16 +1,16 @@
 # Ayanami Wiki
 
 Ayanami 是一个**纯 C++、不依赖 ROS** 的单机器人导航框架，专注于**同一时间内的一次导航任务**。
-它借鉴了 move_base_flex 的"抽象地图 + 依赖地图"插件分层与 nav2 的
+它借鉴了 move_base_flex 的"抽象地图 + 依赖地图"模块分层与 nav2 的
 planner / smoother / controller / recovery 四组件和行为树组织方式，并针对
 稳健、精简、高效、可扩展的目标做了多项结构决策。
 
-- 仓库布局：`src/ayanami`（纯 C++ 核心 + 插件，零 ROS 头文件）与
+- 仓库布局：`src/ayanami`（纯 C++ 核心 + 模块，零 ROS 头文件）与
   `src/ayanami_ros`（唯一的 ROS1 边界层）。
-- 算法插件通过 dlopen（`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`）加载，
+- 算法模块通过 dlopen（`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`）加载，
   以 `create_extension_module` 工厂符号暴露。
-- 行为树（BehaviorTree.CPP v4，vendored）常驻不重建；目标更新走 latest-wins
-  邮箱；恢复调度完全由行为树决定。
+- 行为树（BehaviorTree.CPP v4，vendored）：工厂建一次，**树实例每次导航尝试建一次**；
+  目标更新走 latest-wins 邮箱；恢复调度完全由行为树决定。
 
 ## 快速开始（docker 环境 dynamicx）
 
@@ -42,10 +42,10 @@ cd /share/nav_ws/build/ayanami_ros && ctest --timeout 120
 | [architecture.md](architecture.md) | 总体架构、分层、线程模型、目录结构 |
 | [configuration.md](configuration.md) | 配置系统：全部文件、键、默认值与单一来源纪律 |
 | [navigation-flow.md](navigation-flow.md) | 一次导航的完整生命周期（goal → plan → smooth → follow → recover） |
-| [behavior-tree.md](behavior-tree.md) | 行为树层：节点清单、常驻树协议、v4 halt 适配、reset_token |
+| [behavior-tree.md](behavior-tree.md) | 行为树层：节点清单、树实例模型、建树期端口/角色校验、reset_token |
 | [execution-runtime.md](execution-runtime.md) | 执行运行时：Execution/Action/并发槽/资源协议/错误码体系 |
-| [map-and-costmap.md](map-and-costmap.md) | 地图族抽象、CostmapView 零拷贝读、唯一写者纪律、清图 |
-| [plugins.md](plugins.md) | 插件开发指南：接口、工厂、Param 结构体、CMake 集成 |
+| [map-and-costmap.md](map-and-costmap.md) | 地图族抽象、CostmapReader 回调作用域零拷贝读、唯一写者纪律、清图 |
+| [modules.md](modules.md) | 模块开发指南：接口、工厂、加载后参数注入、Param 结构体、api_version、CMake 集成 |
 | [ros-integration.md](ros-integration.md) | ayanami_ros 边界：AyanamiROS、TF 同步、AMCL 集成、rviz_viewer |
 | [testing.md](testing.md) | 测试套件、关键回归测试、写测试的方法论 |
 | [troubleshooting.md](troubleshooting.md) | 故障排查与已知坑（含三次真实卡死案例的复盘） |
@@ -60,12 +60,12 @@ cd /share/nav_ws/build/ayanami_ros && ctest --timeout 120
 /goal ────────┼──► submitGoal(邮箱)     │   CostmapNavigationServer
               │                         │   ├─ CostmapMapContext (global/local)
 rviz_viewer ◄─┘ (旁路可视化)            │   ├─ planner/smoother/controller/
-                                        │   │  recovery/checker 插件
+                                        │   │  recovery/checker 模块
                                         ▼   ▼
-                                   BehaviorTreePilot（常驻树 100Hz tick）
+                                   BehaviorTreePilot（工厂常驻；每次尝试一棵新树）
                                         │ request* (TaskHandle 直连)
                                         ▼
-                              ActionBase 并发槽 ──► Execution 线程 ──► 插件
+                              ActionBase 并发槽 ──► Execution 线程 ──► 模块
                                         │
                               cmd_vel ──► 机器人（Gazebo 差速）
 ```

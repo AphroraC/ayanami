@@ -18,11 +18,11 @@ ayanami 消息送入核心、以固定频率驱动核心、承载 ROS 侧扩展�
 | `start() / stop()` | loop 线程生命周期（50Hz） |
 
 loop 线程每周期：`syncTransformsToCore()` → `checkTfHealth()`（1Hz）→
-`navigation_plugin->spinOnce()`（costmap 可视化 1Hz）→ `drainPendingGoal()`
+`navigation_module->spinOnce()`（costmap 可视化 1Hz）→ `drainPendingGoal()`
 → `ros::spinOnce()`（触发 scan/odom/goal 回调）→ WallRate sleep。
 
 扩展加载顺序（M2-P1）：扩展（rviz_viewer，构造期注册旁路订阅）**先于**
-navigation_plugin->start()（首波可视化 emit 不丢）。
+navigation_module->start()（首波可视化 emit 不丢）。
 
 ### 定位修正累计漂移 → 清全局动态层
 

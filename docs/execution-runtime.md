@@ -68,7 +68,7 @@ AbstractActionBase；单导航纪律下旧并发槽收敛为单在飞记录 + pe
 - 每个在飞任务持 execution + **驱动线程**（runImpl 一次完整执行）。
 - `start()`：同槽在飞时先 cancel 旧 execution（cancel 内同步发零速）→
   新 goal 停靠 pending 槽 → 旧驱动任务退出时 teardown 链装新驱动线程
-  （tick 线程绝不阻塞在慢插件上，同槽插件绝不重入）。
+  （tick 线程绝不阻塞在慢模块上，同槽模块绝不重入）。
 - `runImplCommon`：轮询骨架——先查 `aborted()`（k_aborted 兜底优先），
   再交给派生的 StateMapper（透传 cancel / Execution 状态→GoalStatus 映射 /
   finish 结算），`waitForStateUpdate` 事件驱动 + 20ms 兜底。
@@ -78,17 +78,17 @@ AbstractActionBase；单导航纪律下旧并发槽收敛为单在飞记录 + pe
   （旁路 emit + recovery 互斥释放）再 `promise.set_value`——先释放资源后
   发布可见性，杜绝"BT 轮询已见 ready 但互斥未释放"的 RESOURCE_BUSY 竞态。
 
-## 多插件与 goal 级选择（nav2 语义）
+## 多模块与 goal 级选择（nav2 语义）
 
-- planner/smoother/controller 支持**多插件配置**：每个加载的插件都有独立
+- planner/smoother/controller 支持**多模块配置**：每个加载的模块都有独立
   action；recovery 本就按 id 派发。
 - goal 携带 `planner_id / smoother_id / controller_id`（BT 端口经
   PlannerSelector/ControllerSelector/SmootherSelector 写黑板后绑定）；空 id
-  = 家族默认（第一个配置的插件）；显式未知 id → INVALID_INPUT 结构化拒绝。
+  = 家族默认（第一个配置的模块）；显式未知 id → INVALID_INPUT 结构化拒绝。
 - `requestPlanUpdate(goal_id, ...)` 在全部 controller action 中按 goal_id
   寻址；cancelAll*/preemptAll* 覆盖整个 action map（防止非默认 id 残留
   速度输出）。
-- 生产配置仍为每族单插件（机制完备、配置从简）。
+- 生产配置仍为每族单模块（机制完备、配置从简）。
 
 ## Feedback（nav2 对齐）
 
@@ -112,8 +112,8 @@ AbstractActionBase；单导航纪律下旧并发槽收敛为单在飞记录 + pe
 - 无人使用时 `cancelAllPlanners/Smoothers/Controllers` 供 halt/抢占调用。
 - checker 注入与速度上限注入（`configureControllerExecution`）。
 - 空 start 解析上收框架：`PlannerExecution::start/setNewGoal` 把空 start
-  （默认构造位姿）经 RobotStateController 解析为最新机器人位姿；插件契约
-  为"start 永远有效"，插件不再各自解释哨兵。
+  （默认构造位姿）经 RobotStateController 解析为最新机器人位姿；模块契约
+  为"start 永远有效"，模块不再各自解释哨兵。
 
 ## 全局动态代价图重建触发（AyanamiROS）
 

@@ -16,20 +16,20 @@ ayanami 采用"算法核心与中间件彻底分离"的两包结构：
 ┌──────────────▼───────────────────────────────────────────────┐
 │ ayanami（纯 C++，零 ROS 头文件）                                │
 │                                                               │
-│  宿主插件层  CostmapNavigation（modules/costmap_navigation）    │
+│  宿主模块层  CostmapNavigation（modules/costmap_navigation）    │
 │    ├─ CostmapNavigationServer（地图族 server，唯一写者）        │
-│    └─ BehaviorTreePilot（常驻树 tick 循环）                    │
+│    └─ BehaviorTreePilot（工厂常驻；每尝试一棵新树）             │
 │                                                               │
 │  行为树层    ComputePathToPose / SmoothPath / FollowPath /     │
 │              Recovery action 节点 + PipelineSequence /         │
-│              RecoveryNode / RateController / RoundRobin /      │
-│              RecoverySequence / 条件节点                        │
+│              RecoveryNode / RateController /                   │
+│              RecoverySequence(轮换) / 条件节点                  │
 │                                                               │
 │  执行层      NavigationServerBase(NavigationRuntime)           │
 │              ActionBase 并发槽 ─► ExecutionBase 状态机线程      │
 │              （Planner/Smoother/Controller/Recovery 四族）      │
 │                                                               │
-│  插件接口层  AbstractPlanner/Smoother/Controller/Recovery/     │
+│  模块接口层  AbstractPlanner/Smoother/Controller/Recovery/     │
 │              GoalChecker/ProgressChecker（零地图类型）          │
 │              + 地图族接口 CostmapPlanner/Smoother/...          │
 │                                                               │
@@ -38,7 +38,7 @@ ayanami 采用"算法核心与中间件彻底分离"的两包结构：
 │                                                               │
 │  基础设施    Config/GlobalConfig、NavigationCallbacks 静态槽、  │
 │              RobotStateController、TransformStore(fast_tf)、    │
-│              PluginManager、WorkerPool(已移除，见下)             │
+│              ModuleManager、WorkerPool(已移除，见下)             │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -59,15 +59,15 @@ ayanami 采用"算法核心与中间件彻底分离"的两包结构：
 
 | 目录 | 内容 |
 |---|---|
-| `include/ayanami/abstract/core` | 算法插件抽象接口（零地图类型）：Planner/Smoother/Controller/Recovery/GoalChecker/ProgressChecker/Navigation |
-| `include/ayanami/abstract/components` | 运行时组件：ExecutionBase、四族 Execution、ActionBase、ActionServer/TaskHandle、PluginManager、NavigationServerBase(NavigationRuntime，多插件 action map + goal 级 id 派发)、NavigationSessionState、RobotStateController(唯一 TF 查询单例) |
-| `include/ayanami/behavior_tree` | BehaviorTreePilot、BT action/condition/selector 节点（CRTP 基类 NavigationActionNode）、控制节点（PipelineSequence/RecoveryNode/RateController/RoundRobin/RecoverySequence）、黑板协议、BehaviorTreeExtension |
-| `include/ayanami/costmap` | costmap 地图族：MapContext、CostmapView、命令端口、地图族 Execution/Action |
-| `include/ayanami/map` | 地图族抽象：AbstractMapContext、MapCommandPort、MapCapability、MapFamilyFactory |
+| `include/ayanami/abstract/core` | 算法模块抽象接口（零地图类型）：Planner/Smoother/Controller/Recovery/GoalChecker/ProgressChecker/Navigation |
+| `include/ayanami/abstract/components` | 运行时组件：ExecutionBase、四族 Execution、ActionBase、ActionServer/TaskHandle、ModuleManager、NavigationServerBase(NavigationRuntime，多模块 action map + goal 级 id 派发)、NavigationSessionState、RobotStateController(唯一 TF 查询单例) |
+| `include/ayanami/behavior_tree` | BehaviorTreePilot、BT action/condition/selector 节点（CRTP 基类 NavigationActionNode）、控制节点（PipelineSequence/RecoveryNode/RateController/RecoverySequence(轮换)）、黑板协议、BehaviorTreeExtension |
+| `include/ayanami/costmap` | costmap 地图族：MapContext、CostmapReader、OverlayPolicy、命令端口、地图族 Execution/Action |
+| `include/ayanami/map` | 地图族抽象：AbstractMapContext、MapCommandPort、MapFamilyFactory |
 | `include/ayanami/interfaces` | NavigationCallbacks 全局旁路槽、TransformStore |
 | `include/ayanami/messages` | 自研消息（geometry/nav/sensor/actions/failure/recovery_params/timestamp） |
-| `include/ayanami/utility` | Config/GlobalConfig、logging、CallbackSlot/CallbackSubscription、load_module/loaded_module/extension_module |
-| `modules/` | 11 个 dlopen 插件（见 [plugins.md](plugins.md)） |
+| `include/ayanami/utility` | Config/GlobalConfig、logging、CallbackSlot/CallbackSubscription、loadModule/loaded_module/extension_module |
+| `modules/` | 12 个 dlopen 模块（见 [modules.md](modules.md)） |
 | `packages/` | costmap_2d（Costmap2D/LayeredCostmap）、costmap_layers（Static/SimpleObstacle/Inflation）、costmap_server（CostmapWrapper） |
 | `tests/` | 52 个 gtest（见 [testing.md](testing.md)） |
 | `thirdparty/` | BehaviorTree.CPP v4、fast_tf、nlohmann_json、ankerl |
@@ -80,26 +80,26 @@ Ayanami 内部**没有进程级线程池**（WorkerPool 已移除）。线程模
 | 线程 | 数量 | 职责 |
 |---|---|---|
 | AyanamiROS loop | 1 | 50Hz：TF 同步 → TF 健康诊断 → spinOnce(可视化) → drainPendingGoal → ros::spinOnce |
-| BT tick（navigation_thread） | 0/1 | 常驻树 tick 循环（默认 100Hz，`bt_tree.sleep` 可被唤醒） |
+| BT tick（navigation_thread） | 0/1 | BT tick 循环（默认 100Hz；空闲时在邮箱条件变量上等待） |
 | Action 驱动线程 | 每槽 1 | 轮询 execution 状态机并结算 goal（runImpl） |
-| Execution 状态机线程 | 每执行 1 | 插件调用循环（planner 单发 / controller 周期 / recovery tick） |
+| Execution 状态机线程 | 每执行 1 | 模块调用循环（planner 单发 / controller 周期 / recovery tick） |
 
 同步纪律：
 
 - 并发槽（ActionBase）：同槽新 goal 必须先 cancel 旧 execution 并等旧驱动
-  线程退出（`task_done` + `slots_cv`）后才允许提交新任务 → 同槽插件绝不重入。
+  线程退出（`task_done` + `task_cv`）后才允许提交新任务 → 同族模块绝不重入。
 - 执行线程异常有 `k_aborted = 250` 兜底终态，保证驱动任务不会死轮询、
   recovery 互斥不会死锁。
-- 插件调用前/发布命令前强制复查 `cancel_requested / should_exit`。
+- 模块调用前/发布命令前强制复查 `cancel_requested / should_exit`。
 
 ## 核心设计决策（Ruling 摘录）
 
 1. **主流控制流不走全局回调**：BT 节点直接调 `NavigationRuntime::request*`
    拿 `TaskHandle`（直连，future + onComplete）。全局回调槽
    （`NavigationCallbacks`）只承载旁路输出（可视化 / 监控）。
-2. **常驻树**：树只建一次；新 goal 只重写黑板 + 推进 revision，绝不跨线程
-   halt；树返回终端状态时由 pilot 调 `resetNavigationTreeState()` 全量重置
-   内部状态（BT.CPP v4 halt 语义适配，见 [behavior-tree.md](behavior-tree.md)）。
+2. **树实例按尝试新建**：工厂（节点 + 树 XML）只建一次；每次导航尝试建一棵新树
+   + 新黑板，尝试结束即释放树对象、保留黑板作为记录。树生命期 == 树实例，跨生命期
+   状态泄漏按构造不可能（见 [behavior-tree.md](behavior-tree.md)）。
 3. **latest-wins 单一目标**：同一时间只有一个导航任务。新 goal 覆写邮箱；
    planner 原位换目标；controller 持续跟随旧路径直到新路径平滑落地后
    in-place `updatePlan`。版本计数合并为**单一单调 plan_version**（规划
@@ -107,7 +107,8 @@ Ayanami 内部**没有进程级线程池**（WorkerPool 已移除）。线程模
 4. **地图族抽象**：核心与宿主只认 `MapFamilyFactory` / `AbstractMapContext`
    抽象面；CostmapMapContext 的创建经由工厂；`libayanami` 本体不含任何
    costmap 符号（`map_family_abstraction_test` 守护）。
-5. **地图读契约**：短时读走 `CostmapView` 零拷贝 RAII 视图；**规划器读
+5. **地图读契约**：短时读走 `readGlobal()/readLocal()` 回调内的 `CostmapReader`
+   （零拷贝、回调返回即释放锁）；**规划器读
    global+local 叠加经 `composePlanningOverlay()`**——双锁只住 O(N) 合成
    （local←global 变换一次解析），A* 无锁查 buffer，写者永不被搜索阻塞。
    local costmap 建在 odom 系（定位跳变免疫，nav2 惯例）。视图禁止存为
@@ -124,4 +125,4 @@ Ayanami 内部**没有进程级线程池**（WorkerPool 已移除）。线程模
 | RobotStateController | `abstract/components/robot_state_controller.hpp` | 跨 DSO 单例：最新位姿(TF)+最新速度(odom)，帧名一次性缓存 |
 | TransformStore | `interfaces/transform_store.hpp` | fast_tf 缓冲的线程安全包装（跨 DSO 单例） |
 | NavigationCallbacks | `interfaces/callbacks.hpp` | 旁路输出槽（rviz_viewer / 监控订阅），静态成员只在 libayanami 内定义一份 |
-| PluginManager | `abstract/components/plugin_manager.hpp` | dlopen + dynamic_pointer_cast + init_fn + 名称表 |
+| ModuleManager | `abstract/components/module_manager.hpp` | dlopen + dynamic_pointer_cast + init_fn + 名称表 |

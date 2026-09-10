@@ -19,6 +19,7 @@ NavigationCore
                       ├── local costmap（local_costmap_frame，通常 odom）
                       ├── footprint（configure 期不可变缓存）
                       ├── obstacle update（handleObstacle* 落图管线）
+                      ├── readGlobal()/readLocal()（唯一读入口，回调作用域）
                       ├── composePlanningOverlay()（规划输入物化）
                       └── costmap clear command（CostmapCommandPort）
 ```
@@ -45,26 +46,36 @@ NavigationCore
   全部锁**，A* 事后只查 buffer（O(1)/cell、无锁）——搜索再慢（不可达
   目标/大图）也不会阻塞写者落图。锁内耗时被钉在 O(N) 合成上，"<10ms"
   由机制保证而非纪律约定。
-- **smoother 只读 local**（`lockLocal()`）；路径若在另一帧（生产：map），
+- **smoother 只读 local**（`readLocal()`）；路径若在另一帧（生产：map），
   grid←path 变换**每次 smooth 只解析一次**，输出路径保持原帧。
-- **controller 读 local**（dwb 每 cycle `lockLocal()`；pid 不读图）。
-  局部图帧可能与路径/位姿帧不同：dwb 在插件内经 RSC 变换（已有逻辑）。
-- CostmapView = RAII shared 锁 + 零拷贝 master grid 指针，**只用于短时
-  调用**；视图禁止存为长生命周期成员（历史事故，见
-  troubleshooting.md）。规划器不走视图，走 overlay 物化。
-- 机器人状态查询统一走 `RobotStateController`（视图内 robot_pose 是
-  构建期按视图帧解析的缓存）。
+- **controller 读 local**（dwb 每 cycle `readLocal()`；pid 不读图）。
+  局部图帧可能与路径/位姿帧不同：dwb 在模块内经 RSC 变换（已有逻辑）。
+- **读接口只有一个**：`readGlobal(fn)` / `readLocal(fn)`，把
+  `const CostmapReader&` 交给回调，锁在回调返回时释放。按值返回视图的
+  按值返回视图的 `lockLocal()/lockGlobal()` 已删除——那样写时"把视图存成成员或塞进 lambda"
+  是完全合法的 C++，会静默把写者挡到对象析构（历史事故，见
+  troubleshooting.md）。现在没有可保存的值，这类 bug 不可表达。
+- **`CostmapReader` 的 grid 指针只在回调内有效**：不要把它带出回调，也不要拷贝
+  栅格数据。需要比"一次有界遍历"更久的算法，走 planner 的 overlay 物化。
+- **位姿在加锁之前解析**：`buildReader` 先解析机器人位姿、再取地图锁。这个顺序是
+  修复项——旧实现先取锁再查 TF，即"持地图锁做 TF 查询"，正是
+  `composePlanningOverlay` 自己声明禁止的嵌套（map 锁 → robot-state 锁），一个
+  等待着写者的锁序反转。
+- 同一次回调内需要两张图时**嵌套**（local 外层、global 内层），与写者的
+  获取顺序一致。
+- 机器人状态查询统一走 `RobotStateController`（reader 内的 robot_pose 是
+  构建期按该图帧解析的缓存；`hasRobotPose()` 为假表示当时 TF 不可用）。
 - map version 仍然不做：新鲜度只有 `isCurrent()`。
 
-## 族级插件接口
+## 族级模块接口
 
 在抽象接口之上只增加注入点：
-`configure(const PluginContext&, CostmapMapContext::ConstPtr)`
+`configure(const ModuleContext&, CostmapMapContext::ConstPtr)`
 （对标 MBF `CostmapPlanner : AbstractPlanner` + initialize(name, costmap)）。
 
-`NavigationServerBase` 通过虚钩子 `initialize*Plugin` 装配，**本体不含任何
+`NavigationServerBase` 通过虚钩子 `initialize*Module` 装配，**本体不含任何
 costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接缝。
-未来 mesh/voxel 族：平行实现 `{Family}MapContext`、族级插件接口与
+未来 mesh/voxel 族：平行实现 `{Family}MapContext`、族级模块接口与
 `{Family}MapFamilyFactory` 即可，族间互不感知。
 
 ## Costmap 数据流水线（costmap 族）
@@ -84,9 +95,9 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
         └─ 两图顺序落图（local 先、global 后，与读者锁序一致）
 ```
 
-- **唯一写者**：CostmapNavigationServer 是地图的唯一写者；插件与 BT 只读。
+- **唯一写者**：CostmapNavigationServer 是地图的唯一写者；模块与 BT 只读。
 - 写命令端口：`CostmapCommandPort : MapCommandPort`
-  （`ClearCostmapCommand{affected_maps, clear_radius, enabled}`），恢复插件
+  （`ClearCostmapCommand{affected_maps, clear_radius, enabled}`），恢复模块
   与定位跳变处理都经端口提交，由 server 的 `executeClearCommand` 执行
   （各图按自己的 frame 解析清图中心）。
 - Ruling #7：InflationLayer 只做 `cost > old` 覆盖，障碍消失不会自动去膨胀
@@ -109,16 +120,16 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 | SimpleObstacleLayer | 同上 | markObstacles（延迟标记列表）/raytraceFreespace（Bresenham 清除）/clearArea；组合方式 MAXIMUM（全局）/OVERWRITE（局部） |
 | InflationLayer | 同上 | 只做 `cost > old` 膨胀覆盖 |
 | CostmapWrapper | `packages/costmap_server` | LayeredCostmap + `std::shared_mutex` + active/current + updateMap(Unlocked)；自身记录帧名 |
-| CostmapView | `ayanami/costmap/core/costmap_view.hpp` | 零拷贝 RAII 读视图（shared_lock + master grid 指针 + 帧名（取 wrapper）/footprint/robot_pose/current） |
+| CostmapReader | `ayanami/costmap/core/costmap_reader.hpp` | 回调作用域的零拷贝读访问（shared_lock + master grid 指针 + 帧名/footprint/robot_pose/current）；移动语义、不可拷贝，只由 readGlobal/readLocal 交给回调 |
 | PlanningOverlay | `ayanami/costmap/core/planning_overlay.hpp` | 规划输入物化：叠加代价 buffer + 全局 grid 几何 + 机器人位姿；消费者无锁 O(1) 查询 |
-| CostmapMapContext | `ayanami/costmap/components` | 双帧 wrapper 聚合 + lockLocal/lockGlobal + composePlanningOverlay + isPathValid + commandPort + footprint 缓存 |
+| CostmapMapContext | `ayanami/costmap/components` | 双帧 wrapper 聚合 + readGlobal/readLocal + composePlanningOverlay + isPathValid + commandPort + footprint 缓存 + OverlayPolicy |
 
 ## 锁与所有权纪律
 
 - 单写者多读者：写者（server）持 `unique_lock`；读者持 `shared_lock`。
-- 插件在 `configure` 时持有 `CostmapMapContext::ConstPtr`（const 智能指
-  针），**绝不改图**；短时读图经 `lockLocal()/lockGlobal()` 取视图；规划
-  器经 `composePlanningOverlay()` 物化后无锁搜索。视图存活期即持锁期，
+- 模块在 `configure` 时持有 `CostmapMapContext::ConstPtr`（const 智能指
+  针），**绝不改图**；短时读图经 `readLocal()/readGlobal()` 的回调；规划
+  器经 `composePlanningOverlay()` 物化后无锁搜索。回调存活期即持锁期，
   **禁止把视图存成长生命周期成员**（会把写者永久挡在门外——历史事故：
   dwb 存 `local_view` 成员导致落图/滚动永久阻塞）。
 - 可变访问器（`globalCostmap()/localCostmap()`）只提供给地图写者与
@@ -131,7 +142,10 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 ## isPathValid 语义（nav2 planner_server 对齐）
 
 `CostmapMapContext::isPathValid`（BT `IsPathValid` 条件的最终实现）：
-- 经 `composePlanningOverlay` 取叠加（锁只住合成期），**从距机器人最近
+- **不走** `composePlanningOverlay`：路径校验是 O(path) 的稀疏探针，逐点查询即可；
+  为了 O(path) 的活去物化 O(map) 是错配（composePlanningOverlay 是给 A* 热路径用的）。
+- 叠加规则由与 planner 共用的显式 `OverlayPolicy` 对象给出（"两者同规则"是代码
+  事实，而不是注释里的承诺），**从距机器人最近
   的路径点开始检查**——已走过路段可能被新障碍占据，属误判源，nav2 显式
   跳过；
 - 每点须在界内（出界对标 nav2 按 lethal 处理），代价非 NO_INFORMATION 且
