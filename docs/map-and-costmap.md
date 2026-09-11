@@ -20,7 +20,7 @@ NavigationCore
                       ├── footprint（configure 期不可变缓存）
                       ├── obstacle update（handleObstacle* 落图管线）
                       ├── readGlobal()/readLocal()（唯一读入口，回调作用域）
-                      ├── composePlanningOverlay()（规划输入物化）
+                      ├── snapshotGlobal()（规划输入物化，短锁快照）
                       └── costmap clear command（CostmapCommandPort）
 ```
 
@@ -38,16 +38,13 @@ NavigationCore
 
 ## 读图契约（全地图族约定）
 
-- **planner 读 global+local 的叠加**（costmap 族 =
-  `composePlanningOverlay(buffer)`）：合成阶段同时持有两把 shared 锁
-  （获取顺序 local→global），逐 cell 取 max(global, local)，local 仅在
-  窗口内参与，NO_INFORMATION 保守占优；local←global 变换**每次合成只
-  解析一次**（缓存矩阵逐 cell 应用，搜索过程零变换）。**合成完成即释放
-  全部锁**，A* 事后只查 buffer（O(1)/cell、无锁）——搜索再慢（不可达
-  目标/大图）也不会阻塞写者落图。锁内耗时被钉在 O(N) 合成上，"<10ms"
-  由机制保证而非纪律约定。
-- **smoother 只读 local**（`readLocal()`）；路径若在另一帧（生产：map），
-  grid←path 变换**每次 smooth 只解析一次**，输出路径保持原帧。
+- **planner 短锁快照**（`snapshotGlobal()`）：共享锁只住一次 master grid
+  的 memcpy（`CostmapSnapshot`，含几何/帧/机器人位姿），A* 随后在不可变
+  副本上搜索——**全程不持有地图锁**，搜索再慢（不可达目标/大图）也不
+  会阻塞写者落图。锁内耗时被钉在 O(N) 拷贝上，由机制保证而非纪律约定。
+- **smoother 用自有副本**：订阅 `NavigationCallbacks::on_costmap_raw`
+  （无损代价图全量拷贝，宿主仅在内容变化时发射），平滑全程零活图锁；
+  输入路径与地图 revision 均未变化时直接返回缓存输出（备忘录）。
 - **controller 读 local**（dwb 每 cycle `readLocal()`；pid 不读图）。
   局部图帧可能与路径/位姿帧不同：dwb 在模块内经 RSC 变换（已有逻辑）。
 - **读接口只有一个**：`readGlobal(fn)` / `readLocal(fn)`，把
@@ -56,10 +53,10 @@ NavigationCore
   是完全合法的 C++，会静默把写者挡到对象析构（历史事故，见
   troubleshooting.md）。现在没有可保存的值，这类 bug 不可表达。
 - **`CostmapReader` 的 grid 指针只在回调内有效**：不要把它带出回调，也不要拷贝
-  栅格数据。需要比"一次有界遍历"更久的算法，走 planner 的 overlay 物化。
+  栅格数据。需要比"一次有界遍历"更久的算法，走 planner 的 `snapshotGlobal()`
+  快照或 smoother 的 raw 槽副本。
 - **位姿在加锁之前解析**：`buildReader` 先解析机器人位姿、再取地图锁。这个顺序是
-  修复项——旧实现先取锁再查 TF，即"持地图锁做 TF 查询"，正是
-  `composePlanningOverlay` 自己声明禁止的嵌套（map 锁 → robot-state 锁），一个
+  修复项——旧实现先取锁再查 TF，即"持地图锁做 TF 查询"，一个
   等待着写者的锁序反转。
 - 同一次回调内需要两张图时**嵌套**（local 外层、global 内层），与写者的
   获取顺序一致。
@@ -104,8 +101,7 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
   ——动态更新前必须先 clearArea 上一帧观察窗（外扩 inflation+1 cell）。
 - **落图时序（scan-stamp 查询）**：传感器变换按 **scan 自身时间戳**查询
   （零容差，失败立即回退 latest 并计数）。机器人位姿（滚动居中/清图中
-  心）仍用 latest。fast_tf 动态边回溯窗口由 `tf_cache_duration`（默认
-  10s）配置。
+  心）仍用 latest。TF 查询按需直达注入的 tf2 源，无核心侧回溯窗口配置。
 - **滚动窗口与传感器流解耦**：宿主 `spinOnce()` 周期调用
   `CostmapNavigationServer::updateRollingWindows()`——local 按
   local_frame←robot 居中，global（若配置滚动）按 global_frame←robot。
@@ -121,15 +117,15 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 | InflationLayer | 同上 | 只做 `cost > old` 膨胀覆盖 |
 | CostmapWrapper | `packages/costmap_server` | LayeredCostmap + `std::shared_mutex` + active/current + updateMap(Unlocked)；自身记录帧名 |
 | CostmapReader | `ayanami/costmap/core/costmap_reader.hpp` | 回调作用域的零拷贝读访问（shared_lock + master grid 指针 + 帧名/footprint/robot_pose/current）；移动语义、不可拷贝，只由 readGlobal/readLocal 交给回调 |
-| PlanningOverlay | `ayanami/costmap/core/planning_overlay.hpp` | 规划输入物化：叠加代价 buffer + 全局 grid 几何 + 机器人位姿；消费者无锁 O(1) 查询 |
-| CostmapMapContext | `ayanami/costmap/components` | 双帧 wrapper 聚合 + readGlobal/readLocal + composePlanningOverlay + isPathValid + commandPort + footprint 缓存 + OverlayPolicy |
+| CostmapSnapshot | `ayanami/costmap/core/costmap_snapshot.hpp` | 规划输入物化：短锁拷贝的不可变 master grid（几何+代价+位姿），消费者无锁 O(1) 查询 |
+| CostmapMapContext | `ayanami/costmap/components` | 双帧 wrapper 聚合 + readGlobal/readLocal + snapshotGlobal + isPathValid + commandPort + footprint 缓存 |
 
 ## 锁与所有权纪律
 
 - 单写者多读者：写者（server）持 `unique_lock`；读者持 `shared_lock`。
 - 模块在 `configure` 时持有 `CostmapMapContext::ConstPtr`（const 智能指
   针），**绝不改图**；短时读图经 `readLocal()/readGlobal()` 的回调；规划
-  器经 `composePlanningOverlay()` 物化后无锁搜索。回调存活期即持锁期，
+  器经 `snapshotGlobal()` 短锁拷贝后无锁搜索。回调存活期即持锁期，
   **禁止把视图存成长生命周期成员**（会把写者永久挡在门外——历史事故：
   dwb 存 `local_view` 成员导致落图/滚动永久阻塞）。
 - 可变访问器（`globalCostmap()/localCostmap()`）只提供给地图写者与
@@ -142,10 +138,10 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 ## isPathValid 语义（nav2 planner_server 对齐）
 
 `CostmapMapContext::isPathValid`（BT `IsPathValid` 条件的最终实现）：
-- **不走** `composePlanningOverlay`：路径校验是 O(path) 的稀疏探针，逐点查询即可；
-  为了 O(path) 的活去物化 O(map) 是错配（composePlanningOverlay 是给 A* 热路径用的）。
-- 叠加规则由与 planner 共用的显式 `OverlayPolicy` 对象给出（"两者同规则"是代码
-  事实，而不是注释里的承诺），**从距机器人最近
+- **不走** `snapshotGlobal()`：路径校验是 O(path) 的稀疏探针，逐点查询即可；
+  为了 O(path) 的活去拷贝 O(map) 是错配（快照是给 A* 热路径用的）。
+- 检查规则与 planner 共用同一张 global master grid（"两者同规则"是代码
+  事实），**从距机器人最近
   的路径点开始检查**——已走过路段可能被新障碍占据，属误判源，nav2 显式
   跳过；
 - 每点须在界内（出界对标 nav2 按 lethal 处理），代价非 NO_INFORMATION 且
@@ -157,14 +153,12 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 ## 机器人状态来源
 
 - `RobotStateController`（跨 DSO 单例）是**唯一的位姿/速度/TF 查询点**：
-  位姿 = TransformStore 最新 `global_frame←robot`；速度 = 最新 odom
+  位姿 = 注入的 tf2 源最新 `global_frame←robot`；速度 = 最新 odom
   （`velocity_timeout` 过期返回零速但位姿仍有效）。**所有需要查询 TF 的
   地方直接 include 并使用该单例**，不要再自创 getRobotPose 之类的包装。
-- 写入端：ayanami_ros 把 `tf_sync_edges` 的 ROS TF 同步进 TransformStore；
-  odom twist 直写 `setOdometry`。
-- TF 注意事项：fast_tf 禁止双向外推。查询分两类：位姿类（控制周期位姿/
-  滚动居中/清图中心）用 `Timestamp::latest()`；观测类（障碍落图）用
-  传感器 header.stamp 精确回溯（窗口 `tf_cache_duration`，默认 10s）。
-  fast_tf 动态边 `set` 对同一时间戳不覆盖（emplace 语义）；`set` 到
-  "新父帧+已存在子帧"需经已存在的中间帧挂载（与 50Hz 同步的边序一致），
-  直接挂会抛 "cannot merge unconnected trees"。
+- TF 桥（按需查询模型）：ayanami_ros 启动时把 tf2 backed 的查询源注入
+  `RobotStateController`（`setTransformSource`）；核心线程的
+  `lookupTransform / canTransform / lookupPose` 按需直达 tf2 buffer——
+  插值、静态边、stamp 时间查询全部由 tf2 提供。没有周期采样，没有核心侧
+  变换缓存；内部仅保留 boost::circular_buffer 里程计。超时为 steady_clock
+  轮询（不用 tf2 的 ros::Time 时钟等待，避免 /clock 停滞时挂死）。

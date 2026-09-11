@@ -7,20 +7,6 @@
     "map_frame": "map",
     "odom_frame": "odom",
     "robot_frame": "base_link",
-    "tf_sync_rate": 50.0,
-    "tf_cache_duration": 10.0,
-    "tf_sync_edges": [
-      "map-odom:10hz",
-      "odom-base_link:50hz",
-      "base_link-robosense:10hz",
-      "map-camera_init:10hz",
-      "camera_init-body:50hz"
-    ],
-    "tf_static_edges": [
-      "base_link-robosense"
-    ],
-    "localization_clear_yaw_threshold": 1.0,
-    "localization_clear_pos_threshold": 2.0,
     "navigation_so_name": "libayanami_costmap_navigation.so"
   }
 }

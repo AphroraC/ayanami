@@ -30,10 +30,9 @@ namespace costmap {
  * That class of bug is now unrepresentable: there is no value to keep.
  *
  * - grid(): master grid pointer; valid only while the callback runs. Do NOT copy
- *   grid data out, and do not pass the pointer beyond the callback -- if an
- *   algorithm needs the map for longer than a bounded pass, the planner's
- *   composePlanningOverlay() is the sanctioned materialization (it holds the
- *   locks only for the compose window).
+ *   grid data out, and do not pass the pointer beyond the callback -- the
+ *   planner's direct-read family contract (search under the lock for one
+ *   bounded planning call) is the sanctioned long-hold pattern.
  * - footprint(): the robot footprint (configure-time cache, immutable, no lock).
  * - robot_pose(): the robot pose in this map's frame, resolved BEFORE the lock
  *   was taken (never a transform lookup under a map lock), so it may be absent

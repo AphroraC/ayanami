@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -35,6 +37,7 @@
 
 #include <shared_mutex>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -108,7 +111,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeLocalWrapper() {
 TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto local = makeLocalWrapper();
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();

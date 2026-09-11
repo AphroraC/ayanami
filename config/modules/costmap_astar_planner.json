@@ -1,9 +1,9 @@
 {
   "planner": {
-    "name": "costmap_smac_planner",
-    "so_name": "libayanami_costmap_smac_planner.so"
+    "name": "costmap_astar_planner",
+    "so_name": "libayanami_costmap_astar_planner.so"
   },
-  "costmap_smac_planner": {
+  "costmap_astar_planner": {
     "use_diagonal": true,
     "tolerance": 0.0,
     "cost_factor": 0.5,

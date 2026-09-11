@@ -1,10 +1,13 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "ayanami/behavior_tree/pilot.hpp"
 #include "ayanami/abstract/core/abstract_navigation.hpp"
@@ -47,13 +50,6 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
   void setPointcloud(const ayanami::sensor_msgs::PointCloud2& cloud) override;
   void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) override;
 
-  /// @brief Localization correction jump: clears the global costmap dynamic layers (marks made under the old
-  /// correction are untrusted; the static layer is kept, and later scans rebuild it under the new correction).
-  /// The local map lives in the local costmap frame (local_costmap_frame,
-  /// typically odom), which the map<-odom correction does not touch, so its
-  /// marks stay valid and it is not cleared.
-  void onLocalizationJump() override;
-
   // ---- Test/host support accessors ----
   behavior_tree::BehaviorTreePilot& pilot() { return bt_pilot; }
    costmap::CostmapNavigationServer& navigationServer() {
@@ -70,23 +66,62 @@ class CostmapNavigation final : public ayanami::abstract::AbstractNavigation {
  private:
   /// @brief Converts one costmap to OccupancyGrid and publishes to the
   /// side-channel slot (core message; rviz_viewer re-publishes as ROS).
+  /// Incremental (nav2 Costmap2DPublisher semantics): the first emission and
+  /// any geometry change (size/resolution/origin) emit a FULL grid; a pure
+  /// content change emits only the changed-cell window on
+  /// on_costmap_visualization_update; an unchanged map emits nothing.
   void publishMapForVisualization(const std::string& name,
                                   const costmap_2d::CostmapWrapper::Ptr&
                                       wrapper);
   /// @brief Global map: static + inflation content changes only on configure
   /// / clear commands -> published ONCE (latched downstream), not per tick.
   void publishGlobalMapForVisualization();
+
+  /// @brief Lossless full-grid copy for in-framework consumers (the
+  /// smoother's collision check): emitted under the same shared lock as
+  /// the occupancy visualization, only when the content changed. The
+  /// payload is a plain value copy -- subscribers never touch the live
+  /// grid, so no lock ordering is introduced.
+  void emitRawCostmap(const std::string& name, const std::string& frame,
+                      const costmap_2d::Costmap2D& cm);
   /// @brief Local map: rolling window with per-cycle obstacle updates ->
   /// republished at costmap_visualization_rate.
   void publishLocalMapForVisualization();
+
+  /// @brief Last-published state per map name (incremental diffing baseline).
+  struct SavedCostmap {
+    bool valid{false};
+    uint32_t width{0};
+    uint32_t height{0};
+    double resolution{0.0};
+    double origin_x{0.0};
+    double origin_y{0.0};
+    /// @brief Raw master-grid costs (not occupancy-converted) for diffing.
+    std::vector<unsigned char> costs;
+    /// @brief Monotonic per-map revision of the last raw emission (advances
+    /// whenever the published content changes).
+    uint64_t raw_revision{0};
+  };
+  std::map<std::string, SavedCostmap> saved_costmaps;
+  /// @brief Guards saved_costmaps (publish happens on the start/spinOnce
+  /// caller threads).
+  std::mutex saved_costmaps_mutex;
 
   std::shared_ptr<costmap::CostmapNavigationServer> navigation_server;
   behavior_tree::BehaviorTreePilot bt_pilot;
   std::unique_ptr<std::thread> navigation_thread;
   std::mutex goal_mutex;
   ayanami::geometry_msgs::PoseStamped current_goal;
-  double visualization_rate{1.0};  // costmap_visualization_rate (Hz)
-  std::chrono::steady_clock::time_point last_publish{};
+  /// @brief Per-map publish cadence (Hz). The LOCAL map follows the robot and
+  /// must publish faster than the static global map: navigation.costmap_
+  /// visualization_rate gates the global map; costmap_local.visualization_
+  /// rate (fallback: the global value) gates the local one. The incremental
+  /// publisher keeps an unchanged map silent, so the faster local cadence
+  /// costs nothing while the robot stands still.
+  double global_visualization_rate{1.0};
+  double local_visualization_rate{1.0};
+  std::chrono::steady_clock::time_point last_global_publish{};
+  std::chrono::steady_clock::time_point last_local_publish{};
   enum NavState { IDLE, RUNNING, COMPLETED, FAILED } state{IDLE};
 };
 

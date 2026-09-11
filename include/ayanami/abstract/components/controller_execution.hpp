@@ -196,6 +196,19 @@ public:
     return progress_checker;
   }
 
+  /// @brief Force a fresh baseline for both checkers (execution reuse: a new
+  /// FollowPath task on a reused execution must not inherit the previous
+  /// task's checker state, even when the goal pose is unchanged -- the
+  /// in-loop reset only fires on an actual goal CHANGE).
+  void resetCheckers() {
+    if (goal_checker) {
+      goal_checker->reset();
+    }
+    if (progress_checker) {
+      progress_checker->reset();
+    }
+  }
+
   ControllerState getState() const {
     return static_cast<ControllerState>(state.load());
   }
@@ -230,6 +243,11 @@ protected:
   void run() override {
     start_time = std::chrono::steady_clock::now();
     last_valid_time = start_time;
+    // Execution reuse: stale outage windows from a previous run must not
+    // leak into this one (the first stale cycle would otherwise look like a
+    // long-standing outage and trip patience immediately).
+    map_stale_since.reset();
+    pose_failure_since.reset();
     setState(STARTED, false);
 
     // Loop period from controller_frequency
@@ -332,6 +350,11 @@ protected:
             goal_checker->reset();
             progress_checker->reset();
           }
+          // The plan content changed: the next progress-metrics pass takes a
+          // full nearest-point scan once (per replan, ~1Hz), then advances
+          // incrementally along the trajectory (per control cycle).
+          progress_index = 0;
+          progress_index_full_scan = true;
         }
 
         // Single source of truth for robot state: global RobotStateController (pose + latest velocity).
@@ -400,11 +423,15 @@ protected:
         }
 
         if (result.ok) {
-          if (!validVelocityCommand(cmd_vel)) {
+          if (!finiteVelocityCommand(cmd_vel)) {
             error = ErrorCode::NO_VALID_COMMAND;
-            message = "Controller produced an invalid velocity command";
+            message = "Controller produced a non-finite velocity command";
             publishStopCommand();
           } else {
+            // Over-limit but finite commands are clamped into the caps (a
+            // marginal overshoot must not stop the robot); NaN/inf were
+            // rejected above.
+            clampVelocityCommand(cmd_vel);
             error = ErrorCode::NONE;
             message = result.message;
             setState(GOT_LOCAL_CMD, false);
@@ -493,6 +520,14 @@ protected:
   double distance_remaining{0.0};
   double avg_speed{0.0};
   double estimated_time_remaining{0.0};
+  /// @brief Incremental nearest-point tracking state (see
+  /// updateProgressMetrics): the index advances monotonically along the
+  /// trajectory; a full scan runs once after each applied plan.
+  std::size_t progress_index{0};
+  bool progress_index_full_scan{false};
+  /// @brief Throttle for the clamp warning (limit overshoots can recur every
+  /// cycle; one warning per second is enough).
+  std::chrono::steady_clock::time_point last_clamp_warn_at{};
 
   /// @brief nav2 failure_tolerance semantics: <0 (default) tolerates forever,
   /// 0 fails immediately, >0 is the tolerance window in seconds.
@@ -505,27 +540,61 @@ protected:
 
   /// @brief Update speed / distance_remaining / avg-speed metrics (call
   /// after the robot state query, before the goal check).
+  ///
+  /// Nearest-point tracking is INCREMENTAL along the trajectory: a full
+  /// O(path) scan runs once per applied plan (progress_index_full_scan),
+  /// then each cycle only scans a bounded window around the last index
+  /// (small backtrack + bounded lookahead) and advances monotonically --
+  /// the per-cycle cost no longer grows with the path length.
   void updateProgressMetrics(
       const geometry_msgs::PoseStamped& robot_pose,
       const geometry_msgs::TwistStamped& robot_velocity) {
     last_speed = std::hypot(robot_velocity.twist.linear.x(),
                             robot_velocity.twist.linear.y());
-    // Remaining length = distance to the nearest plan point + the plan
-    // length from there to the end (nav2 distance_remaining semantics,
-    // nearest-point projection).
-    std::size_t nearest_index = 0;
-    double best = std::numeric_limits<double>::max();
-    for (std::size_t i = 0; i < plan.poses.size(); ++i) {
-      const double d = (plan.poses[i].pose.position -
-                        robot_pose.pose.position)
-                           .norm();
-      if (d < best) {
-        best = d;
-        nearest_index = i;
+    if (!plan.poses.empty()) {
+      const auto distance_to = [&](std::size_t index) {
+        return (plan.poses[index].pose.position - robot_pose.pose.position)
+            .norm();
+      };
+      if (progress_index_full_scan) {
+        std::size_t nearest_index = 0;
+        double best = std::numeric_limits<double>::max();
+        for (std::size_t i = 0; i < plan.poses.size(); ++i) {
+          const double d = distance_to(i);
+          if (d < best) {
+            best = d;
+            nearest_index = i;
+          }
+        }
+        progress_index = nearest_index;
+        progress_index_full_scan = false;
+      } else {
+        // Bounded window: a few points back (pose noise / small plan
+        // shifts), a bounded run ahead (the robot advances along the path).
+        const std::size_t back_step = 5;
+        const std::size_t ahead_step = 100;
+        const std::size_t window_begin =
+            progress_index > back_step ? progress_index - back_step : 0;
+        const std::size_t window_end =
+            std::min(plan.poses.size(), progress_index + ahead_step + 1);
+        std::size_t nearest_index = progress_index;
+        double best = distance_to(progress_index);
+        for (std::size_t i = window_begin; i < window_end; ++i) {
+          const double d = distance_to(i);
+          if (d < best) {
+            best = d;
+            nearest_index = i;
+          }
+        }
+        progress_index = nearest_index;
       }
     }
-    double remaining = best;
-    for (std::size_t i = nearest_index; i + 1 < plan.poses.size(); ++i) {
+    double remaining = plan.poses.empty()
+                           ? 0.0
+                           : (plan.poses[progress_index].pose.position -
+                              robot_pose.pose.position)
+                                 .norm();
+    for (std::size_t i = progress_index; i + 1 < plan.poses.size(); ++i) {
       remaining += (plan.poses[i + 1].pose.position -
                     plan.poses[i].pose.position)
                        .norm();
@@ -559,16 +628,48 @@ protected:
            lhs.pose.orientation.isApprox(rhs.pose.orientation);
   }
 
-  bool validVelocityCommand(
-      const geometry_msgs::TwistStamped& command) const {
+  /// @brief Clamp a finite command into the velocity limits in place.
+  ///
+  /// Policy shift (replacing the old reject-and-stop): a command that merely
+  /// exceeds a limit is CLAMPED (warn throttled), because stopping the robot
+  /// for a 0.01 overshoot turns a third-party module's margin error into a
+  /// patience timeout. NaN/inf components are NOT clamped -- they are
+  /// rejected upstream by finiteVelocityCommand.
+  void clampVelocityCommand(ayanami::geometry_msgs::TwistStamped& command) {
+    const auto clamp = [](double value, double limit) {
+      return value > limit ? limit : (value < -limit ? -limit : value);
+    };
+    auto& linear = command.twist.linear;
+    auto& angular = command.twist.angular;
+    const double clamped_x = clamp(linear.x(), max_linear_x);
+    const double clamped_y = clamp(linear.y(), max_linear_y);
+    const double clamped_w = clamp(angular.z(), max_angular_z);
+    if (clamped_x != linear.x() || clamped_y != linear.y() ||
+        clamped_w != angular.z()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_clamp_warn_at >= std::chrono::seconds(1)) {
+        last_clamp_warn_at = now;
+        spdlog::warn(
+            "ControllerExecution: velocity command exceeded the limits "
+            "(vx={} vy={} wz={}, caps vx={} vy={} wz={}); clamped",
+            linear.x(), linear.y(), angular.z(), max_linear_x, max_linear_y,
+            max_angular_z);
+      }
+    }
+    linear.x() = clamped_x;
+    linear.y() = clamped_y;
+    angular.z() = clamped_w;
+  }
+
+  /// @brief Finite check only (limits are handled by clamping): a non-finite
+  /// command is unclampable garbage and is rejected (NO_VALID_COMMAND path).
+  bool finiteVelocityCommand(
+      const ayanami::geometry_msgs::TwistStamped& command) const {
     const auto& linear = command.twist.linear;
     const auto& angular = command.twist.angular;
     return std::isfinite(linear.x()) && std::isfinite(linear.y()) &&
            std::isfinite(linear.z()) && std::isfinite(angular.x()) &&
-           std::isfinite(angular.y()) && std::isfinite(angular.z()) &&
-           std::abs(linear.x()) <= max_linear_x &&
-           std::abs(linear.y()) <= max_linear_y &&
-           std::abs(angular.z()) <= max_angular_z;
+           std::isfinite(angular.y()) && std::isfinite(angular.z());
   }
 };
 

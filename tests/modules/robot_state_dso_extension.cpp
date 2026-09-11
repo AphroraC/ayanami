@@ -37,5 +37,5 @@ extern "C" void robotStateDsoSetVelocity(double linear_x) {
   twist.header.frame_id =
       RobotStateController::instance().robotFrame();
   twist.twist.linear.x() = linear_x;
-  RobotStateController::instance().setVelocity(twist);
+  RobotStateController::instance().setOdometry(twist);
 }

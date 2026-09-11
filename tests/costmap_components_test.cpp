@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -25,6 +27,7 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -275,7 +278,7 @@ TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
 TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto wrapper = makeWrapper();
   auto controller = std::make_shared<TestController>();

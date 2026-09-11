@@ -71,7 +71,7 @@ public:
                              result);
       return task;
     }
-    Base::start(*gh, createExecution());
+    Base::submitGoal(*gh);
     Feedback accepted;
     accepted.message = "controller goal accepted";
     action_server->publishFeedback(gh->id, accepted);
@@ -138,7 +138,7 @@ public:
   }
 
 protected:
-  void runImpl(const GoalHandleType& gh, ControllerExecution& exec) override {
+  void runGoal(const GoalHandleType& gh, ControllerExecution& exec) override {
     action_server->setActive(gh.id);
     // Per-cycle progress feedback (nav2 FollowPath: speed / distance
     // remaining / ETA) flows through the action server to the
@@ -146,45 +146,31 @@ protected:
     exec.setFeedbackCallback([this, gh](const Feedback& feedback) {
       action_server->publishFeedback(gh.id, feedback);
     });
+    // Execution reuse: a new task must start from a fresh checker baseline
+    // and the new plan/version (the in-loop reset only fires when the goal
+    // POSE changes vs the previous task's goal).
+    exec.resetCheckers();
     exec.setNewPlan(gh.goal.path);
     exec.setPlanVersion(gh.goal.plan_version);
-    exec.start();
-    runImplCommon(
-        gh, exec,
-        [this](const GoalHandleType& gh, ControllerExecution& exec) -> bool {
-          if (action_server->isCancelRequested(gh.id)) {
-            exec.cancel();
-          }
-          const bool canceled =
-              action_server->isCancelRequested(gh.id) ||
-              exec.getState() == ControllerExecution::CANCELED;
-          if (canceled) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-            return true;
-          }
-          if (exec.getState() == ControllerExecution::ARRIVED_GOAL) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-            return true;
-          }
-          switch (exec.getState()) {
-            case ControllerExecution::NO_PLAN:
-            case ControllerExecution::EMPTY_PLAN:
-            case ControllerExecution::INVALID_PLAN:
-            case ControllerExecution::NO_PROGRESS:
-            case ControllerExecution::STOPPED:
-            case ControllerExecution::INTERNAL_ERROR:
-            case ControllerExecution::ROBOT_DISABLED:
-            case ControllerExecution::MAP_STALE:
-              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-              return true;
-            default:
-              break;
-          }
-          return false;
-        });
+    exec.runBlocking();
+    if (exec.aborted()) {
+      abortGoal(gh);
+      return;
+    }
+    const auto state = exec.getState();
+    ayanami::actions::GoalStatus status;
+    if (action_server->isCancelRequested(gh.id) ||
+        state == ControllerExecution::CANCELED) {
+      status = ayanami::actions::GoalStatus::CANCELED;
+    } else if (state == ControllerExecution::ARRIVED_GOAL) {
+      status = ayanami::actions::GoalStatus::SUCCEEDED;
+    } else {
+      status = ayanami::actions::GoalStatus::ABORTED;
+    }
+    finishResult(gh, exec, status);
   }
 
-  virtual ControllerExecution::Ptr createExecution() {
+  ControllerExecution::Ptr createExecution() override {
     if (execution_factory) {
       return execution_factory();
     }

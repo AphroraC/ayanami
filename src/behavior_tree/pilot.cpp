@@ -59,6 +59,12 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   controller_frequency =
       cfg.param<double>(k_sec, "controller_frequency", 20.0);
   tick_frequency = cfg.param<double>(k_sec, "tick_frequency", 100.0);
+  max_nav_retries = static_cast<uint32_t>(
+      std::max(0, cfg.param<int>(k_sec, "max_nav_retries", 6)));
+  oscillation_distance =
+      cfg.param<double>(k_sec, "oscillation_distance", 0.1);
+  oscillation_timeout =
+      cfg.param<double>(k_sec, "oscillation_timeout", 5.0);
 
 // Generic tree extensions: the config names extension .so(s), cached at
   // configure time and loaded during buildFactory via
@@ -508,6 +514,9 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<uint64_t>(k_raw_path_revision, 0u);
   bt_blackboard->set<uint64_t>(k_goal_revision, 0u);
   bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});
+  bt_blackboard->set<uint32_t>(k_nav_retries, max_nav_retries);
+  bt_blackboard->set<double>(k_oscillation_distance, oscillation_distance);
+  bt_blackboard->set<double>(k_oscillation_timeout, oscillation_timeout);
 }
 
 } // namespace behavior_tree

@@ -55,6 +55,38 @@ TEST(ConfigTest, eigenIsometry3dVector) {
   EXPECT_NEAR(vec[1].translation().y(), 5.0, 1e-6);
 }
 
+TEST(ConfigTest, childExposesNestedObjectAsSection) {
+  auto dir = makeTempConfigDir();
+  writeJson(dir / "child_config.json", R"({
+    "costmap_local": {
+      "rolling_window": true,
+      "scan": {
+        "type": "laserscan",
+        "marking": true,
+        "min_obstacle_height": 0.05
+      }
+    }
+  })");
+  ayanami::Config cfg((dir / "child_config.json").string());
+
+  // A missing / non-object child yields an empty config.
+  EXPECT_FALSE(cfg.child("costmap_local", "missing").hasSection("missing"));
+  EXPECT_FALSE(cfg.child("missing_section", "scan").hasSection("scan"));
+
+  // The nested object is addressable as {scan: {...}}: the uniform
+  // param(section, key) spelling plus the unused-keys audit apply.
+  ayanami::Config scan = cfg.child("costmap_local", "scan");
+  ASSERT_TRUE(scan.hasSection("scan"));
+  EXPECT_EQ(scan.param<std::string>("scan", "type", ""), "laserscan");
+  EXPECT_TRUE(scan.param<bool>("scan", "marking", false));
+  EXPECT_DOUBLE_EQ(scan.param<double>("scan", "min_obstacle_height", 0.0),
+                   0.05);
+  // Reads participate in the audit regardless of whether the value matched
+  // the default.
+  EXPECT_TRUE(scan.wasConsumed("scan", "type"));
+  EXPECT_TRUE(scan.wasConsumed("scan", "marking"));
+}
+
 TEST(ConfigTest, loadAndParamScalar) {
   auto dir = makeTempConfigDir();
   writeJson(dir / "test.json", R"({ "m": { "k": 42, "v": "hello" } })");

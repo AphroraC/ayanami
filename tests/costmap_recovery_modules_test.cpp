@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -51,6 +53,7 @@
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/load_module.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -162,7 +165,7 @@ class TestWriterPort : public CostmapCommandPort {
 /// Sets the TF via RobotStateController: map<-base_link with the robot at world (wx, wy).
 void setRobot(double wx, double wy) {
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.setTransform(
+  testTransforms().set(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(wx, wy, 0.0) * Eigen::Quaterniond::Identity());
 }
@@ -337,7 +340,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
 
 // ---------- Single-publisher safety checks: finite + max_vel caps (over-limit zeroed) ----------
 
-TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
+TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsClamped) {
   attachVelocityCapture();
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapSpinRecovery>();
@@ -348,15 +351,25 @@ TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsZeroed) {
   // The execution owns the cadence (production: CostmapNavigationServer reads
   // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
   exec.setCyclePeriod(std::chrono::milliseconds(10));
-  // max_w=0.3 > the injected cap max_vel_theta=0.1 -> non-zero commands must be zeroed.
+  // max_w=0.3 > the injected cap max_vel_theta=0.1 -> commands are clamped
+  // into the cap (policy: over-limit suggestions are clamped + warned, never
+  // zeroed; only non-finite values are zeroed).
   exec.setMaximumVelocity(1.0, 1.0, 0.1);
   exec.start();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   exec.join();
-  EXPECT_FALSE(anyNonZeroAngular())
-      << "recovery commands exceeding max_vel_theta must be zeroed by the "
-         "execution";
-  EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);
+  EXPECT_TRUE(anyNonZeroAngular())
+      << "the in-progress spin suggestion (0.3 rad/s) must be clamped to the "
+         "cap, not zeroed";
+  EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9)
+      << "the terminal state must still publish zero velocity";
+  {
+    std::lock_guard<std::mutex> lock(g_emit_mutex);
+    for (const auto& t : g_emitted) {
+      EXPECT_LE(std::abs(t.twist.angular.z()), 0.1 + 1e-9)
+          << "every published recovery command must respect max_vel_theta";
+    }
+  }
   detachVelocityCapture();
 }
 

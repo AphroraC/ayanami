@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +25,7 @@
 #include <ayanami/costmap/core/costmap_command.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 std::filesystem::path makeRollingConfigDir() {
@@ -45,7 +48,9 @@ std::filesystem::path makeRollingConfigDir() {
                          "rolling_window": true, "track_unknown": false,
                          "inflation_radius": 0.2, "inscribed_radius": 0.1,
                          "cost_scaling_factor": 2.0, "obstacle_range": 3.0,
-                         "raytrace_range": 3.5}
+                         "raytrace_range": 3.5,
+                         "observation_sources": ["scan"],
+                         "scan": {"type": "laserscan"}}
     })";
   }
   return dir;
@@ -81,14 +86,14 @@ TEST(LocalWindowRolling, localWindowFollowsRobotPose) {
   rsc.initialize("map", "map", "base_link", 5.0);
   Eigen::Isometry3d t_odom_base = Eigen::Isometry3d::Identity();
   t_odom_base.translation() = Eigen::Vector3d(3.0, 3.0, 0.0);
-  rsc.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
                    t_odom_base, false);
-  rsc.setTransform("odom", "laser", ayanami::Timestamp::latest(),
+  testTransforms().set("odom", "laser", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity(), false);
   // Both costmaps share the map frame: provide the map<-odom edge so the
-  // map-frame robot pose resolves.
-  rsc.setTransform("map", "odom", ayanami::Timestamp::latest(),
-                   Eigen::Isometry3d::Identity(), false);
+  // map->odom lookups resolve.
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity(), false);
 
   server.handleObstacleLaserScan(makeScan());
 
@@ -106,9 +111,9 @@ TEST(LocalWindowRolling, localWindowFollowsRobotPose) {
   EXPECT_NEAR(origin_y, 1.5, 0.11) << "local window did not roll to robot";
 }
 
-// ---- Localization correction jump: the global dynamic layer is cleared wholesale (static layer kept) ----
+// ---- Map-representation policy: laser marks reach the LOCAL map only; the global map is static+inflation and a global-targeted clear degrades to a no-op ----
 
-TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
+TEST(LocalWindowRolling, laserMarksLocalOnlyAndGlobalStaysStatic) {
   auto dir = makeRollingConfigDir();
   ayanami::costmap::CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
@@ -128,10 +133,10 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
  // All three edges are written with equal stamps each cycle (mirroring live 50Hz sync): under latest common time semantics
  // multi-hop chains sample one instant consistently; staggered-stamp single-sample edges would lack coverage outside the common instant and fail.
   const auto cycle_stamp = next_stamp();
-  rsc.setTransform("odom", "base_link", cycle_stamp, t_map_base, false);
-  rsc.setTransform("odom", "laser", cycle_stamp,
+  testTransforms().set("odom", "base_link", cycle_stamp, t_map_base, false);
+  testTransforms().set("odom", "laser", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
-  rsc.setTransform("map", "odom", cycle_stamp,
+  testTransforms().set("map", "odom", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
 
   auto countGlobalLethal = [&server] {
@@ -147,39 +152,46 @@ TEST(LocalWindowRolling, localizationJumpClearsGlobalDynamicLayer) {
     }
     return lethal;
   };
+  auto countLocalLethal = [&server] {
+    const auto* grid = server.localCostmap()->get().getCostmap();
+    int lethal = 0;
+    for (unsigned int j = 0; j < grid->getSizeInCellsY(); ++j) {
+      for (unsigned int i = 0; i < grid->getSizeInCellsX(); ++i) {
+        if (grid->getCost(i, j) >= 100) {
+          ++lethal;
+        }
+      }
+    }
+    return lethal;
+  };
 
   // Baseline before mapping (static layer 20x20 all empty -> no lethal)
   const int baseline = countGlobalLethal();
 
-  // Inject a 0.3m ring scan -> dynamic marks appear on the global map (endpoints stay within the 1m bounds)
+  // Inject a 0.3m ring scan -> dynamic marks appear on the LOCAL map only;
+  // the global map (static+inflation) must not receive any marks.
   server.handleObstacleLaserScan(makeScan(0.3f));
-  const int after_mark = countGlobalLethal();
-  EXPECT_GT(after_mark, baseline) << "scan marks did not reach global map";
+  EXPECT_GT(countLocalLethal(), 0) << "scan marks did not reach the local map";
+  EXPECT_EQ(countGlobalLethal(), baseline)
+      << "the global map must stay static (no dynamic marks)";
 
-  // Localization correction jump handling: clear the global dynamic layer (clear_radius<=0 = the whole dynamic layer)
-  ayanami::costmap::ClearCostmapCommand command;
-  command.affected_maps = "global";
-  command.clear_radius = 0.0;
-  command.enabled = true;
-  EXPECT_TRUE(server.executeClearCommand(command));
+  // A global-targeted clear command is still accepted (no-op for a static
+  // map), and the global content is unchanged.
+  ayanami::costmap::ClearCostmapCommand global_clear;
+  global_clear.affected_maps = "global";
+  global_clear.clear_radius = 0.0;
+  global_clear.enabled = true;
+  EXPECT_TRUE(server.executeClearCommand(global_clear));
+  EXPECT_EQ(countGlobalLethal(), baseline);
 
-  EXPECT_LE(countGlobalLethal(), baseline)
-      << "global dynamic layer not cleared on localization jump";
-  {
-    const auto* grid = server.globalCostmap()->get().getCostmap();
-    int n100 = 0, n253 = 0, n_other = 0;
-    for (unsigned int j = 0; j < grid->getSizeInCellsY(); ++j) {
-      for (unsigned int i = 0; i < grid->getSizeInCellsX(); ++i) {
-        const auto c = grid->getCost(i, j);
-        if (c >= 100) ++n100;
-        else if (c == 253) ++n253;
-        else if (c != 0) ++n_other;
-      }
-    }
-    GTEST_SUCCEED() << "post-clear histogram: >=100=" << n100
-                    << " inscribed=" << n253 << " other=" << n_other
-                    << " baseline=" << baseline;
-  }
+  // A local clear still clears the local dynamic layer.
+  ayanami::costmap::ClearCostmapCommand local_clear;
+  local_clear.affected_maps = "local";
+  local_clear.clear_radius = 0.0;
+  local_clear.enabled = true;
+  EXPECT_TRUE(server.executeClearCommand(local_clear));
+  EXPECT_EQ(countLocalLethal(), 0)
+      << "local dynamic layer not cleared by the clear command";
 }
 
 // ---- Rolling decoupling: spinOnce periodic rolling follows the robot even without a scan stream ----
@@ -204,10 +216,10 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
       std::chrono::nanoseconds(stamp_ns += 1000000));
   Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
   t.translation() = Eigen::Vector3d(2.0, 2.0, 0.0);
-  rsc.setTransform("odom", "base_link", cycle_stamp, t, false);
-  rsc.setTransform("odom", "laser", cycle_stamp,
+  testTransforms().set("odom", "base_link", cycle_stamp, t, false);
+  testTransforms().set("odom", "laser", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
-  rsc.setTransform("map", "odom", cycle_stamp,
+  testTransforms().set("map", "odom", cycle_stamp,
                    Eigen::Isometry3d::Identity(), false);
 
  // Repeated periodic rolling calls (throttled internally by update_frequency): the window must follow
@@ -228,6 +240,9 @@ TEST(LocalWindowRolling, rollingWindowFollowsWithoutSensorStream) {
 }
 
 // ---- isPathValid starts at the closest point (nav2-aligned): occupancy on the already-traveled segment is not invalid ----
+// isPathValid is a GLOBAL-map (planning timescale) check, so the occupied
+// cells are set on a directly built global wrapper instead of being stamped
+// through the (local-only) observation pipeline.
 
 TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
   auto dir = makeRollingConfigDir();
@@ -241,15 +256,15 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
   auto next_stamp = [&stamp_ns] {
     return ayanami::Timestamp(std::chrono::nanoseconds(stamp_ns += 1000000));
   };
- // All three edges written with equal stamps per cycle (mirrors live 50Hz sync; see the localizationJump comment).
+ // All three edges written with equal stamps per cycle (mirrors live 50Hz sync).
   auto set_base = [&](double x, double y) {
     const auto stamp = next_stamp();
     Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
     t.translation() = Eigen::Vector3d(x, y, 0.0);
-    rsc.setTransform("odom", "base_link", stamp, t, false);
-    rsc.setTransform("odom", "laser", stamp,
+    testTransforms().set("odom", "base_link", stamp, t, false);
+    testTransforms().set("odom", "laser", stamp,
                      Eigen::Isometry3d::Identity(), false);
-    rsc.setTransform("map", "odom", stamp,
+    testTransforms().set("map", "odom", stamp,
                      Eigen::Isometry3d::Identity(), false);
   };
 
@@ -263,11 +278,15 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
     path.poses.push_back(pt);
   }
 
- // Drop a ring of obstacles at the path start (already-traveled segment): robot placed at (0.2, 0)
-  set_base(0.2, 0.0);
-  server.handleObstacleLaserScan(makeScan(0.25f));
+ // Occupy the global map at the path start (world (0.2, 0) -> cell (4, 0)).
+  {
+    auto* grid = server.globalCostmap()->get().getCostmap();
+    auto write_lock = server.globalCostmap()->lockForWrite();
+    grid->setCost(4, 0, costmap_2d::LETHAL_OBSTACLE);
+  }
 
- // The robot has advanced to x~0.8 (path end): the start obstacles lie before the "closest point" -> valid
+ // The robot has advanced to x~0.8 (path end): the occupied start lies
+ // before the "closest point" -> valid
   set_base(0.8, 0.0);
   EXPECT_TRUE(server.isPathValid(path))
       << "occupied already-passed segment must not invalidate the path";
@@ -278,12 +297,13 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
       << "occupied segment at the robot's position must invalidate the path";
 }
 
-// ---- Mapping timing: scans are queried by stamp (pose at capture time), not latest ----
+// ---- Mapping timescales: the LOCAL map is immune to map<-odom corrections ----
 // Scenario: the robot spins in place while the map<-odom correction translates by (0.3,0) between 5s and 6s (an AMCL
-// correction evolution). The same ring scan (radius 0.6) is stamped 5s / 6s: the marks must land at the map pose of
-// their own capture time -- using latest would stamp both frames with the newest corrected pose (rotational skew).
+// correction evolution). Two ring scans are stamped at 5.05s / 5.25s. The local map lives in the ODOM frame, whose
+// sensor edges the correction does not touch -- so BOTH scans must land at the SAME local cells. A latest-time or
+// map-frame stamping implementation would shift the marks by the correction (or mark at the frame origin).
 
-TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
+TEST(LocalWindowRolling, localMarksAreImmuneToLocalizationCorrection) {
   auto dir = makeRollingConfigDir();
   ayanami::costmap::CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
@@ -294,8 +314,7 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
  // all TF samples and scan stamps must fit inside a single 500ms window.
  // Timeline: 5.000 base/laser/map=id | 5.100 base/laser/map=id |
  // 5.200 base/laser/map=(0.3,0) | 5.300 same | 5.400 same (newest)
- // scan A @5.050: map<-odom interpolation = id -> mark near (0.6, 0)
- // scan B @5.250: map<-odom interpolation = (0.3, 0) -> mark near (0.9, 0)
+ // scan A @5.050: stamp-time queries; scan B @5.250 with the shifted correction.
   auto identity = Eigen::Isometry3d::Identity();
   Eigen::Isometry3d t_m_o = Eigen::Isometry3d::Identity();
   t_m_o.translation() = Eigen::Vector3d(0.3, 0.0, 0.0);
@@ -306,38 +325,52 @@ TEST(LocalWindowRolling, obstacleMarksFollowScanStampNotLatest) {
                                  static_cast<int64_t>(offset_s * 1e9)));
   };
   for (double offset : {0.0, 0.1}) {
-    rsc.setTransform("odom", "base_link", at(offset), identity, false);
-    rsc.setTransform("odom", "laser", at(offset), identity, false);
-    rsc.setTransform("map", "odom", at(offset), identity, false);
+    testTransforms().set("odom", "base_link", at(offset), identity, false);
+    testTransforms().set("odom", "laser", at(offset), identity, false);
+    testTransforms().set("map", "odom", at(offset), identity, false);
   }
   for (double offset : {0.2, 0.3, 0.4}) {
-    rsc.setTransform("odom", "base_link", at(offset), identity, false);
-    rsc.setTransform("odom", "laser", at(offset), identity, false);
-    rsc.setTransform("map", "odom", at(offset), t_m_o, false);
+    testTransforms().set("odom", "base_link", at(offset), identity, false);
+    testTransforms().set("odom", "laser", at(offset), identity, false);
+    testTransforms().set("map", "odom", at(offset), t_m_o, false);
   }
 
   auto countCell = [&server](unsigned int mx, unsigned int my) {
-    return server.globalCostmap()->get().getCostmap()->getCost(mx, my);
+    return server.localCostmap()->get().getCostmap()->getCost(mx, my);
+  };
+  // The bearing-0 endpoint (world x=0.59998) sits on a cell rounding
+  // boundary, so assert on a NEIGHBORHOOD: a lethal mark must exist around
+  // world (0.6, 0) (cells 40..44, rows 29..31).
+  auto hasLethalNear = [&](unsigned int mx_begin, unsigned int mx_end) {
+    for (unsigned int my = 29; my <= 31; ++my) {
+      for (unsigned int mx = mx_begin; mx <= mx_end; ++mx) {
+        if (countCell(mx, my) >= costmap_2d::LETHAL_OBSTACLE) {
+          return true;
+        }
+      }
+    }
+    return false;
   };
 
- // Scan A @5.050s: ring 0.6, map<-odom interpolation = id -> bearing 0 marks cell (11,0)
+ // The local rolling map (3m x 3m @0.05m) centers on the robot at odom (0,0):
+ // origin (-1.5,-1.5). Bearing-0 endpoint world (0.59998, 0.005) marks around
+ // local cell (42, 30) -- for BOTH scans, because the correction moved the
+ // map<-odom edge only and the local marks live in odom.
   ayanami::sensor_msgs::LaserScan scan_a = makeScan(0.6f);
   scan_a.header.stamp = at(0.05);
   server.handleObstacleLaserScan(scan_a);
-  EXPECT_EQ(countCell(11, 0), costmap_2d::LETHAL_OBSTACLE)
+  EXPECT_TRUE(hasLethalNear(40, 44))
       << "scan A (stamp 5.05s) mark missing at acquisition-time position";
-  EXPECT_LT(countCell(18, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-      << "cell 18 must not be marked before scan B (latest-time semantics would mark it early)";
 
- // Scan B @5.250s: same ring, map<-odom interpolation = (0.3,0) -> cell (18,0)
   ayanami::sensor_msgs::LaserScan scan_b = makeScan(0.6f);
   scan_b.header.stamp = at(0.25);
   server.handleObstacleLaserScan(scan_b);
-  EXPECT_EQ(countCell(17, 0), costmap_2d::LETHAL_OBSTACLE)
-      << "scan B (stamp 5.25s) mark missing at acquisition-time position"
-      " (bearing-0 endpoint x=0.89998 -> cell 17)";
-  EXPECT_LT(countCell(11, 0), costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-      << "cell 11 was ray-cleared by scan B (stamp-time stamping semantics)";
+  EXPECT_TRUE(hasLethalNear(40, 44))
+      << "scan B (stamp 5.25s) must land at the SAME local cells: the "
+         "map<-odom correction must not shift odom-frame marks";
+  EXPECT_FALSE(hasLethalNear(46, 50))
+      << "a map-frame-style correction shift (x+0.3 -> cells ~48) must NOT "
+         "appear in the local map";
 }
 
 }  // namespace

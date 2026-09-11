@@ -3,7 +3,7 @@
 // M1 key milestone: assembling all core library components (CostmapNavigationServer + the 4 module families +
 // BehaviorTreePilot) into the dlopen entry module. This test:
 // - ExtensionModule loads libayanami_costmap_navigation.so
-// - initialize: configureCoreMaps + loadModules (dlopen smac/savitzky/spin
+// - initialize: configureCoreMaps + loadModules (dlopen astar/savitzky/spin
 // real algorithm modules + a test controller) + createActions + pilot wiring (
 // configure -> loadFromFile -> setNavigationRuntime)
 // - start publishes the first visualization (the on_costmap_visualization bypass is captured)
@@ -13,6 +13,8 @@
 // - destruction order does not crash
 
 #include <gtest/gtest.h>
+
+#include "test_transform_source.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,6 +42,7 @@
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 /// @brief Declare the four recovery roles the production tree references.
@@ -104,10 +107,10 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 using ayanami::nav_msgs::Path;
 
-// argv: module .so + 7 module .so files (smac/savitzky/pid/test_controller/spin/
+// argv: module .so + 7 module .so files (astar/savitzky/pid/test_controller/spin/
 // goal_checker/progress_checker).
 std::string g_module_so;
-std::string g_smac_so;
+std::string g_astar_so;
 std::string g_savitzky_so;
 std::string g_pid_so;
 std::string g_test_controller_so;
@@ -188,7 +191,7 @@ std::filesystem::path makeConfigDir() {
              "  }\n}\n");
 
   write_file(dir / "planner.json",
-             moduleJsonOpen("planner", "test_planner", g_smac_so) +
+             moduleJsonOpen("planner", "test_planner", g_astar_so) +
              "  \"test_planner\": {\n"
              "    \"use_diagonal\": true,\n    \"tolerance\": 0.0,\n"
              "    \"cost_factor\": 0.5,\n    \"lethal_cost\": 254,\n"
@@ -290,7 +293,10 @@ std::filesystem::path makeConfigDir() {
         << "    \"track_unknown\": false,\n"
         << "    \"inflation_radius\": 1.0,\n"
         << "    \"inscribed_radius\": 0.8,\n"
-        << "    \"cost_scaling_factor\": 2.0\n"
+        << "    \"cost_scaling_factor\": 2.0,\n"
+        << "    \"observation_sources\": [\"cloud\", \"scan\"],\n"
+        << "    \"cloud\": {\"type\": \"pointcloud\"},\n"
+        << "    \"scan\": {\"type\": \"laserscan\"}\n"
         << "  }\n"
         << "}\n";
   }
@@ -343,7 +349,7 @@ std::filesystem::path makeConfigDir() {
 void giveRobotStaticPose() {
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "map", "base_link", 0.25);
-  rsc.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity());
 }
 
@@ -443,7 +449,7 @@ TEST(CostmapNavigationTest, dlopenAllAlgorithmModulesLoad) {
   // All 4 real algorithm module .so files go through the common create_extension_module factory and obtain the correct
   // module family type via typed dynamic_pointer_cast.
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapPlanner>(
-                ayanami::ExtensionModule::loadModule(g_smac_so)),
+                ayanami::ExtensionModule::loadModule(g_astar_so)),
             nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<ayanami::costmap::CostmapSmoother>(
                 ayanami::ExtensionModule::loadModule(g_savitzky_so)),
@@ -508,16 +514,115 @@ TEST(CostmapNavigationTest, startPublishesVisualizationAndSpinOnceRepeats) {
   EXPECT_TRUE(has_global);
   EXPECT_TRUE(has_local);
 
-  // spinOnce: under rate limiting (100Hz) repeated calls should trigger again.
+  // spinOnce: incremental publishing (nav2 Costmap2DPublisher semantics) --
+  // an UNCHANGED map emits nothing, so repeated rate-limited calls no longer
+  // grow the full-grid emission log.
   const size_t before = g_viz_names.size();
   for (int i = 0; i < 5; ++i) {
     host->spinOnce();
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
   }
-  EXPECT_GT(g_viz_names.size(), before);
+  EXPECT_EQ(g_viz_names.size(), before);
 
   host->stop();
   delete host;
+  detachObservers();
+}
+
+// ---------------- incremental costmap publishing ----------------
+// nav2 Costmap2DPublisher semantics locked end to end: first emission and any
+// geometry change emit FULL grids; a content-only change emits a bounded
+// OccupancyGridUpdate; an unchanged map emits nothing.
+
+TEST(CostmapNavigationTest, incrementalCostmapPublishingFullUpdateAndSilence) {
+  attachObservers();
+  std::vector<std::string> update_names;
+  std::mutex update_mutex;
+  ayanami::CallbackSubscription update_cb =
+      ayanami::interfaces::NavigationCallbacks::on_costmap_visualization_update.subscribe(
+          [&](const std::string& name,
+              const ayanami::nav_msgs::OccupancyGridUpdate& update) {
+            std::lock_guard<std::mutex> lock(update_mutex);
+            update_names.push_back(name + ":" + std::to_string(update.width) +
+                                   "x" + std::to_string(update.height));
+          });
+
+  const auto dir = makeConfigDir();
+  CostmapNavigation* host = createHost(dir);
+  ASSERT_NE(host, nullptr);
+  {
+    // Consistent frame tree for the local (odom-frame) map: the robot state
+    // resolves map <- odom <- base_link; the lidar hangs off base_link.
+    auto& rsc = ayanami::components::RobotStateController::instance();
+    rsc.initialize("map", "odom", "base_link", 0.25);
+    const auto identity = Eigen::Isometry3d::Identity();
+    testTransforms().set("map", "odom", ayanami::Timestamp::latest(), identity);
+    testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
+                     identity);
+    testTransforms().set("odom", "lidar", ayanami::Timestamp::latest(), identity);
+  }
+  host->start();
+
+  // First publish cycle: full grids for both maps, no updates yet.
+  ASSERT_TRUE(waitUntil([&] {
+    std::lock_guard<std::mutex> lock(g_viz_mutex);
+    return g_viz_names.size() >= 2;
+  }));
+
+  // Feed an observation: obstacle at base_link (0.3, 0) -- the LOCAL map
+  // content changes -> exactly the local map emits a bounded update.
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  ayanami::sensor_msgs::PointCloud2 cloud;
+  cloud.header.frame_id = "lidar";
+  pcl::PointXYZI hit;
+  hit.x = 0.3f;
+  hit.y = 0.0f;
+  hit.z = 0.0f;
+  cloud.cloud.points.push_back(hit);
+  host->setPointcloud(cloud);
+  ASSERT_TRUE(host->navigationServer().waitForMapIdle(2.0));
+  {
+    auto* local_master =
+        host->navigationServer().localCostmap()->get().getCostmap();
+    std::cerr << "DEBUG cost@(10,10)=" << (int)local_master->getCost(10, 10)
+              << " origin=(" << local_master->getOriginX() << ","
+              << local_master->getOriginY() << ")\n";
+  }
+  // spinOnce drives the publish cadence (costmap_visualization_rate gate):
+  // keep calling it until the update lands.
+  ASSERT_TRUE(waitUntil([&] {
+    host->spinOnce();
+    std::lock_guard<std::mutex> lock(update_mutex);
+    return !update_names.empty();
+  }));
+  {
+    std::lock_guard<std::mutex> lock(update_mutex);
+    EXPECT_EQ(update_names.size(), 1u);
+    EXPECT_EQ(update_names.front().substr(0, 13), "local_costmap");
+  }
+
+  // spinOnce again with no change: silence (no full re-emission, no update).
+  const size_t updates_before = update_names.size();
+  {
+    std::lock_guard<std::mutex> lock(g_viz_mutex);
+    g_viz_names.clear();
+  }
+  for (int i = 0; i < 3; ++i) {
+    host->spinOnce();
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  }
+  {
+    std::lock_guard<std::mutex> lock(update_mutex);
+    EXPECT_EQ(update_names.size(), updates_before);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_viz_mutex);
+    EXPECT_TRUE(g_viz_names.empty());
+  }
+
+  host->stop();
+  delete host;
+  update_cb.reset();
   detachObservers();
 }
 
@@ -621,7 +726,7 @@ TEST(CostmapNavigationTest, destructorDoesNotCrash) {
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc > 1) g_module_so = argv[1];
-  if (argc > 2) g_smac_so = argv[2];
+  if (argc > 2) g_astar_so = argv[2];
   if (argc > 3) g_savitzky_so = argv[3];
   if (argc > 4) g_pid_so = argv[4];
   if (argc > 5) g_test_controller_so = argv[5];

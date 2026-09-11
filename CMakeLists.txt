@@ -49,7 +49,7 @@ if(catkin_FOUND)
 endif()
 
 # Third-party interface libraries (introduced via the new cmake/thirdparty.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # defines BT::behaviortree_cpp / fast_tf::fast_tf / nlohmann_json / ankerl
+include(${CMAKE_SOURCE_DIR}/cmake/thirdparty.cmake)  # defines BT::behaviortree_cpp / nlohmann_json / ankerl
 
 # Task 14: BT-dependent sources (excluded when BUILD_WITH_BT=OFF to avoid compile failures from missing BT headers)
 set(AYANAMI_BT_SOURCES "")
@@ -70,14 +70,12 @@ add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
   src/utility/load_module.cpp
   src/utility/extension_module.cpp
   src/interfaces/callbacks.cpp
-  src/interfaces/transform_store.cpp
   src/abstract/components/execution_base.cpp
   src/abstract/components/module_manager.cpp
   src/components/navigation_server_base.cpp
   src/components/robot_state_controller.cpp
   src/costmap/components/costmap_navigation_server.cpp
-  ${AYANAMI_BT_SOURCES}
-  thirdparty/fast_tf/fast_tf.cpp)
+  ${AYANAMI_BT_SOURCES})
 target_include_directories(ayanami PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/modules>
@@ -98,7 +96,7 @@ target_link_libraries(ayanami PRIVATE ${CMAKE_DL_LIBS})
 # the public header config.hpp does not include nlohmann (spec §2.1), so PRIVATE is enough.
 target_link_libraries(ayanami PRIVATE nlohmann_json::nlohmann_json)
 if(BUILD_WITH_BT)
-  target_link_libraries(ayanami PUBLIC BT::behaviortree_cpp fast_tf::fast_tf)
+  target_link_libraries(ayanami PUBLIC BT::behaviortree_cpp)
 endif()
 install(TARGETS ayanami EXPORT ayanamiTargets
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
@@ -118,10 +116,10 @@ function(ayanami_add_module name)
   set(AYANAMI_INSTALL_TARGETS ${AYANAMI_INSTALL_TARGETS} PARENT_SCOPE)
 endfunction()
 
-# Task 21: modules/costmap_smac_planner (A* global path planner plugin)
-ayanami_add_module(costmap_smac_planner
-  modules/costmap_smac_planner/costmap_smac_planner.cpp
-  modules/costmap_smac_planner/module.cpp)
+# Task 21: modules/costmap_astar_planner (A* global path planner plugin)
+ayanami_add_module(costmap_astar_planner
+  modules/costmap_astar_planner/costmap_astar_planner.cpp
+  modules/costmap_astar_planner/module.cpp)
 
 # Task 22: modules/costmap_savitzky_smoother (7-point SG path smoother plugin)
 ayanami_add_module(costmap_savitzky_smoother
@@ -134,7 +132,7 @@ ayanami_add_module(costmap_pid_controller
   modules/costmap_pid_controller/module.cpp)
 
 # modules/costmap_dwb_controller (DWB local controller, ported from nav2_dwb_controller;
-# zero ROS: pluginlib -> static registry / tf2 -> TransformStore / rclcpp -> Config)
+# zero ROS: pluginlib -> static registry / tf2 -> injected RobotStateController source / rclcpp -> Config)
 ayanami_add_module(costmap_dwb_controller
   modules/costmap_dwb_controller/costmap_dwb_controller.cpp
   modules/costmap_dwb_controller/module.cpp
@@ -174,6 +172,19 @@ ayanami_add_module(costmap_wait_recovery
 ayanami_add_module(costmap_clear_costmap_recovery
   modules/costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.cpp
   modules/costmap_clear_costmap_recovery/module.cpp)
+
+# modules/costmap_*_layer (costmap layer plugins: static / obstacle /
+# inflation; the modules/ so+json pattern applied to the layer family --
+# costmap_<map>.layers lists them, list order = composition order)
+ayanami_add_module(costmap_static_layer
+  modules/costmap_static_layer/module.cpp)
+target_link_libraries(costmap_static_layer PRIVATE costmap_2d_layers::costmap_2d_layers)
+ayanami_add_module(costmap_obstacle_layer
+  modules/costmap_obstacle_layer/module.cpp)
+target_link_libraries(costmap_obstacle_layer PRIVATE costmap_2d_layers::costmap_2d_layers)
+ayanami_add_module(costmap_inflation_layer
+  modules/costmap_inflation_layer/module.cpp)
+target_link_libraries(costmap_inflation_layer PRIVATE costmap_2d_layers::costmap_2d_layers)
 
 # Task 25: modules/costmap_navigation (AbstractNavigation host plugin)
 ayanami_add_module(costmap_navigation
@@ -236,13 +247,17 @@ if(BUILD_TESTING)
     target_link_libraries(messages_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME MessagesTest COMMAND messages_test)
 
-    add_executable(transform_store_test tests/transform_store_test.cpp)
-    target_link_libraries(transform_store_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
-    add_test(NAME TransformStoreTest COMMAND transform_store_test)
 
     add_executable(robot_state_controller_test tests/robot_state_controller_test.cpp)
     target_link_libraries(robot_state_controller_test PRIVATE ayanami GTest::gtest GTest::gtest_main)
     add_test(NAME RobotStateControllerTest COMMAND robot_state_controller_test)
+# RobotStateController TF-query performance benchmark (10 edges @ 500 Hz;
+# gates: success rate > 98 %, mean/p99 latency < 3 ms)
+    add_executable(robot_state_controller_bench
+      tests/robot_state_controller_bench.cpp)
+    target_link_libraries(robot_state_controller_bench PRIVATE
+      ayanami GTest::gtest GTest::gtest_main)
+    add_test(NAME RobotStateControllerBench COMMAND robot_state_controller_bench)
 
     # RobotStateController cross-DSO singleton: instance() is defined in a libayanami .cpp,
     # so dlopen'ed plugins (linked against libayanami) and the main binary resolve to the same instance and share state.
@@ -439,11 +454,11 @@ if(BUILD_TESTING)
     set_tests_properties(PlannerWriterConcurrency PROPERTIES TIMEOUT 10)
 
     # Task 3 (M2 Phase A wrap-up): minor carry wiring, 5 items combined
-    # (smac start fallback / single source for robot_frame / guard against double configureCoreMaps /
+    # (astar start fallback / single source for robot_frame / guard against double configureCoreMaps /
     #  pid coarse signature / cmake find_dependency).
     add_executable(minor_carry_wirings_test tests/minor_carry_wirings_test.cpp)
     target_link_libraries(minor_carry_wirings_test PRIVATE
-      ayanami costmap_smac_planner costmap_pid_controller
+      ayanami costmap_astar_planner costmap_pid_controller
       costmap_2d_layers::costmap_2d_layers costmap_server::costmap_server
       GTest::gtest GTest::gtest_main)
     add_test(NAME MinorCarryWiring COMMAND minor_carry_wirings_test)
@@ -463,7 +478,7 @@ if(BUILD_TESTING)
     add_executable(costmap_navigation_server_test
       tests/costmap_navigation_server_test.cpp)
     target_link_libraries(costmap_navigation_server_test PRIVATE
-      ayanami costmap_smac_planner costmap_server::costmap_server GTest::gtest)
+      ayanami costmap_astar_planner costmap_server::costmap_server GTest::gtest)
     target_compile_definitions(costmap_navigation_server_test PRIVATE
       AYANAMI_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
     add_test(NAME CostmapNavigationServerTest COMMAND costmap_navigation_server_test
@@ -487,13 +502,22 @@ if(BUILD_TESTING)
     add_test(NAME CostmapDwBControllerTest COMMAND costmap_dwb_controller_test
       ${CMAKE_SOURCE_DIR}/config/modules/costmap_dwb_controller.json)
 
-# Task 21: modules/costmap_smac_planner (A* global path planner plugin)
-    add_executable(costmap_smac_planner_test tests/costmap_smac_planner_test.cpp)
-    target_link_libraries(costmap_smac_planner_test PRIVATE
-      ayanami costmap_smac_planner costmap_2d_layers::costmap_2d_layers
+# Task 21: modules/costmap_astar_planner (A* global path planner plugin)
+    add_executable(costmap_astar_planner_test tests/costmap_astar_planner_test.cpp)
+    target_link_libraries(costmap_astar_planner_test PRIVATE
+      ayanami costmap_astar_planner costmap_2d_layers::costmap_2d_layers
       GTest::gtest GTest::gtest_main)
-    add_test(NAME CostmapSmacPlannerTest COMMAND costmap_smac_planner_test
-      $<TARGET_FILE:costmap_smac_planner>)
+    add_test(NAME CostmapAstarPlannerTest COMMAND costmap_astar_planner_test
+      $<TARGET_FILE:costmap_astar_planner>)
+# Task 27: tests/costmap_layer_plugin_test (costmap layer plugin family)
+    add_executable(costmap_layer_plugin_test tests/costmap_layer_plugin_test.cpp)
+    target_link_libraries(costmap_layer_plugin_test PRIVATE
+      ayanami costmap_2d_layers::costmap_2d_layers costmap_server::costmap_server
+      GTest::gtest)
+    add_test(NAME CostmapLayerPluginTest COMMAND costmap_layer_plugin_test
+      $<TARGET_FILE:costmap_static_layer>
+      $<TARGET_FILE:costmap_obstacle_layer>
+      $<TARGET_FILE:costmap_inflation_layer>)
 
 # Task 22: modules/costmap_savitzky_smoother (7-point SG path smoother plugin)
     add_executable(costmap_savitzky_smoother_test
@@ -543,7 +567,7 @@ if(BUILD_TESTING)
       AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
     add_test(NAME CostmapNavigationTest COMMAND costmap_navigation_test
       $<TARGET_FILE:costmap_navigation>
-      $<TARGET_FILE:costmap_smac_planner>
+      $<TARGET_FILE:costmap_astar_planner>
       $<TARGET_FILE:costmap_savitzky_smoother>
       $<TARGET_FILE:costmap_pid_controller>
       $<TARGET_FILE:navigation_test_controller>
@@ -562,7 +586,7 @@ if(BUILD_TESTING)
         AYANAMI_TEST_BT_EXT_SO="$<TARGET_FILE:navigation_behavior_tree>")
       add_test(NAME HeadlessE2E COMMAND headless_e2e_test
         $<TARGET_FILE:costmap_navigation>
-        $<TARGET_FILE:costmap_smac_planner>
+        $<TARGET_FILE:costmap_astar_planner>
         $<TARGET_FILE:costmap_savitzky_smoother>
         $<TARGET_FILE:navigation_test_controller>
         $<TARGET_FILE:costmap_spin_recovery>
@@ -598,7 +622,7 @@ if(BUILD_TESTING)
     add_test(NAME ConfigConsistencyTest COMMAND config_consistency_test
       "${CMAKE_SOURCE_DIR}/config"
       $<TARGET_FILE:costmap_navigation>
-      $<TARGET_FILE:costmap_smac_planner>
+      $<TARGET_FILE:costmap_astar_planner>
       $<TARGET_FILE:costmap_savitzky_smoother>
       $<TARGET_FILE:costmap_pid_controller>
       $<TARGET_FILE:costmap_spin_recovery>
@@ -650,7 +674,7 @@ if(BUILD_TESTING)
     add_test(NAME ExtensionModuleFactoryTest COMMAND extension_module_factory_test
       $<TARGET_FILE:costmap_navigation>
       $<TARGET_FILE:costmap_dwb_controller>
-      $<TARGET_FILE:costmap_smac_planner>
+      $<TARGET_FILE:costmap_astar_planner>
       $<TARGET_FILE:costmap_savitzky_smoother>
       $<TARGET_FILE:costmap_pid_controller>
       $<TARGET_FILE:costmap_spin_recovery>

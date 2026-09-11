@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/core/abstract_planner.hpp>
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
@@ -17,6 +19,7 @@
 #include <string>
 #include <type_traits>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -134,7 +137,7 @@ TEST(CoreCostmapMapContext, defaultCurrentTrue) {
 TEST(CoreCostmapMapContext, framesAndRobotPose) {
   CostmapMapContext ctx;
   ctx.setFrames("map", "odom", "base_link");
-  ayanami::components::RobotStateController::instance().setTransform(
+  testTransforms().set(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
   EXPECT_EQ(ctx.globalFrame(), "map");

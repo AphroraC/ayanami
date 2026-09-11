@@ -29,6 +29,7 @@
 #include <costmap_server/costmap_wrapper.hpp>
 
 #include <ayanami/costmap/components/costmap_map_context.hpp>
+#include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
@@ -75,12 +76,38 @@ std::shared_ptr<CostmapMapContext> makeContext(
   return ctx;
 }
 
+/// Feeds the smoother the way production does: a lossless RawCostmap copy
+/// through the global raw slot (the smoother never reads the live map).
+void publishRaw(const std::string& name, uint64_t revision,
+                const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
+  ayanami::nav_msgs::RawCostmap raw;
+  std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
+  const auto* cm = wrapper->get().getCostmap();
+  ASSERT_NE(cm, nullptr);
+  raw.name = name;
+  raw.frame_id = wrapper->globalFrame();
+  raw.resolution = cm->getResolution();
+  raw.origin_x = cm->getOriginX();
+  raw.origin_y = cm->getOriginY();
+  raw.width = cm->getSizeInCellsX();
+  raw.height = cm->getSizeInCellsY();
+  raw.revision = revision;
+  const auto* map = cm->getCharMap();
+  raw.costs.assign(map,
+                   map + static_cast<std::size_t>(raw.width) * raw.height);
+  ayanami::interfaces::NavigationCallbacks::on_costmap_raw(raw);
+}
+
 std::shared_ptr<CostmapSavitzkySmoother> makeSmoother(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
   auto smoother = std::make_shared<CostmapSavitzkySmoother>();
   smoother->configure(
       ayanami::ModuleContext{"test_savitzky", ayanami::Config("")},
       makeContext(wrapper)->getSharedConstPtr());
+  // Both timescales get the same test grid (the context keeps a matching
+  // shape); revision 1 = initial publication.
+  publishRaw("global_costmap", 1, wrapper);
+  publishRaw("local_costmap", 1, wrapper);
   return smoother;
 }
 
@@ -247,6 +274,10 @@ TEST(CostmapSavitzkySmootherTest, collisionCheckRollsBackToOriginal) {
     wrapper->get().getCostmap()->setCost(cell_x, cell_y,
                                          costmap_2d::LETHAL_OBSTACLE);
   }
+  // The smoother only sees its own copies: republish (revision advance)
+  // so the re-smooth observes the obstacle.
+  publishRaw("global_costmap", 2, wrapper);
+  publishRaw("local_costmap", 2, wrapper);
 
   // Re-smooth + collision check -> in-place rollback to the original path (the locked direct read includes the obstacle).
   Path out = in;

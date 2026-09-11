@@ -70,7 +70,7 @@ public:
                              result);
       return task;
     }
-    Base::start(*gh, createExecution());
+    Base::submitGoal(*gh);
     return task;
   }
 
@@ -117,40 +117,28 @@ public:
   }
 
 protected:
-  void runImpl(const GoalHandleType& gh, SmootherExecution& exec) override {
+  void runGoal(const GoalHandleType& gh, SmootherExecution& exec) override {
     action_server->setActive(gh.id);
-    exec.smoothPath(gh.goal.path, gh.goal.max_duration);
-    runImplCommon(
-        gh, exec,
-        [this](const GoalHandleType& gh, SmootherExecution& exec) -> bool {
-          if (action_server->isCancelRequested(gh.id)) {
-            exec.cancel();
-          }
-          const bool canceled =
-              action_server->isCancelRequested(gh.id) ||
-              exec.getState() == SmootherExecution::CANCELED;
-          if (canceled) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-            return true;
-          }
-          if (exec.getState() == SmootherExecution::SMOOTHED_PATH) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-            return true;
-          }
-          switch (exec.getState()) {
-            case SmootherExecution::NO_SMOOTHED_PATH:
-            case SmootherExecution::STOPPED:
-            case SmootherExecution::INTERNAL_ERROR:
-              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-              return true;
-            default:
-              break;
-          }
-          return false;
-        });
+    exec.prepareGoal(gh.goal.path, gh.goal.max_duration);
+    exec.runBlocking();
+    if (exec.aborted()) {
+      abortGoal(gh);
+      return;
+    }
+    const auto state = exec.getState();
+    ayanami::actions::GoalStatus status;
+    if (action_server->isCancelRequested(gh.id) ||
+        state == SmootherExecution::CANCELED) {
+      status = ayanami::actions::GoalStatus::CANCELED;
+    } else if (state == SmootherExecution::SMOOTHED_PATH) {
+      status = ayanami::actions::GoalStatus::SUCCEEDED;
+    } else {
+      status = ayanami::actions::GoalStatus::ABORTED;
+    }
+    finishResult(gh, exec, status);
   }
 
-  virtual SmootherExecution::Ptr createExecution() {
+  SmootherExecution::Ptr createExecution() override {
     if (execution_factory) {
       return execution_factory();
     }

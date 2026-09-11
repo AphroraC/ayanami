@@ -109,9 +109,9 @@ protected:
   }
 
   void run() override {
-    // Note: do not reset cancel_requested inside run. It was reset during
-    // start and is only read here; resetting it at the beginning of run
-    // would drop a cancel that just happened after start (TOCTOU).
+    // cancel_requested/should_exit are reset by runBlocking() before the
+    // task (resetting them here would drop a cancel that landed between the
+    // reset and this point, TOCTOU).
     setState(STARTED, false);
     start_time = std::chrono::steady_clock::now();
     // Module start/setBehaviorParams get the same exception-fallback
@@ -174,9 +174,10 @@ protected:
           break;
         }
 
-        // Sole publish: after validation (finite + max_vel), publish this
-        // cycle's suggested velocity; non-motion recoveries (nullopt)
-        // publish nothing.
+        // Sole publish: after validation the cycle's suggested velocity is
+        // clamped into the max_vel limits (policy aligned with the
+        // controller: an over-limit command is clamped + warned, never
+        // stopped on); non-motion recoveries (nullopt) publish nothing.
         if (cycle.velocity) {
           publishRecoveryVelocity(*cycle.velocity);
         }
@@ -228,27 +229,46 @@ protected:
     }
   }
 
-  /// @brief Publish the suggested velocity after validation (finite + max_vel limits); invalid commands are zeroed.
+  /// @brief Publish the suggested velocity after clamping into the max_vel
+  /// limits; a non-finite command is unclampable garbage and is zeroed
+  /// instead (never reaches the robot).
   void publishRecoveryVelocity(
       const ayanami::geometry_msgs::TwistStamped& suggestion) {
     ayanami::geometry_msgs::TwistStamped cmd = suggestion;
-    if (!validVelocityCommand(cmd)) {
-      // Keep the frame, zero the remaining fields (invalid input never reaches the robot).
+    auto& linear = cmd.twist.linear;
+    auto& angular = cmd.twist.angular;
+    const bool finite = std::isfinite(linear.x()) && std::isfinite(linear.y()) &&
+                        std::isfinite(linear.z()) &&
+                        std::isfinite(angular.x()) &&
+                        std::isfinite(angular.y()) &&
+                        std::isfinite(angular.z());
+    if (!finite) {
+      // Keep the frame, zero the remaining fields (invalid input never
+      // reaches the robot).
       cmd.twist = ayanami::geometry_msgs::Twist{};
+    } else {
+      const auto clamp = [](double value, double limit) {
+        return value > limit ? limit : (value < -limit ? -limit : value);
+      };
+      const double clamped_x = clamp(linear.x(), max_linear_x);
+      const double clamped_y = clamp(linear.y(), max_linear_y);
+      const double clamped_w = clamp(angular.z(), max_angular_z);
+      if (clamped_x != linear.x() || clamped_y != linear.y() ||
+          clamped_w != angular.z()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_clamp_warn_at >= std::chrono::seconds(1)) {
+          last_clamp_warn_at = now;
+          spdlog::warn(
+              "RecoveryExecution: velocity suggestion exceeded the limits "
+              "(vx={} wz={}; caps vx={} wz={}); clamped",
+              linear.x(), angular.z(), max_linear_x, max_angular_z);
+        }
+      }
+      linear.x() = clamped_x;
+      linear.y() = clamped_y;
+      angular.z() = clamped_w;
     }
     ayanami::interfaces::NavigationCallbacks::on_velocity_command(cmd);
-  }
-
-  bool validVelocityCommand(
-      const ayanami::geometry_msgs::TwistStamped& command) const {
-    const auto& linear = command.twist.linear;
-    const auto& angular = command.twist.angular;
-    return std::isfinite(linear.x()) && std::isfinite(linear.y()) &&
-           std::isfinite(linear.z()) && std::isfinite(angular.x()) &&
-           std::isfinite(angular.y()) && std::isfinite(angular.z()) &&
-           std::abs(linear.x()) <= max_linear_x &&
-           std::abs(linear.y()) <= max_linear_y &&
-           std::abs(angular.z()) <= max_angular_z;
   }
 
   /// @brief Periodic wait; cancel/stop interrupts immediately (does not wait out the full period).
@@ -268,6 +288,8 @@ protected:
   double max_linear_x{std::numeric_limits<double>::infinity()};
   double max_linear_y{std::numeric_limits<double>::infinity()};
   double max_angular_z{std::numeric_limits<double>::infinity()};
+  /// @brief Throttle for the clamp warning (see publishRecoveryVelocity).
+  std::chrono::steady_clock::time_point last_clamp_warn_at{};
 };
 
 } // namespace components

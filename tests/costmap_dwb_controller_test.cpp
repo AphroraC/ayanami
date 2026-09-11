@@ -16,6 +16,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -46,6 +48,7 @@
 #include <costmap_dwb_controller/plugins/standard_traj_generator.hpp>
 #include <costmap_dwb_controller/trajectory_utils.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using costmap_queue::MapBasedQueue;
@@ -397,8 +400,8 @@ TEST(DwbController, setPlanBeforeFirstComputeIsSafe) {
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "odom", "base_link");
   // The plan is expressed in "map", the local frame is "odom": feed the
-  // map->odom edge so the in-module plan transform can resolve it.
-  ayanami::components::RobotStateController::instance().setTransform(
+  // map->odom edge so the controller's map->odom query resolves.
+  testTransforms().set(
       "odom", "map", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
 
@@ -484,7 +487,7 @@ TEST(DwbController, initializeLoadsCriticsAndScoresTrajectory) {
   auto ctx = std::make_shared<ayanami::costmap::CostmapMapContext>();
   ctx->setLocalCostmap(wrapper);
   ctx->setFrames("map", "odom", "base_link");
-  ayanami::components::RobotStateController::instance().setTransform(
+  testTransforms().set(
       "odom", "map", ayanami::Timestamp::latest(),
       Eigen::Isometry3d::Identity());
 

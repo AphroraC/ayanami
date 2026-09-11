@@ -26,7 +26,7 @@ XML/策略——树与节点注册全部下沉到 `navigation_behavior_tree` 扩
   `requestPlanUpdate`；"已到达"的 SUCCESS 不因 pending 版本差异被拒。
 - `Recovery`：端口
   `recovery(id)/target_yaw/backup_distance/backup_speed/wait_duration`
-  （覆盖端口 NaN=未提供，绝不解释为 0）；cause = 黑板 failure_context，
+  （覆盖端口 NaN=未提供，绝不解释为 0）；cause = 端口绑定的 failure_context，
   **消费后清零**（单槽黑板键，避免后续恢复读到陈旧原因）。
 
 **Condition**
@@ -122,7 +122,8 @@ tick。配置错误不会靠重试自愈，所以不继续循环。
 - BT 节点**只依据结构化的 `ErrorCode` 做决策，绝不解析 message**。
 - 任何 FAILURE 前调用 `writeFailureContext` 把
   `FailureContext{stage, code, module_id, message, session_id, plan_version}`
-  写入黑板 `failure_context`——Recovery 节点的 `RecoveryGoal.cause` 由此
+  经声明的输出端口写入 `failure_context`（XML 显式绑定）——Recovery 节点的
+  `RecoveryGoal.cause` 由此
   获得"谁/为什么触发恢复"，**并随即清零该槽位**。
 - stale 结果（session 过期）一律视为 INTERNAL_ERROR 类 FAILURE，不进入
   重试统计；plan_version 陈旧拒绝只适用于 FollowPath（"已到达"豁免）与
@@ -142,7 +143,7 @@ tick。配置错误不会靠重试自愈，所以不继续循环。
 | `raw_path_revision` | uint64 | pilot（每轮置 0）+ ComputePathToPose（成功后 +1） |
 | `planner_frequency` / `smoother_frequency` / `controller_frequency` | double | pilot（configure 期） |
 | `session_id` / `goal_revision` | uint64 | pilot |
-| `failure_context` | FailureContext | 失败节点写 / Recovery 节点消费清零 |
+| `failure_context` | FailureContext | 失败节点经声明端口写 / RecoveryNode 分类 / Recovery 动作消费清零（另有 nav_retries / oscillation_distance / oscillation_timeout 注入口） |
 | `navigation_runtime` | NavigationRuntime::Ptr | pilot（注入） |
 | `clear_costmap_id` / `spin_id` / `wait_id` / `backup_id` | string | BT 扩展（role→模块映射） |
 

@@ -22,13 +22,6 @@ set(BUILD_TESTING ${_btcpp_old_build_testing} CACHE BOOL "" FORCE)
 unset(_btcpp_old_build_testing)
 target_link_options(behaviortree_cpp PRIVATE "-Wl,-Bsymbolic")
 
-# ---- fast_tf (header-only) ----
-add_library(fast_tf INTERFACE)
-target_include_directories(fast_tf INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/thirdparty/fast_tf>
-  $<INSTALL_INTERFACE:include>)
-add_library(fast_tf::fast_tf ALIAS fast_tf)
-install(TARGETS fast_tf EXPORT ayanamiTargets)
 
 # ---- nlohmann_json (header-only) ----
 # Vendored tree keeps `#include <nlohmann/...>` prefixes internally, so the

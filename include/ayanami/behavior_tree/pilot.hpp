@@ -244,6 +244,14 @@ class BehaviorTreePilot {
   double planner_frequency = 10.0;
   double smoother_frequency = -1.0;
   double controller_frequency = 20.0;
+  /// @brief Outer RecoveryNode retry budget (navigation.max_nav_retries),
+  /// written to the blackboard as {nav_retries} for the tree XML to bind.
+  uint32_t max_nav_retries = 6;
+  /// @brief Navigation-level oscillation trigger parameters
+  /// (navigation.oscillation_{distance,timeout}); written to the
+  /// blackboard for the IsRobotProgressing gate in the tree XML.
+  double oscillation_distance = 0.1;
+  double oscillation_timeout = 5.0;
 
   // Generic tree: extension .so specified by navigation.behavior_tree_extension.
   std::vector<std::string> tree_extension_so_names;

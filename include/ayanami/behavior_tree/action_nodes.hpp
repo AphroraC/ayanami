@@ -22,18 +22,15 @@
 namespace ayanami {
 namespace behavior_tree {
 
-/// @brief Write the structured failure context to the blackboard (key
-/// discipline extension). Called before the node returns FAILURE so that
-/// Recovery nodes can read the precise cause.
-inline void writeFailureContext(const BT::TreeNode& node,
+/// @brief Write the structured failure context to the node's output port
+/// (the {failure_context} blackboard binding). Called before the node
+/// returns FAILURE so that Recovery nodes can read the precise cause.
+inline void writeFailureContext(BT::TreeNode& node,
                                 const FailureContext& context) {
-  if (node.config().blackboard) {
-    node.config().blackboard->set<FailureContext>(k_failure_context, context);
-  }
-  // Failure observability: FailureContext previously only went to the
-  // blackboard (debugging required gdb); log one line here (failures are
-  // low-frequency events, warn level does not flood; message is diagnostic
-  // only, decisions still look only at code).
+  node.setOutput(k_failure_context, context);
+  // Failure observability: log one line here (failures are low-frequency
+  // events, warn level does not flood; message is diagnostic only,
+  // decisions still look only at code).
   spdlog::warn("[bt] stage={} failure: code={} msg='{}' module='{}' "
                "session={} pv={}",
                static_cast<int>(context.stage), static_cast<int>(context.code),
@@ -60,7 +57,7 @@ inline void applyBehaviorPort(const BT::TreeNode& node, const char* port,
  *
  * Lifecycle owned by the base:
  * - onStart (final): resolve NavigationRuntime -> assembleGoal (ports) ->
- *   skipSubmit hook -> submit -> wake-up registration.
+ *   submit -> wake-up registration.
  * - onRunning (final): pollInFlight hook (goal-change resubmit / in-place
  *   plan update) -> stale session rejection -> acceptsResult stale policy ->
  *   error -> FAILURE context -> onSuccess.
@@ -105,12 +102,9 @@ class NavigationActionNode : public BT::StatefulActionNode {
 
   // ---- Optional derived hooks ----
 
-  /// @brief Return a terminal status to skip submitting (SmoothPath
-  /// signature skip). Default: always submit.
-  std::optional<BT::NodeStatus> skipSubmit(const GoalT&) { return std::nullopt; }
   /// @brief Mid-flight handling each tick before the result poll (ComputePath
-  /// goal-change resubmit, FollowPath in-place plan update). Return a status
-  /// to end the tick, nullopt to continue the standard poll.
+  /// goal-change in-place update, FollowPath in-place plan update). Return a
+  /// status to end the tick, nullopt to continue the standard poll.
   std::optional<BT::NodeStatus> pollInFlightImpl() { return std::nullopt; }
   /// @brief Stale-result policy on top of the session check. Default:
   /// reject results whose plan_version is no longer current. The planner and
@@ -170,9 +164,6 @@ class NavigationActionNode : public BT::StatefulActionNode {
     GoalT goal;
     if (!assembleGoal(goal)) {
       return failWithCurrent(ErrorCode::INVALID_INPUT, "goal port missing");
-    }
-    if (auto skip = static_cast<Derived*>(this)->skipSubmit(goal)) {
-      return *skip;
     }
     if (!resubmit(goal)) {
       return failWithCurrent(ErrorCode::INTERNAL_ERROR,
@@ -235,11 +226,14 @@ class ComputePathToPoseNode
   using Base::Base;
 
   static BT::PortsList providedPorts() {
-    return {
+    auto ports = failureContextPorts();
+    BT::PortsList own = {
       BT::InputPort<geometry_msgs::PoseStamped>(k_goal, "navigation goal"),
       BT::InputPort<std::string>("planner_id", "", "planner module id"),
       BT::OutputPort<nav_msgs::Path>("path", "planned path"),
     };
+    ports.merge(own);
+    return ports;
   }
 
   FailureStage stageImpl() const { return FailureStage::Planner; }
@@ -272,14 +266,20 @@ class ComputePathToPoseNode
     geometry_msgs::PoseStamped current_goal;
     if (getInput(k_goal, current_goal) &&
         !goalEquals(current_goal, submitted_goal)) {
+      // Goal change mid-flight: take the in-place planner update path (the
+      // requestPlanUpdate analogue). No cancel / no join / no new task --
+      // the running execution adopts the latest goal via its revision
+      // guard and replans on its own thread; the same TaskHandle keeps
+      // running. An update miss means the task finished exactly during the
+      // submit; re-check the finished task next tick (an update miss is
+      // not misreported as failure).
       actions::GetPathGoal update;
       update.goal = current_goal;
-      if (!resubmit(update)) {
-        return failWithCurrent(ErrorCode::INTERNAL_ERROR,
-                               "requestPath returned invalid task");
+      if (nav_server->requestPathUpdate(task.goal_id(), update)) {
+        submitted_goal = current_goal;
+        return BT::NodeStatus::RUNNING;
       }
-      submitted_goal = current_goal;
-      return BT::NodeStatus::RUNNING;
+      return std::nullopt;
     }
     return std::nullopt;
   }
@@ -313,8 +313,9 @@ class ComputePathToPoseNode
  * default), path={smoothed_path} (output). On success the node advances the
  * live plan_version (smoothing +1) so the controller adopts the smoothed
  * path. Re-smoothing is driven by the smoother branch's RateController
- * reset_token bound to {raw_path_revision}: only the planner advances that
- * key, so this node's own version bump cannot re-trigger it.
+ * reset_token bound to {raw_path_revision} plus the branch's own tick rate:
+ * the BT owns the smoother's re-entry frequency, and the running local map
+ * may change between re-runs even when the raw path has not.
  */
 class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
                                                   actions::SmoothPathGoal,
@@ -326,11 +327,14 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
   using Base::Base;
 
   static BT::PortsList providedPorts() {
-    return {
+    auto ports = failureContextPorts();
+    BT::PortsList own = {
       BT::InputPort<nav_msgs::Path>("input_path", "path to smooth"),
       BT::InputPort<std::string>("smoother_id", "", "smoother module id"),
       BT::OutputPort<nav_msgs::Path>("path", "smoothed path"),
     };
+    ports.merge(own);
+    return ports;
   }
 
   FailureStage stageImpl() const { return FailureStage::Smoother; }
@@ -354,6 +358,9 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
 
   BT::NodeStatus onSuccessImpl(const actions::SmoothPathResult& result) {
     setOutput("path", result.smoothed_path);
+    // Unconditional adoption: whenever the smoother publishes a result the
+    // running controller switches to the new path via the plan_version bump
+    // and FollowPath's in-place updatePlan (no content-signature skip).
     nav_server->incrementPlanVersion();
     return BT::NodeStatus::SUCCESS;
   }
@@ -364,7 +371,16 @@ class SmoothPathNode : public NavigationActionNode<SmoothPathNode,
  * goal.
  *
  * Ports: path={smoothed_path} (input), controller_id (input, empty =
- * default), frequency={controller_frequency} (input).
+ * default), frequency={controller_frequency} (input, INFORMATIONAL ONLY).
+ *
+ * The "frequency" port is a blackboard mirror of
+ * navigation.controller_frequency written by the pilot; it is deliberately
+ * NOT a control path. The computeVelocityCommand cadence is owned by the
+ * execution layer, which receives the rate from the server config at
+ * assembly time (NavigationServerBase::configureControllerExecution ->
+ * setControllerFrequency). The port exists so the tree documents its
+ * expected control rate and for tree-level observability; changing it in
+ * the XML does not change the execution rate.
  *
  * When plan_version changes, take the in-place controller update path
  * (requestPlanUpdate): no cancel / no join / no new Execution; the running
@@ -383,11 +399,18 @@ class FollowPathNode : public NavigationActionNode<FollowPathNode,
   using Base::Base;
 
   static BT::PortsList providedPorts() {
-    return {
+    auto ports = failureContextPorts();
+    BT::PortsList own = {
       BT::InputPort<nav_msgs::Path>("path", "path to follow"),
       BT::InputPort<std::string>("controller_id", "", "controller module id"),
-      BT::InputPort<double>("frequency", 20.0, "controller frequency in Hz"),
+      BT::InputPort<double>(
+          "frequency", 20.0,
+          "INFORMATIONAL: blackboard mirror of navigation.controller_"
+          "frequency; the execution rate is set by the server config, not "
+          "by this port"),
     };
+    ports.merge(own);
+    return ports;
   }
 
   FailureStage stageImpl() const { return FailureStage::Controller; }
@@ -477,8 +500,13 @@ class RecoveryActionNode : public NavigationActionNode<RecoveryActionNode,
   using Base::Base;
 
   static BT::PortsList providedPorts() {
-    return {
+    // No failureContextPorts() merge here: this node needs the INPUT
+    // direction (the cause); an OutputPort under the same name would win
+    // the merge and flip the direction.
+    BT::PortsList ports = {
       BT::InputPort<std::string>("recovery", "recovery module id"),
+      BT::InputPort<FailureContext>(k_failure_context,
+                                    "cause consumed by this recovery"),
       BT::InputPort<double>("target_yaw",
                             std::numeric_limits<double>::quiet_NaN(),
                             "override spin target angle [rad]"),
@@ -492,6 +520,7 @@ class RecoveryActionNode : public NavigationActionNode<RecoveryActionNode,
                             std::numeric_limits<double>::quiet_NaN(),
                             "override wait duration [s]"),
     };
+    return ports;
   }
 
   FailureStage stageImpl() const { return FailureStage::Recovery; }
@@ -503,9 +532,14 @@ class RecoveryActionNode : public NavigationActionNode<RecoveryActionNode,
     }
     recovery_id = goal.recovery_id;
     readBehaviorParams(goal);
+    // Cause: consume the failure context through the declared input port,
+    // then clear the shared entry (the cause is consumed exactly once; a
+    // stale context must not leak into a later recovery).
+    FailureContext cause;
+    if (static_cast<bool>(getInput(k_failure_context, cause))) {
+      goal.cause = cause;
+    }
     if (config().blackboard) {
-      (void)config().blackboard->get<FailureContext>(k_failure_context,
-                                                     goal.cause);
       config().blackboard->set<FailureContext>(k_failure_context,
                                                FailureContext{});
     }

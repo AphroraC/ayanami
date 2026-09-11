@@ -70,9 +70,7 @@ public:
                              result);
       return task;
     }
-    auto exec = createExecution();
-    exec->setBehaviorParams(goal.behavior);
-    Base::start(*gh, std::move(exec));
+    Base::submitGoal(*gh);
     return task;
   }
 
@@ -124,41 +122,28 @@ public:
   }
 
 protected:
-  void runImpl(const GoalHandleType& gh, RecoveryExecution& exec) override {
+  void runGoal(const GoalHandleType& gh, RecoveryExecution& exec) override {
     action_server->setActive(gh.id);
-    exec.start();
-    runImplCommon(
-        gh, exec,
-        [this](const GoalHandleType& gh, RecoveryExecution& exec) -> bool {
-          if (action_server->isCancelRequested(gh.id)) {
-            exec.cancel();
-          }
-          const bool canceled =
-              action_server->isCancelRequested(gh.id) ||
-              exec.getState() == RecoveryExecution::CANCELED;
-          if (canceled) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::CANCELED);
-            return true;
-          }
-          if (exec.getState() == RecoveryExecution::RECOVERY_DONE) {
-            finishResult(gh, exec, ayanami::actions::GoalStatus::SUCCEEDED);
-            return true;
-          }
-          switch (exec.getState()) {
-            case RecoveryExecution::RECOVERY_FAILED:
-            case RecoveryExecution::PAT_EXCEEDED:
-            case RecoveryExecution::STOPPED:
-            case RecoveryExecution::INTERNAL_ERROR:
-              finishResult(gh, exec, ayanami::actions::GoalStatus::ABORTED);
-              return true;
-            default:
-              break;
-          }
-          return false;
-        });
+    exec.setBehaviorParams(gh.goal.behavior);
+    exec.runBlocking();
+    if (exec.aborted()) {
+      abortGoal(gh);
+      return;
+    }
+    const auto state = exec.getState();
+    ayanami::actions::GoalStatus status;
+    if (action_server->isCancelRequested(gh.id) ||
+        state == RecoveryExecution::CANCELED) {
+      status = ayanami::actions::GoalStatus::CANCELED;
+    } else if (state == RecoveryExecution::RECOVERY_DONE) {
+      status = ayanami::actions::GoalStatus::SUCCEEDED;
+    } else {
+      status = ayanami::actions::GoalStatus::ABORTED;
+    }
+    finishResult(gh, exec, status);
   }
 
-  virtual RecoveryExecution::Ptr createExecution() {
+  RecoveryExecution::Ptr createExecution() override {
     if (execution_factory) {
       return execution_factory();
     }

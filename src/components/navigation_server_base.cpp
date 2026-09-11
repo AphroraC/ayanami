@@ -144,6 +144,13 @@ void NavigationServerBase::loadModules(const std::string& config_path) {
   max_vel_y = nav_cfg.param<double>("navigation", "max_vel_y", max_vel_y);
   max_vel_theta =
       nav_cfg.param<double>("navigation", "max_vel_theta", max_vel_theta);
+  // Controller loop rate: the execution layer owns the computeVelocityCommand
+  // cadence, so the config value must land here (the server), not only on
+  // the pilot's blackboard -- the previous gap left every controller
+  // execution running on its built-in 20 Hz default regardless of config.
+  controller_frequency =
+      nav_cfg.param<double>("navigation", "controller_frequency",
+                            controller_frequency);
   // Patience: controller = nav2 failure_tolerance semantics (<0 forever,
   // 0 immediate, >0 window; also covers the stale-map safety check);
   // recovery patience <=0 disables.
@@ -443,9 +450,12 @@ void NavigationServerBase::configureControllerExecution(
                  default_progress_checker);
   }
   // Velocity limit injection (navigation.max_vel_{x,y,theta} cache;
-  // validVelocityCommand rejects over-limit commands at the execution layer,
-  // and max_vel_y=0 also forbids lateral motion).
+  // over-limit but finite commands are clamped by the execution, and
+  // max_vel_y=0 also forbids lateral motion).
   exec->setMaximumVelocity(max_vel_x, max_vel_y, max_vel_theta);
+  // Controller loop rate (navigation.controller_frequency): the execution
+  // owns the module call cadence.
+  exec->setControllerFrequency(controller_frequency);
   // Failure patience (navigation.controller_patience, nav2
   // failure_tolerance analogue): only after no valid command persists for
   // this long does the execution report a terminal state; retry decisions
@@ -639,6 +649,22 @@ NavigationServerBase::requestRecovery(
     recovery_exclusive.store(false);
     throw;
   }
+}
+
+bool NavigationServerBase::requestPathUpdate(
+    uint64_t goal_id, const ayanami::actions::GetPathGoal& goal) {
+  // The in-place update addresses the goal by id: search every loaded
+  // planner action (the goal may run on a non-default module).
+  std::lock_guard<std::mutex> request_lock(planner_request_mutex);
+  for (auto& kv : planner_actions) {
+    if (kv.second && kv.second->updateGoal(goal_id, goal)) {
+      return true;
+    }
+  }
+  spdlog::error("NavigationServerBase::requestPathUpdate: no running "
+                "planner goal {} to update",
+                goal_id);
+  return false;
 }
 
 bool NavigationServerBase::requestPlanUpdate(

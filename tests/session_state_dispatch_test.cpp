@@ -19,6 +19,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
@@ -52,6 +54,7 @@
 #include <thread>
 #include <vector>
 
+using ayanami::testing::testTransforms;
 using namespace ayanami::behavior_tree;
 using ayanami::ErrorCode;
 using ayanami::ResultT;
@@ -658,7 +661,8 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   auto tree = factory.createTreeFromText(R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
-    <ComputePathToPose goal="{goal}" path="{raw_path}"/>
+    <ComputePathToPose goal="{goal}" path="{raw_path}"
+                        failure_context="{failure_context}"/>
   </BehaviorTree>
 </root>)", bb);
 
@@ -677,7 +681,7 @@ TEST(SessionStateDispatchTest, failureContextWrittenAndRecoveryCarriesCause) {
   auto rec_tree = factory.createTreeFromText(R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
-    <Recovery recovery="{spin_id}"/>
+    <Recovery recovery="{spin_id}" failure_context="{failure_context}"/>
   </BehaviorTree>
 </root>)", bb);
 
@@ -788,7 +792,7 @@ TEST(SessionStateDispatchTest, moduleIdDefaultedOnlyWhenEmpty) {
 TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto server = std::make_shared<FollowServer>();
   server->installController();
@@ -813,7 +817,11 @@ TEST(SessionStateDispatchTest, controllerInPlacePlanUpdateEndToEnd) {
 
   // tick 1: onStart -> submits the v0 path; the real ControllerAction starts executing.
   EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
-  EXPECT_EQ(server->controller_action_ptr->executions.load(), 1);
+  // The goal is accepted asynchronously (resident worker mailbox): the
+  // execution is created by the worker shortly after the submit.
+  ASSERT_TRUE(waitUntil([&] {
+    return server->controller_action_ptr->executions.load() == 1;
+  }));
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
 
   // plan_version changed: FollowPathNode takes the in-place update (requestPlanUpdate).

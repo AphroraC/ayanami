@@ -1,21 +1,26 @@
 // modules/costmap_savitzky_smoother -- 7-point Savitzky-Golay path smoothing.
 //
-// Pure C++ (zero ROS): collision checks run on a lock-held zero-copy map read via CostmapReader (LOCAL master grid;
-// family read contract: smoother = local map only).
+// Pure C++ (zero ROS): collision checks run on the smoother's OWN map
+// copies, kept fresh by subscribing to NavigationCallbacks::on_costmap_raw
+// (the host emits a lossless full-grid copy under the map's shared lock,
+// only when the content changed). No live-map lock is ever held by the
+// smoother: a long smoothing pass delays the map writer by nothing.
 // The core is the 7-point SG convolution (nav2 SavitzkyGolaySmoother semantics):
 // - coefficients [-2, 3, 6, 7, 6, 3, -2] / 21; end points fixed; interior points convolved over the window
 // - places with less than a full window at the boundaries use replicated padding (clamped to the end points)
 // - do_refinement: applies refinement_num more filter rounds to the result (bounded by max_duration)
-// - collision check: after smoothing, queries the local costmap point by point; any cost >=
-// INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on) rolls back to the original and still reports
-// SUCCESS -- the rollback is a graceful degradation, not a failure (see the call site).
+// - collision check: after smoothing, the path is queried point by point on
+// both copies; any cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
+// rolls back to the original and still reports SUCCESS -- the rollback is a
+// graceful degradation, not a failure (see the call site).
 // Frames: the path is expressed in its header frame (production: the global
-// costmap frame), the local grid in the local costmap frame (typically
-// odom) -- the grid<-path transform is resolved ONCE per smooth call (no
-// per-point TF queries) and the returned path keeps its original frame.
+// costmap frame), each copy in its own grid frame -- the grid<-path
+// transform is resolved ONCE per smooth call (no per-point TF queries) and
+// the returned path keeps its original frame.
 
 #include "costmap_savitzky_smoother.hpp"
 
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/utility/config.hpp>
 
 #include <algorithm>
@@ -77,6 +82,22 @@ void updateOrientations(std::vector<ayanami::geometry_msgs::PoseStamped>& poses)
   }
 }
 
+// Position identity (memoization key): size + per-point isApprox; header
+// frames must match so the cached output is frame-compatible.
+bool pathEquals(const ayanami::nav_msgs::Path& lhs,
+                const ayanami::nav_msgs::Path& rhs) {
+  if (lhs.poses.size() != rhs.poses.size() ||
+      lhs.header.frame_id != rhs.header.frame_id) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.poses.size(); ++i) {
+    if (!lhs.poses[i].pose.position.isApprox(rhs.poses[i].pose.position)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 
@@ -108,8 +129,47 @@ void CostmapSavitzkySmoother::configure(
   // config is idempotent.
   configureParameters(context);
   map_context = std::move(map);
+
+  // Map copies arrive through the global raw slot (idempotent: the loader
+  // and direct construction may both call configure).
+  if (!subscriptions_active) {
+    global_subscription =
+        ayanami::interfaces::NavigationCallbacks::on_costmap_raw.subscribe(
+            [this](const ayanami::nav_msgs::RawCostmap& raw) {
+              onRawCostmap(raw);
+            });
+    local_subscription =
+        ayanami::interfaces::NavigationCallbacks::on_costmap_raw.subscribe(
+            [this](const ayanami::nav_msgs::RawCostmap& raw) {
+              onRawCostmap(raw);
+            });
+    subscriptions_active = true;
+  }
 }
 
+void CostmapSavitzkySmoother::onRawCostmap(
+    const ayanami::nav_msgs::RawCostmap& raw) {
+  std::lock_guard<std::mutex> lock(snapshots_mutex);
+  if (raw.name == "global_costmap") {
+    global_snapshot.data = raw;
+    global_snapshot.valid = true;
+  } else if (raw.name == "local_costmap") {
+    local_snapshot.data = raw;
+    local_snapshot.valid = true;
+  }
+}
+
+CostmapSavitzkySmoother::RawSnapshot CostmapSavitzkySmoother::snapshot(
+    const std::string& name) const {
+  std::lock_guard<std::mutex> lock(snapshots_mutex);
+  if (name == "global_costmap") {
+    return global_snapshot;
+  }
+  if (name == "local_costmap") {
+    return local_snapshot;
+  }
+  return RawSnapshot{};
+}
 
 bool CostmapSavitzkySmoother::cancel() {
   canceled.store(true);
@@ -123,26 +183,73 @@ ResultT<void> CostmapSavitzkySmoother::smoothPath(
         ErrorCode::MAP_UNAVAILABLE,
         "CostmapSavitzkySmoother has no costmap module");
   }
-  // Collision checking needs the map (family read contract: smoother reads the
-  // LOCAL map). The read callback owns the shared lock for exactly this
-  // smoothing call (<10 ms), zero copy; the writer is never held off longer.
-  return map_context->readLocal(
-      [&](const ayanami::costmap::CostmapReader& costmap) -> ResultT<void> {
-        return smoothPathWithMap(path, max_duration, costmap);
-      });
-}
-
-ResultT<void> CostmapSavitzkySmoother::smoothPathWithMap(
-    ayanami::nav_msgs::Path& path, double max_duration,
-    const ayanami::costmap::CostmapReader& costmap) {
-  const ayanami::nav_msgs::Path original = path;
   canceled.store(false);
 
-  // Empty path or fewer than 7 points: no window to smooth, return SUCCESS directly with path unchanged.
-  if (path.poses.size() < 7) {
+  // The smoother's own map copies (slot-fed; no live-map locks).
+  const RawSnapshot global = snapshot("global_costmap");
+  const RawSnapshot local = snapshot("local_costmap");
+  const uint64_t global_revision =
+      global.valid ? global.data.revision : k_no_map;
+  const uint64_t local_revision = local.valid ? local.data.revision : k_no_map;
+
+  // Memoization: identical input path on unchanged maps -> the cached
+  // output IS the answer (write it through; no smoothing work, no map
+  // queries). A changed path or any map revision advance re-smooths.
+  if (has_cache && pathEquals(cached_input, path) &&
+      global_revision == cached_global_revision &&
+      local_revision == cached_local_revision) {
+    path = cached_output;
     auto result = ResultT<void>::success();
-    result.message = "path too short to smooth";
+    result.message = "smoothing cache hit (input path and maps unchanged)";
     return result;
+  }
+
+  const ayanami::nav_msgs::Path original = path;
+
+  // 1. Core smoothing (no map access): the SG convolution needs no grid.
+  smoothInPlace(path, max_duration);
+
+  // 2. Collision check on BOTH timescales (family read contract: smoother =
+  // global+local collision checking) against the smoother's own copies.
+  bool collision = false;
+  if (global.valid) {
+    collision = collidesWithSnapshot(path, global);
+  }
+  if (!collision && local.valid) {
+    collision = collidesWithSnapshot(path, local);
+  }
+  if (collision) {
+    // Graceful degradation, NOT a failure: restoring the original path
+    // leaves the caller following the path the planner already produced
+    // and validated. Reporting a failure here would send a pure
+    // smoothing artifact into the recovery ladder (spin/wait/back-up)
+    // instead of simply walking the raw path.
+    path = original;
+    has_cache = true;
+    cached_input = original;
+    cached_output = path;
+    cached_global_revision = global_revision;
+    cached_local_revision = local_revision;
+    auto result = ResultT<void>::success();
+    result.message = "map collision detected; rolled back to original path";
+    return result;
+  }
+
+  has_cache = true;
+  cached_input = original;
+  cached_output = path;
+  cached_global_revision = global_revision;
+  cached_local_revision = local_revision;
+
+  // Identical to the original also degenerates to SUCCESS.
+  return ResultT<void>::success();
+}
+
+void CostmapSavitzkySmoother::smoothInPlace(ayanami::nav_msgs::Path& path,
+                                            double max_duration) {
+  // Empty path or fewer than 7 points: no window to smooth, nothing to do.
+  if (path.poses.size() < 7) {
+    return;
   }
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -153,9 +260,9 @@ ResultT<void> CostmapSavitzkySmoother::smoothPathWithMap(
   // max_duration < 0 means unlimited time.
   const bool timed = max_duration >= 0.0;
 
-  // Budget exhausted before starting: SUCCESS + partial smoothing (= none).
+  // Budget exhausted before starting: no smoothing.
   if (timed && elapsed() > max_duration) {
-    return ResultT<void>::success();
+    return;
   }
 
   // Nominal one filter round (core smoothing).
@@ -172,64 +279,53 @@ ResultT<void> CostmapSavitzkySmoother::smoothPathWithMap(
   }
 
   updateOrientations(path.poses);
+}
 
-  // Collision check: after smoothing, query the lock-held read view point by
-  // point; on a lethal hit roll back to the original. The path frame and the
-  // local grid frame may differ (map vs odom): the grid<-path transform is
-  // resolved ONCE per call and applied to the query points; the returned
-  // path keeps its original frame untouched.
-  const costmap_2d::Costmap2D* cm = costmap.grid();
-  if (cm) {
-    const std::string grid_frame = costmap.frame();
-    const std::string path_frame = path.header.frame_id.empty()
-                                       ? (map_context ? map_context->globalFrame()
-                                                      : std::string{})
-                                       : path.header.frame_id;
-    Eigen::Isometry3d grid_from_path = Eigen::Isometry3d::Identity();
-    const bool need_transform =
-        !path_frame.empty() && !grid_frame.empty() && path_frame != grid_frame;
-    if (need_transform) {
-      if (!ayanami::components::RobotStateController::instance()
-               .lookupTransform(grid_frame, path_frame,
-                                ayanami::Timestamp::latest(), grid_from_path,
-                                0.0)) {
-        return ResultT<void>::failure(
-            ErrorCode::TRANSFORM_UNAVAILABLE,
-            "CostmapSavitzkySmoother: cannot transform path frame '" +
-                path_frame + "' into local costmap frame '" + grid_frame + "'");
-      }
-    }
-    for (const auto& p : path.poses) {
-      const Eigen::Vector3d query =
-          need_transform ? (grid_from_path * p.pose.position)
-                         : p.pose.position;
-      unsigned int mx = 0;
-      unsigned int my = 0;
-      if (!cm->worldToMap(query.x(), query.y(), mx, my)) {
-        continue;
-      }
-      if (cm->getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
-        // Graceful degradation, NOT a failure: restoring the original path
-        // leaves the caller following the path the planner already produced
-        // and validated. Reporting a failure here would send a pure
-        // smoothing artifact into the recovery ladder (spin/wait/back-up)
-        // instead of simply walking the raw path.
-        //
-        // This check only sees the LOCAL map (family read contract: smoother
-        // reads local), so it cannot judge the global layer. The tree-level
-        // `IsPathValid path="{smoothed_path}"` covers the global+local
-        // overlay for whatever this call returns.
-        path = original;
-        auto result = ResultT<void>::success();
-        result.message =
-            "local-map collision detected; rolled back to original path";
-        return result;
-      }
+bool CostmapSavitzkySmoother::collidesWithSnapshot(
+    const ayanami::nav_msgs::Path& path,
+    const RawSnapshot& snapshot) const {
+  if (!snapshot.valid) {
+    return false;
+  }
+  const ayanami::nav_msgs::RawCostmap& cm = snapshot.data;
+  if (cm.costs.empty()) {
+    return false;
+  }
+  // The path frame and the grid frame may differ (map vs odom): the
+  // grid<-path transform is resolved ONCE per call and applied to the query
+  // points.
+  const std::string& grid_frame = cm.frame_id;
+  const std::string path_frame = path.header.frame_id.empty()
+                                     ? (map_context ? map_context->globalFrame()
+                                                    : std::string{})
+                                     : path.header.frame_id;
+  Eigen::Isometry3d grid_from_path = Eigen::Isometry3d::Identity();
+  const bool need_transform =
+      !path_frame.empty() && !grid_frame.empty() && path_frame != grid_frame;
+  if (need_transform) {
+    if (!ayanami::components::RobotStateController::instance()
+             .lookupTransform(grid_frame, path_frame,
+                              ayanami::Timestamp::latest(), grid_from_path,
+                              0.0)) {
+      // A missing frame transform for this grid is a degraded check, not a
+      // collision: the other grid (and the BT-level IsPathValid) still
+      // covers the path.
+      return false;
     }
   }
-
-  // Identical to the original also degenerates to SUCCESS.
-  return ResultT<void>::success();
+  for (const auto& p : path.poses) {
+    const Eigen::Vector3d query =
+        need_transform ? (grid_from_path * p.pose.position) : p.pose.position;
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!cm.worldToMap(query.x(), query.y(), mx, my)) {
+      continue;
+    }
+    if (cm.getCost(mx, my) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace modules

@@ -4,8 +4,8 @@
     "so_name": "libayanami_simple_goal_checker.so"
   },
   "simple_goal_checker": {
-    "position_tolerance": 0.35,
-    "angle_tolerance": 2.6,
+    "position_tolerance": 0.25,
+    "angle_tolerance": 0.3,
     "linear_tolerance": 0.1,
     "angular_tolerance": 0.1
   }

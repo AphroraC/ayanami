@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/controller_execution.hpp>
 #include <ayanami/abstract/components/planner_execution.hpp>
 #include <ayanami/abstract/components/recovery_execution.hpp>
@@ -20,6 +22,7 @@
 #include <string>
 #include <thread>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
@@ -212,7 +215,7 @@ TEST(ExecutionPlanner, startGoalReachesFoundPlanAndOutcomeZero) {
 TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<TestController>();
   ayanami::components::ControllerExecution exec(controller);
@@ -250,7 +253,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
 TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<TestController>();
   ayanami::components::ControllerExecution exec(controller);
@@ -392,9 +395,10 @@ TEST(ExecutionController, missingCheckersIsInternalError) {
   exec.join();
 }
 
-// Controller output above the setMaximumVelocity cap -> validVelocityCommand rejects ->
-// NO_LOCAL_CMD (no over-limit non-zero velocity published); max_vel_y=0 additionally forbids lateral motion (|linear.y| must be 0).
-TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
+// Controller output above the setMaximumVelocity cap -> clamped into the caps and
+// published (policy: over-limit commands are clamped + warned, never stopped on);
+// max_vel_y=0 additionally forbids lateral motion (|linear.y| must be 0 after clamp).
+TEST(ExecutionController, velocityAboveMaxClampedAndPublished) {
   class OverspeedController : public ayanami::abstract::AbstractController {
    public:
     ResultT<void> computeVelocityCommand(const PoseStamped&,
@@ -419,8 +423,12 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   exec.setMaximumVelocity(1.0, 0.0, 1.0);
 
   std::atomic<int> overspeed_cmds{0};
+  std::atomic<int> published{0};
+  TwistStamped last_cmd;
   ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
       [&](const TwistStamped& cmd) {
+        last_cmd = cmd;
+        published.fetch_add(1);
         if (cmd.twist.linear.x() > 1.0 ||
             std::abs(cmd.twist.linear.y()) > 1e-9 ||
             std::abs(cmd.twist.angular.z()) > 1.0) {
@@ -433,18 +441,26 @@ TEST(ExecutionController, velocityAboveMaxRejectedAndNotPublished) {
   exec.setNewPlan(plan);
   exec.start();
 
-  // Every cycle hits the cap -> NO_LOCAL_CMD (non-terminal, loop continues); the over-limit velocity is never published.
+  // Every cycle publishes a clamped command -> GOT_LOCAL_CMD (loop keeps running);
+  // the over-limit velocity is clamped, never published above the caps.
   for (int i = 0; i < 100 &&
                   exec.getState() !=
-                      ayanami::components::ControllerExecution::NO_LOCAL_CMD;
+                      ayanami::components::ControllerExecution::GOT_LOCAL_CMD;
        ++i) {
     exec.waitForStateUpdate(std::chrono::milliseconds(10));
   }
   EXPECT_EQ(exec.getState(),
-            ayanami::components::ControllerExecution::NO_LOCAL_CMD);
-  EXPECT_EQ(exec.getError(), ErrorCode::NO_VALID_COMMAND);
+            ayanami::components::ControllerExecution::GOT_LOCAL_CMD);
+  EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   EXPECT_GE(controller->calls, 1);
+  for (int i = 0; i < 100 && published.load() == 0; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_GE(published.load(), 1);
   EXPECT_EQ(overspeed_cmds.load(), 0);
+  EXPECT_NEAR(last_cmd.twist.linear.x(), 1.0, 1e-9);
+  EXPECT_NEAR(last_cmd.twist.linear.y(), 0.0, 1e-9);
+  EXPECT_NEAR(last_cmd.twist.angular.z(), 1.0, 1e-9);
 
   exec.cancel();
   exec.join();

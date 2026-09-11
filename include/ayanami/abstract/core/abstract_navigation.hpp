@@ -53,17 +53,6 @@ public:
   virtual void setLaserScan(const ayanami::sensor_msgs::LaserScan& scan) {
     (void)scan;
   }
-
-  /// @brief Localization correction jump notification (the middleware
-  /// adapter detects that the map<-odom correction changed abruptly relative
-  /// to the previous value -- typically AMCL reconverging after
-  /// relocalization / a large in-place rotation).
-  ///
-  /// Semantics are defined by the map family's host: anything stamped into
-  /// its map under the old correction may be stale and should be
-  /// invalidated/rebuilt per family policy (costmap: clear the global
-  /// dynamic layer and let subsequent scans rebuild it). Default no-op.
-  virtual void onLocalizationJump() {}
 };
 
 } // namespace abstract

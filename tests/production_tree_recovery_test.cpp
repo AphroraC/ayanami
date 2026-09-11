@@ -16,10 +16,13 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/behavior_tree/action_nodes.hpp>
 #include <ayanami/behavior_tree/blackboard_protocol.hpp>
 #include <ayanami/behavior_tree/navigation.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
+#include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/messages/actions.hpp>
 #include <ayanami/types.hpp>
 
@@ -34,6 +37,7 @@
 #include <string>
 #include <vector>
 
+using ayanami::testing::testTransforms;
 using namespace ayanami::behavior_tree;
 using ayanami::ErrorCode;
 using ayanami::actions::ExePathResult;
@@ -98,6 +102,9 @@ class MockRuntime final : public NavigationRuntime {
   // ---- Policy ----
   int settle_after{2};  // settled after this many pumps
   bool controller_always_fails{true};
+  /// @brief The FollowPath task NEVER completes (stays RUNNING): the
+  /// oscillation-gate test needs a long-lived attempt to sample.
+  bool controller_never_settles{false};
   /// @brief Report the smoothed path as invalid (overlay rejection) while the
   /// raw path stays valid. The two are told apart by pose count, so the
   /// smoother branch's IsPathValid can be exercised without also failing the
@@ -143,7 +150,9 @@ class MockRuntime final : public NavigationRuntime {
       const ayanami::actions::ExePathGoal&) override {
     ++exe_requests;
     auto state = std::make_shared<TaskState<ExePathResult>>();
-    pending.push_back({0, [this, state] { settleExe(state); }});
+    if (!controller_never_settles) {
+      pending.push_back({0, [this, state] { settleExe(state); }});
+    }
     return TaskHandle<ExePathResult>(1, state, [] { return false; });
   }
 
@@ -278,6 +287,7 @@ class ProductionTreeRecovery : public ::testing::Test {
     bb->set<uint64_t>(k_goal_revision, 0u);
     bb->set<ayanami::FailureContext>(k_failure_context,
                                      ayanami::FailureContext{});
+    bb->set<uint32_t>(k_nav_retries, 6u);
   }
 
   /// @brief Build this attempt's tree instance (fresh object + blackboard).
@@ -349,6 +359,53 @@ TEST_F(ProductionTreeRecovery,
   EXPECT_LE(runtime->recovery_requests,
             13 * std::max(1, runtime->path_requests))
       << "recovery storm: unbounded recoveries per tree life";
+}
+
+// ---- Navigation-level oscillation: every component succeeds, the robot
+// never moves -> the IsRobotProgressing gate fails the pipeline and the
+// recovery ladder fires WITHOUT any planner/controller failure. ----
+TEST_F(ProductionTreeRecovery, navigationLevelOscillationTriggersRecoveryLadder) {
+  runtime->controller_always_fails = false;
+  runtime->controller_never_settles = true;
+  runtime->settle_after = 1;
+  buildTree();
+  // AFTER buildTree: writeBlackboard recreates the blackboard, so the
+  // attempt-specific parameters land on the live instance.
+  bb->set<uint32_t>(k_nav_retries, 2u);
+  bb->set<double>(k_oscillation_distance, 0.1);
+  bb->set<double>(k_oscillation_timeout, 0.2);
+
+  // A robot pose that never changes: the very definition of "going
+  // nowhere" for the gate.
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
+                   Eigen::Isometry3d::Identity());
+  {
+    PoseStamped probe;
+    ayanami::geometry_msgs::TwistStamped vel;
+    ASSERT_TRUE(rsc.getRobotState(probe, vel))
+        << "robot pose must resolve for the oscillation gate";
+  }
+
+  BT::NodeStatus status = BT::NodeStatus::RUNNING;
+  for (int i = 0; i < 400 && status == BT::NodeStatus::RUNNING; ++i) {
+    status = tickTree();
+    runtime->pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  // The attempt terminates in FAILURE (the retry budget exhausts against a
+  // robot that never makes progress).
+  EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+  // The ladder fired on the gate alone: planner/controller never failed.
+  EXPECT_EQ(runtime->exe_requests, 1)
+      << "FollowPath should have kept running (never_settles)";
+  EXPECT_GE(runtime->recovery_requests, 2)
+      << "oscillation gate never dispatched the recovery ladder";
+  EXPECT_GE(runtime->recovery_requests, 2)
+      << "the ladder should have rotated through the recoveries";
 }
 
 // ---- Transient failure: the second execution succeeds -> whole tree SUCCESS, the outer recovery must not fire ----

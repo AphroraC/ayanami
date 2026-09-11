@@ -56,10 +56,25 @@ public:
   using ExecutionBase::start;
   void start(const geometry_msgs::PoseStamped& start,
              const geometry_msgs::PoseStamped& goal, double tolerance) {
-    this->start_pose = resolveStart(start);
-    this->goal_pose = goal;
-    this->goal_tolerance = tolerance;
+    prepareGoal(start, goal, tolerance);
     ExecutionBase::start();
+  }
+
+  /// @brief Goal inputs for one planning task WITHOUT spawning a thread
+  /// (execution reuse: the resident action worker calls prepareGoal +
+  /// runBlocking). Also resets the latest-wins seam state so nothing from a
+  /// previous task leaks into this one.
+  void prepareGoal(const geometry_msgs::PoseStamped& start,
+                   const geometry_msgs::PoseStamped& goal, double tolerance) {
+    std::lock_guard<std::mutex> lock(goal_mutex);
+    start_pose = resolveStart(start);
+    goal_pose = goal;
+    goal_tolerance = tolerance;
+    pending_start = start_pose;
+    pending_goal = goal;
+    pending_tolerance = tolerance;
+    goal_revision.store(0);
+    plan = nav_msgs::Path{};
   }
 
   /// @brief Cancel: set cancel_requested and forward to the planner module (cooperative).
@@ -70,22 +85,37 @@ public:
   }
 
   /// @brief In-place goal update while running (latest-wins update seam).
-  /// @return false means the execution has reached a terminal state or the
-  /// module does not support it; the caller should fall back to creating a
-  /// new execution.
-  virtual bool setNewGoal(const geometry_msgs::PoseStamped& start,
-                          const geometry_msgs::PoseStamped& goal,
-                          double tolerance) {
-    if (!planner || !planner->setNewGoal(start, goal, tolerance)) {
-      return false;
-    }
+  ///
+  /// Purely execution-level (the module is NOT involved): the pending
+  /// start/goal/tolerance land in a revision-guarded slot and the run loop
+  /// adopts the latest revision before (and after) each module call, so a
+  /// goal change neither cancels the task nor spawns a new execution
+  /// (requestPlanUpdate analogue for the planner family). The module's
+  /// cooperative cancel() is invoked so a long-running search returns
+  /// promptly and the loop replans for the new goal on the same thread.
+  /// @return false means the execution has reached a terminal state (the
+  /// update will not be consumed); the caller should fall back to a new
+  /// request.
+  bool setNewGoal(const geometry_msgs::PoseStamped& start,
+                  const geometry_msgs::PoseStamped& goal, double tolerance) {
     {
       std::lock_guard<std::mutex> lock(goal_mutex);
-      if (isTerminalState()) return false;
+      if (isTerminalState()) {
+        return false;
+      }
       pending_start = resolveStart(start);
       pending_goal = goal;
       pending_tolerance = tolerance;
       goal_revision.fetch_add(1);
+      // Cooperative interrupt of the in-flight module call, taken under the
+      // SAME mutex the run loop uses for its post-call revision check: the
+      // bump and the cancel are atomic with respect to that check, so a
+      // result released by THIS cancel can never be committed as a terminal
+      // state for the superseded goal (the check always observes the new
+      // revision and replans instead).
+      if (planner) {
+        planner->cancel();
+      }
     }
     condition.notify_all();
     return true;
@@ -171,11 +201,27 @@ protected:
           return;
         }
         if (result.ok) {
+          // Commit-path revision recheck, atomic against setNewGoal (which
+          // stores the revision and interrupts the module under the same
+          // mutex): a goal that arrived between the post-call check and this
+          // commit must NOT be answered with the superseded plan.
+          {
+            std::lock_guard<std::mutex> lock(goal_mutex);
+            if (goal_revision.load() != adopted_revision) {
+              continue;
+            }
+          }
           // plan was written in place by the module (see callPlanner arg).
           error = ErrorCode::NONE;
           message = result.message;
           setState(FOUND_PLAN, true);
           return;
+        }
+        {
+          std::lock_guard<std::mutex> lock(goal_mutex);
+          if (goal_revision.load() != adopted_revision) {
+            continue;
+          }
         }
         // Return the error code immediately on failure (retries are decided by the BT).
         error = result.error;

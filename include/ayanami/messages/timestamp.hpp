@@ -11,9 +11,9 @@ namespace ayanami {
  *        {int32 sec, uint32 nanosec} (nanosec in [0, 1e9), negative values
  *        floor-normalized, e.g. -1.7s = {sec: -2, nanosec: 3e8}).
  *
- * - Depends only on std::chrono; no fast_tf / ROS types introduced; can be
+ * - Depends only on std::chrono; no TF-library / ROS types introduced; can be
  *   serialized across middlewares.
- * - Semantics aligned with fast_tf: {0, 0} == the "latest" sentinel (query
+ * - Semantics aligned with tf2: {0, 0} == the "latest" sentinel (query
  *   the newest available transform).
  * - Production code should express "latest" explicitly with
  *   Timestamp::latest() and not rely on the implicit zero value.
@@ -29,7 +29,7 @@ struct Timestamp {
   constexpr explicit Timestamp(std::chrono::nanoseconds v) { fromNanoseconds(v.count()); }
   constexpr explicit Timestamp(std::int64_t ns_count) { fromNanoseconds(ns_count); }
 
-  /// @brief Explicit latest sentinel (in fast_tf, time_t{} means latest).
+  /// @brief Explicit latest sentinel (tf2 ros::Time(0) equivalent).
   static constexpr Timestamp latest() { return Timestamp{}; }
 
   constexpr bool isLatest() const { return sec == 0 && nanosec == 0; }
@@ -38,7 +38,7 @@ struct Timestamp {
     return static_cast<double>(count()) * 1e-9;
   }
 
-  /// @brief Total nanoseconds (int64), for internal arithmetic and fast_tf interactions.
+  /// @brief Total nanoseconds (int64), for internal arithmetic.
   std::int64_t count() const {
     return static_cast<std::int64_t>(sec) * 1000000000LL +
            static_cast<std::int64_t>(nanosec);

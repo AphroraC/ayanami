@@ -1,0 +1,9 @@
+{
+  "layer": {
+    "name": "static_layer",
+    "so_name": "libayanami_costmap_static_layer.so"
+  },
+  "static_layer": {
+    "static_map": "config/assets/nav.pgm"
+  }
+}

@@ -6,6 +6,7 @@
 #include <string>
 
 #include <ayanami/costmap/core/costmap_planner.hpp>
+#include <ayanami/costmap/core/costmap_snapshot.hpp>
 
 namespace ayanami {
 namespace modules {
@@ -13,27 +14,27 @@ namespace modules {
 /**
  * @brief A* global path planning module (CostmapPlanner family).
  *
- * Runs standard 4/8-connected A* on the global+local overlay (family read
- * contract: planner = global+local superposition, per-cell conservative max;
- * NO_INFORMATION dominates).
+ * Runs standard 4/8-connected A* directly on the GLOBAL costmap master grid
+ * (family read contract: planner = global map only; fresh local observations
+ * never shape the global plan).
  * - Blocking: cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
  * - Traversal cost: step * (neutral_cost + cost_factor * cell_cost)
  * - Goal inside an obstacle: nearestValidGoal searches for the nearest valid cell within tolerance (approximate path)
  *
  * Map access discipline: configure(context, map) injects the own
- * configuration + a const smart pointer to the map module; makePlan calls
- * map->composePlanningOverlay() which holds the two map shared locks ONLY
- * for the O(N) compose pass, then releases them -- the A* itself queries the
- * returned PlanningOverlay buffer lock-free in O(1) per cell, so a slow
- * search (unreachable goal / large map) never stalls the map writer. The
- * start pose arrives fully resolved (the execution layer substitutes the
- * current robot pose for an empty start; modules never interpret sentinels).
+ * configuration + a const smart pointer to the map module; makePlan takes a
+ * SHORT-LOCK SNAPSHOT of the global master grid
+ * (map->snapshotGlobal(): the shared lock lives only for the memcpy) and
+ * runs the search on that immutable copy, so the map writer is never
+ * delayed by planning. The start pose arrives fully resolved (the
+ * execution layer substitutes the current robot pose for an empty start;
+ * modules never interpret sentinels).
  */
-class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
+class CostmapAstarPlanner final : public ayanami::costmap::CostmapPlanner {
  public:
-  CostmapSmacPlanner() = default;
+  CostmapAstarPlanner() = default;
   // Derived class adds the virtual destructor with override (base AbstractPlanner is already virtual)
-  ~CostmapSmacPlanner() override = default;
+  ~CostmapAstarPlanner() override = default;
 
   /// @brief Parameter-loading seam (ExtensionModule): called by the loader
   /// right after a successful load, and by configure() for callers that build
@@ -49,12 +50,9 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
                           nav_msgs::Path& plan) override;
 
   bool cancel() override;
-  bool setNewGoal(const geometry_msgs::PoseStamped& start,
-                  const geometry_msgs::PoseStamped& goal,
-                  double tolerance) override;
 
  private:
-  struct CostmapSmacPlannerParam {
+  struct CostmapAstarPlannerParam {
     bool use_diagonal = true;
     double tolerance = 0.0;
     double cost_factor = 0.5;
@@ -63,16 +61,18 @@ class CostmapSmacPlanner final : public ayanami::costmap::CostmapPlanner {
     bool use_final_approach = false;
   };
 
-  CostmapSmacPlannerParam param;
+  CostmapAstarPlannerParam param;
 
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
-  /// @brief Reusable overlay scratch (global+local max per global cell):
-  /// composed once per makePlan while the map locks are held, then queried
-  /// lock-free by the search (see composePlanningOverlay).
-  ayanami::costmap::PlanningOverlay overlay_buffer;
+  /// @brief Search body (see makePlan): runs on the short-lock snapshot
+  /// with no map lock held.
+  ResultT<void> makePlanWithMap(
+      const geometry_msgs::PoseStamped& start,
+      const geometry_msgs::PoseStamped& goal, double tolerance,
+      nav_msgs::Path& plan_out,
+      const ayanami::costmap::CostmapSnapshot& snapshot);
 
   std::atomic<bool> canceled{false};
-  std::atomic<uint64_t> goal_revision{0};
 };
 
 }  // namespace modules

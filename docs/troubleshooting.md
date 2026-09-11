@@ -88,8 +88,7 @@
 | # | 坑 | 位置 | 状态 |
 |---|---|---|---|
 | P1 | BT.CPP v4 `haltChildren` 只对 RUNNING child 生效，终态缓存子树不重置 → 常驻树下 planner 永不重规划 + 恢复风暴 | BT.CPP v4 语义 + behavior_tree/* | **已从根上消除**：树实例改为每次导航尝试新建（树生命期 == 树实例），不再需要任何复位协议。直驱树的代码同样改为「每次尝试建新树」即可 |
-| P2 | fast_tf 动态边同时间戳 set 不覆盖（emplace 语义） | thirdparty/fast_tf | 已知；测试代码需用递增时间戳 |
-| P3 | fast_tf "新父帧+已存在子帧"直接 set 抛 cannot merge unconnected trees | thirdparty/fast_tf | 按同步边序挂载（map←odom 先行） |
+| ~~P2/P3~~ | fast_tf 边写入语义（同戳不覆盖 / 未连通树抛错） | thirdparty/fast_tf | **已随 fast_tf 移除**：TF 改为按需查询桥，核心不再写入变换 |
 | P4 | tf2 带超时等待以 ros::Time（sim time）计时，/clock 停摆时无限阻塞 | ayanami_ros sync | 已修：timeout=0（诊断兜底） |
 | P5 | gazebo_ros_diff_drive 轮距/打滑 → 原地旋转里程计欠报 ~6% | urdf_gazebo_demo | 环境已知；AMCL 参数补偿 + 框架自动清图兜底 |
 | P6 | AMCL alpha_slow/fast=0 → 恢复注入永久禁用（w_diff≡0） | amcl_diff.launch / pf.c:408 | 已修 0.001/0.1 |
@@ -97,7 +96,7 @@
 | P8 | AMCL 参数须用 `initial_pose_a`（非 _yaw），否则内部 NaN 不发布 map→odom | amcl_diff.launch | 已修 |
 | P9 | 多个残留 roslaunch/gzserver 同发同名 TF → 帧缺失/乱序（ayanami 日志会提示） | 环境 | 重启前彻底 pkill |
 | P10 | 二次 configureCoreMaps 会替换 context 使模块指针悬挂 | costmap_navigation_server.cpp | 已加守护（warn + return） |
-| P11 | 持地图锁做 TF 查询（map 锁 → robot-state 锁），与 composePlanningOverlay 自述的写者纪律相反 | costmap_map_context.hpp buildReader | 已修：机器人位姿在**加锁之前**解析。无回归测试（timeout=0 的查询不可观测），靠代码审查保证 |
+| P11 | 持地图锁做 TF 查询（map 锁 → robot-state 锁） | costmap_map_context.hpp buildReader | 已修：机器人位姿在**加锁之前**解析。无回归测试（timeout=0 的查询不可观测），靠代码审查保证 |
 | P12 | 平滑器只看得见 local 图，其产物此前没有任何树级校验 → 平滑可以把路径推进全局图的障碍里 | config/BT/navigation.xml + costmap_savitzky_smoother | 已修：smoother 分支补 `IsPathValid path="{smoothed_path}"`；平滑器自身的碰撞回滚仍是 SUCCESS（优雅降级，不是失败） |
 | P13 | 到达容差两处独立配置，出厂值 angle_tolerance=2.6 rad 使朝向检查失效（只否掉 31 度的圆） | simple_goal_checker.json + 控制器 | 已修机制：容差**单一来源**（checker 经执行层下推给控制器，控制器视其为上界）；数值按保守处理未改，启动日志会点名该过宽配置 |
 | P14 | 模块 json 的参数写在**家族段**里 → 模块读自己的段读不到，静默跑默认值 | 多处夹具 | 已加校验：加载时要求存在以模块名命名的参数段，缺失即拒绝；另有「未消费键」审计 |

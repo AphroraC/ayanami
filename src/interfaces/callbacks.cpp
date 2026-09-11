@@ -23,6 +23,11 @@ CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> NavigationCallback
 CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> NavigationCallbacks::on_recovery_result;
 CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_velocity_command;
 CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_costmap_visualization;
+CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGridUpdate&)>
+    NavigationCallbacks::on_costmap_visualization_update;
+
+CallbackSlot<void(const ayanami::nav_msgs::RawCostmap&)>
+    NavigationCallbacks::on_costmap_raw;
 CallbackSlot<void(const ayanami::actions::NavigationResult&)>
     NavigationCallbacks::on_navigation_result;
 

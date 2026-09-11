@@ -26,6 +26,7 @@
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_smoother_execution.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
+#include <ayanami/costmap/core/costmap_snapshot.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
 #include <ayanami/utility/config.hpp>
@@ -175,6 +176,56 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
     EXPECT_EQ(global->get().getCostmap()->getCost(3, 3),
               costmap_2d::FREE_SPACE);
   }
+}
+
+// The snapshot read contract: snapshotGlobal holds the shared lock only for
+// the memcpy, and the returned copy is immutable -- a later writer publish
+// must not change it, while a fresh snapshot observes the new data.
+TEST(SnapshotStability, snapshotIsImmutableAndLockIsShort) {
+  auto global = makeGlobalWrapper();
+  auto ctx = std::make_shared<CostmapMapContext>();
+  ctx->setGlobalCostmap(global);
+
+  ayanami::costmap::CostmapSnapshot first;
+  ASSERT_TRUE(ctx->snapshotGlobal(first));
+  ASSERT_TRUE(first.valid());
+  EXPECT_EQ(first.frame, "map");
+  EXPECT_EQ(first.size_x, 10u);
+  EXPECT_EQ(first.size_y, 10u);
+  EXPECT_DOUBLE_EQ(first.resolution, 0.5);
+  // Cell-center conversion mirrors Costmap2D::mapToWorld.
+  EXPECT_DOUBLE_EQ(first.origin_x, 0.0);
+  EXPECT_EQ(first.getCost(3, 3), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(first.getCost(3, 4), costmap_2d::LETHAL_OBSTACLE);
+  // worldToMap mirrors Costmap2D: (2.6, 2.4) -> cell (5, 4); out of bounds rejected.
+  unsigned int mx = 0;
+  unsigned int my = 0;
+  ASSERT_TRUE(first.worldToMap(2.6, 2.4, mx, my));
+  EXPECT_EQ(mx, 5u);
+  EXPECT_EQ(my, 4u);
+  EXPECT_FALSE(first.worldToMap(-0.1, 0.0, mx, my));
+
+  // A writer publishes after the snapshot: the copy must NOT change.
+  {
+    std::unique_lock<std::shared_mutex> lock(global->mutex());
+    global->get().getCostmap()->setCost(3, 3, costmap_2d::FREE_SPACE);
+    global->get().getCostmap()->setCost(8, 8, costmap_2d::LETHAL_OBSTACLE);
+    global->updateMapUnlocked(0.0, 0.0, 0.0);
+  }
+  EXPECT_EQ(first.getCost(3, 3), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(first.getCost(8, 8), costmap_2d::FREE_SPACE);
+
+  // A fresh snapshot observes the published state.
+  ayanami::costmap::CostmapSnapshot second;
+  ASSERT_TRUE(ctx->snapshotGlobal(second));
+  EXPECT_EQ(second.getCost(3, 3), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(second.getCost(8, 8), costmap_2d::LETHAL_OBSTACLE);
+
+  // No wrapper: snapshot fails and leaves an empty (invalid) out-param.
+  auto empty_ctx = std::make_shared<CostmapMapContext>();
+  ayanami::costmap::CostmapSnapshot none;
+  EXPECT_FALSE(empty_ctx->snapshotGlobal(none));
+  EXPECT_FALSE(none.valid());
 }
 
 // A slow reader repeatedly locks and reads vs a writer publishing continuously: inconsistent two-cell samples under the reader lock would mean torn reads; the writer

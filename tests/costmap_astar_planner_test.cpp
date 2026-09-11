@@ -1,4 +1,4 @@
-// modules/costmap_smac_planner (CostmapPlanner-family A* global path planning).
+// modules/costmap_astar_planner (CostmapPlanner-family A* global path planning).
 //
 // Coverage:
 // - makePlan with start/goal on an all-free map -> ok, non-empty path, start ~ start, end ~ goal
@@ -8,6 +8,8 @@
 // - module.cpp exports the unified create_extension_module factory (verified via dlopen)
 
 #include <gtest/gtest.h>
+
+#include "test_transform_source.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -29,15 +31,16 @@
 #include <ayanami/costmap/core/costmap_planner.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
-#include <costmap_smac_planner/costmap_smac_planner.hpp>
+#include <costmap_astar_planner/costmap_astar_planner.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
 using ayanami::ResultT;
 using ayanami::costmap::CostmapMapContext;
-using ayanami::modules::CostmapSmacPlanner;
+using ayanami::modules::CostmapAstarPlanner;
 
 std::string g_module_so;
 
@@ -78,7 +81,7 @@ std::shared_ptr<CostmapMapContext> makeOverlayContext(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& local_wrapper) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map_o", "odom_o", "base_o", 0.25);
-  rsc.setTransform("odom_o", "map_o", ayanami::Timestamp::latest(),
+  testTransforms().set("odom_o", "map_o", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity());
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setFrames("map_o", "odom_o", "base_o");
@@ -87,10 +90,10 @@ std::shared_ptr<CostmapMapContext> makeOverlayContext(
   return ctx;
 }
 
-std::shared_ptr<CostmapSmacPlanner> makePlanner(
+std::shared_ptr<CostmapAstarPlanner> makePlanner(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper) {
-  auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
+  auto planner = std::make_shared<CostmapAstarPlanner>();
+  planner->configure(ayanami::ModuleContext{"test_astar", ayanami::Config("")},
                      makeContext(wrapper)->getSharedConstPtr());
   return planner;
 }
@@ -113,7 +116,7 @@ ayanami::geometry_msgs::PoseStamped cellCenter(unsigned int mx, unsigned int my,
 
 // ---------- makePlan success path ----------
 
-TEST(CostmapSmacPlannerTest, makePlanSuccessOnFreeMap) {
+TEST(CostmapAstarPlannerTest, makePlanSuccessOnFreeMap) {
   auto wrapper = makeWrapper(20, 0.5);  // 20x20 @ 0.5m = 10m x 10m, all free
   auto planner = makePlanner(wrapper);
 
@@ -130,7 +133,7 @@ ayanami::nav_msgs::Path plan;
   EXPECT_NEAR(plan.poses.back().pose.position.y(), goal.pose.position.y(), 1e-6);
 }
 
-TEST(CostmapSmacPlannerTest, makePlanRoutesAroundObstacle) {
+TEST(CostmapAstarPlannerTest, makePlanRoutesAroundObstacle) {
   // A central 4x4 obstacle block (cells 8..11) with start/goal on either side.
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
@@ -154,7 +157,7 @@ ayanami::nav_msgs::Path plan;
 
 // ---------- Family read contract: the overlay includes local-only obstacles ----------
 
-TEST(CostmapSmacPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
+TEST(CostmapAstarPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
   // Global: fully free corridor. Local: a wall across the straight line
   // (column x=9..10, full height). With the overlay the straight path is
   // blocked; A* must detour around the wall (path leaves the corridor
@@ -168,9 +171,9 @@ TEST(CostmapSmacPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
       m.setCost(10, y, costmap_2d::LETHAL_OBSTACLE);
     }
   });
-  auto planner = std::make_shared<CostmapSmacPlanner>();
+  auto planner = std::make_shared<CostmapAstarPlanner>();
   planner->configure(
-      ayanami::ModuleContext{"test_smac", ayanami::Config("")},
+      ayanami::ModuleContext{"test_astar", ayanami::Config("")},
       makeOverlayContext(global_wrapper, local_wrapper)->getSharedConstPtr());
 
   auto start = cellCenter(2, 9);
@@ -193,7 +196,7 @@ TEST(CostmapSmacPlannerTest, localOnlyObstacleDivertsOverlayPlan) {
 }
 
 // A control: without the local map the same straight corridor plans straight.
-TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
+TEST(CostmapAstarPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
   auto global_wrapper = makeWrapper(20, 0.5);
   auto local_wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 0; y < m.getSizeInCellsY(); ++y) {
@@ -205,13 +208,13 @@ TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
   // degrades to global, and the straight corridor stays straight.
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map_o2", "odom_o2", "base_o2", 0.25);
-  rsc.setTransform("odom_o2", "map_o2", ayanami::Timestamp::latest(),
+  testTransforms().set("odom_o2", "map_o2", ayanami::Timestamp::latest(),
                    Eigen::Isometry3d::Identity());
   auto ctx = std::make_shared<CostmapMapContext>();
   ctx->setFrames("map_o2", "odom_o2", "base_o2");
   ctx->setGlobalCostmap(global_wrapper);
-  auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
+  auto planner = std::make_shared<CostmapAstarPlanner>();
+  planner->configure(ayanami::ModuleContext{"test_astar", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
   auto start = cellCenter(2, 9);
@@ -229,7 +232,7 @@ TEST(CostmapSmacPlannerTest, globalOnlyPlanIgnoresLocalObstacle) {
   }
 }
 
-TEST(CostmapSmacPlannerTest, goalInObstacleWithToleranceFindsNearest) {
+TEST(CostmapAstarPlannerTest, goalInObstacleWithToleranceFindsNearest) {
   // A central 4x4 obstacle block (cells 8..11) with the goal at the block center (10,10).
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
@@ -249,7 +252,7 @@ ayanami::nav_msgs::Path plan;
   ASSERT_FALSE(plan.poses.empty());
 }
 
-TEST(CostmapSmacPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
+TEST(CostmapAstarPlannerTest, goalInObstacleWithoutToleranceReturnsNoPath) {
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -270,7 +273,7 @@ ayanami::nav_msgs::Path plan;
 
 // ---------- start errors ----------
 
-TEST(CostmapSmacPlannerTest, startInObstacleReturnsErrorSegment) {
+TEST(CostmapAstarPlannerTest, startInObstacleReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
     for (unsigned int y = 8; y <= 11; ++y) {
       for (unsigned int x = 8; x <= 11; ++x) {
@@ -290,7 +293,7 @@ ayanami::nav_msgs::Path plan;
   EXPECT_TRUE(plan.poses.empty());
 }
 
-TEST(CostmapSmacPlannerTest, startOutOfMapReturnsErrorSegment) {
+TEST(CostmapAstarPlannerTest, startOutOfMapReturnsErrorSegment) {
   auto wrapper = makeWrapper(20, 0.5);
   auto planner = makePlanner(wrapper);
 
@@ -306,7 +309,7 @@ ayanami::nav_msgs::Path plan;
 
 // ---------- Cancel mid-planning ----------
 
-TEST(CostmapSmacPlannerTest, cancelDuringPlanningReturnsCanceled) {
+TEST(CostmapAstarPlannerTest, cancelDuringPlanningReturnsCanceled) {
   // 800x800 @ 0.05 = 40m x 40m. The goal sits inside a lethal ring (1 cell thick):
   // A* must expand the whole reachable area before reporting NO_PATH (~100ms), leaving plenty of window for cancel.
   auto wrapper = makeWrapper(800, 0.05, [](costmap_2d::Costmap2D& m) {
@@ -344,9 +347,9 @@ ayanami::nav_msgs::Path plan;
 
 // ---------- module.cpp factory symbols (common factory + typed cast) ----------
 
-TEST(CostmapSmacPlannerTest, moduleFactoryCreatesPlanner) {
+TEST(CostmapAstarPlannerTest, moduleFactoryCreatesPlanner) {
   ASSERT_FALSE(g_module_so.empty());
-  auto planner = std::dynamic_pointer_cast<CostmapSmacPlanner>(
+  auto planner = std::dynamic_pointer_cast<CostmapAstarPlanner>(
       ayanami::ExtensionModule::loadModule(g_module_so));
   ASSERT_NE(planner, nullptr);
 }

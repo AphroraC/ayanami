@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
@@ -41,6 +43,7 @@
 #error "AYANAMI_TEST_GOAL_UPDATE_CONTROLLER_SO required"
 #endif
 
+using ayanami::testing::testTransforms;
 namespace {
 
 /// @brief Declare the four recovery roles the production tree references.
@@ -260,9 +263,9 @@ TEST(GoalUpdateFollowTest, controllerFollowsReplannedPathAfterGoalUpdate) {
   // Robot state: pose = origin (map<-odom<-base_link all identity); velocity = zero.
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 0.25);
-  robot_state.setTransform("map", "odom", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity(), true);
-  robot_state.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity(), true);
 
   auto server = std::make_shared<GoalUpdateTestServer>();
@@ -337,9 +340,9 @@ TEST(GoalUpdateFollowTest, plannerAndSmootherFireOncePerFreshPlan) {
 
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 0.25);
-  robot_state.setTransform("map", "odom", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity(), true);
-  robot_state.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity(), true);
 
   auto server = std::make_shared<GoalUpdateTestServer>();

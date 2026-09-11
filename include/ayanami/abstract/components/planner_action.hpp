@@ -60,9 +60,10 @@ public:
   ~PlannerAction() override { cancelAll(); }
 
   /// @brief Mainline: accept a goal and get a TaskHandle straight away.
-  /// When the same execution is running and the module supports in-place
-  /// goal updates, take the latest-wins seam (no cancel / no new
-  /// execution); the old goal is settled immediately as CANCELED.
+  /// Submitting while a task is in flight follows the base preemption
+  /// protocol (in-flight task canceled, new goal runs after it settles);
+  /// goal REVISIONS of the in-flight task go through updateGoal() instead
+  /// (no cancel, no new task).
   Task acceptGoal(const Goal& goal) {
     auto task = action_server->acceptGoal(goal);
     auto gh = action_server->getGoal(task.goal_id());
@@ -79,35 +80,35 @@ public:
                              result);
       return task;
     }
-    {
-      std::lock_guard<std::mutex> lock(goal_mutex);
-      if (active_execution && Base::isRunning() &&
-          active_execution->setNewGoal(goal.start, goal.goal,
-                                       goal.tolerance)) {
-        if (active_goal_id != 0) {
-          Result canceled;
-          canceled.error = ErrorCode::CANCELED;
-          canceled.message = "Superseded by a newer planner goal";
-          canceled.session_id = active_goal.session_id;
-          canceled.plan_version = active_goal.plan_version;
-          action_server->publishResult(active_goal_id,
-                                       ayanami::actions::GoalStatus::CANCELED,
-                                       canceled);
-        }
-        active_goal_id = gh->id;
-        active_goal = goal;
-        action_server->setActive(gh->id);
-        return task;
-      }
-      active_execution = createExecution();
-      active_goal_id = gh->id;
-      active_goal = goal;
-    }
-    Base::start(*gh, active_execution);
+    Base::submitGoal(*gh);
     return task;
   }
 
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
+
+  /// @brief In-place goal update of the running planning task (the planner
+  /// analogue of ControllerAction::updatePlan). No cancel / no join / no new
+  /// Execution: the execution adopts the latest start/goal/tolerance via its
+  /// revision-guarded pending slot and replans on its own thread. The same
+  /// TaskHandle keeps running; the goal CONTENT is replaced wholesale.
+  /// Returns false when the goal is no longer running (task already
+  /// finished/canceled) or the execution has reached a terminal state -- the
+  /// caller should re-check the finished task instead of treating the miss
+  /// as a failure.
+  bool updateGoal(uint64_t goal_id, const Goal& goal) {
+    auto exec = Base::executionForGoal(goal_id);
+    if (!exec) {
+      return false;
+    }
+    if (!exec->setNewGoal(goal.start, goal.goal, goal.tolerance)) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(goal_mutex);
+    if (active_goal_id == goal_id) {
+      active_goal = goal;  // finishResult reports the latest stamped goal
+    }
+    return true;
+  }
 
   /// @brief Settle a goal preempted from the pending slot (canceled before
   /// its driver started) so its TaskHandle never hangs.
@@ -131,7 +132,7 @@ public:
     result.plan_version = gh.goal.plan_version;
     action_server->publishResult(gh.id,
                                  ayanami::actions::GoalStatus::ABORTED, result);
-    clearActiveExecution(gh.id, active_execution.get());
+    clearActiveExecution(gh.id);
   }
 
   void cancelAll() {
@@ -149,67 +150,38 @@ public:
   }
 
 protected:
-  void runImpl(const GoalHandleType& gh, PlannerExecution& exec) override {
+  void runGoal(const GoalHandleType& gh, PlannerExecution& exec) override {
     action_server->setActive(gh.id);
-    exec.start(gh.goal.start, gh.goal.goal, gh.goal.tolerance);
-    while (true) {
-      uint64_t goal_id = 0;
-      Goal goal;
-      {
-        std::lock_guard<std::mutex> lock(goal_mutex);
-        if (active_execution.get() == &exec) {
-          goal_id = active_goal_id;
-          goal = active_goal;
-        } else {
-          // This execution was replaced because the module does not support
-          // in-place goal updates. It must complete its own original handle.
-          goal_id = gh.id;
-          goal = gh.goal;
-        }
-      }
-      // The fallback exception terminal state (k_aborted) is not recognized
-      // by the PlannerExecution enum and must be settled here, otherwise the
-      // driver task spins forever and the slot occupancy is never released.
-      if (exec.aborted()) {
-        finishResult(goal_id, goal, exec,
-                     ayanami::actions::GoalStatus::ABORTED);
-        clearActiveExecution(goal_id, &exec);
-        return;
-      }
-      if (goal_id != 0 && action_server->isCancelRequested(goal_id)) {
-        exec.cancel();
-      }
-      const bool canceled = goal_id != 0 &&
-          (action_server->isCancelRequested(goal_id) ||
-           exec.getState() == PlannerExecution::CANCELED);
-      if (canceled) {
-        finishResult(goal_id, goal, exec,
-                     ayanami::actions::GoalStatus::CANCELED);
-        clearActiveExecution(goal_id, &exec);
-        return;
-      }
-      if (exec.getState() == PlannerExecution::FOUND_PLAN) {
-        finishResult(goal_id, goal, exec,
-                     ayanami::actions::GoalStatus::SUCCEEDED);
-        clearActiveExecution(goal_id, &exec);
-        return;
-      }
-      switch (exec.getState()) {
-        case PlannerExecution::NO_PLAN_FOUND:
-        case PlannerExecution::STOPPED:
-        case PlannerExecution::INTERNAL_ERROR:
-          finishResult(goal_id, goal, exec,
-                       ayanami::actions::GoalStatus::ABORTED);
-          clearActiveExecution(goal_id, &exec);
-          return;
-        default:
-          break;
-      }
-      exec.waitForStateUpdate(std::chrono::milliseconds(20));
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex);
+      active_goal_id = gh.id;
+      active_goal = gh.goal;
     }
+    exec.prepareGoal(gh.goal.start, gh.goal.goal, gh.goal.tolerance);
+    exec.runBlocking();
+    // The fallback exception terminal state (k_aborted) is not recognized
+    // by the PlannerExecution enum and must be settled via the abort path,
+    // otherwise the in-flight record is never released.
+    if (exec.aborted()) {
+      abortGoal(gh);
+      clearActiveExecution(gh.id);
+      return;
+    }
+    const auto state = exec.getState();
+    ayanami::actions::GoalStatus status;
+    if (action_server->isCancelRequested(gh.id) ||
+        state == PlannerExecution::CANCELED) {
+      status = ayanami::actions::GoalStatus::CANCELED;
+    } else if (state == PlannerExecution::FOUND_PLAN) {
+      status = ayanami::actions::GoalStatus::SUCCEEDED;
+    } else {
+      status = ayanami::actions::GoalStatus::ABORTED;
+    }
+    finishResult(gh.id, gh.goal, exec, status);
+    clearActiveExecution(gh.id);
   }
 
-  virtual PlannerExecution::Ptr createExecution() {
+  PlannerExecution::Ptr createExecution() override {
     if (execution_factory) {
       return execution_factory();
     }
@@ -246,18 +218,15 @@ private:
     action_server->publishResult(goal_id, status, result);
   }
 
-  void clearActiveExecution(uint64_t goal_id,
-                            const PlannerExecution* execution) {
+  void clearActiveExecution(uint64_t goal_id) {
     std::lock_guard<std::mutex> lock(goal_mutex);
-    if (active_goal_id == goal_id && active_execution.get() == execution) {
+    if (active_goal_id == goal_id) {
       active_goal_id = 0;
-      active_execution.reset();
     }
   }
 
   ServerPtr action_server;
   mutable std::mutex goal_mutex;
-  PlannerExecution::Ptr active_execution;
   uint64_t active_goal_id{0};
   Goal active_goal;
 };

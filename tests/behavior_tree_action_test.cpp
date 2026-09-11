@@ -95,7 +95,7 @@ void setNavServer(const BT::Blackboard::Ptr& bb,
                                                        server);
 }
 
-/// Fills all 17 required blackboard entries (defaults suffice; includes failure_context).
+/// Fills all required blackboard entries (defaults suffice; includes failure_context).
 void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<PoseStamped>(k_goal, makePose(0.0));
   bb->set<Path>(k_raw_path, Path{});
@@ -111,6 +111,7 @@ void setRequiredEntries(const BT::Blackboard::Ptr& bb) {
   bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
+  bb->set<uint32_t>(k_nav_retries, 6u);
 }
 
 /**
@@ -323,14 +324,20 @@ constexpr const char* k_recovery_xml = R"(
 constexpr const char* k_compute_path_recovery_xml = R"(
 <root BTCPP_format="4">
   <BehaviorTree ID="main">
-    <RecoveryNode name="ComputePath" number_of_retries="1">
+    <RecoveryNode name="ComputePath" number_of_retries="1"
+                  failure_context="{failure_context}">
       <Sequence>
-        <ComputePathToPose goal="{goal}" path="{raw_path}"/>
-        <IsPathValid path="{raw_path}"/>
-        <SmoothPath  input_path="{raw_path}" path="{smoothed_path}"/>
-        <IsPathValid path="{smoothed_path}"/>
+        <ComputePathToPose goal="{goal}" path="{raw_path}"
+                           failure_context="{failure_context}"/>
+        <IsPathValid path="{raw_path}"
+                     failure_context="{failure_context}"/>
+        <SmoothPath  input_path="{raw_path}" path="{smoothed_path}"
+                     failure_context="{failure_context}"/>
+        <IsPathValid path="{smoothed_path}"
+                     failure_context="{failure_context}"/>
       </Sequence>
-      <Recovery recovery="{clear_costmap_id}"/>
+      <Recovery recovery="{clear_costmap_id}"
+                failure_context="{failure_context}"/>
     </RecoveryNode>
   </BehaviorTree>
 </root>)";
@@ -423,8 +430,10 @@ TEST(BehaviorTreeActionTest, everyPlanIsSmoothedAndAdvancesTheLiveVersion) {
   }
   ASSERT_EQ(success_cycles, 2);
   // Live plan_version: cycle1 = planning(+1) + smoothing(+1); cycle2 replans
-  // and re-smooths (+1 each). Both producers advance the shared counter -- the
-  // tree distinguishes them by raw_path_revision, not by the live version.
+  // (+1) and re-smoothing bumps again (+1): every smoother result is adopted
+  // unconditionally (no content-signature skip) and the running controller
+  // switches to it through FollowPath's in-place updatePlan. The tree
+  // distinguishes replans by raw_path_revision, not by the live version.
   EXPECT_EQ(server->currentPlanVersion(), 4u);
   EXPECT_EQ(server->smooth_request_count, 2);
 }
@@ -501,11 +510,17 @@ TEST(BehaviorTreeActionTest, smoothingFailurePropagatesToRecoveryThenFails) {
   ASSERT_TRUE(bb->get<Path>(k_smoothed_path, smooth));
   EXPECT_TRUE(smooth.poses.empty());
 
-  // failure_context records the Smoother failure for upper-layer recovery/diagnostics.
+  // Failure-context port protocol: the dispatched Recovery action consumed
+  // the Smoother failure as its cause (observable on the recorded goal),
+  // and the exhausted-budget path cleared the shared entry afterwards -- no
+  // stale cause leaks past the terminal state.
+  EXPECT_EQ(server->last_recovery_goal.cause.stage,
+            ayanami::FailureStage::Smoother);
+  EXPECT_EQ(server->last_recovery_goal.cause.code,
+            ErrorCode::SMOOTHING_FAILED);
   ayanami::FailureContext after;
   ASSERT_TRUE(bb->get<ayanami::FailureContext>(k_failure_context, after));
-  EXPECT_EQ(after.stage, ayanami::FailureStage::Smoother);
-  EXPECT_EQ(after.code, ErrorCode::SMOOTHING_FAILED);
+  EXPECT_EQ(after.code, ErrorCode::NONE);
 }
 
 TEST(BehaviorTreeActionTest, staleSessionIsRejectedOnRunning) {

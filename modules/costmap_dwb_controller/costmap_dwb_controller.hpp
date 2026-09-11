@@ -15,7 +15,7 @@
 //
 // Replacement points (zero ROS):
 // - pluginlib::ClassLoader -> static registry (registration.hpp)
-// - tf2_ros::Buffer + nav_2d_utils::tf_help -> TransformStore singleton
+// - tf2_ros::Buffer + nav_2d_utils::tf_help -> RobotStateController bridge singleton
 // - rclcpp parameters -> ayanami::Config (json section dwb_module_name, keys are dotted full names)
 // - DWBPublisher (ROS publishing) -> removed (debug visualization via an optional callback slot, omitted for now)
 #pragma once

@@ -1,16 +1,18 @@
 // (M1 finale): headless E2E full-pipeline test.
 //
 // No real chassis/ROS: assembles the whole chain via the dlopen libayanami_costmap_navigation.so host module:
-// initialize -> start -> setGoal -> BT (smac planner -> savitzky smoother ->
+// initialize -> start -> setGoal -> BT (astar planner -> savitzky smoother ->
 // controller) -> cmd_vel emitted via the on_velocity_command bypass; periodic virtual pointclouds
 // (out-of-map obstacles do not affect planning); also verifies the on_costmap_visualization bypass fires.
 // Finally stop/destruction must not crash.
 //
-// argv: 1=host.so, 2=smac.so, 3=savitzky.so, 4=test_controller.so,
+// argv: 1=host.so, 2=astar.so, 3=savitzky.so, 4=test_controller.so,
 // 5=spin.so, 6=goal_checker.so, 7=progress_checker.so,
 // 8=assets_dir (tests/assets, contains headless_map.pgm)
 
 #include <gtest/gtest.h>
+
+#include "test_transform_source.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -29,12 +31,12 @@
 
 #include <ayanami/abstract/core/abstract_navigation.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 #include <ayanami/utility/config.hpp>
 #include <ayanami/utility/extension_module.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 /// @brief Declare the four recovery roles the production tree references.
@@ -79,7 +81,7 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::interfaces::NavigationCallbacks;
 
 std::string g_host_so;
-std::string g_smac_so;
+std::string g_astar_so;
 std::string g_savitzky_so;
 std::string g_test_controller_so;
 std::string g_spin_so;
@@ -124,12 +126,11 @@ ayanami::sensor_msgs::PointCloud2 makeFarPointCloud() {
 }
 
 void setupTransforms() {
-  auto& store = ayanami::interfaces::TransformStore::instance();
-  store.setTransform("odom", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
                      Eigen::Isometry3d::Identity());
-  store.setTransform("map", "odom", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
                      Eigen::Isometry3d::Identity());
-  store.setTransform("base_link", "lidar", ayanami::Timestamp::latest(),
+  testTransforms().set("base_link", "lidar", ayanami::Timestamp::latest(),
                      Eigen::Isometry3d::Identity());
 }
 
@@ -189,7 +190,7 @@ std::filesystem::path makeConfigDir() {
   }
 
   write_file(dir / "planner.json",
-             moduleJson("planner", "test_planner", g_smac_so));
+             moduleJson("planner", "test_planner", g_astar_so));
   write_file(dir / "smoother.json",
              moduleJson("smoother", "test_smoother", g_savitzky_so));
   write_file(dir / "controller.json",
@@ -254,7 +255,9 @@ std::filesystem::path makeConfigDir() {
         << "    \"track_unknown\": false,\n"
         << "    \"inflation_radius\": 1.0,\n"
         << "    \"inscribed_radius\": 0.8,\n"
-        << "    \"cost_scaling_factor\": 2.0\n"
+        << "    \"cost_scaling_factor\": 2.0,\n"
+        << "    \"observation_sources\": [\"cloud\"],\n"
+        << "    \"cloud\": {\"type\": \"pointcloud\"}\n"
         << "  }\n"
         << "}\n";
   }
@@ -423,7 +426,7 @@ TEST(HeadlessE2E, fullNavigationPipeline) {
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc > 1) g_host_so = argv[1];
-  if (argc > 2) g_smac_so = argv[2];
+  if (argc > 2) g_astar_so = argv[2];
   if (argc > 3) g_savitzky_so = argv[3];
   if (argc > 4) g_test_controller_so = argv[4];
   if (argc > 5) g_spin_so = argv[5];

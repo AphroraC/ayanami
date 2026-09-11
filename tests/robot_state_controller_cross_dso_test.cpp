@@ -17,7 +17,6 @@
 #include <Eigen/Geometry>
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/utility/extension_module.hpp>
 #include <ayanami/utility/load_module.hpp>
@@ -59,12 +58,12 @@ TEST(RobotStateControllerCrossDSO, coreAndModuleResolveSameInstance) {
   // standing in for the core controller execution) reads the same value. Proves cross-DSO shared mutable state.
   RobotStateController& rsc = RobotStateController::instance();
   rsc.initialize("map", "odom", "base_link", 0.25);
-  rsc.resetVelocity();
+  rsc.resetOdometry();
 
   TwistStamped twist;
   twist.header.frame_id = "base_link";
   twist.twist.linear.x() = 0.75;
-  rsc.setVelocity(twist);
+  rsc.setOdometry(twist);
 
   EXPECT_TRUE(rsc.hasFreshVelocity());
   EXPECT_DOUBLE_EQ(dso_read(), 0.75);

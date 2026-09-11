@@ -22,6 +22,22 @@ void ExecutionBase::start() {
   execution_thread = std::thread([this]() { runTask(); });
 }
 
+void ExecutionBase::runBlocking() {
+  // Inline variant of start(): the caller's thread drives preRun -> run ->
+  // postRun directly (execution reuse: the resident action worker calls this
+  // per goal instead of spawning an execution thread per task). The flag
+  // reset mirrors start(), plus a state reset so observers never see the
+  // previous run's terminal state before this run's STARTED.
+  should_exit = false;
+  cancel_requested = false;
+  state.store(0);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    running = true;
+  }
+  runTask();
+}
+
 void ExecutionBase::runTask() {
   preRun();
   try {

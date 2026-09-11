@@ -11,7 +11,7 @@ config/
 ├── costmap_navigation.json   # 导航主配置：navigation 段 + costmap 三段
 ├── assets/                   # nav.pgm + nav.json（静态地图元数据）、rmuc26.*
 └── modules/                  # 每模块一个文件：<family> 段 + <name> 参数段
-    ├── costmap_smac_planner.json
+    ├── costmap_astar_planner.json
     ├── costmap_savitzky_smoother.json
     ├── costmap_dwb_controller.json
     ├── costmap_pid_controller.json
@@ -76,9 +76,7 @@ config/
 |---|---|
 | `laserscan_topic / pointcloud_topic / odom_topic / goal_topic` | 输入 topic（/scan、/velodyne_points、/odom、/move_base_simple/goal） |
 | `map_frame / odom_frame / robot_frame` | map / odom / base_link |
-| `tf_sync_rate` | 50.0 Hz 同步循环 |
-| `tf_sync_edges` | `[[target, source], ...]`：map←odom、odom←base_footprint、base_footprint←base_link、base_link←support、support←laser |
-| `tf_static_edges` | base_footprint←base_link 等静态边（fast_tf is_static 分类） |
+| ~~`tf_sync_rate` / `tf_sync_edges` / `tf_static_edges` / `tf_cache_duration`~~ | 已移除：TF 改为按需查询桥（核心经注入源直达 tf2 buffer），采样配置不复存在 |
 | `localization_clear_yaw_threshold / localization_clear_pos_threshold` | 全局动态层重建触发：累计旋转 1.0 rad / 累计平移 2.0 m |
 | `navigation_so_name` | libayanami_costmap_navigation.so |
 | `extension_modules` | [libayanami_rviz_viewer.so] |
@@ -91,8 +89,8 @@ config/
 
 ```json
 {
-  "planner": { "name": "costmap_smac", "so_name": "libayanami_costmap_smac_planner.so" },
-  "costmap_smac_planner": { "use_diagonal": true, "tolerance": 0.0, ... }
+  "planner": { "name": "costmap_astar", "so_name": "libayanami_costmap_astar_planner.so" },
+  "costmap_astar_planner": { "use_diagonal": true, "tolerance": 0.0, ... }
 }
 ```
 

@@ -43,9 +43,16 @@ public:
   /// @brief Record the inputs (taking the path by value) and start the smoothing thread.
   using ExecutionBase::start;
   void smoothPath(nav_msgs::Path path, double max_duration) {
+    prepareGoal(std::move(path), max_duration);
+    ExecutionBase::start();
+  }
+
+  /// @brief Goal inputs for one smoothing task WITHOUT spawning a thread
+  /// (execution reuse: the resident action worker calls prepareGoal +
+  /// runBlocking).
+  void prepareGoal(nav_msgs::Path path, double max_duration) {
     this->path = std::move(path);
     this->max_duration = max_duration;
-    ExecutionBase::start();
   }
 
   /// @brief Cancel: set cancel_requested and forward to the smoother module (cooperative).

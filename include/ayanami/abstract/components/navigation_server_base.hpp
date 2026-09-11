@@ -50,6 +50,18 @@ public:
   virtual void incrementPlanVersion() = 0;
   virtual bool requestPlanUpdate(
       uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) = 0;
+  /// @brief Planner in-place goal update (the requestPlanUpdate analogue):
+  /// while a planning task is still running, its start/goal/tolerance are
+  /// replaced wholesale (no cancel/join/new Execution); the same TaskHandle
+  /// keeps running and the run loop replans for the latest goal. Called by
+  /// ComputePathToPose when the goal port changes mid-flight. Default:
+  /// unsupported (test doubles / map-free servers).
+  virtual bool requestPathUpdate(uint64_t goal_id,
+                                 const ayanami::actions::GetPathGoal& goal) {
+    (void)goal_id;
+    (void)goal;
+    return false;
+  }
   virtual void cancelAllControllers() = 0;
   virtual void cancelAllPlanners() {}
   virtual void cancelAllSmoothers() {}
@@ -120,11 +132,13 @@ public:
   /// e.g. CostmapNavigationServer -> Costmap*Action).
   virtual void createActions();
 
-  /// @brief Start the server (idempotent; reserved lifecycle hook).
-  void start();
+  /// @brief Start the server (idempotent; reserved lifecycle hook). Derived
+  /// servers override to start their own resident machinery (e.g. the
+  /// costmap map-writer thread) on top of the module activation.
+  virtual void start();
 
   /// @brief Stop the server: cancel and join all RUNNING actions (idempotent).
-  void stop();
+  virtual void stop();
 
   /// @brief Lookup an action of the first three families by module id
   /// (nav2 semantics: every configured module gets an action; an empty id
@@ -156,6 +170,10 @@ public:
   /// Execution. Called by FollowPathNode when plan_version changes.
   virtual bool requestPlanUpdate(uint64_t goal_id,
                                  const ayanami::actions::ExePathGoal& goal);
+
+  /// @brief Planner in-place goal update (see NavigationRuntime).
+  bool requestPathUpdate(uint64_t goal_id,
+                         const ayanami::actions::GetPathGoal& goal) override;
 
   /// @brief Cancel the entire controller action map (all logical ids, not
   /// just the default id): cleans up every possibly running controller task
@@ -264,6 +282,13 @@ protected:
   double max_vel_x{std::numeric_limits<double>::infinity()};
   double max_vel_y{std::numeric_limits<double>::infinity()};
   double max_vel_theta{std::numeric_limits<double>::infinity()};
+  // Controller loop rate (navigation.controller_frequency, Hz): cached at
+  // loadModules and injected into every controller execution via
+  // configureControllerExecution -> setControllerFrequency. The execution
+  // owns the computeVelocityCommand cadence; the BT FollowPath "frequency"
+  // port is informational only (blackboard mirror for the tree, never a
+  // control path).
+  double controller_frequency{20.0};
   // Patience (navigation.{controller_patience,recovery_patience}, seconds):
   // controller = nav2 failure_tolerance analogue (<0 = tolerate forever
   // [default], 0 = fail immediately, >0 = tolerance window; covers both "no

@@ -60,12 +60,6 @@ class AbstractPlanner : public virtual ExtensionModule {
 
   /// @brief Cancel in-progress planning (cooperative interrupt; unsupported by default).
   virtual bool cancel() { return false; }
-
-  /// @brief In-place goal update while running (latest-wins seam; optional).
-  virtual bool setNewGoal(const ayanami::geometry_msgs::PoseStamped&,
-                          const ayanami::geometry_msgs::PoseStamped&, double) {
-    return false;
-  }
 };
 
 } // namespace abstract

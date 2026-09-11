@@ -39,8 +39,13 @@ class Layer {
 
   bool isCurrent() const { return current.load(); }
   bool isEnabled() const { return enabled; }
-  void setEnabled(bool enabled) { enabled = enabled; }
+  void setEnabled(bool enabled) { this->enabled = enabled; }
   const std::string& getName() const { return name; }
+
+  /// @brief The LayeredCostmap hosting this layer (null before initialize);
+  /// read access for host-side helpers (footprint, master geometry).
+  const LayeredCostmap* layeredCostmap() const { return master; }
+  LayeredCostmap* layeredCostmap() { return master; }
 
  protected:
   virtual void onInitialize() {}

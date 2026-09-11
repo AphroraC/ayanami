@@ -10,14 +10,14 @@ ayanami 消息送入核心、以固定频率驱动核心、承载 ROS 侧扩展�
 
 | 方法 | 语义 |
 |---|---|
-| `setTransform(parent, child, stamp, T, is_static)` | 直写核心 `RobotStateController`（→ TransformStore） |
+| `installTfSource()`（构造时） | 把 tf2 backed 查询源注入核心 `RobotStateController`（按需查询桥） |
 | `setOdometry(TwistStamped)` | 直写核心 `RobotStateController::setOdometry`（控制器读最新速度） |
-| `submitSensor(PointCloud2 / LaserScan)` | 先 `syncTransformsToCore(Time(0), 0)`，再直递宿主 `setPointcloud/setLaserScan` |
+| `submitSensor(PointCloud2 / LaserScan)` | 直递宿主 `setPointcloud/setLaserScan`（传感器时刻变换由核心按需经 tf2 源查询） |
 | `submitGoal(PoseStamped)` | goal 邮箱覆写（latest-wins，不排队） |
 | `drainPendingGoal() / hasPendingGoal()` | loop 线程每周期投递最新一条 |
 | `start() / stop()` | loop 线程生命周期（50Hz） |
 
-loop 线程每周期：`syncTransformsToCore()` → `checkTfHealth()`（1Hz）→
+loop 线程每周期：`checkTfHealth()`（1Hz）→
 `navigation_module->spinOnce()`（costmap 可视化 1Hz）→ `drainPendingGoal()`
 → `ros::spinOnce()`（触发 scan/odom/goal 回调）→ WallRate sleep。
 
@@ -35,21 +35,16 @@ loop 的 TF 同步中对 `odom←base_footprint` 边累计机器人旋转/平移
 期间 map 系 scan 持续偏转、全局动态标记整体错位。注意信号必须是**机器人
 运动量**而非修正增量——修正渐进且可能长期不收敛，增量恒为小值。
 
-### TF 同步（syncTransformsToCore）
+### TF 桥（按需查询，installTfSource）
 
-- 对 `tf_sync_edges` 每条边 `lookupTransform(target, source, Time(0),
-  timeout=0)`——**timeout 必须为 0**：tf2 带超时等待以 ros::Time（sim time）
-  计时，/clock 停摆时会无限阻塞循环。缺边由 `checkTfHealth`（1Hz，附完整
-  帧树）与"同步缺边"诊断兜底，下一周期重试。
-- 静态边分类一次并固化（`tf_edge_static` map）：tf2 对静态边返回 stamp=0，
-  fast_tf 禁止静态/动态互换，故每条边首查后固定 is_static。
-- 边写入 fast_tf：动态边用 tf 消息真实 stamp；静态边用 latest。传感器回调
-  （submitSensor）先按传感器 header.stamp 同步一次（ROS TF buffer 可插值出
-  传感器时刻样本，使核心按戳查询命中），再 latest 同步。
-- fast_tf 注意：动态边同时间戳 set 不覆盖（emplace 语义）；新父帧挂载需
-  经已存在中间帧（与同步边序一致）；**动态边回溯窗口由 `tf_cache_duration`
-  配置（默认 10s，对齐 tf2）**，跨样本间隔超窗的查询会失败（拒绝双向外推）。
-  原 tf_time_offset 戳前移补丁已随可配置窗口退役。
+- 构造时把 tf2 backed 查询源注入核心 `RobotStateController`
+  （`setTransformSource`）：核心线程的 `lookupTransform / canTransform /
+  lookupPose` **按需直达 tf2 buffer**——插值、静态边、stamp 时间查询全部
+  由 tf2 负责，无周期采样、无核心侧变换缓存。
+- 超时语义：TF2Listener 内部用 **steady_clock 轮询 canTransform**（5ms
+  粒度），绝不用 tf2 自带的带时长等待——后者以 ros::Time（sim time）计时，
+  /clock 停摆时会无限阻塞（实测事故）。缺边由 `checkTfHealth`（1Hz，附
+  完整帧树）低频诊断兜底。
 - 障碍落图的时间约定：传感器变换按 scan 戳查询（见 map-and-costmap.md），
   机器人位姿/滚动居中用 latest——两者不要混用。
 
@@ -58,7 +53,7 @@ loop 的 TF 同步中对 `odom←base_footprint` 边累计机器人旋转/平移
 ```
 /move_base_simple/goal ──► submitGoal（邮箱）──► loop drain ──► setGoal
                                                                    └─► BT 邮箱
-AMCL (map←odom) ── tf_sync ──► TransformStore ◄── 全部核心 TF 查询唯一入口
+AMCL (map←odom) ──► tf2 buffer ◄── installTfSource ◄── 全部核心 TF 查询唯一入口
 ```
 
 AMCL 集成要点（`nav_demo/launch/amcl_diff.launch`，参数均已源码验证）：
@@ -100,7 +95,7 @@ map_server 加载 `nav_demo/map/ayanami.yaml` → 指向
 
 纯函数转换：fromRosPose / fromRosTwist / fromRosPointCloud2 / fromRosLaserScan
 / toRosPath / toRosOccupancyGrid；`ros::Time(0) ↔ Timestamp::latest()`。
-scan/pointcloud 的 frame_id 原样保留，落图时由核心经 TransformStore 解析。
+scan/pointcloud 的 frame_id 原样保留，落图时由核心经注入的 tf2 源解析。
 
 ## 输出边界（rviz_viewer / cmd_chassis_publisher）
 

@@ -52,6 +52,12 @@ public:
   /// @brief Execute asynchronously on the execution's own thread (joins the old thread first if still running).
   virtual void start();
 
+  /// @brief Execute INLINE on the caller's thread (execution reuse): the
+  /// resident action worker calls this once per goal instead of spawning an
+  /// execution thread per task. Blocks until run() reaches a terminal
+  /// state; the cancel/stop flag reset mirrors start().
+  void runBlocking();
+
   /// @brief Request run to exit (rigorous); run exits with the STOPPED state.
   virtual void stop();
 

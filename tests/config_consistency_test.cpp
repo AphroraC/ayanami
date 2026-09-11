@@ -15,7 +15,7 @@
 // requestRecovery(full name) -> the costmap_spin_recovery module is actually invoked
 // (the on_velocity_command angular-velocity events = the runRecovery count).
 //
-// argv: 1=config_dir, 2=host.so, 3=smac.so, 4=savitzky.so, 5=pid.so,
+// argv: 1=config_dir, 2=host.so, 3=astar.so, 4=savitzky.so, 5=pid.so,
 // 6=spin.so, 7=back_up.so, 8=wait.so, 9=clear.so
 
 #include <gtest/gtest.h>
@@ -58,6 +58,7 @@ using ayanami::abstract::AbstractPlanner;
 using ayanami::abstract::AbstractRecovery;
 using ayanami::abstract::AbstractSmoother;
 using ayanami::actions::RecoveryGoal;
+using ayanami::behavior_tree::k_nav_retries;
 using ayanami::behavior_tree::k_navigation_runtime;
 using ayanami::behavior_tree::k_spin_id;
 // Blackboard keys the shipped production tree references (see the shipped-tree test).
@@ -80,7 +81,7 @@ using ayanami::modules::CostmapNavigation;
 
 std::string g_config_dir;
 std::string g_host_so;
-std::string g_smac_so;
+std::string g_astar_so;
 std::string g_savitzky_so;
 std::string g_pid_so;
 std::string g_spin_so;
@@ -293,7 +294,7 @@ TEST(ConfigConsistencyTest, moduleManagersLoadMatchingNames) {
     ModuleManager<AbstractPlanner> mgr;
     ayanami::components::ModuleSpec spec;
     spec.name = moduleName("config_planner", "planner");
-    spec.so_name = g_smac_so;
+    spec.so_name = g_astar_so;
     ASSERT_TRUE(
         mgr.loadModule(spec,
                        ayanami::ModuleContext{spec.name, ayanami::Config("")},
@@ -634,6 +635,7 @@ TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
     bb->set<uint64_t>(k_raw_path_revision, 0u);
     bb->set<uint64_t>(k_goal_revision, 0u);
     bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
+    bb->set<uint32_t>(k_nav_retries, 6u);
     // The shipped tree references recoveries by role id.
     bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
     bb->set<std::string>(k_spin_id, "spin");
@@ -675,7 +677,7 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc > 1) g_config_dir = argv[1];
   if (argc > 2) g_host_so = argv[2];
-  if (argc > 3) g_smac_so = argv[3];
+  if (argc > 3) g_astar_so = argv[3];
   if (argc > 4) g_savitzky_so = argv[4];
   if (argc > 5) g_pid_so = argv[5];
   if (argc > 6) g_spin_so = argv[6];

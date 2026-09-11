@@ -1,15 +1,17 @@
-// modules/costmap_smac_planner -- A* global path planning module.
+// modules/costmap_astar_planner -- A* global path planning module.
 //
-// Pure C++ (zero ROS): runs on the composed global+local overlay
-// (PlanningOverlay; family read contract: planner = global+local
-// superposition, per-cell conservative max; NO_INFORMATION dominates),
-// standard 4/8-connected A*. Rewritten with reference to _legacy SmacPlannerAStar semantics:
+// Pure C++ (zero ROS): plans on a SHORT-LOCK SNAPSHOT of the GLOBAL costmap
+// master grid (family read contract: planner = global map only; fresh local
+// observations never shape the global plan; the map writer is never delayed
+// by the search because the shared lock is held only for the memcpy).
+// Standard 4/8-connected A*. Rewritten with reference to _legacy
+// AstarPlannerAStar semantics:
 // - Blocking: cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
 // - Traversal cost: step * (neutral_cost + cost_factor * cell_cost)
 // - Goal inside an obstacle: nearestValidGoal searches for the nearest valid cell within tolerance (approximate path)
 // - cancel: checked node by node in the search loop; once interrupted, returns ErrorCode::CANCELED
 
-#include "costmap_smac_planner.hpp"
+#include "costmap_astar_planner.hpp"
 
 #include <ayanami/utility/config.hpp>
 
@@ -39,29 +41,25 @@ struct SearchParams {
   double neutral_cost{1.0};
 };
 
-// Overlay cost accessor: cost of an overlay cell under the family read
-// contract (planner = global+local superposition). Provided by the caller
-// (PlanningOverlay::costAt); kept as a template parameter so A* stays
-// allocation-free on the hot path.
-
-// Standard A*. Returns {found, cost, cells(start->goal)}. canceled is checked node by node.
+// Standard A* over a costmap snapshot. Returns {found, cost,
+// cells(start->goal)}. canceled is checked node by node. The snapshot is
+// immutable: the search holds NO map lock (the caller copied the master
+// grid under a short shared lock before calling).
 struct AStarResult {
   bool found{false};
   double cost{0.0};
   std::vector<Cell> cells;
 };
 
-template <typename CostAt>
-AStarResult runAStar(const ayanami::costmap::PlanningOverlay& overlay,
-                     const SearchParams& params,
-                     CostAt&& cost_at, unsigned int sx, unsigned int sy,
-                     unsigned int gx, unsigned int gy,
+AStarResult runAStar(const ayanami::costmap::CostmapSnapshot& grid,
+                     const SearchParams& params, unsigned int sx,
+                     unsigned int sy, unsigned int gx, unsigned int gy,
                      const std::atomic<bool>& canceled) {
-  const auto blocked = [&cost_at](unsigned int x, unsigned int y) {
-    return cost_at(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  const auto blocked = [&grid](unsigned int x, unsigned int y) {
+    return grid.getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
   };
-  const unsigned int width = overlay.size_x;
-  const unsigned int height = overlay.size_y;
+  const unsigned int width = grid.size_x;
+  const unsigned int height = grid.size_y;
   const std::size_t size =
       static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
 
@@ -151,7 +149,8 @@ AStarResult runAStar(const ayanami::costmap::PlanningOverlay& overlay,
       const double step = diagonal ? k_diagonal_step : 1.0;
       const double move_cost =
           step * (params.neutral_cost +
-                  params.cost_factor * static_cast<double>(cost_at(ux, uy)));
+                  params.cost_factor *
+                      static_cast<double>(grid.getCost(ux, uy)));
       const double tentative = g_score[cur_idx] + move_cost;
       if (tentative < g_score[nidx]) {
         parent[nidx] = static_cast<int>(cur_idx);
@@ -164,14 +163,12 @@ AStarResult runAStar(const ayanami::costmap::PlanningOverlay& overlay,
 }
 
 // Finds the nearest valid cell within radius=tolerance_cells around (gx,gy) (including itself).
-template <typename CostAt>
-bool nearestValidGoal(const ayanami::costmap::PlanningOverlay& overlay,
-                      CostAt&& cost_at,
+bool nearestValidGoal(const ayanami::costmap::CostmapSnapshot& grid,
                       unsigned int gx, unsigned int gy,
                       double tolerance_cells, unsigned int& ox,
                       unsigned int& oy) {
-  const auto blocked = [&cost_at](unsigned int x, unsigned int y) {
-    return cost_at(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  const auto blocked = [&grid](unsigned int x, unsigned int y) {
+    return grid.getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
   };
   const int radius = static_cast<int>(std::ceil(std::max(0.0, tolerance_cells)));
   for (int r = 0; r <= radius; ++r) {
@@ -187,7 +184,7 @@ bool nearestValidGoal(const ayanami::costmap::PlanningOverlay& overlay,
         }
         const unsigned int ux = static_cast<unsigned int>(nx);
         const unsigned int uy = static_cast<unsigned int>(ny);
-        if (ux >= overlay.size_x || uy >= overlay.size_y) {
+        if (ux >= grid.size_x || uy >= grid.size_y) {
           continue;
         }
         if (blocked(ux, uy)) {
@@ -205,10 +202,10 @@ bool nearestValidGoal(const ayanami::costmap::PlanningOverlay& overlay,
 }  // namespace
 
 
-void CostmapSmacPlanner::configureParameters(const ayanami::ModuleContext& context) {
+void CostmapAstarPlanner::configureParameters(const ayanami::ModuleContext& context) {
   // Parameter loading, separated from configuration: the loader calls this
   // right after a successful load, and every value lands in the module's own
-  // CostmapSmacPlannerParam member (whose field initializers are the defaults for keys the
+  // CostmapAstarPlannerParam member (whose field initializers are the defaults for keys the
   // config omits).
   // Parameters are read from the ModuleContext-injected own configuration (the module does not know the global config layout);
   // missing config keys keep the default values.
@@ -231,7 +228,7 @@ void CostmapSmacPlanner::configureParameters(const ayanami::ModuleContext& conte
                        param.use_final_approach);
 }
 
-void CostmapSmacPlanner::configure(
+void CostmapAstarPlanner::configure(
     const ModuleContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {
   // Direct-construction callers (tests, or a host that builds the object
@@ -243,22 +240,12 @@ void CostmapSmacPlanner::configure(
 }
 
 
-bool CostmapSmacPlanner::cancel() {
+bool CostmapAstarPlanner::cancel() {
   canceled.store(true);
   return true;
 }
 
-bool CostmapSmacPlanner::setNewGoal(
-    const geometry_msgs::PoseStamped&, const geometry_msgs::PoseStamped&,
-    double) {
-  goal_revision.fetch_add(1);
-  // Interrupt the current A* loop. PlannerExecution observes its own goal
-  // revision and immediately invokes makePlan again on the same thread.
-  canceled.store(true);
-  return true;
-}
-
-ResultT<void> CostmapSmacPlanner::makePlan(
+ResultT<void> CostmapAstarPlanner::makePlan(
     const geometry_msgs::PoseStamped& start,
     const geometry_msgs::PoseStamped& goal, double tolerance,
     nav_msgs::Path& plan_out) {
@@ -266,21 +253,31 @@ ResultT<void> CostmapSmacPlanner::makePlan(
 
   if (!map_context) {
     return ResultT<void>::failure(
-        ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no costmap module");
+        ErrorCode::MAP_UNAVAILABLE, "CostmapAstarPlanner has no costmap module");
   }
-  // Family read contract: the planner reads the global+local overlay.
-  // composePlanningOverlay holds the two map shared locks ONLY for the O(N)
-  // compose pass and releases them on return; the A* then queries the reused
-  // member buffer lock-free in O(1) per cell, so the map writer is never
-  // stalled by the search itself.
-  if (!map_context->composePlanningOverlay(overlay_buffer)) {
-    return ResultT<void>::failure(
-        ErrorCode::MAP_UNAVAILABLE, "CostmapSmacPlanner has no global costmap");
+  // Family read contract: the planner reads the GLOBAL map only, via a
+  // SHORT-LOCK SNAPSHOT. snapshotGlobal holds the map's shared lock only
+  // for the memcpy; the search below runs on the immutable copy with no
+  // map lock held, so the incremental map writer is never delayed by
+  // planning regardless of map size or search duration.
+  ayanami::costmap::CostmapSnapshot snapshot;
+  if (!map_context->snapshotGlobal(snapshot)) {
+    return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
+                                  "CostmapAstarPlanner has no global costmap");
   }
-  const auto& overlay = overlay_buffer;
-  const auto cost_at = [&overlay](unsigned int mx, unsigned int my) {
-    return overlay.costAt(mx, my);
-  };
+  return makePlanWithMap(start, goal, tolerance, plan_out, snapshot);
+}
+
+ResultT<void> CostmapAstarPlanner::makePlanWithMap(
+    const geometry_msgs::PoseStamped& start,
+    const geometry_msgs::PoseStamped& goal, double tolerance,
+    nav_msgs::Path& plan_out,
+    const ayanami::costmap::CostmapSnapshot& snapshot) {
+  const auto* grid = &snapshot;
+  if (!snapshot.valid()) {
+    return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
+                                  "CostmapAstarPlanner has no global costmap");
+  }
 
   // Interface contract (AbstractPlanner): `start` is always a fully resolved
   // pose -- the execution layer substitutes the current robot pose for an
@@ -292,37 +289,48 @@ ResultT<void> CostmapSmacPlanner::makePlan(
     return ResultT<void>::failure(ErrorCode::TRANSFORM_UNAVAILABLE,
                                    "Start and goal frames do not match");
   }
+  if (!start_pose.header.frame_id.empty() &&
+      start_pose.header.frame_id != snapshot.frame) {
+    return ResultT<void>::failure(
+        ErrorCode::TRANSFORM_UNAVAILABLE,
+        "Start frame '" + start_pose.header.frame_id +
+            "' does not match the global costmap frame '" + snapshot.frame +
+            "'");
+  }
 
   unsigned int sx = 0;
   unsigned int sy = 0;
   unsigned int gx = 0;
   unsigned int gy = 0;
-  if (!overlay.worldToMap(start_pose.pose.position.x(),
-                          start_pose.pose.position.y(), sx, sy)) {
+  if (!grid->worldToMap(start_pose.pose.position.x(),
+                        start_pose.pose.position.y(), sx, sy)) {
     return ResultT<void>::failure(ErrorCode::START_INVALID,
                                    "Start pose is outside the global costmap");
   }
-  if (!overlay.worldToMap(goal.pose.position.x(), goal.pose.position.y(),
-                          gx, gy)) {
+  if (!grid->worldToMap(goal.pose.position.x(), goal.pose.position.y(),
+                        gx, gy)) {
     return ResultT<void>::failure(ErrorCode::GOAL_INVALID,
                                    "Goal pose is outside the global costmap");
   }
 
-  if (overlay.blockedCell(sx, sy)) {
+  const auto blocked = [grid](unsigned int x, unsigned int y) {
+    return grid->getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  };
+  if (blocked(sx, sy)) {
     return ResultT<void>::failure(ErrorCode::START_INVALID,
                                    "Start pose is blocked");
   }
 
   const double tolerance_m = tolerance > 0.0 ? tolerance : param.tolerance;
   const double tolerance_cells =
-      tolerance_m / std::max(overlay.resolution, 1e-9);
+      tolerance_m / std::max(grid->resolution, 1e-9);
 
   // Goal inside an obstacle: nearestValidGoal finds the nearest valid cell within tolerance.
   unsigned int target_x = gx;
   unsigned int target_y = gy;
   bool approximate = false;
-  if (overlay.blockedCell(gx, gy)) {
-    if (!nearestValidGoal(overlay, cost_at, gx, gy, tolerance_cells, target_x,
+  if (blocked(gx, gy)) {
+    if (!nearestValidGoal(*grid, gx, gy, tolerance_cells, target_x,
                           target_y)) {
       return ResultT<void>::failure(
           ErrorCode::GOAL_INVALID,
@@ -337,7 +345,7 @@ ResultT<void> CostmapSmacPlanner::makePlan(
   params.neutral_cost = param.neutral_cost;
 
   const AStarResult result =
-      runAStar(overlay, params, cost_at, sx, sy, target_x, target_y, canceled);
+      runAStar(*grid, params, sx, sy, target_x, target_y, canceled);
   if (canceled.load()) {
     return ResultT<void>::failure(ErrorCode::CANCELED, "Planning canceled");
   }
@@ -346,14 +354,14 @@ ResultT<void> CostmapSmacPlanner::makePlan(
                                    "No path found");
   }
 
-  // Build the plan: cell -> world pose (overlay frame = global costmap frame).
+  // Build the plan: cell -> world pose (grid frame = global costmap frame).
   nav_msgs::Path plan;
-  plan.header.frame_id = overlay.frame;
+  plan.header.frame_id = snapshot.frame;
   plan.poses.reserve(result.cells.size());
   for (const auto& cell : result.cells) {
     double wx = 0.0;
     double wy = 0.0;
-    overlay.mapToWorld(cell.x, cell.y, wx, wy);
+    grid->mapToWorld(cell.x, cell.y, wx, wy);
     auto p = geometry_msgs::PoseStamped::fromIsometry(
         plan.header.frame_id, Eigen::Isometry3d::Identity());
     p.pose.position = Eigen::Vector3d(wx, wy, 0.0);
@@ -380,8 +388,8 @@ ResultT<void> CostmapSmacPlanner::makePlan(
 
   plan_out = std::move(plan);
   auto out = ResultT<void>::success();
-  out.message = approximate ? "Smac planner found an approximate path"
-                            : "Smac planner found a path";
+  out.message = approximate ? "A* planner found an approximate path"
+                            : "A* planner found a path";
   return out;
 }
 

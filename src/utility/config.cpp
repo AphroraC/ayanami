@@ -17,6 +17,8 @@ std::mutex g_global_config_mutex;
 
 GlobalConfig* GlobalConfig::inst = nullptr;
 
+Config::Config() : config(nlohmann::json::object()) {}
+
 Config::Config(const std::string& config_filename) {
   nlohmann::json json;
   if (!config_filename.empty()) {
@@ -156,6 +158,22 @@ bool Config::hasSection(const std::string& section) const {
   return json.find(section) != json.end();
 }
 
+Config Config::child(const std::string& section,
+                     const std::string& key) const {
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
+  const auto module = json.find(section);
+  if (module == json.end() || !module->is_object()) {
+    return Config();
+  }
+  const auto sub = module->find(key);
+  if (sub == module->end() || !sub->is_object()) {
+    return Config();
+  }
+  Config child_config;
+  child_config.config = nlohmann::json{{key, *sub}};
+  return child_config;
+}
+
 std::vector<std::string> Config::keys(const std::string& section) const {
   std::vector<std::string> keys;
   const auto& json = std::any_cast<const nlohmann::json&>(config);
@@ -185,19 +203,42 @@ std::vector<std::string> Config::sections() const {
 
 std::vector<std::string> Config::paramStringOrList(
     const std::string& module_name, const std::string& param_name) const {
-  // Either spelling is legal, so try the list form first and fall back to the
-  // scalar one. Both reads are type-guarded inside param<T>(), so a genuine
-  // type error shows up as "not found" on both attempts and the caller gets an
-  // empty list rather than an exception.
-  const auto as_list =
-      param<std::vector<std::string>>(module_name, param_name);
-  if (as_list) {
-    return *as_list;
+  // Either spelling is legal (a single string or an array of strings). The
+  // dispatch inspects the JSON value's type BEFORE any typed read: probing
+  // with param<std::vector<std::string>> first logged a bogus "cannot read as
+  // the requested type" error for every plain-string value (the common
+  // spelling) and only then fell back to the string -- an error that was
+  // really a control-flow probe, spamming the startup log.
+  const auto& json = std::any_cast<const nlohmann::json&>(config);
+  const auto module = json.find(module_name);
+  if (module == json.end() || !module->is_object()) {
+    return {};
   }
-  const auto as_single = param<std::string>(module_name, param_name);
-  if (as_single && !as_single->empty()) {
-    return {*as_single};
+  const auto value = module->find(param_name);
+  if (value == module->end() || value->is_null()) {
+    return {};
   }
+  // The key exists and was asked for: keep the audit contract identical to
+  // param<T> (consumed even when the value turns out to be unusable).
+  recordConsumed(module_name, param_name);
+  if (value->is_string()) {
+    const auto& str = value->get_ref<const std::string&>();
+    return str.empty() ? std::vector<std::string>{} : std::vector<std::string>{str};
+  }
+  if (value->is_array()) {
+    try {
+      return value->get<std::vector<std::string>>();
+    } catch (const std::exception& e) {
+      // A malformed array is a genuine config problem worth reporting.
+      spdlog::error(
+          "param {}/{}: array cannot be read as a string list ({})",
+          module_name, param_name, e.what());
+      return {};
+    }
+  }
+  // Neither spelling: a genuine type mistake -- report once, loudly.
+  spdlog::error("param {}/{}: expected a string or an array of strings",
+                module_name, param_name);
   return {};
 }
 

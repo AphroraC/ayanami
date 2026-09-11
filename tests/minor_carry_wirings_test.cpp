@@ -1,7 +1,7 @@
 // (M2 phase A wrap-up): 5 wiring integration items.
 //
 // Coverage (brief Step 1 verbatim):
-// - SmacPlannerFallsBackToRobotPose: makePlan(start left empty) -> costmap_context
+// - AstarPlannerFallsBackToRobotPose: makePlan(start left empty) -> costmap_context
 // getRobotPose fallback -> the first path pose ~ (1, 2, pi/4) (mock transform).
 // - RobotFrameSingleSourceFromCostmapNavigationJson: the robot_frame single source moves to
 // costmap_navigation.json::navigation::robot_frame (costmap.json is no longer read).
@@ -11,6 +11,8 @@
 // the same coarse signature (goal+size) -> setPlan does not reset the PID state (continuous ramp).
 
 #include <gtest/gtest.h>
+
+#include "test_transform_source.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -42,9 +44,10 @@
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
 #include <costmap_pid_controller/costmap_pid_controller.hpp>
-#include <costmap_smac_planner/costmap_smac_planner.hpp>
+#include <costmap_astar_planner/costmap_astar_planner.hpp>
 #include <ayanami/utility/config.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -54,14 +57,14 @@ using ayanami::costmap::CostmapNavigationServer;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapPidController;
-using ayanami::modules::CostmapSmacPlanner;
+using ayanami::modules::CostmapAstarPlanner;
 using ayanami::nav_msgs::Path;
 
 constexpr double k_max_acc = 1.0;
 constexpr double k_dt = 0.05;
 constexpr double k_pi = 3.14159265358979323846;
 
-std::filesystem::path g_module_dir;  // pid/smac module config directory
+std::filesystem::path g_module_dir;  // pid/astar module config directory
 
 // ---------------- Common utilities ----------------
 
@@ -79,7 +82,7 @@ std::filesystem::path makeUniqueDir(const std::string& tag) {
   return dir;
 }
 
-/// Points GlobalConfig at the module config directory (used by pid/smac loadConfig).
+/// Points GlobalConfig at the module config directory (used by pid/astar loadConfig).
 void resetModuleConfig() {
   ayanami::GlobalConfig::instance(g_module_dir.string(), true);
 }
@@ -92,7 +95,7 @@ PoseStamped makePose(double x, double y, double yaw = 0.0) {
   return p;
 }
 
-// ---------------- Test 1: smac fallback ----------------
+// ---------------- Test 1: astar fallback ----------------
 
 // An NxN @ res, origin=(0,0), all-free LayeredCostmap + StaticLayer.
 std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(unsigned int size,
@@ -149,7 +152,9 @@ std::filesystem::path makeNavigationConfigDir(
              "    \"track_unknown\": false,\n"
              "    \"inflation_radius\": 0.6,\n"
              "    \"inscribed_radius\": 0.3,\n"
-             "    \"cost_scaling_factor\": 3.0\n"
+             "    \"cost_scaling_factor\": 3.0,\n"
+             "    \"observation_sources\": [\"scan\"],\n"
+             "    \"scan\": {\"type\": \"laserscan\"}\n"
              "  }\n"
              "}\n");
   return dir;
@@ -222,11 +227,11 @@ TEST(MinorCarryWiring, emptyStartResolvedToRobotPoseAtExecutionLayer) {
   T_robot.translation() = Eigen::Vector3d(1.0, 2.0, 0.0);
   T_robot.linear() =
       Eigen::AngleAxisd(k_pi / 4.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-  rsc.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                    T_robot);
 
-  auto planner = std::make_shared<CostmapSmacPlanner>();
-  planner->configure(ayanami::ModuleContext{"test_smac", ayanami::Config("")},
+  auto planner = std::make_shared<CostmapAstarPlanner>();
+  planner->configure(ayanami::ModuleContext{"test_astar", ayanami::Config("")},
                      ctx->getSharedConstPtr());
 
   // Interface contract: an EMPTY start is resolved to the latest robot pose
@@ -337,21 +342,20 @@ TEST(MinorCarryWiring, pidSignatureCoarseSameGoalNoReset) {
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
 
-  // Module config directory (strictly single-level index; read explicitly by pid/smac constructors via getConfigPath).
+  // Module config directory (strictly single-level index; read explicitly by pid/astar constructors via getConfigPath).
   g_module_dir = makeUniqueDir("modules");
   write_file(g_module_dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\",\n"
-             "    \"config_planner\": \"costmap_smac_planner.json\",\n"
+             "    \"config_planner\": \"costmap_astar_planner.json\",\n"
              "    \"config_controller\": \"costmap_pid_controller.json\",\n"
-             "    \"config_smac_planner\": \"costmap_smac_planner.json\",\n"
              "    \"config_pid_controller\": \"costmap_pid_controller.json\"\n"
              "  }\n}\n");
   write_file(g_module_dir / "navigation.json",
              "{\n  \"navigation\": {}\n}\n");
   write_file(g_module_dir / "costmap_pid_controller.json", pidConfigContent());
-  write_file(g_module_dir / "costmap_smac_planner.json",
-             "{\n  \"costmap_smac_planner\": {\n"
+  write_file(g_module_dir / "costmap_astar_planner.json",
+             "{\n  \"costmap_astar_planner\": {\n"
              "    \"use_diagonal\": true,    \"tolerance\": 0.0,\n"
              "    \"cost_factor\": 0.5,    \"lethal_cost\": 254,\n"
              "    \"neutral_cost\": 1.0,    \"use_final_approach\": false\n"

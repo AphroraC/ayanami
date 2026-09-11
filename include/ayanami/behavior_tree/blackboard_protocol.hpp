@@ -50,8 +50,7 @@ inline constexpr const char* k_session_id = "session_id";
 // and the smoother branch keys its RateController reset_token off that key.
 // Without a separate revision the smoother would have to watch the live plan
 // version, which it advances itself -- so it could not tell "a new raw path
-// landed" from "I just smoothed", and a content-signature skip was needed to
-// paper over that. Two producers, two revisions.
+// landed" from "I just smoothed". Two producers, two revisions.
 //
 // There is deliberately no blackboard mirror of the live plan version: the
 // single authority is NavigationSessionState::currentPlanVersion() (readable
@@ -60,6 +59,13 @@ inline constexpr const char* k_session_id = "session_id";
 inline constexpr const char* k_raw_path_revision = "raw_path_revision";
 inline constexpr const char* k_goal_revision = "goal_revision";
 inline constexpr const char* k_failure_context = "failure_context";
+// Outer RecoveryNode retry budget, injected from navigation.max_nav_retries
+// (config owns the policy; the tree XML only binds the port to this key).
+inline constexpr const char* k_nav_retries = "nav_retries";
+// Navigation-level oscillation trigger parameters (MBF semantics),
+// injected from navigation.oscillation_{distance,timeout}.
+inline constexpr const char* k_oscillation_distance = "oscillation_distance";
+inline constexpr const char* k_oscillation_timeout = "oscillation_timeout";
 
 /// Core-required blackboard entries (validateRequiredBlackboardEntries
 /// scans them once after createTree). Recovery role ids
@@ -72,9 +78,21 @@ inline const std::vector<const char*>& requiredBlackboardEntries() {
     k_goal, k_raw_path, k_smoothed_path, k_planner_frequency, k_smoother_frequency,
     k_controller_frequency,
     k_session_id, k_raw_path_revision,
-    k_failure_context, k_goal_revision,
+    k_failure_context, k_goal_revision, k_nav_retries,
   };
   return k_required;
+}
+
+/// @brief The failure_context port pair shared by every failure-producing
+/// node and every RecoveryNode: the structured context travels through the
+/// declared port binding ({failure_context} in the tree XML) instead of an
+/// implicit blackboard slot, so the tree build validates the wiring.
+inline BT::PortsList failureContextPorts() {
+  return {
+      BT::OutputPort<FailureContext>(k_failure_context,
+                                     "structured context written before "
+                                     "FAILURE"),
+  };
 }
 
 /// Verify all protocol-required blackboard entries exist; throw immediately on any missing one.

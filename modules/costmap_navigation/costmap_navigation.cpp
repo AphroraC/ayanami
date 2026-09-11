@@ -77,13 +77,18 @@ void CostmapNavigation::initialize(const std::string& config_path) {
   bt_pilot.loadFromFile(xml_path, tree_id);
   bt_pilot.setNavigationRuntime(navigation_server);
 
-  visualization_rate = nav_cfg.param<double>(
+  global_visualization_rate = nav_cfg.param<double>(
       "navigation", "costmap_visualization_rate", 1.0);
+  // The local map follows the robot: it gets its own (faster) publish
+  // cadence; without the key it inherits the global value.
+  local_visualization_rate = nav_cfg.param<double>(
+      "costmap_local", "visualization_rate", global_visualization_rate);
 }
 
 void CostmapNavigation::start() {
   navigation_server->start();
-  last_publish = std::chrono::steady_clock::now();
+  last_global_publish = std::chrono::steady_clock::now();
+  last_local_publish = std::chrono::steady_clock::now();
   // Global map (static + inflation) is published ONCE: downstream topics
   // are latched and its content changes only on configure / clear commands.
   // The local rolling map is republished periodically from spinOnce().
@@ -108,9 +113,18 @@ void CostmapNavigation::spinOnce() {
   navigation_server->updateRollingWindows();
 
   const auto now = std::chrono::steady_clock::now();
-  const double hz = visualization_rate > 0.0 ? visualization_rate : 1.0;
-  if (now - last_publish >= std::chrono::duration<double>(1.0 / hz)) {
-    last_publish = now;
+  const double global_hz =
+      global_visualization_rate > 0.0 ? global_visualization_rate : 1.0;
+  if (now - last_global_publish >=
+      std::chrono::duration<double>(1.0 / global_hz)) {
+    last_global_publish = now;
+    publishGlobalMapForVisualization();
+  }
+  const double local_hz =
+      local_visualization_rate > 0.0 ? local_visualization_rate : 1.0;
+  if (now - last_local_publish >=
+      std::chrono::duration<double>(1.0 / local_hz)) {
+    last_local_publish = now;
     publishLocalMapForVisualization();
   }
 }
@@ -140,69 +154,134 @@ void CostmapNavigation::setLaserScan(
   navigation_server->handleObstacleLaserScan(scan);
 }
 
-void CostmapNavigation::onLocalizationJump() {
-  // Localization correction jump: clear the whole dynamic layer of the global map (clear_radius<=0 = entire dynamic layer);
-  // the static layer bounds are re-marked and then restored by updateMap. Executed via the single-writer command port.
-  if (!navigation_server) {
-    return;
-  }
-  costmap::ClearCostmapCommand command;
-  // Both maps are stamped in the shared map frame, so a correction jump
-  // misaligns the dynamic markers of both -- clear both dynamic layers.
-  command.affected_maps = "both";
-  command.clear_radius = 0.0;  // <=0: clear the entire dynamic layer
-  command.enabled = true;
-  if (navigation_server->executeClearCommand(command)) {
-    spdlog::info(
-        "onLocalizationJump: cleared dynamic costmap after "
-        "localization correction jump");
-  } else {
-    spdlog::warn(
-        "onLocalizationJump: dynamic costmap clear failed (TF or "
-        "map unavailable)");
-  }
-}
-
 void CostmapNavigation::publishMapForVisualization(
     const std::string& name, const costmap_2d::CostmapWrapper::Ptr& wrapper) {
   if (!wrapper) {
     return;
   }
   // Reader discipline: shared-lock direct master grid read (zero copy), one
-  // copy into the core OccupancyGrid for the side-channel slot (downstream
-  // ROS topics are latched; the map writer waits for the lock).
+  // pass over the grid either emitting a full grid or diffing against the
+  // last published state (incremental publishing, nav2 Costmap2DPublisher
+  // semantics: full on first emission / geometry change, bounded-window
+  // update on content change, nothing when unchanged).
   std::shared_lock<std::shared_mutex> lock(wrapper->mutex());
   const costmap_2d::Costmap2D* cm = wrapper->get().getCostmap();
   if (!cm) {
     return;
   }
-  ayanami::nav_msgs::OccupancyGrid grid;
-  grid.header.frame_id = wrapper->globalFrame();
-  grid.info.resolution = cm->getResolution();
-  grid.info.width = cm->getSizeInCellsX();
-  grid.info.height = cm->getSizeInCellsY();
-  Eigen::Isometry3d origin_iso = Eigen::Isometry3d::Identity();
-  origin_iso.translation() =
-      Eigen::Vector3d(cm->getOriginX(), cm->getOriginY(), 0.0);
-  grid.info.origin = ayanami::geometry_msgs::Pose::fromIsometry(origin_iso);
-  grid.data.resize(static_cast<std::size_t>(grid.info.width) *
-                   static_cast<std::size_t>(grid.info.height));
-  for (unsigned int y = 0; y < grid.info.height; ++y) {
-    for (unsigned int x = 0; x < grid.info.width; ++x) {
-      const auto cost = cm->getCost(x, y);
-      std::size_t idx = static_cast<std::size_t>(y) * grid.info.width + x;
-      if (cost == costmap_2d::NO_INFORMATION) {
-        grid.data[idx] = -1;
-      } else if (costmap_2d::isLethal(cost)) {
-        grid.data[idx] = 100;
-      } else {
-        grid.data[idx] =
-            static_cast<int8_t>((static_cast<int>(cost) * 100) / 252);
+  const uint32_t width = cm->getSizeInCellsX();
+  const uint32_t height = cm->getSizeInCellsY();
+  const double resolution = cm->getResolution();
+  const double origin_x = cm->getOriginX();
+  const double origin_y = cm->getOriginY();
+
+  std::lock_guard<std::mutex> guard(saved_costmaps_mutex);
+  SavedCostmap& saved = saved_costmaps[name];
+  const bool geometry_changed = !saved.valid || saved.width != width ||
+                                saved.height != height ||
+                                saved.resolution != resolution ||
+                                saved.origin_x != origin_x ||
+                                saved.origin_y != origin_y;
+
+  const auto to_occupancy = [](unsigned char cost) {
+    if (cost == costmap_2d::NO_INFORMATION) {
+      return static_cast<int8_t>(-1);
+    }
+    if (costmap_2d::isLethal(cost)) {
+      return static_cast<int8_t>(100);
+    }
+    return static_cast<int8_t>((static_cast<int>(cost) * 100) / 252);
+  };
+
+  if (geometry_changed) {
+    ayanami::nav_msgs::OccupancyGrid grid;
+    grid.header.frame_id = wrapper->globalFrame();
+    grid.info.resolution = resolution;
+    grid.info.width = width;
+    grid.info.height = height;
+    Eigen::Isometry3d origin_iso = Eigen::Isometry3d::Identity();
+    origin_iso.translation() = Eigen::Vector3d(origin_x, origin_y, 0.0);
+    grid.info.origin = ayanami::geometry_msgs::Pose::fromIsometry(origin_iso);
+    grid.data.resize(static_cast<std::size_t>(width) * height);
+    saved.costs.resize(static_cast<std::size_t>(width) * height);
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        const unsigned char cost = cm->getCost(x, y);
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * width + x;
+        saved.costs[idx] = cost;
+        grid.data[idx] = to_occupancy(cost);
       }
     }
+    saved.valid = true;
+    saved.width = width;
+    saved.height = height;
+    saved.resolution = resolution;
+    saved.origin_x = origin_x;
+    saved.origin_y = origin_y;
+    ayanami::interfaces::NavigationCallbacks::on_costmap_visualization(name,
+                                                                       grid);
+    return;
   }
-  ayanami::interfaces::NavigationCallbacks::on_costmap_visualization(name,
-                                                                     grid);
+
+  // Content-only change: find the bounding box of cells whose cost differs
+  // from the last published state; identical maps emit nothing at all.
+  uint32_t min_x = width;
+  uint32_t min_y = height;
+  uint32_t max_x = 0;
+  uint32_t max_y = 0;
+  bool changed = false;
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const unsigned char cost = cm->getCost(x, y);
+      if (cost ==
+          saved.costs[static_cast<std::size_t>(y) * width + x]) {
+        continue;
+      }
+      changed = true;
+      min_x = std::min(min_x, x);
+      min_y = std::min(min_y, y);
+      max_x = std::max(max_x, x);
+      max_y = std::max(max_y, y);
+    }
+  }
+  if (!changed) {
+    return;
+  }
+  ayanami::nav_msgs::OccupancyGridUpdate update;
+  update.x0 = min_x;
+  update.y0 = min_y;
+  update.width = max_x - min_x + 1;
+  update.height = max_y - min_y + 1;
+  update.data.reserve(static_cast<std::size_t>(update.width) *
+                      update.height);
+  for (uint32_t y = min_y; y <= max_y; ++y) {
+    for (uint32_t x = min_x; x <= max_x; ++x) {
+      const std::size_t idx = static_cast<std::size_t>(y) * width + x;
+      const unsigned char cost = cm->getCost(x, y);
+      saved.costs[idx] = cost;
+      update.data.push_back(to_occupancy(cost));
+    }
+  }
+  ayanami::interfaces::NavigationCallbacks::on_costmap_visualization_update(
+      name, update);
+}
+
+void CostmapNavigation::emitRawCostmap(const std::string& name,
+                                       const std::string& frame,
+                                       const costmap_2d::Costmap2D& cm) {
+  ayanami::nav_msgs::RawCostmap raw;
+  raw.name = name;
+  raw.frame_id = frame;
+  raw.resolution = cm.getResolution();
+  raw.origin_x = cm.getOriginX();
+  raw.origin_y = cm.getOriginY();
+  raw.width = cm.getSizeInCellsX();
+  raw.height = cm.getSizeInCellsY();
+  raw.revision = saved_costmaps[name].raw_revision;
+  const auto* map = cm.getCharMap();
+  raw.costs.assign(map, map + static_cast<std::size_t>(raw.width) * raw.height);
+  ayanami::interfaces::NavigationCallbacks::on_costmap_raw(raw);
 }
 
 void CostmapNavigation::publishGlobalMapForVisualization() {

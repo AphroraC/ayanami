@@ -51,6 +51,10 @@ class RecoveryNode : public BT::ControlNode,
       BT::InputPort<uint32_t>("number_of_retries", 1u, "number of retries"),
       BT::InputPort<uint64_t>("budget_reset_token", 0u,
                               "revision that resets the retry budget"),
+      BT::InputPort<FailureContext>(
+          k_failure_context, FailureContext{},
+          "failure cause written by the failed child (classified here, then "
+          "consumed by the dispatched Recovery action)"),
     };
   }
 
@@ -82,6 +86,12 @@ class RecoveryNode : public BT::ControlNode,
       if (retry_count >= max_retries) {
         haltChildren();
         retry_count = 0;
+        // Budget exhausted without dispatching a Recovery action: no one
+        // else will consume the cause, so clear it here.
+        if (config().blackboard) {
+          config().blackboard->set<FailureContext>(k_failure_context,
+                                                   FailureContext{});
+        }
         return BT::NodeStatus::FAILURE;
       }
       haltChild(0);
@@ -116,17 +126,25 @@ class RecoveryNode : public BT::ControlNode,
   /// (change-detection semantics, owned by ResettableNode).
 
  private:
-  /// @brief Read the failure context written by the failing child and
-  /// classify it. No context (code NONE) counts as recoverable.
-  bool childFailureRecoverable() const {
-    if (!config().blackboard) {
-      return true;
-    }
+  /// @brief Read the failure context written by the failing child (through
+  /// the declared port) and classify it. No context (code NONE) counts as
+  /// recoverable. When the recovery branch is dispatched the context stays
+  /// alive for the Recovery action's cause port; on a short-circuit /
+  /// exhausted budget it is cleared so no stale cause leaks onward.
+  bool childFailureRecoverable() {
     FailureContext ctx;
-    if (!config().blackboard->get<FailureContext>(k_failure_context, ctx)) {
+    if (!getInput(k_failure_context, ctx)) {
       return true;
     }
-    return isRecoverable(ctx.code);
+    const bool recoverable = isRecoverable(ctx.code);
+    if (!recoverable) {
+      // Short-circuit: nothing downstream will consume the cause.
+      if (config().blackboard) {
+        config().blackboard->set<FailureContext>(k_failure_context,
+                                                 FailureContext{});
+      }
+    }
+    return recoverable;
   }
 
   uint32_t max_retries;

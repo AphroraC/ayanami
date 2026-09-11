@@ -25,7 +25,7 @@ namespace modules {
 
 namespace {
 
-/// @brief TransformStore version equivalent to nav2_utils::transformPose:
+/// @brief Bridge version equivalent to nav2_utils::transformPose:
 /// looks up the target <- source transform (latest) and returns the 2D pose in the target frame.
 bool transformPose(ayanami::components::RobotStateController* state_controller,
                    const std::string& target_frame,

@@ -7,6 +7,10 @@
 // (the ayanami_ros odomCallback writer vs the core costmap controller
 // execution readers). Defining it here guarantees the ROS writer and the
 // core readers resolve to the same instance inside libayanami.
+//
+// TF bridge discipline: the injected lookup fn is invoked OUTSIDE the
+// internal mutex (it carries its own synchronization); the mutex guards
+// only the odometry buffer, the frame cache and the fn slot itself.
 
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 
@@ -22,6 +26,11 @@ RobotStateController& RobotStateController::instance() {
   return controller;
 }
 
+void RobotStateController::setTransformSource(TransformLookupFn fn) {
+  std::unique_lock<std::shared_mutex> lock(mutex);
+  lookup_fn = std::move(fn);
+}
+
 void RobotStateController::initialize(const std::string& global,
                                      const std::string& local,
                                      const std::string& robot,
@@ -34,11 +43,49 @@ void RobotStateController::initialize(const std::string& global,
   last_velocity.reset();
 }
 
-void RobotStateController::setVelocity(
-    const geometry_msgs::TwistStamped& velocity) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
-  last_velocity = velocity;
-  last_velocity_at = std::chrono::steady_clock::now();
+bool RobotStateController::canTransform(const std::string& target,
+                                        const std::string& source,
+                                        const Timestamp& stamp,
+                                        double timeout) const {
+  TransformLookupFn fn;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex);
+    fn = lookup_fn;
+  }
+  if (!fn) {
+    return false;
+  }
+  Eigen::Isometry3d unused = Eigen::Isometry3d::Identity();
+  return fn(target, source, stamp, unused, timeout);
+}
+
+bool RobotStateController::lookupTransform(const std::string& target,
+                                           const std::string& source,
+                                           const Timestamp& stamp,
+                                           Eigen::Isometry3d& transform,
+                                           double timeout) const {
+  TransformLookupFn fn;
+  {
+    std::shared_lock<std::shared_mutex> lock(mutex);
+    fn = lookup_fn;
+  }
+  if (!fn) {
+    return false;
+  }
+  return fn(target, source, stamp, transform, timeout);
+}
+
+bool RobotStateController::lookupPose(const std::string& target_frame,
+                                      const std::string& base_frame,
+                                      const Timestamp& stamp,
+                                      geometry_msgs::PoseStamped& pose,
+                                      double timeout) const {
+  Eigen::Isometry3d transform;
+  if (!lookupTransform(target_frame, base_frame, stamp, transform, timeout)) {
+    return false;
+  }
+  pose = geometry_msgs::PoseStamped::fromIsometry(target_frame, transform);
+  return true;
 }
 
 void RobotStateController::setOdometry(
@@ -77,35 +124,6 @@ bool RobotStateController::getOdometry(
   return true;
 }
 
-void RobotStateController::setTransform(
-    const std::string& parent, const std::string& child,
-    ayanami::Timestamp stamp, const Eigen::Isometry3d& transform,
-    bool is_static) {
-  std::unique_lock<std::shared_mutex> lock(mutex);
-  ayanami::interfaces::TransformStore::instance().setTransform(
-      parent, child, stamp, transform, is_static);
-}
-
-bool RobotStateController::lookupTransform(
-    const std::string& target, const std::string& source,
-    ayanami::Timestamp stamp, Eigen::Isometry3d& transform,
-    double timeout) const {
-  std::shared_lock<std::shared_mutex> lock(mutex);
-  return ayanami::interfaces::TransformStore::instance().lookupTransform(
-      target, source, stamp, transform, timeout);
-}
-
-bool RobotStateController::poseFromTransformStore(
-    geometry_msgs::PoseStamped& pose) const {
-  Eigen::Isometry3d T;
-  if (!ayanami::interfaces::TransformStore::instance().lookupTransform(
-          global_frame, robot_frame, ayanami::Timestamp::latest(), T)) {
-    return false;
-  }
-  pose = geometry_msgs::PoseStamped::fromIsometry(global_frame, T);
-  return true;
-}
-
 geometry_msgs::TwistStamped RobotStateController::velocityLocked() const {
   if (!last_velocity) {
     return {};
@@ -120,18 +138,17 @@ geometry_msgs::TwistStamped RobotStateController::velocityLocked() const {
 bool RobotStateController::getRobotState(
     geometry_msgs::PoseStamped& pose,
     geometry_msgs::TwistStamped& velocity) const {
-  std::shared_lock<std::shared_mutex> lock(mutex);
-  if (!poseFromTransformStore(pose)) {
+  if (!lookupPose(globalFrame(), robotFrame(), Timestamp::latest(), pose)) {
     return false;
   }
+  std::shared_lock<std::shared_mutex> lock(mutex);
   velocity = velocityLocked();
   return true;
 }
 
 geometry_msgs::PoseStamped RobotStateController::getRobotPose() const {
-  std::shared_lock<std::shared_mutex> lock(mutex);
   geometry_msgs::PoseStamped pose;
-  poseFromTransformStore(pose);
+  lookupPose(globalFrame(), robotFrame(), Timestamp::latest(), pose);
   return pose;
 }
 
@@ -151,6 +168,12 @@ bool RobotStateController::hasFreshVelocity() const {
 
 void RobotStateController::resetVelocity() {
   std::unique_lock<std::shared_mutex> lock(mutex);
+  last_velocity.reset();
+}
+
+void RobotStateController::resetOdometry() {
+  std::unique_lock<std::shared_mutex> lock(mutex);
+  odometry_buffer.clear();
   last_velocity.reset();
 }
 

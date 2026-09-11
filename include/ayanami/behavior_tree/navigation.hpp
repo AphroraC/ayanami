@@ -110,6 +110,7 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   // condition nodes
   factory.registerNodeType<IsPathValid>("IsPathValid");
   factory.registerNodeType<GoalUpdated>("GoalUpdated");
+  factory.registerNodeType<IsRobotProgressing>("IsRobotProgressing");
   // Control nodes
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
   factory.registerNodeType<RateController>("RateController");

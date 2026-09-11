@@ -1,11 +1,15 @@
-// RobotStateController unit tests (extended):
-// - getRobotState = latest TF pose (TransformStore latest) + latest velocity
+// RobotStateController unit tests (bridge model):
+// - TF queries delegate to the injected source (lookupTransform / canTransform /
+//   lookupPose); queries before installation fail gracefully
+// - getRobotState = latest TF pose (injected source) + latest odometry velocity
 // - velocity older than velocity_timeout (or no velocity) -> zero velocity but the pose stays valid
-// - latest-wins: setVelocity overwrites
+// - latest-wins: setOdometry overwrites
 // - frame names/timeout are cached only at initialize; the hot getRobotState path does not read Config
 // - concurrent reads/writes are thread safe
 
 #include <gtest/gtest.h>
+
+#include "test_transform_source.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -15,20 +19,18 @@
 #include <Eigen/Geometry>
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
-#include <ayanami/interfaces/transform_store.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/utility/config.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::components::RobotStateController;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
 
-auto& store() { return ayanami::interfaces::TransformStore::instance(); }
-
 void setUpTransforms() {
-  store().setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link",
                        Eigen::Isometry3d::Identity());
 }
 
@@ -51,11 +53,59 @@ bool isZero(const TwistStamped& t) {
 
 }  // namespace
 
-TEST(RobotStateControllerTest, getRobotStateReturnsLatestPoseAndVelocity) {
-  setUpTransforms();
+TEST(RobotStateControllerTest, lookupBeforeSourceInstalledFailsGracefully) {
+  // A controller instance without an injected source: every query fails
+  // (no crash, no stale data).
+  RobotStateController::instance().initialize(
+      "bridge_none_map", "bridge_none_odom", "bridge_none_base", 0.25);
+  // Install + remove an empty source to guarantee the "none" state.
+  RobotStateController::instance().setTransformSource({});
+  Eigen::Isometry3d transform;
+  EXPECT_FALSE(RobotStateController::instance().lookupTransform(
+      "a", "b", ayanami::Timestamp::latest(), transform));
+  EXPECT_FALSE(RobotStateController::instance().canTransform(
+      "a", "b", ayanami::Timestamp::latest()));
+  PoseStamped pose;
+  EXPECT_FALSE(RobotStateController::instance().lookupPose(
+      "a", "b", ayanami::Timestamp::latest(), pose));
+  PoseStamped state_pose;
+  TwistStamped velocity;
+  EXPECT_FALSE(
+      RobotStateController::instance().getRobotState(state_pose, velocity));
+}
+
+TEST(RobotStateControllerTest, injectedSourceServesQueries) {
+  testTransforms().set("map", "base_link", Eigen::Isometry3d::Identity());
+  testTransforms().set("base_link", "lidar",
+                       Eigen::Translation3d(0.1, 0.0, 0.0) *
+                           Eigen::Quaterniond::Identity());
+  testTransforms().install();
   initController();
 
-  RobotStateController::instance().setVelocity(makeTwist(0.5, 0.1));
+  RobotStateController& rsc = RobotStateController::instance();
+  EXPECT_TRUE(rsc.canTransform("map", "lidar", ayanami::Timestamp::latest()));
+  Eigen::Isometry3d transform;
+  ASSERT_TRUE(rsc.lookupTransform("map", "lidar", ayanami::Timestamp::latest(),
+                                  transform));
+  EXPECT_DOUBLE_EQ(transform.translation().x(), 0.1);
+
+  PoseStamped pose;
+  ASSERT_TRUE(rsc.lookupPose("map", "lidar", ayanami::Timestamp::latest(),
+                             pose));
+  EXPECT_EQ(pose.header.frame_id, "map");
+  EXPECT_DOUBLE_EQ(pose.pose.position.x(), 0.1);
+
+  // Unresolvable pair: false.
+  EXPECT_FALSE(rsc.canTransform("map", "unknown_frame",
+                                ayanami::Timestamp::latest()));
+}
+
+TEST(RobotStateControllerTest, getRobotStateReturnsLatestPoseAndVelocity) {
+  setUpTransforms();
+  testTransforms().install();
+  initController();
+
+  RobotStateController::instance().setOdometry(makeTwist(0.5, 0.1));
 
   PoseStamped pose;
   TwistStamped velocity;
@@ -68,10 +118,11 @@ TEST(RobotStateControllerTest, getRobotStateReturnsLatestPoseAndVelocity) {
 
 TEST(RobotStateControllerTest, latestWinsVelocity) {
   setUpTransforms();
+  testTransforms().install();
   initController();
 
-  RobotStateController::instance().setVelocity(makeTwist(0.5));
-  RobotStateController::instance().setVelocity(makeTwist(1.5, 0.2));
+  RobotStateController::instance().setOdometry(makeTwist(0.5));
+  RobotStateController::instance().setOdometry(makeTwist(1.5, 0.2));
 
   TwistStamped velocity = RobotStateController::instance().getRobotVelocity();
   EXPECT_DOUBLE_EQ(velocity.twist.linear.x(), 1.5);
@@ -80,9 +131,10 @@ TEST(RobotStateControllerTest, latestWinsVelocity) {
 
 TEST(RobotStateControllerTest, staleVelocityYieldsZeroButPoseStaysValid) {
   setUpTransforms();
+  testTransforms().install();
   initController(/*velocity_timeout=*/0.01);
 
-  RobotStateController::instance().setVelocity(makeTwist(2.0));
+  RobotStateController::instance().setOdometry(makeTwist(2.0));
 
   PoseStamped pose;
   TwistStamped velocity;
@@ -100,12 +152,13 @@ TEST(RobotStateControllerTest, staleVelocityYieldsZeroButPoseStaysValid) {
 }
 
 TEST(RobotStateControllerTest, noPoseReturnsFalse) {
-  // Use independent frame names (not sharing the TransformStore with other tests) and set no TF at all:
-  // getRobotState must return false (no pose available).
+  // Use independent frame names (not sharing the stub tree with other tests)
+  // and set no TF for them: getRobotState must return false (no pose).
+  testTransforms().install();
   RobotStateController::instance().initialize(
       "no_pose_map", "no_pose_odom", "no_pose_base",
       /*velocity_timeout=*/0.25);
-  RobotStateController::instance().setVelocity(makeTwist(1.0));
+  RobotStateController::instance().setOdometry(makeTwist(1.0));
 
   PoseStamped pose;
   TwistStamped velocity;
@@ -117,8 +170,9 @@ TEST(RobotStateControllerTest, noPoseReturnsFalse) {
 
 TEST(RobotStateControllerTest, hotPathNeverReadsConfig) {
   setUpTransforms();
+  testTransforms().install();
   initController();
-  RobotStateController::instance().setVelocity(makeTwist(0.7));
+  RobotStateController::instance().setOdometry(makeTwist(0.7));
 
   // Point GlobalConfig at a nonexistent directory (empty config): the cached frame names/timeout are unaffected and
   // getRobotState does not read Config.
@@ -139,6 +193,7 @@ TEST(RobotStateControllerTest, hotPathNeverReadsConfig) {
 
 TEST(RobotStateControllerTest, concurrentReadWriteIsThreadSafe) {
   setUpTransforms();
+  testTransforms().install();
   initController();
 
   std::atomic<bool> running{true};
@@ -147,7 +202,7 @@ TEST(RobotStateControllerTest, concurrentReadWriteIsThreadSafe) {
   for (int i = 0; i < 4; ++i) {
     writers.emplace_back([&running, i] {
       while (running.load()) {
-        RobotStateController::instance().setVelocity(
+        RobotStateController::instance().setOdometry(
             makeTwist(static_cast<double>(i), 1.0));
       }
     });
@@ -168,8 +223,9 @@ TEST(RobotStateControllerTest, concurrentReadWriteIsThreadSafe) {
 
 TEST(RobotStateControllerTest, resetVelocityClears) {
   setUpTransforms();
+  testTransforms().install();
   initController();
-  RobotStateController::instance().setVelocity(makeTwist(1.0));
+  RobotStateController::instance().setOdometry(makeTwist(1.0));
   EXPECT_TRUE(RobotStateController::instance().hasFreshVelocity());
 
   RobotStateController::instance().resetVelocity();

@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
@@ -28,6 +30,7 @@
 #include <thread>
 #include <vector>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -143,7 +146,7 @@ bool waitReady(Task& t, int max_ms = 5000) {
 TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<RecordingController>();
   TestControllerAction action(controller);

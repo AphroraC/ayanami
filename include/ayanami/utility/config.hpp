@@ -22,6 +22,11 @@ namespace ayanami {
 class Config {
 public:
   /**
+   * @brief An empty configuration (no keys). Used by child() for absent
+   * sub-objects and by callers that need a placeholder before loading.
+   */
+  Config();
+  /**
    * @brief Load a configuration from a JSON file.
    * @param config_filename Path to the JSON file.
    *                        Empty string results in an empty config.
@@ -51,6 +56,19 @@ public:
    * @brief Check if a top-level section exists.
    */
   bool hasSection(const std::string& section) const;
+
+  /**
+   * @brief View a nested object as a first-class Config.
+   *
+   * child(section, key) returns a Config whose document is
+   * `{ key: <the sub-object> }`, so the sub-object's own parameters are read
+   * with the uniform param(key, param_name) spelling (and participate in the
+   * unusedKeys audit under that key). A missing or non-object sub-value
+   * yields an empty Config. This is how nav2-style nested blocks (e.g.
+   * costmap_local.observation_sources.<name>) integrate with the flat
+   * section/param model without exposing the JSON type.
+   */
+  Config child(const std::string& section, const std::string& key) const;
 
   /**
    * @brief Parameter names present in a section (empty when it is absent).

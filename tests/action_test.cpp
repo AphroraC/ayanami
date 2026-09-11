@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/action_server.hpp>
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/planner_action.hpp>
@@ -24,6 +26,7 @@
 #include <string>
 #include <thread>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
@@ -346,7 +349,7 @@ TEST(PlannerAction, resultEmittedOnBypassSlotWhileTaskHandleIsMain) {
 TEST(ControllerAction, runsOneCycleAndSucceeds) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto controller = std::make_shared<TestController>();
   TestControllerAction action(controller);

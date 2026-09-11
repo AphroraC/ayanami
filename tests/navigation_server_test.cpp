@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <ayanami/abstract/components/controller_action.hpp>
 #include <ayanami/abstract/components/navigation_server_base.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
@@ -29,6 +31,7 @@
 #include <thread>
 #include <vector>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::geometry_msgs::PoseStamped;
@@ -436,7 +439,7 @@ TEST(NavigationServerBaseTest, requestPathSucceedsAndFillsSessionAndVersion) {
 TEST(NavigationServerBaseTest, requestExecutionAndRecoveryAndSmoothingSucceed) {
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   auto dir = makeConfigDir(g_planner_so);
   TestNavServer server;
@@ -530,7 +533,7 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   auto coord = std::make_shared<recovery_exclusive::Coordinator>();
   auto& robot_state = ayanami::components::RobotStateController::instance();
   robot_state.initialize("map", "odom", "base_link", 10.0);
-  robot_state.setTransform("map", "base_link", ayanami::Timestamp::latest(),
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
                            Eigen::Isometry3d::Identity());
   recovery_exclusive::RecoveryExclusiveServer server(coord);
 

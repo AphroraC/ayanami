@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <deque>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -52,21 +53,21 @@ constexpr double k_default_cost_scaling_factor = 10.0;
 constexpr int k_default_size_x = 0;
 constexpr int k_default_size_y = 0;
 
-// Dynamic transforms are sampled into TransformStore at tf_sync_rate
+// Dynamic transforms resolve on demand through the injected tf2 source
 // (50 Hz). Obstacle stamping prefers querying the sensor transform with the
 // scan's own timestamp (zero tolerance, no waiting):
 // it places the point cloud at the "capture instant" pose -- when the robot
 // rotates, a latest query would bake the omega x (now - T_scan) timing skew
 // into the costmap (measured: at 1.2rad/s rotation, map-frame point clouds
 // drifted 0.13-0.28m between adjacent frames, while scan-stamp queries only
-// 0.01-0.04m). fast_tf does not extrapolate:
+// 0.01-0.04m). tf2 does not extrapolate:
 // when the scan stamp is ahead of synchronized samples (faster-than-realtime
 // simulation) or outside the pruning window, the query fails; then it falls
 // back to latest (historical behavior) and counts the fallback, exposing the
 // fallback rate via throttled logs. The robot pose (rolling centering /
 // clear center) still uses latest -- window centering should follow the
 // current pose.
-// Query timeout policy: fast_tf's timeout parameter is a blocking wait
+// Query timeout policy: the injected tf2 source's timeout is a bounded poll
 // budget (cv wait until a new sample or timeout, starving other TF readers/
 // writers on the same global lock meanwhile) -- all core-side queries use
 // timeout=0 (non-blocking) and take their own fallback paths when missing
@@ -77,6 +78,10 @@ constexpr double k_tf_lookup_timeout_s = 0.0;
 // lock for <10 ms per call; a writer acquisition that waits longer than this
 // means some reader is overstaying its lock and map updates are delayed.
 constexpr double k_writer_wait_warn_s = 0.1;
+
+// Map-writer loop: one stamp+updateMap pass above this duration warns
+// (throttled). The latest-wins observation mailbox absorbs overruns.
+constexpr double k_map_update_warn_ms = 50.0;
 
 // TF chain missing warn throttling: for the same chain (local/global), at
 // most one "no transform" per k_tf_warn_interval_s, avoiding flooding at
@@ -122,11 +127,189 @@ class CommandPortImpl : public CostmapCommandPort {
 CostmapNavigationServer::CostmapNavigationServer() {
   command_port = std::make_shared<CommandPortImpl>(
       [this](const ClearCostmapCommand& command) {
-        return executeClearCommand(command);
+        // The clear command joins the writer thread's queue (single literal
+        // writer); the submitter waits bounded for the applied result. With
+        // no writer thread running (tests) the command executes inline.
+        if (!writer_running.load()) {
+          return executeClearCommand(command);
+        }
+        auto done = std::make_shared<std::promise<bool>>();
+        auto applied = done->get_future();
+        {
+          std::lock_guard<std::mutex> lock(writer_mutex);
+          pending_clears.push_back(PendingClear{command, std::move(done)});
+        }
+        writer_cv.notify_all();
+        return applied.wait_for(std::chrono::seconds(2)) ==
+                       std::future_status::ready
+                   ? applied.get()
+                   : false;
       });
 }
 
-CostmapNavigationServer::~CostmapNavigationServer() = default;
+CostmapNavigationServer::~CostmapNavigationServer() { stopWriter(); }
+
+// ---- lifecycle: the resident map-writer thread ----
+
+void CostmapNavigationServer::start() {
+  NavigationServerBase::start();
+  startWriter();
+}
+
+void CostmapNavigationServer::stop() {
+  stopWriter();
+  NavigationServerBase::stop();
+}
+
+void CostmapNavigationServer::startWriter() {
+  if (writer_running.exchange(true)) {
+    return;
+  }
+  // Liveness baselines start from now: a source configured with
+  // expected_update_rate that never delivers goes stale after its rate.
+  const auto now = std::chrono::steady_clock::now();
+  source_last_seen.assign(observation_sources.size(), now);
+  source_stale_warn_at.assign(observation_sources.size(),
+                              std::chrono::steady_clock::time_point{});
+  writer_thread = std::thread([this] { writerLoop(); });
+}
+
+void CostmapNavigationServer::stopWriter() {
+  if (!writer_running.exchange(false)) {
+    return;
+  }
+  writer_cv.notify_all();
+  if (writer_thread.joinable()) {
+    writer_thread.join();
+  }
+}
+
+bool CostmapNavigationServer::waitForMapIdle(double timeout_s) const {
+  if (!writer_running.load()) {
+    return true;  // inline processing: nothing pending by construction
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration<double>(timeout_s);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (observation_submitted.load() == observation_applied.load()) {
+      std::lock_guard<std::mutex> lock(writer_mutex);
+      if (pending_observations.empty()) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return observation_submitted.load() == observation_applied.load();
+}
+
+void CostmapNavigationServer::writerLoop() {
+  while (writer_running.load()) {
+    std::deque<PendingObservation> batch;
+    std::vector<PendingClear> clears;
+    {
+      std::unique_lock<std::mutex> lock(writer_mutex);
+      writer_cv.wait_for(lock, std::chrono::milliseconds(10), [&] {
+        return !pending_observations.empty() || !pending_clears.empty() ||
+               !writer_running.load();
+      });
+      if (!writer_running.load()) {
+        break;
+      }
+      // Drain the whole FIFO: each queued frame is processed with its OWN
+      // stamp-time TF, so no sector coverage is lost to a processing stall.
+      batch.swap(pending_observations);
+      clears.swap(pending_clears);
+    }
+
+    // Clear commands first: a recovery's replan depends on the cleared map.
+    for (auto& clear : clears) {
+      const bool ok = executeClearCommand(clear.command);
+      if (clear.done) {
+        clear.done->set_value(ok);
+      }
+    }
+
+    // Rolling BEFORE stamping: the window origin must follow the robot with
+    // minimal delay, and a scan's bounded stamp-time TF wait (up to
+    // transform_tolerance inside processObservation) must not push the
+    // window update into the next loop period.
+    rollWindows();
+
+    for (auto& observation : batch) {
+      // nav2 mapUpdateLoop-style timing, split by responsibility: the
+      // stamp-time TF wait is a DESIGNED bounded wait (up to
+      // transform_tolerance -- a scan published ahead of the odometry chain
+      // waits for it instead of degrading to latest), so only the
+      // rasterization work past that wait is judged against the threshold.
+      double tf_wait_ms = 0.0;
+      bool stamp_fallback = false;
+      const auto update_start = std::chrono::steady_clock::now();
+      processObservation(observation, &tf_wait_ms, &stamp_fallback);
+      const double update_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - update_start)
+              .count();
+      const double work_ms = update_ms - tf_wait_ms;
+      if (work_ms > k_map_update_warn_ms) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_map_update_warn_at >= std::chrono::seconds(5)) {
+          last_map_update_warn_at = now;
+          spdlog::warn(
+              "CostmapNavigationServer: map update work took {:.1f} ms "
+              "(threshold {:.0f} ms; total {:.1f} ms incl. {:.1f} ms "
+              "stamp-time TF wait); rasterization/inflation is the "
+              "bottleneck -- observation ingestion stays O(enqueue)",
+              work_ms, k_map_update_warn_ms, update_ms, tf_wait_ms);
+        }
+      }
+    }
+    observation_applied.store(observation_submitted.load());
+
+    // Sensor-liveness checks live on the writer thread too (single literal
+    // writer for every map mutation).
+    checkSourceLiveness();
+  }
+}
+
+void CostmapNavigationServer::checkSourceLiveness() {
+  if (!costmap_context || !costmap_context->localCostmap()) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  bool all_fresh = true;
+  for (std::size_t i = 0; i < observation_sources.size(); ++i) {
+    const auto& source = observation_sources[i];
+    if (source.expected_update_rate <= 0.0) {
+      continue;
+    }
+    const double silent_s = std::chrono::duration<double>(
+                                now - source_last_seen[i])
+                                .count();
+    if (silent_s <= source.expected_update_rate) {
+      continue;
+    }
+    all_fresh = false;
+    const auto prev = source_stale_warn_at[i];
+    if (now - prev >= std::chrono::seconds(5) ||
+        prev == std::chrono::steady_clock::time_point{}) {
+      source_stale_warn_at[i] = now;
+      spdlog::warn(
+          "CostmapNavigationServer: observation source '{}' has been silent "
+          "for {:.1f}s (expected every {:.1f}s); the costmap is marked "
+          "not-current so the controller/execution safety checks degrade to "
+          "recovery instead of trusting stale obstacle data",
+          source.name, silent_s, source.expected_update_rate);
+    }
+  }
+  if (!all_fresh) {
+    costmap_context->localCostmap()->setCurrent(false);
+    // A global dynamic layer consuming sensor streams degrades together
+    // with the local one (same observations, same staleness).
+    if (global_obstacle_layer != nullptr && costmap_context->globalCostmap()) {
+      costmap_context->globalCostmap()->setCurrent(false);
+    }
+  }
+}
 
 void CostmapNavigationServer::configureCoreMaps(
     const std::string& config_path, ayanami::map::MapFamilyFactory::Ptr factory) {
@@ -174,87 +357,120 @@ void CostmapNavigationServer::configureCoreMaps(
   const double resolution =
       cfg.param<double>("costmap", "resolution", k_default_resolution);
 
-  // ---- global: StaticLayer + SimpleObstacleLayer + InflationLayer ----
+  // ---- global: StaticLayer + InflationLayer (static content only) ----
+  // Map-representation policy (nav2 convention): the global costmap carries
+  // ONLY static + inflation content. Dynamic obstacle marks live exclusively
+  // in the local (odom-frame) rolling map, so no global dynamic layer can go
+  // stale under localization corrections and no drift-heuristic clearing is
+  // needed.
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       global_frame,
       cfg.param<bool>("costmap_global", "rolling_window", false),
       cfg.param<bool>("costmap_global", "track_unknown", false));
-  auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
-  global_lm->addLayer(static_layer);
-  const std::string static_map =
-      cfg.param<std::string>("costmap_global", "static_map", "");
-  if (!static_map.empty()) {
-    try {
-      // A relative static_map (assets/nav.pgm) resolves relative to the
-      // package root (the parent of config/), no longer depending on the
-      // node cwd (~/.ros under roslaunch).
-      std::string map_path = static_map;
-      if (map_path.front() != '/' && map_path.find("://") == std::string::npos) {
-        map_path = std::filesystem::path(config_path).parent_path().string() +
-                   "/" + static_map;
+  // Layer plugin path: a "layers" list in the map section loads the
+  // composition from module jsons (list order = composition order, the
+  // modules/ so+json pattern); a failed load in the plugin path is a
+  // startup error. Absent -> the legacy hardcoded composition below.
+  const bool global_layers_loaded =
+      loadLayerPlugins("costmap_global", cfg, config_path, global_lm,
+                       global_layer_modules, global_layer_plugins);
+  // Function scope: the legacy writer's pointer registration below reads
+  // it even when the plugin path skipped the legacy construction.
+  std::shared_ptr<costmap_2d_layers::SimpleObstacleLayer> global_obstacle;
+  std::shared_ptr<costmap_2d_layers::SimpleObstacleLayer> obstacle_layer;
+  if (!global_layers_loaded) {
+    auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+    global_lm->addLayer(static_layer);
+    const std::string static_map =
+        cfg.param<std::string>("costmap_global", "static_map", "");
+    if (!static_map.empty()) {
+      try {
+        // A relative static_map (assets/nav.pgm) resolves relative to the
+        // package root (the parent of config/), no longer depending on the
+        // node cwd (~/.ros under roslaunch).
+        std::string map_path = static_map;
+        if (map_path.front() != '/' && map_path.find("://") == std::string::npos) {
+          map_path = std::filesystem::path(config_path).parent_path().string() +
+                     "/" + static_map;
+        }
+        // Ayanami map metadata is JSON-only and loaded through the common Config
+        // API. Middleware adapters keep their deployment metadata outside this package.
+        std::filesystem::path metadata_path(map_path);
+        metadata_path.replace_extension(".json");
+        Config map_cfg(metadata_path.string());
+        const auto map_resolution = map_cfg.param<double>("map", "resolution");
+        const auto map_origin = map_cfg.param<Eigen::Vector3d>("map", "origin");
+        if (!map_resolution || !map_origin) {
+          throw std::runtime_error("invalid JSON map metadata: " +
+                                   metadata_path.string());
+        }
+        static_layer->setMapPath(map_path, *map_resolution, map_origin->x(),
+                                 map_origin->y());
+      } catch (const std::exception& e) {
+        spdlog::error("CostmapNavigationServer::configureCoreMaps: {}", e.what());
       }
-      // Ayanami map metadata is JSON-only and loaded through the common Config
-      // API. Middleware adapters keep their deployment metadata outside this package.
-      std::filesystem::path metadata_path(map_path);
-      metadata_path.replace_extension(".json");
-      Config map_cfg(metadata_path.string());
-      const auto map_resolution = map_cfg.param<double>("map", "resolution");
-      const auto map_origin = map_cfg.param<Eigen::Vector3d>("map", "origin");
-      if (!map_resolution || !map_origin) {
-        throw std::runtime_error("invalid JSON map metadata: " +
-                                 metadata_path.string());
+    }
+    if (!static_layer->hasMap()) {
+      const int fallback_size_x =
+          cfg.param<int>("costmap_global", "size_x", k_default_size_x);
+      const int fallback_size_y =
+          cfg.param<int>("costmap_global", "size_y", k_default_size_y);
+      if (fallback_size_x > 0 && fallback_size_y > 0) {
+        global_lm->resizeMap(static_cast<unsigned int>(fallback_size_x),
+                             static_cast<unsigned int>(fallback_size_y),
+                             resolution, 0.0, 0.0);
+      } else {
+        throw std::runtime_error(
+            "static global map failed to load and no fallback size is configured");
       }
-      static_layer->setMapPath(map_path, *map_resolution, map_origin->x(),
-                               map_origin->y());
-    } catch (const std::exception& e) {
-      spdlog::error("CostmapNavigationServer::configureCoreMaps: {}", e.what());
     }
-  }
-  if (!static_layer->hasMap()) {
-    const int fallback_size_x =
-        cfg.param<int>("costmap_global", "size_x", k_default_size_x);
-    const int fallback_size_y =
-        cfg.param<int>("costmap_global", "size_y", k_default_size_y);
-    if (fallback_size_x > 0 && fallback_size_y > 0) {
-      global_lm->resizeMap(static_cast<unsigned int>(fallback_size_x),
-                           static_cast<unsigned int>(fallback_size_y),
-                           resolution, 0.0, 0.0);
-    } else {
-      throw std::runtime_error(
-          "static global map failed to load and no fallback size is configured");
+    {
+      const auto* global_master = global_lm->getCostmap();
+      if (!global_master || global_master->getSizeInCellsX() == 0 ||
+          global_master->getSizeInCellsY() == 0) {
+        throw std::runtime_error("static map loaded but global master geometry is empty");
+      }
+      spdlog::info(
+          "global costmap geometry from static map: {}x{} resolution={} "
+          "origin=({}, {})",
+          global_master->getSizeInCellsX(), global_master->getSizeInCellsY(),
+          global_master->getResolution(), global_master->getOriginX(),
+          global_master->getOriginY());
     }
-  }
-  {
-    const auto* global_master = global_lm->getCostmap();
-    if (!global_master || global_master->getSizeInCellsX() == 0 ||
-        global_master->getSizeInCellsY() == 0) {
-      throw std::runtime_error("static map loaded but global master geometry is empty");
+
+    // ---- global dynamic obstacle layer (nav2 global_costmap shape) ----
+    // costmap_global.observation_sources names the sources (blocks under
+    // costmap_local) whose observations are ALSO stamped into the global map;
+    // empty (default) keeps a static-only global map. The layer sits between
+    // the StaticLayer and the InflationLayer: marks inflate like real
+    // obstacles, and the StaticLayer below restores the base map on every
+    // dirty-window update (clear-to-free stays off so clears only retire
+    // dynamic marks).
+    global_observation_sources =
+        cfg.paramStringOrList("costmap_global", "observation_sources");
+    if (!global_observation_sources.empty()) {
+      global_obstacle =
+          std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+      global_obstacle->setCombinationMethod(
+          costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::OVERWRITE);
+      global_obstacle->setClearToFree(false);
+      global_lm->addLayer(global_obstacle);
     }
-    spdlog::info(
-        "global costmap geometry from static map: {}x{} resolution={} "
-        "origin=({}, {})",
-        global_master->getSizeInCellsX(), global_master->getSizeInCellsY(),
-        global_master->getResolution(), global_master->getOriginX(),
-        global_master->getOriginY());
+
+    auto global_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+    const double global_inflation_radius = cfg.param<double>(
+        "costmap_global", "inflation_radius", k_default_inflation_radius);
+    global_inflation->setInflationRadius(global_inflation_radius);
+    this->global_inflation_radius = global_inflation_radius;
+    global_inflation->setInscribedRadius(cfg.param<double>(
+        "costmap_global", "inscribed_radius", k_default_inscribed_radius));
+    global_inflation->setCostScalingFactor(cfg.param<double>(
+        "costmap_global", "cost_scaling_factor", k_default_cost_scaling_factor));
+    global_lm->addLayer(global_inflation);
   }
-
-  auto global_obstacle =
-      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  global_obstacle->setCombinationMethod(
-      costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::MAXIMUM);
-  global_obstacle->setClearToFree(false);
-  global_lm->addLayer(global_obstacle);
-
-  auto global_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
-  const double global_inflation_radius = cfg.param<double>(
-      "costmap_global", "inflation_radius", k_default_inflation_radius);
-  global_inflation->setInflationRadius(global_inflation_radius);
-  global_inflation->setInscribedRadius(cfg.param<double>(
-      "costmap_global", "inscribed_radius", k_default_inscribed_radius));
-  global_inflation->setCostScalingFactor(cfg.param<double>(
-      "costmap_global", "cost_scaling_factor", k_default_cost_scaling_factor));
-  global_lm->addLayer(global_inflation);
-
+  for (const auto& plugin : global_layer_plugins) {
+    plugin->onAddedToMap(*global_lm);
+  }
   // ---- local: SimpleObstacleLayer + InflationLayer (rolling, LOCAL frame) ----
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       local_frame,
@@ -270,21 +486,27 @@ void CostmapNavigationServer::configureCoreMaps(
                         0.0, 0.0);
   }
 
-  auto obstacle_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  obstacle_layer->setCombinationMethod(
-      costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::OVERWRITE);
-  local_lm->addLayer(obstacle_layer);
-
-  auto local_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+  // Layer plugin path for the local map (see the global note above); the
+  // map geometry (size/resolution/rolling) stays a server-level concern.
   const double local_inflation_radius = cfg.param<double>(
       "costmap_local", "inflation_radius", k_default_inflation_radius);
-  local_inflation->setInflationRadius(local_inflation_radius);
-  local_inflation->setInscribedRadius(cfg.param<double>(
-      "costmap_local", "inscribed_radius", k_default_inscribed_radius));
-  local_inflation->setCostScalingFactor(cfg.param<double>(
-      "costmap_local", "cost_scaling_factor", k_default_cost_scaling_factor));
-  local_lm->addLayer(local_inflation);
+  const bool local_layers_loaded =
+      loadLayerPlugins("costmap_local", cfg, config_path, local_lm,
+                       local_layer_modules, local_layer_plugins);
+  if (!local_layers_loaded) {
+    obstacle_layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+    obstacle_layer->setCombinationMethod(
+        costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::OVERWRITE);
+    local_lm->addLayer(obstacle_layer);
 
+    auto local_inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+    local_inflation->setInflationRadius(local_inflation_radius);
+    local_inflation->setInscribedRadius(cfg.param<double>(
+        "costmap_local", "inscribed_radius", k_default_inscribed_radius));
+    local_inflation->setCostScalingFactor(cfg.param<double>(
+        "costmap_local", "cost_scaling_factor", k_default_cost_scaling_factor));
+    local_lm->addLayer(local_inflation);
+  }
   auto local_wrapper =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
   // Materialize the local map once at configure: layers start non-current,
@@ -334,15 +556,18 @@ void CostmapNavigationServer::configureCoreMaps(
   // reinflation during startup.
   global_wrapper->updateMap(0.0, 0.0, 0.0);
 
-  global_obstacle_layer = global_obstacle.get();
   local_obstacle_layer = obstacle_layer.get();
-  this->global_inflation_radius = global_inflation_radius;
+  global_obstacle_layer = global_obstacle.get();
   this->local_inflation_radius = local_inflation_radius;
-  global_resolution = resolution;
   local_resolution = resolution;
-  local_raytrace_range = cfg.param<double>(
-      "costmap_local", "raytrace_range", local_raytrace_range);
- // Decoupled rolling-window update frequency (periodic rolling in spinOnce, independent of the sensor stream)
+ // Flat max-range keys stay as back-compat defaults for the per-source
+ // ranges (nav2 names them obstacle_max_range / raytrace_max_range).
+  const double local_obstacle_range =
+      cfg.param<double>("costmap_local", "obstacle_range", 3.0);
+  const double local_raytrace_range =
+      cfg.param<double>("costmap_local", "raytrace_range", 3.5);
+ // Decoupled rolling-window update frequency (periodic rolling driven by the
+ // map-writer thread, independent of the sensor stream)
   const double local_update_hz =
       cfg.param<double>("costmap_local", "update_frequency", 10.0);
   const double global_update_hz =
@@ -353,6 +578,105 @@ void CostmapNavigationServer::configureCoreMaps(
   global_roll_period = global_update_hz > 0.0
                            ? std::chrono::duration<double>(1.0 / global_update_hz)
                            : std::chrono::duration<double>(0.0);
+
+  // ---- observation_sources as a real contract (nav2 semantics) ----
+  // Each declared source name reads its own child block
+  // (costmap_local.<name>.{type, marking, clearing, min/max_obstacle_height,
+  // obstacle_min/max_range, raytrace_min/max_range, expected_update_rate});
+  // every declared block participates in the unused-keys audit.
+  observation_sources.clear();
+  for (const auto& name :
+       cfg.paramStringOrList("costmap_local", "observation_sources")) {
+    Config source_cfg = cfg.child("costmap_local", name);
+    if (!source_cfg.hasSection(name)) {
+      spdlog::warn(
+          "costmap_local.observation_sources declares '{}' but there is no "
+          "'{}' parameter block under costmap_local; source ignored",
+          name, name);
+      continue;
+    }
+    ObservationSourceConfig source;
+    source.name = name;
+    const std::string type =
+        source_cfg.param<std::string>(name, "type", "laserscan");
+    source.kind = type == "pointcloud"
+                      ? ObservationSourceConfig::Kind::PointCloud
+                      : ObservationSourceConfig::Kind::LaserScan;
+    for (const auto& existing : observation_sources) {
+      if (existing.kind == source.kind) {
+        throw std::runtime_error(
+            "costmap_local.observation_sources: more than one '" + type +
+            "' source ('" + existing.name + "', '" + name +
+            "') is not supported; one source per sensor kind");
+      }
+    }
+    source.marking = source_cfg.param<bool>(name, "marking", true);
+    source.clearing = source_cfg.param<bool>(name, "clearing", true);
+    source.min_obstacle_height =
+        source_cfg.param<double>(name, "min_obstacle_height", 0.0);
+    source.max_obstacle_height =
+        source_cfg.param<double>(name, "max_obstacle_height", 1.0);
+    source.obstacle_min_range =
+        source_cfg.param<double>(name, "obstacle_min_range", 0.0);
+    source.obstacle_max_range = source_cfg.param<double>(
+        name, "obstacle_max_range", local_obstacle_range);
+    source.raytrace_min_range =
+        source_cfg.param<double>(name, "raytrace_min_range", 0.0);
+    source.raytrace_max_range = source_cfg.param<double>(
+        name, "raytrace_max_range", local_raytrace_range);
+    source.expected_update_rate =
+        source_cfg.param<double>(name, "expected_update_rate", 0.0);
+    auditUnusedParameters(source_cfg, name,
+                          "observation source '" + name + "'");
+    observation_sources.push_back(source);
+  }
+  // Global source names must reference declared source blocks; an unknown
+  // name would otherwise silently consume nothing.
+  for (const auto& name : global_observation_sources) {
+    const bool known =
+        std::find_if(observation_sources.begin(), observation_sources.end(),
+                     [&name](const ObservationSourceConfig& s) {
+                       return s.name == name;
+                     }) != observation_sources.end();
+    if (!known) {
+      spdlog::warn(
+          "costmap_global.observation_sources declares '{}' but there is no "
+          "'{}' parameter block under costmap_local; the global map ignores "
+          "it",
+          name, name);
+    }
+  }
+  // Union of the legacy source blocks + every layer plugin's declared
+  // sources: the writer's kind lookup and the liveness check see one list
+  // (dedup by name; a name declared twice keeps its first definition).
+  for (const auto* map_plugins :
+       {&global_layer_plugins, &local_layer_plugins}) {
+    for (const auto& plugin : *map_plugins) {
+      for (const auto& plugin_source : plugin->observationSources()) {
+        const bool known =
+            std::find_if(observation_sources.begin(),
+                         observation_sources.end(),
+                         [&plugin_source](const ObservationSourceConfig& x) {
+                           return x.name == plugin_source.name;
+                         }) != observation_sources.end();
+        if (!known) {
+          observation_sources.push_back(plugin_source);
+        }
+      }
+    }
+  }
+  // Liveness baselines: the writer start re-baselines them, but the inline
+  // (no-writer) processing path stamps them too, so size them here.
+  source_last_seen.assign(observation_sources.size(),
+                          std::chrono::steady_clock::now());
+  source_stale_warn_at.assign(observation_sources.size(),
+                              std::chrono::steady_clock::time_point{});
+  // Stamp-time TF bounded wait (writer-thread budget; publishers never
+  // block) + footprint clearing (the robot never marks itself).
+  transform_tolerance =
+      cfg.param<double>("costmap_local", "transform_tolerance", 0.1);
+  footprint_clearing =
+      cfg.param<bool>("costmap_local", "footprint_clearing", true);
 
   costmap_context =
       std::dynamic_pointer_cast<CostmapMapContext>(map_family_factory->createContext());
@@ -385,12 +709,47 @@ void CostmapNavigationServer::configureCoreMaps(
   ayanami::components::RobotStateController::instance().initialize(
       global_frame, local_frame, robot_frame, velocity_timeout);
 
-  prev_obstacles_global.clear();
-  prev_obstacles_local.clear();
-  has_prev_obstacles_global = false;
-  has_prev_obstacles = false;
-  has_last_global_robot = false;
+  prev_local = {};
+  prev_global = {};
   has_last_local_robot = false;
+}
+
+bool CostmapNavigationServer::loadLayerPlugins(
+    const std::string& section, const ayanami::Config& cfg,
+    const std::string& config_dir,
+    const costmap_2d::LayeredCostmap::Ptr& layered_costmap,
+    ayanami::components::ModuleManager<ayanami::costmap::CostmapLayerPlugin>&
+        manager,
+    std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins) {
+  const auto files = cfg.paramStringOrList(section, "layers");
+  if (files.empty()) {
+    return false;  // no "layers" list -> legacy hardcoded composition
+  }
+  for (const auto& file : files) {
+    if (file.empty()) {
+      continue;
+    }
+    // Module json paths resolve relative to the config directory (the
+    // config_recovery convention).
+    const std::string path = std::filesystem::path(file).is_absolute()
+                                 ? file
+                                 : (std::filesystem::path(config_dir) / file)
+                                       .string();
+    Config layer_cfg(path);
+    ayanami::components::ModuleSpec spec;
+    spec.name = layer_cfg.param<std::string>("layer", "name", "");
+    spec.so_name = layer_cfg.param<std::string>("layer", "so_name", "");
+    if (!manager.loadModule(spec, ayanami::ModuleContext{spec.name, layer_cfg},
+                            {})) {
+      throw std::runtime_error(
+          "layer plugin failed to load: " + spec.name + " (" + spec.so_name +
+          "): " + manager.lastFailureMessage());
+    }
+    auto plugin = manager.getModule(spec.name);
+    layered_costmap->addLayer(plugin->layer());
+    plugins.push_back(plugin);
+  }
+  return true;
 }
 
 // ---- Virtual initialize*Module hooks: costmap family injection ----
@@ -596,16 +955,32 @@ void CostmapNavigationServer::handleObstaclePointCloud(
         "configured (call configureCoreMaps first)");
     return;
   }
-  std::vector<Eigen::Vector3d> points;
-  points.reserve(cloud.cloud.points.size());
+  const auto* source = findSource(ObservationSourceConfig::Kind::PointCloud);
+  if (source == nullptr) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true)) {
+      spdlog::warn(
+          "handleObstaclePointCloud: no pointcloud observation source is "
+          "configured (costmap_local.observation_sources); cloud dropped");
+    }
+    return;
+  }
+  PendingObservation observation;
+  observation.source = source;
+  observation.frame_id = cloud.header.frame_id;
+  observation.stamp = cloud.header.stamp;
+  observation.points.reserve(cloud.cloud.points.size());
   for (const auto& p : cloud.cloud.points) {
     if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
       continue;
     }
-    points.emplace_back(static_cast<double>(p.x), static_cast<double>(p.y),
-                        0.0);
+    // z is KEPT here: the source's min/max_obstacle_height window filters
+    // hits in processObservation (nav2 semantics).
+    observation.points.emplace_back(static_cast<double>(p.x),
+                                    static_cast<double>(p.y),
+                                    static_cast<double>(p.z));
   }
-  markObstaclesInFrame(cloud.header.frame_id, cloud.header.stamp, points);
+  submitObservation(std::move(observation));
 }
 
 void CostmapNavigationServer::handleObstacleLaserScan(
@@ -619,212 +994,452 @@ void CostmapNavigationServer::handleObstacleLaserScan(
   if (scan.ranges.empty()) {
     return;
   }
-  std::vector<Eigen::Vector3d> points;
-  std::vector<Eigen::Vector3d> clearing_points;
-  points.reserve(scan.ranges.size());
-  clearing_points.reserve(scan.ranges.size());
+  const auto* source = findSource(ObservationSourceConfig::Kind::LaserScan);
+  if (source == nullptr) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true)) {
+      spdlog::warn(
+          "handleObstacleLaserScan: no laserscan observation source is "
+          "configured (costmap_local.observation_sources); scan dropped");
+    }
+    return;
+  }
+  PendingObservation observation;
+  observation.source = source;
+  observation.frame_id = scan.header.frame_id;
+  observation.stamp = scan.header.stamp;
+  observation.points.reserve(scan.ranges.size());
+  observation.clearing_points.reserve(scan.ranges.size());
   for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
     const double range = static_cast<double>(scan.ranges[i]);
     const double angle = scan.angle_min + i * scan.angle_increment;
+    // Ray endpoints clamped to the source's raytrace_max_range (a
+    // non-finite range rays out to the max: "nothing up to here is
+    // blocked"); processObservation skips rays below raytrace_min_range.
     const double clear_range =
-        std::isfinite(range)
-            ? std::clamp(range, 0.0, local_raytrace_range)
-            : local_raytrace_range;
-    clearing_points.emplace_back(clear_range * std::cos(angle),
-                                 clear_range * std::sin(angle), 0.0);
+        std::isfinite(range) ? std::clamp(range, 0.0,
+                                          source->raytrace_max_range)
+                             : source->raytrace_max_range;
+    observation.clearing_points.emplace_back(clear_range * std::cos(angle),
+                                             clear_range * std::sin(angle),
+                                             0.0);
     if (range >= scan.range_min && range <= scan.range_max) {
-      points.emplace_back(range * std::cos(angle), range * std::sin(angle),
-                          0.0);
+      observation.points.emplace_back(range * std::cos(angle),
+                                      range * std::sin(angle), 0.0);
     }
   }
-  markObstaclesInFrame(scan.header.frame_id, scan.header.stamp, points,
-                       clearing_points);
+  submitObservation(std::move(observation));
 }
 
-void CostmapNavigationServer::markObstaclesInFrame(
-    const std::string& frame_id, const ayanami::Timestamp& stamp,
-    const std::vector<Eigen::Vector3d>& points,
-    const std::vector<Eigen::Vector3d>& clearing_points) {
-  if (!costmap_context || !costmap_context->localCostmap() ||
-      !local_obstacle_layer) {
-    spdlog::warn(
-        "CostmapNavigationServer::markObstaclesInFrame: costmap not "
-        "configured (call configureCoreMaps first)");
+const ObservationSourceConfig*
+CostmapNavigationServer::findSource(ObservationSourceConfig::Kind kind) const {
+  for (const auto& source : observation_sources) {
+    if (source.kind == kind) {
+      return &source;
+    }
+  }
+  return nullptr;
+}
+
+void CostmapNavigationServer::submitObservation(
+    PendingObservation&& observation) {
+  observation_submitted.fetch_add(1);
+  if (!writer_running.load()) {
+    // No writer thread (direct-construction tests): legacy inline semantics,
+    // the caller's thread stamps the map synchronously.
+    processObservation(observation);
+    observation_applied.store(observation_submitted.load());
     return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(writer_mutex);
+    if (pending_observations.size() >= k_max_pending_observations) {
+      // Sustained processing stall: drop the OLDEST frame (its sector
+      // coverage is the stalest) and keep the freshest ones.
+      pending_observations.pop_front();
+    }
+    pending_observations.push_back(std::move(observation));
+  }
+  writer_cv.notify_all();
+}
+
+bool CostmapNavigationServer::lookupWithBoundedWait(
+    const std::string& target_frame, const std::string& source_frame,
+    const ayanami::Timestamp& stamp, Eigen::Isometry3d& transform,
+    double* wait_seconds) const {
+  auto& robot_state_controller =
+      ayanami::components::RobotStateController::instance();
+  // Bounded POLL (never a blocking wait on the ros clock): the writer thread is
+  // allowed to wait up to transform_tolerance for the stamp-time transform
+  // (publishers are never blocked -- they only enqueue), and polling with
+  // zero-timeout lookups avoids starving other TF readers on the store's
+  // internal lock. The 5ms poll granularity halves the quantization delay a
+  // just-behind-the-chain scan stamp experiences.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration<double>(transform_tolerance);
+  const auto wait_start = std::chrono::steady_clock::now();
+  while (true) {
+    if (robot_state_controller.lookupTransform(target_frame, source_frame,
+                                               stamp, transform,
+                                               k_tf_lookup_timeout_s)) {
+      if (wait_seconds) {
+        *wait_seconds = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - wait_start)
+                            .count();
+      }
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      if (wait_seconds) {
+        *wait_seconds = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - wait_start)
+                            .count();
+      }
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+void CostmapNavigationServer::clearFootprintRegion(
+    costmap_2d_layers::SimpleObstacleLayer& layer, double robot_x,
+    double robot_y, double robot_yaw) {
+  const auto& footprint = costmap_context->footprint();
+  if (footprint.empty()) {
+    return;
+  }
+  // Rotated footprint bounding box (+ one cell margin): clearing slightly
+  // beyond the polygon is free space anyway under the robot.
+  double min_x = std::numeric_limits<double>::max();
+  double min_y = std::numeric_limits<double>::max();
+  double max_x = std::numeric_limits<double>::lowest();
+  double max_y = std::numeric_limits<double>::lowest();
+  const double cos_yaw = std::cos(robot_yaw);
+  const double sin_yaw = std::sin(robot_yaw);
+  for (const auto& point : footprint) {
+    const double wx = robot_x + point.x * cos_yaw - point.y * sin_yaw;
+    const double wy = robot_y + point.x * sin_yaw + point.y * cos_yaw;
+    min_x = std::min(min_x, wx);
+    min_y = std::min(min_y, wy);
+    max_x = std::max(max_x, wx);
+    max_y = std::max(max_y, wy);
+  }
+  const double margin = std::max(local_resolution, 0.0);
+  layer.clearArea(min_x - margin, min_y - margin, max_x + margin,
+                  max_y + margin);
+}
+
+bool CostmapNavigationServer::stampObservationOnMap(
+    const PendingObservation& observation, const std::string& map_frame,
+    const costmap_2d::CostmapWrapper::Ptr& wrapper,
+    costmap_2d_layers::SimpleObstacleLayer* obstacle_layer,
+    PrevMapObservation& prev, double inflation_radius, bool is_local_map,
+    double* tf_wait_ms, bool* stamp_fallback,
+    const std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins) {
+  if (tf_wait_ms) {
+    *tf_wait_ms = 0.0;
+  }
+  if (stamp_fallback) {
+    *stamp_fallback = false;
+  }
+  const auto* source = observation.source;
+  if (wrapper == nullptr || source == nullptr || !costmap_context ||
+      (obstacle_layer == nullptr && plugins.empty())) {
+    return false;
   }
   auto& robot_state_controller =
       ayanami::components::RobotStateController::instance();
-  const std::string& global_frame = costmap_context->globalFrame();
-  const std::string& local_frame = costmap_context->localFrame();
-  const bool have_stamp = !stamp.isLatest();
+  const bool have_stamp = !observation.stamp.isLatest();
 
-  // Per-map stamping: each costmap is stamped in its own frame (global =
-  // global_costmap_frame, local = local_costmap_frame, typically map/odom).
-  // The sensor transform is queried per frame -- the scan's own timestamp
-  // first (zero tolerance: fall back to latest immediately on query failure,
-  // never blocking the callback thread; fast_tf does not extrapolate, so a
-  // scan stamp ahead of the sync chain or outside the pruning window falls
-  // back to latest and is counted).
-  auto stampOneMap =
-      [&](const std::string& map_frame,
-          costmap_2d::CostmapWrapper& wrapper,
-          costmap_2d_layers::SimpleObstacleLayer& layer,
-          double inflation_radius, double resolution,
-          bool& has_last, double& last_x, double& last_y, double& last_yaw,
-          std::vector<Eigen::Vector2d>& prev, bool& has_prev) {
-        if (points.empty() && clearing_points.empty()) {
-          return;
-        }
-        Eigen::Isometry3d T_frame_sensor = Eigen::Isometry3d::Identity();
-        bool stamp_ok = false;
-        if (have_stamp &&
-            robot_state_controller.lookupTransform(map_frame, frame_id, stamp,
-                                                   T_frame_sensor, 0.0)) {
-          stamp_ok = true;
-          ++stamp_query_ok;
-        }
-        if (!stamp_ok &&
-            !robot_state_controller.lookupTransform(
-                map_frame, frame_id, ayanami::Timestamp::latest(),
-                T_frame_sensor, k_tf_lookup_timeout_s)) {
-          if (have_stamp) {
-            ++stamp_query_fallback;
-          }
-          if (tfWarnDue(map_tf_warn_at)) {
-            spdlog::warn(
-                "CostmapNavigationServer::markObstaclesInFrame: no transform "
-                "{} <- {} (stamp={:f}s); obstacle stamping paused. Check the "
-                "TF producers (gazebo diff-drive odom->base_footprint, "
-                "robot_state_publisher) and whether a leftover simulation "
-                "instance publishes duplicate TF",
-                map_frame, frame_id, stamp.toSeconds());
-          }
-          return;
-        }
+  // Sensor origin: stamp-time TF with a bounded in-writer wait; on final
+  // failure fall back to latest and count the fallback (the fallback bakes
+  // an omega x dt skew into the marks while rotating -- persistently high
+  // fallback rates mean the scan stamp deviates beyond the sync window).
+  Eigen::Isometry3d t_frame_sensor = Eigen::Isometry3d::Identity();
+  bool stamp_ok = false;
+  double lookup_wait_ms = 0.0;
+  if (have_stamp &&
+      lookupWithBoundedWait(map_frame, observation.frame_id,
+                            observation.stamp, t_frame_sensor,
+                            &lookup_wait_ms)) {
+    stamp_ok = true;
+    ++stamp_query_ok;
+    if (tf_wait_ms) {
+      *tf_wait_ms = lookup_wait_ms;
+    }
+  }
+  if (!stamp_ok &&
+      !robot_state_controller.lookupTransform(
+          map_frame, observation.frame_id, ayanami::Timestamp::latest(),
+          t_frame_sensor, k_tf_lookup_timeout_s)) {
+    if (stamp_fallback) {
+      *stamp_fallback = true;
+    }
+    if (have_stamp) {
+      ++stamp_query_fallback;
+    }
+    if (tfWarnDue(map_tf_warn_at)) {
+      spdlog::warn(
+          "CostmapNavigationServer: no transform {} <- {} (stamp={:f}s); "
+          "obstacle stamping paused. Check the TF producers (gazebo "
+          "diff-drive odom->base_footprint, robot_state_publisher) and "
+          "whether a leftover simulation instance publishes duplicate TF",
+          map_frame, observation.frame_id, observation.stamp.toSeconds());
+    }
+    return false;
+  }
 
-        // Points in this map's frame + observation bounding box.
-        std::vector<Eigen::Vector2d> world;
-        world.reserve(points.size());
-        double min_x = std::numeric_limits<double>::max();
-        double min_y = std::numeric_limits<double>::max();
-        double max_x = std::numeric_limits<double>::lowest();
-        double max_y = std::numeric_limits<double>::lowest();
-        for (const auto& p : points) {
-          const Eigen::Vector3d w = T_frame_sensor * p;
-          world.emplace_back(w.x(), w.y());
-          min_x = std::min(min_x, w.x());
-          min_y = std::min(min_y, w.y());
-          max_x = std::max(max_x, w.x());
-          max_y = std::max(max_y, w.y());
-        }
+  // Robot pose in this map's frame before the write lock. The LOCAL map
+  // keeps a rolling-window pose cache: on a transient TF loss roll the
+  // window with the last successful pose (never (0,0,0) -- the rolling
+  // window would anchor back to the frame origin and DWB would find no
+  // path once the robot leaves it). The global map needs the pose only for
+  // footprint clearing; on failure that pass is skipped.
+  double robot_x = 0.0;
+  double robot_y = 0.0;
+  double robot_yaw = 0.0;
+  bool have_robot_pose = false;
+  Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
+  if (robot_state_controller.lookupTransform(
+          map_frame, costmap_context->robotFrame(),
+          ayanami::Timestamp::latest(), t_robot, k_tf_lookup_timeout_s)) {
+    robot_x = t_robot.translation().x();
+    robot_y = t_robot.translation().y();
+    robot_yaw = std::atan2(t_robot.linear()(1, 0), t_robot.linear()(0, 0));
+    have_robot_pose = true;
+    if (is_local_map) {
+      has_last_local_robot = true;
+      last_local_robot_x = robot_x;
+      last_local_robot_y = robot_y;
+      last_local_robot_yaw = robot_yaw;
+    }
+  } else if (is_local_map && has_last_local_robot) {
+    robot_x = last_local_robot_x;
+    robot_y = last_local_robot_y;
+    robot_yaw = last_local_robot_yaw;
+    have_robot_pose = true;
+  }
 
-        // Resolve the robot pose (this map's frame) before taking the write
-        // lock. On query failure (transient TF loss) roll the window with the
-        // last successful pose -- never fall back to (0,0,0), otherwise the
-        // rolling window gets anchored back to the frame origin and, once the
-        // robot walks out of the window, dwb has no path.
-        double robot_x = 0.0;
-        double robot_y = 0.0;
-        double robot_yaw = 0.0;
-        Eigen::Isometry3d T_robot = Eigen::Isometry3d::Identity();
-        if (robot_state_controller.lookupTransform(
-                map_frame, costmap_context->robotFrame(),
-                ayanami::Timestamp::latest(), T_robot,
-                k_tf_lookup_timeout_s)) {
-          robot_x = T_robot.translation().x();
-          robot_y = T_robot.translation().y();
-          robot_yaw =
-              std::atan2(T_robot.linear()(1, 0), T_robot.linear()(0, 0));
-          has_last = true;
-          last_x = robot_x;
-          last_y = robot_y;
-          last_yaw = robot_yaw;
-          if (robotDiagDue(robot_diag_at)) {
-            spdlog::debug(
-                "markObstacles: robot pose OK {}<-(robot_frame={}) "
-                "trans=({:.3f},{:.3f})",
-                map_frame, costmap_context->robotFrame(), robot_x, robot_y);
-          }
-        } else {
-          if (robotDiagDue(robot_diag_at)) {
-            spdlog::warn(
-                "markObstacles: robot pose FAIL {}<-(robot_frame={}); "
-                "has_last={} (rolling windows keep the last pose)",
-                map_frame, costmap_context->robotFrame(), has_last);
-          }
-          if (has_last) {
-            robot_x = last_x;
-            robot_y = last_y;
-            robot_yaw = last_yaw;
-          }
-        }
+  // Source-driven hit filtering: height window (z kept through conversion)
+  // and marking range window from the sensor origin (nav2 semantics). The
+  // surviving points move into THIS map's frame; their bbox feeds the
+  // previous-window clearing.
+  const Eigen::Vector3d sensor_origin = t_frame_sensor.translation();
+  std::vector<Eigen::Vector2d> world;
+  world.reserve(observation.points.size());
+  double min_x = std::numeric_limits<double>::max();
+  double min_y = std::numeric_limits<double>::max();
+  double max_x = std::numeric_limits<double>::lowest();
+  double max_y = std::numeric_limits<double>::lowest();
+  if (source->marking) {
+    for (const auto& p : observation.points) {
+      // nav2 semantics: the height window is judged in the MAP frame --
+      // points are transformed FIRST, then filtered. Filtering in the
+      // sensor frame (the old behavior) lets any mounting tilt or pitch
+      // silently drop whole sectors of the cloud ("dense cloud, no
+      // obstacle"): sensor-frame z there says nothing about the height
+      // above the ground plane.
+      const Eigen::Vector3d w = t_frame_sensor * p;
+      if (w.z() < source->min_obstacle_height ||
+          w.z() > source->max_obstacle_height) {
+        continue;
+      }
+      const double range = (w.head<2>() - sensor_origin.head<2>()).norm();
+      if (range < source->obstacle_min_range ||
+          range > source->obstacle_max_range) {
+        continue;
+      }
+      world.emplace_back(w.x(), w.y());
+      min_x = std::min(min_x, w.x());
+      min_y = std::min(min_y, w.y());
+      max_x = std::max(max_x, w.x());
+      max_y = std::max(max_y, w.y());
+    }
+  }
 
-        // Stamp this map: raytrace freespace, clear the previous + current
-        // observation window (removing old marks and old inflation bands;
-        // the InflationLayer then fully recomputes within its recompute
-        // window), mark the current obstacles and recompute the master grid.
-        // Each map owns only its own write lock (taken sequentially, never
-        // nested).
-        auto write_lock = wrapper.lockForWrite();
-        if (!clearing_points.empty()) {
-          const Eigen::Vector3d sensor_origin = T_frame_sensor.translation();
-          const auto* grid = wrapper.get().getCostmap();
-          for (const auto& point : clearing_points) {
-            const Eigen::Vector3d endpoint = T_frame_sensor * point;
-            layer.raytraceFreespace(*grid, sensor_origin.x(),
-                                    sensor_origin.y(), endpoint.x(),
-                                    endpoint.y());
-          }
-        } else if (has_prev) {
-          double clear_min_x = min_x;
-          double clear_min_y = min_y;
-          double clear_max_x = max_x;
-          double clear_max_y = max_y;
-          for (const auto& old : prev) {
-            clear_min_x = std::min(clear_min_x, old.x());
-            clear_min_y = std::min(clear_min_y, old.y());
-            clear_max_x = std::max(clear_max_x, old.x());
-            clear_max_y = std::max(clear_max_y, old.y());
-          }
-          // The expansion margin is the inflation radius + one cell: the band
-          // can reach up to ceil(radius/res) cells, and world->cell rounding
-          // would exclude cells lying exactly on the radius boundary.
-          const double margin = inflation_radius + std::max(resolution, 0.0);
-          layer.clearArea(clear_min_x - margin, clear_min_y - margin,
-                          clear_max_x + margin, clear_max_y + margin);
+  // Write pass (sole writer thread; each map takes only its own lock).
+  auto write_lock = wrapper->lockForWrite();
+  if (!plugins.empty()) {
+    // Plugin path: the consuming layers own the filtering policy; the
+    // writer only resolves the per-map TF/pose, routes by source kind and
+    // publishes the map afterwards.
+    ayanami::costmap::MapObservation map_observation;
+    map_observation.t_frame_sensor = t_frame_sensor;
+    map_observation.points = &observation.points;
+    map_observation.clearing_points = &observation.clearing_points;
+    map_observation.robot_pose_xy_yaw =
+        Eigen::Vector3d(robot_x, robot_y, robot_yaw);
+    map_observation.has_robot_pose = have_robot_pose;
+    for (const auto& plugin : plugins) {
+      for (const auto& plugin_source : plugin->observationSources()) {
+        if (plugin_source.kind != source->kind) {
+          continue;
         }
-        for (const auto& w : world) {
-          layer.markObstacles(w.x(), w.y());
+        map_observation.source = &plugin_source;
+        plugin->observe(map_observation);
+        break;
+      }
+    }
+    wrapper->updateMapUnlocked(robot_x, robot_y, robot_yaw);
+    wrapper->setCurrent(true);
+    return true;
+  }
+  auto* grid = wrapper->get().getCostmap();
+  if (source->clearing) {
+    if (!observation.clearing_points.empty()) {
+      for (const auto& endpoint : observation.clearing_points) {
+        const double range = endpoint.head<2>().norm();
+        if (range < source->raytrace_min_range) {
+          continue;
         }
-        prev = world;
-        has_prev = true;
-        wrapper.updateMapUnlocked(robot_x, robot_y, robot_yaw);
-      };
+        Eigen::Vector3d clamped = endpoint;
+        if (range > source->raytrace_max_range) {
+          clamped = endpoint * (source->raytrace_max_range / range);
+        }
+        const Eigen::Vector3d world_end = t_frame_sensor * clamped;
+        obstacle_layer->raytraceFreespace(*grid, sensor_origin.x(),
+                                          sensor_origin.y(), world_end.x(),
+                                          world_end.y());
+      }
+    } else if (prev.valid) {
+      double clear_min_x = min_x;
+      double clear_min_y = min_y;
+      double clear_max_x = max_x;
+      double clear_max_y = max_y;
+      for (const auto& old : prev.points) {
+        clear_min_x = std::min(clear_min_x, old.x());
+        clear_min_y = std::min(clear_min_y, old.y());
+        clear_max_x = std::max(clear_max_x, old.x());
+        clear_max_y = std::max(clear_max_y, old.y());
+      }
+      // The expansion margin is the inflation radius + one cell: the band
+      // can reach up to ceil(radius/res) cells, and world->cell rounding
+      // would exclude cells lying exactly on the radius boundary.
+      const double margin =
+          inflation_radius + std::max(local_resolution, 0.0);
+      obstacle_layer->clearArea(clear_min_x - margin, clear_min_y - margin,
+                                clear_max_x + margin, clear_max_y + margin);
+    }
+  }
 
-  // Local first, then global (matching the reader lock order local -> global).
-  stampOneMap(local_frame, *costmap_context->localCostmap(),
-              *local_obstacle_layer, local_inflation_radius, local_resolution,
-              has_last_local_robot, last_local_robot_x, last_local_robot_y,
-              last_local_robot_yaw, prev_obstacles_local, has_prev_obstacles);
-  if (costmap_context->globalCostmap() && global_obstacle_layer) {
-    stampOneMap(global_frame, *costmap_context->globalCostmap(),
-                *global_obstacle_layer, global_inflation_radius,
-                global_resolution, has_last_global_robot, last_global_robot_x,
-                last_global_robot_y, last_global_robot_yaw,
-                prev_obstacles_global, has_prev_obstacles_global);
+  if (source->marking) {
+    // Points outside this map's bounds cannot be marked (worldToMap
+    // fails); count them and say so -- the usual fix is a larger map size
+    // or a smaller obstacle_max_range.
+    std::size_t outside_window = 0;
+    unsigned int probe_mx = 0;
+    unsigned int probe_my = 0;
+    for (const auto& w : world) {
+      if (!grid->worldToMap(w.x(), w.y(), probe_mx, probe_my)) {
+        ++outside_window;
+        continue;
+      }
+      obstacle_layer->markObstacles(w.x(), w.y());
+    }
+    if (outside_window > 0) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_outside_window_warn_at >= std::chrono::seconds(5)) {
+        last_outside_window_warn_at = now;
+        spdlog::warn(
+            "CostmapNavigationServer: {} of {} marked points fell outside "
+            "the '{}' map ({:.0f}x{:.0f} m); enlarge the map size or reduce "
+            "obstacle_max_range",
+            outside_window, world.size(), map_frame,
+            grid->getSizeInMetersX(), grid->getSizeInMetersY());
+      }
+    }
+  }
+
+  // Footprint clearing LAST (nav2 semantics): hits from the robot's own
+  // chassis lose to the clear, so the robot can never mark itself with
+  // ghost obstacles right under it.
+  if (footprint_clearing && have_robot_pose) {
+    clearFootprintRegion(*obstacle_layer, robot_x, robot_y, robot_yaw);
+  }
+  prev.points = std::move(world);
+  prev.valid = true;
+  wrapper->updateMapUnlocked(robot_x, robot_y, robot_yaw);
+  wrapper->setCurrent(true);
+  return true;
+}
+
+void CostmapNavigationServer::processObservation(
+    const PendingObservation& observation, double* tf_wait_ms,
+    bool* stamp_fallback) {
+  if (stamp_fallback) {
+    *stamp_fallback = false;
+  }
+  if (tf_wait_ms) {
+    *tf_wait_ms = 0.0;
+  }
+  const auto* source = observation.source;
+  if (source == nullptr || !costmap_context ||
+      !costmap_context->localCostmap() ||
+      (local_obstacle_layer == nullptr && local_layer_plugins.empty())) {
+    spdlog::warn(
+        "CostmapNavigationServer::processObservation: costmap or "
+        "observation source not configured");
+    return;
+  }
+  if (observation.points.empty() && observation.clearing_points.empty()) {
+    return;
+  }
+
+  // Local map first (the controller's timescale; its diagnostics feed the
+  // writer-loop timing).
+  double local_tf_wait_ms = 0.0;
+  bool local_stamp_fallback = false;
+  const bool local_ok = stampObservationOnMap(
+      observation, costmap_context->localFrame(),
+      costmap_context->localCostmap(), local_obstacle_layer, prev_local,
+      local_inflation_radius, /*is_local_map=*/true, &local_tf_wait_ms,
+      &local_stamp_fallback, local_layer_plugins);
+  if (tf_wait_ms) {
+    *tf_wait_ms = local_tf_wait_ms;
+  }
+  if (stamp_fallback) {
+    *stamp_fallback = local_stamp_fallback;
+  }
+
+  // Global map: the same observation is stamped into the global dynamic
+  // layer when the source is listed under costmap_global.observation_sources
+  // (nav2 global_costmap = static + obstacle + inflation), so replanning
+  // and IsPathValid see real obstacles beyond the local rolling window.
+  const bool global_active =
+      !global_layer_plugins.empty() ||
+      (global_obstacle_layer != nullptr &&
+       std::find(global_observation_sources.begin(),
+                 global_observation_sources.end(),
+                 source->name) != global_observation_sources.end());
+  if (global_active && costmap_context->globalCostmap()) {
+    stampObservationOnMap(observation, costmap_context->globalFrame(),
+                          costmap_context->globalCostmap(),
+                          global_obstacle_layer, prev_global,
+                          global_inflation_radius, /*is_local_map=*/false,
+                          nullptr, nullptr, global_layer_plugins);
+  }
+
+  if (!local_ok) {
+    return;
+  }
+  // Fresh data just applied: the map is current again (a configured
+  // expected_update_rate marks it stale from the writer's liveness check).
+  for (std::size_t i = 0; i < observation_sources.size(); ++i) {
+    if (&observation_sources[i] == source) {
+      source_last_seen[i] = std::chrono::steady_clock::now();
+      break;
+    }
   }
 
   // Scan-stamp query fallback rate observation (a fallback means that
-  // frame's sensor transform degraded to latest-time semantics, which bakes
-  // an omega x dt stamping skew into the costmap while rotating): a
+  // frame's sensor transform degraded to latest-time semantics): a
   // persistently high fallback rate indicates the scan stamp deviates from
-  // the sync chain beyond the fast_tf pruning window (check RTF / TF sync
-  // health).
+  // the TF sync chain beyond its cache window.
   if (stamp_query_fallback.load() > 0) {
     const auto diag_now = std::chrono::steady_clock::now();
     if (diag_now - last_stamp_diag_at >= std::chrono::seconds(10)) {
       last_stamp_diag_at = diag_now;
-      spdlog::info("markObstacles: stamp-queries ok={} fallback={}",
+      spdlog::info("processObservation: stamp-queries ok={} fallback={}",
                    stamp_query_ok.load(), stamp_query_fallback.load());
       stamp_query_ok.store(0);
       stamp_query_fallback.store(0);
@@ -832,9 +1447,18 @@ void CostmapNavigationServer::markObstaclesInFrame(
   }
 }
 
-// ---- Map change command execution (sole writer) ----
+// ---- Rolling-window updates (writer thread when running) ----
 
 void CostmapNavigationServer::updateRollingWindows() {
+  // The resident map-writer thread owns rolling while it runs (single
+  // literal writer); direct callers only roll in the inline/no-writer mode.
+  if (writer_running.load()) {
+    return;
+  }
+  rollWindows();
+}
+
+void CostmapNavigationServer::rollWindows() {
   if (!costmap_context) {
     return;
   }

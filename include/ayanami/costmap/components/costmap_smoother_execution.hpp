@@ -15,9 +15,11 @@ namespace costmap {
  * @brief The costmap variant of the path smoothing execution.
  *
  * Binds a costmap context on top of SmootherExecution:
- * - preRun/postRun: checkActivate/checkDeactivate (global costmap);
- * - safetyCheck: global wrapper isCurrent();
- * - callSmoother: typed in-place call into CostmapSmoother; the module reads the map under a lock internally as needed.
+ * - preRun/postRun: checkActivate/checkDeactivate on BOTH maps (family read
+ *   contract: the smoother may read the global and the local map);
+ * - safetyCheck: BOTH wrappers current (missing wrapper counts as current);
+ * - callSmoother: typed in-place call into CostmapSmoother; the module
+ *   reads the maps under a lock internally as needed.
  */
 class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
  public:
@@ -36,16 +38,24 @@ class CostmapSmootherExecution : public ayanami::components::SmootherExecution {
     if (ctx && ctx->globalCostmap()) {
       ctx->globalCostmap()->checkActivate();
     }
+    if (ctx && ctx->localCostmap()) {
+      ctx->localCostmap()->checkActivate();
+    }
   }
 
   void postRun() override {
     if (ctx && ctx->globalCostmap()) {
       ctx->globalCostmap()->checkDeactivate();
     }
+    if (ctx && ctx->localCostmap()) {
+      ctx->localCostmap()->checkDeactivate();
+    }
   }
 
   bool safetyCheck() override {
-    return !ctx || !ctx->globalCostmap() || ctx->globalCostmap()->isCurrent();
+    return (!ctx || !ctx->globalCostmap() ||
+            ctx->globalCostmap()->isCurrent()) &&
+           (!ctx || !ctx->localCostmap() || ctx->localCostmap()->isCurrent());
   }
 
  protected:

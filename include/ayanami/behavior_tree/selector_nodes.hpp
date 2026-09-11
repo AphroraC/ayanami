@@ -24,10 +24,20 @@ namespace behavior_tree {
  * A change of the effective selection is logged once.
  *
  * Usage (nav2 default-tree shape):
- *   <PlannerSelector default_id="costmap_smac" override_id="{planner_override}"
+ *   <PlannerSelector default_id="costmap_astar" override_id="{planner_override}"
  *                    selected_id="{planner_id}"/>
  *   ...
  *   <ComputePathToPose goal="{goal}" planner_id="{planner_id}" .../>
+ *
+ * Deployment note (documented by design, not a wiring bug): the production
+ * tree (config/BT/navigation.xml) does NOT instantiate selector nodes.
+ * Module selection there happens at the REQUEST level instead -- the
+ * action nodes' *_id ports (planner_id/controller_id/smoother_id) and the
+ * recovery role ids ({clear_costmap_id} etc., provided by the BT extension
+ * from config_recovery). Selectors are the tree-level alternative for
+ * deployments that want the choice to live in the XML/blackboard; request
+ * -level ids are the lighter default (empty id = family default = first
+ * configured module).
  */
 class ModuleSelectorNode : public BT::SyncActionNode {
  public:

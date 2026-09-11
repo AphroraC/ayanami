@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -24,6 +26,7 @@
 #include <ayanami/types.hpp>
 #include <ayanami/utility/config.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -37,7 +40,7 @@ using ayanami::costmap::CostmapReader;
 /// (the context queries it directly -- the framework-wide TF surface).
 void feedRobotPose(const std::string& frame, const std::string& robot_frame,
                    const Eigen::Vector3d& translation) {
-  ayanami::components::RobotStateController::instance().setTransform(
+  testTransforms().set(
       frame, robot_frame, ayanami::Timestamp::latest(),
       Eigen::Translation3d(translation) * Eigen::Quaterniond::Identity());
 }
@@ -326,7 +329,7 @@ TEST(CostmapMapContextTest, localReaderWithoutWrapperIsInvalid) {
 TEST(CostmapMapContextTest, robotStateQueryGoesThroughRobotStateController) {
   auto& rsc = ayanami::components::RobotStateController::instance();
   rsc.initialize("map", "map", "base_link", 0.25);
-  rsc.setTransform(
+  testTransforms().set(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(1.0, 2.0, 0.0) * Eigen::Quaterniond::Identity());
 
@@ -370,10 +373,10 @@ TEST(CostmapMapContextTest, viewRobotPoseStampedInOwnFrame) {
   // local = locF). TF chain: locF <- mapF <- baseF (fast_tf mounts new
   // parents through existing intermediate frames only).
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.setTransform("mapF", "baseF", ayanami::Timestamp::latest(),
+  testTransforms().set("mapF", "baseF", ayanami::Timestamp::latest(),
                    Eigen::Translation3d(3.0, 4.0, 0.0) *
                        Eigen::Quaterniond::Identity());
-  rsc.setTransform("locF", "mapF", ayanami::Timestamp::latest(),
+  testTransforms().set("locF", "mapF", ayanami::Timestamp::latest(),
                    Eigen::Translation3d(2.0, 0.0, 0.0) *
                        Eigen::Quaterniond::Identity());
 
@@ -559,164 +562,39 @@ TEST(CostmapMapContextTest, isPathValidRejectsEmptyUnknownLethalAndOutOfBounds) 
   EXPECT_TRUE(ctx.isPathValid(makePathAt({{2.0, 2.0}})));
 }
 
-// ---------- composePlanningOverlay: planner family read contract (global+local overlay) ----------
+// ---------- planner family read contract: GLOBAL map only ----------
 
-TEST(CostmapPlanningOverlayTest, overlayMergesLocalWindowWithMax) {
+TEST(CostmapMapContextTest, isPathValidIgnoresLocalMarks) {
   CostmapMapContext ctx;
-  // Same-frame local (identity transform path): overlay in the global frame.
-  ctx.setFrames("map_a", "map_a", "base_a");
+  // Same-frame local (identity transform path).
+  ctx.setFrames("map_p", "map_p", "base_p");
 
-  // global: 10x10 @0.5m origin (0,0); lethal at cell (1,1).
+  // global: 10x10 @0.5m origin (0,0), all free along the path.
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_a", false, false);
+      "map_p", false, false);
   global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  global_lm->getCostmap()->setCost(1, 1, costmap_2d::LETHAL_OBSTACLE);
   auto global =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_a");
+      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_p");
 
-  // local: 10x10 @0.5m origin (0,0), same frame; inflated-cost at cell (5,5).
+  // local: lethal right on the path point.
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_a", true, false);
+      "map_p", true, false);
   local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(5, 5, 200);
+  local_lm->getCostmap()->setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
   auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_a");
+      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_p");
 
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
 
-  ayanami::costmap::PlanningOverlay overlay;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay));
-  ASSERT_TRUE(overlay.valid);
-  EXPECT_EQ(overlay.frame, "map_a");
-  EXPECT_EQ(overlay.size_x, 10u);
-  EXPECT_TRUE(overlay.local_overlay_valid);
+  // world (1.5,1.0) -> cell (3,2): lethal in the LOCAL map, free in the
+  // global one. Path validation is a planner-timescale (global) check and
+  // must NOT be invalidated by local dynamic marks.
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));
 
-  // Window overlap: max(global=0, local=200) = 200.
-  EXPECT_EQ(overlay.costAt(5, 5), 200);
-  EXPECT_FALSE(overlay.blockedCell(5, 5));
-  // Global lethal outside local distinct content stays.
-  EXPECT_EQ(overlay.costAt(1, 1), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_TRUE(overlay.blockedCell(1, 1));
-  // Global unknown dominates local free (conservative).
-  global_lm->getCostmap()->setCost(2, 2, costmap_2d::NO_INFORMATION);
-  ayanami::costmap::PlanningOverlay overlay2;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay2));
-  EXPECT_EQ(overlay2.costAt(2, 2), costmap_2d::NO_INFORMATION);
-}
-
-TEST(CostmapPlanningOverlayTest, overlayTransformsLocalFrameOncePerCompose) {
-  CostmapMapContext ctx;
-  // local frame = odom_a, shifted by (+10, 0) relative to global map_b
-  // (p_local = p_global + (10, 0)): local marks live in the odometry frame.
-  ctx.setFrames("map_b", "odom_a", "base_b");
-  ayanami::components::RobotStateController::instance().setTransform(
-      "odom_a", "map_b", ayanami::Timestamp::latest(),
-      Eigen::Translation3d(10.0, 0.0, 0.0) * Eigen::Quaterniond::Identity());
-
-  // global: 10x10 @0.5m origin (0,0); inflated-cost at cell (2,2)
-  // (world (1.25,1.25) -> local world (11.25,1.25) -> local cell (22,2)).
-  auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_b", false, false);
-  global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  auto global =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_b");
-
-  // local: 30x30 @0.5m origin (0,0) covering local world 0..15m, so the
-  // shifted marks land inside the window.
-  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "odom_a", true, false);
-  local_lm->resizeMap(30, 30, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(22, 2, 200);
-  auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom_a");
-
-  ctx.setGlobalCostmap(global);
-  ctx.setLocalCostmap(local);
-
-  ayanami::costmap::PlanningOverlay overlay;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay));
-  ASSERT_TRUE(overlay.valid);
-  EXPECT_TRUE(overlay.local_overlay_valid);
-  // The local mark (local cell (22,2)) shows up at the GLOBAL cell (2,2):
-  // one transform resolution per compose, per-cell math only.
-  EXPECT_EQ(overlay.costAt(2, 2), 200);
-  // Untouched global cells stay free.
-  EXPECT_EQ(overlay.costAt(3, 3), 0);
-}
-
-TEST(CostmapPlanningOverlayTest, missingLocalTransformDegeneratesToGlobalOnly) {
-  CostmapMapContext ctx;
-  // No odom_b<-map_b edge is ever fed: the local map cannot participate.
-  ctx.setFrames("map_c", "odom_b", "base_c");
-  auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_c", false, false);
-  global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  global_lm->getCostmap()->setCost(3, 3, 120);
-  auto global =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_c");
-  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "odom_b", true, false);
-  local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(3, 3, 250);
-  auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "odom_b");
-  ctx.setGlobalCostmap(global);
-  ctx.setLocalCostmap(local);
-
-  ayanami::costmap::PlanningOverlay overlay;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay));
-  ASSERT_TRUE(overlay.valid);
-  EXPECT_FALSE(overlay.local_overlay_valid);
-  // Global-only cost (the local 250 did NOT participate).
-  EXPECT_EQ(overlay.costAt(3, 3), 120);
-}
-
-TEST(CostmapPlanningOverlayTest, outsideLocalWindowFallsBackToGlobal) {
-  CostmapMapContext ctx;
-  ctx.setFrames("map_d", "map_d", "base_d");
-  auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_d", false, false);
-  global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  global_lm->getCostmap()->setCost(3, 3, 120);
-  auto global =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_d");
-  auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "map_d", true, false);
-  local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(3, 3, 250);
-  auto local =
-      std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_d");
-  ctx.setGlobalCostmap(global);
-  ctx.setLocalCostmap(local);
-
-  // Roll the local window far away (map frame): robot at (100, 0) moves the
-  // window origin to ~(97.5, -2.5), so global cell (3,3) (world (1.75,1.75))
-  // is far outside the local window.
-  local->updateMap(100.0, 0.0, 0.0);
-
-  ayanami::costmap::PlanningOverlay overlay;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay));
-  ASSERT_TRUE(overlay.valid);
-  // Cell (3,3) is far outside the local window: global-only cost.
-  EXPECT_EQ(overlay.costAt(3, 3), 120);
-}
-
-TEST(CostmapPlanningOverlayTest, missingLocalWrapperDegeneratesToGlobalOnly) {
-  CostmapMapContext ctx;
-  ctx.setFrames("iso_map", "iso_odom", "base_link");
-  auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
-      "iso_map", false, false);
-  global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  global_lm->getCostmap()->setCost(4, 4, 250);
-  auto global =
-      std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "iso_map");
-  ctx.setGlobalCostmap(global);
-  // No local wrapper: the overlay stays valid (global-only).
-  ayanami::costmap::PlanningOverlay overlay;
-  ASSERT_TRUE(ctx.composePlanningOverlay(overlay));
-  ASSERT_TRUE(overlay.valid);
-  EXPECT_EQ(overlay.costAt(4, 4), 250);
+  // The same lethal cell in the GLOBAL map does invalidate.
+  global_lm->getCostmap()->setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));
 }
 
 TEST(CostmapMapContextTest, isPathValidDegeneratesWithoutMap) {

@@ -6,7 +6,7 @@
 // tick (execute the tree).
 //
 // argv (always absolute paths of production module .so files):
-// 1=host(costmap_navigation) 2=dwb 3=smac 4=savitzky 5=pid
+// 1=host(costmap_navigation) 2=dwb 3=astar 4=savitzky 5=pid
 // 6=spin 7=backup 8=wait 9=clear 10=goal_checker 11=progress_checker
 // 12=navigation_behavior_tree
 
@@ -71,7 +71,7 @@ std::filesystem::path makeTreeConfigDir() {
 }
 
 
-std::string g_host_so, g_dwb_so, g_smac_so, g_savitzky_so, g_pid_so;
+std::string g_host_so, g_dwb_so, g_astar_so, g_savitzky_so, g_pid_so;
 std::string g_spin_so, g_backup_so, g_wait_so, g_clear_so;
 std::string g_goal_checker_so, g_progress_checker_so, g_bt_ext_so;
 
@@ -95,7 +95,7 @@ void expectLoadsAs(const std::string& so, const char* what = nullptr) {
 TEST(ExtensionModuleFactoryTest, allProductionModulesLoadViaCommonFactory) {
   expectLoadsAs<ayanami::abstract::AbstractNavigation>(g_host_so, "host");
   expectLoadsAs<ayanami::abstract::AbstractController>(g_dwb_so, "dwb");
-  expectLoadsAs<ayanami::costmap::CostmapPlanner>(g_smac_so, "smac");
+  expectLoadsAs<ayanami::costmap::CostmapPlanner>(g_astar_so, "astar");
   expectLoadsAs<ayanami::costmap::CostmapSmoother>(g_savitzky_so, "savitzky");
   expectLoadsAs<ayanami::abstract::AbstractController>(g_pid_so, "pid");
   expectLoadsAs<ayanami::costmap::CostmapRecovery>(g_spin_so, "spin");
@@ -248,6 +248,7 @@ TEST(ExtensionModuleFactoryTest, defaultTreeExtensionLoadsRegistersAndExecutes) 
   bb->set<uint64_t>(k_raw_path_revision, 0u);
   bb->set<uint64_t>(k_goal_revision, 0u);
   bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
+  bb->set<uint32_t>(k_nav_retries, 6u);
   EXPECT_NO_THROW(validateRequiredBlackboardEntries(bb));
 
   auto tree = factory.createTree(ext->defaultTreeId(), bb);
@@ -268,7 +269,7 @@ int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   if (argc > 1) g_host_so = argv[1];
   if (argc > 2) g_dwb_so = argv[2];
-  if (argc > 3) g_smac_so = argv[3];
+  if (argc > 3) g_astar_so = argv[3];
   if (argc > 4) g_savitzky_so = argv[4];
   if (argc > 5) g_pid_so = argv[5];
   if (argc > 6) g_spin_so = argv[6];

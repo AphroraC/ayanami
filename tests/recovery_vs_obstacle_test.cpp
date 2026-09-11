@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "test_transform_source.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <memory>
@@ -37,6 +39,7 @@
 #include <ayanami/types.hpp>
 #include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
 
+using ayanami::testing::testTransforms;
 namespace {
 
 using ayanami::ErrorCode;
@@ -134,7 +137,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
 
 void setRobot(double wx, double wy) {
   auto& rsc = ayanami::components::RobotStateController::instance();
-  rsc.setTransform(
+  testTransforms().set(
       "map", "base_link", ayanami::Timestamp::latest(),
       Eigen::Translation3d(wx, wy, 0.0) * Eigen::Quaterniond::Identity());
 }
