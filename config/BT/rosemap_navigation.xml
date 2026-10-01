@@ -1,11 +1,12 @@
 <root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
   <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
     <RecoveryNode name="NavigateRecovery" number_of_retries="{nav_retries}" budget_reset_token="{goal_revision}"
-                  failure_context="{failure_context}">
+                  max_same_cause="{max_same_cause}" failure_context="{failure_context}">
       <ReactiveSequence name="ProgressGate">
         <IsRobotProgressing distance="{oscillation_distance}"
                             window="{oscillation_timeout}"/>
         <PipelineSequence name="NavigateWithReplanning">
+          <Deadline msec="{planner_timeout}" reset_token="{goal_revision}">
           <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
             <RecoveryNode name="ComputePath" number_of_retries="1"
                           failure_context="{failure_context}">
@@ -16,25 +17,47 @@
                              failure_context="{failure_context}"/>
               </Sequence>
               <Sequence>
-                <Recovery recovery="{clear_costmap_id}"
+                <Recovery recovery="{escape_id}"
                           failure_context="{failure_context}"/>
               </Sequence>
             </RecoveryNode>
           </RateController>
+          </Deadline>
+          <Deadline msec="{smoother_timeout}" reset_token="{goal_revision}">
           <RateController hz="{smoother_frequency}" reset_token="{raw_path_revision}">
-            <Sequence>
-              <SmoothPath input_path="{raw_path}" path="{smoothed_path}"
+            <!-- No smoothed-path IsPathValid: the smoother module gates its
+                 own output on the fused overlay at solve time -- the same
+                 terms the raw path is validated on at plan time. A BT-level
+                 re-validation against the LIVE local map at 20Hz (while the
+                 followed raw path is never re-judged) let transient
+                 perception marks reject every smoothing attempt near
+                 obstacles -- the output never landed and the branch flapped
+                 to raw forever (2026-09-30 forensics). -->
+            <RecoveryNode name="SmoothPathGate" number_of_retries="1"
+                          failure_context="{failure_context}">
+              <Sequence>
+                <Fallback name="SmoothOrDegrade">
+                  <SmoothPath input_path="{smoothed_path}" raw_path="{raw_path}"
+                              path="{smoothed_path}"
+                              failure_context="{failure_context}"/>
+                  <DegradeToRawPath input_path="{raw_path}"
+                                    path="{smoothed_path}"
+                                    failure_context="{failure_context}"/>
+                </Fallback>
+              </Sequence>
+              <Sequence>
+                <Recovery recovery="{escape_id}"
                           failure_context="{failure_context}"/>
-              <IsPathValid path="{smoothed_path}"
-                           failure_context="{failure_context}"/>
-            </Sequence>
+              </Sequence>
+            </RecoveryNode>
           </RateController>
+          </Deadline>
           <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}"
                         failure_context="{failure_context}">
             <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"
                         failure_context="{failure_context}"/>
             <Sequence>
-              <Recovery recovery="{clear_costmap_id}"
+              <Recovery recovery="{escape_id}"
                         failure_context="{failure_context}"/>
             </Sequence>
           </RecoveryNode>
@@ -42,10 +65,11 @@
       </ReactiveSequence>
       <ReactiveFallback name="RecoveryActions">
         <GoalUpdated goal="{goal}"/>
-        <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}">
-          <Recovery recovery="{spin_id}" failure_context="{failure_context}"/>
+        <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}"
+                          failure_context="{failure_context}">
+          <Recovery recovery="{escape_id}"
+                    failure_context="{failure_context}"/>
           <Recovery recovery="{wait_id}" failure_context="{failure_context}"/>
-          <Recovery recovery="{backup_id}" failure_context="{failure_context}"/>
         </RecoverySequence>
       </ReactiveFallback>
     </RecoveryNode>

@@ -1,5 +1,10 @@
 {
-  "recovery": {
+    "recovery": {
+    // Map-only recovery: clearing the costmap must NOT preempt the running
+    // controller (nav2 ClearEntireCostmap parity -- a service call, not a
+    // robot motion). Motion recoveries (spin/back_up/wait) keep the default
+    // true.
+    "preempts_controller": false,
     "name": "costmap_cleanup_recovery",
     "so_name": "libayanami_costmap_cleanup_recovery.so",
     "role": "clear_costmap"

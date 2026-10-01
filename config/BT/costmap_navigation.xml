@@ -1,0 +1,86 @@
+<root BTCPP_format="4" main_tree_to_execute="NavigateWithReplanningAndSmoothing">
+  <BehaviorTree ID="NavigateWithReplanningAndSmoothing">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="{nav_retries}" budget_reset_token="{goal_revision}"
+                  max_same_cause="{max_same_cause}" failure_context="{failure_context}">
+      <ReactiveSequence name="ProgressGate">
+        <IsRobotProgressing distance="{oscillation_distance}"
+                            window="{oscillation_timeout}"
+                            reset_token="{goal_revision}"/>
+        <PipelineSequence name="NavigateWithReplanning">
+          <Deadline msec="{planner_timeout}" reset_token="{goal_revision}">
+          <RateController hz="{planner_frequency}" reset_token="{goal_revision}">
+            <RecoveryNode name="ComputePath" number_of_retries="1"
+                          failure_context="{failure_context}">
+              <Sequence>
+                <ComputePathToPose goal="{goal}" path="{raw_path}"
+                                   failure_context="{failure_context}"/>
+                <IsPathValid path="{raw_path}"
+                             failure_context="{failure_context}"/>
+              </Sequence>
+              <Sequence>
+                <Recovery recovery="{clear_costmap_id}"
+                          failure_context="{failure_context}"/>
+              </Sequence>
+            </RecoveryNode>
+          </RateController>
+          </Deadline>
+          <Deadline msec="{smoother_timeout}" reset_token="{goal_revision}">
+          <RateController hz="{smoother_frequency}" reset_token="{raw_path_revision}">
+            <!-- The smoothed path is gated by the smoother module's own
+                 fused overlay check (global band + local marks at solve
+                 time) -- the same terms the raw path is validated on at plan
+                 time. The tree deliberately carries NO smoothed-path
+                 IsPathValid: re-judging the refinement against the LIVE
+                 local map at 20Hz while the followed raw path is never
+                 re-judged let transient perception marks (registration
+                 flicker in the free ring just outside the static band,
+                 decay 1s) reject every smoothing attempt near obstacles --
+                 the output never landed and the branch flapped to raw
+                 forever (2026-09-30 forensics). Fresh marks are the planner
+                 branch's business: 5Hz replan + its own plan-time gate.
+                 SmoothPathGate's clear-and-retry covers only the no-artifact
+                 window (both fallback children failed). -->
+            <RecoveryNode name="SmoothPathGate" number_of_retries="1"
+                          failure_context="{failure_context}">
+              <Sequence>
+                <Fallback name="SmoothOrDegrade">
+                  <SmoothPath input_path="{smoothed_path}" raw_path="{raw_path}"
+                              path="{smoothed_path}"
+                              failure_context="{failure_context}"/>
+                  <DegradeToRawPath input_path="{raw_path}"
+                                    path="{smoothed_path}"
+                                    failure_context="{failure_context}"/>
+                </Fallback>
+              </Sequence>
+              <Sequence>
+                <Recovery recovery="{clear_costmap_id}"
+                          failure_context="{failure_context}"/>
+              </Sequence>
+            </RecoveryNode>
+          </RateController>
+          </Deadline>
+          <RecoveryNode name="FollowPath" number_of_retries="1" budget_reset_token="{goal_revision}"
+                        failure_context="{failure_context}">
+            <FollowPath path="{smoothed_path}" frequency="{controller_frequency}"
+                        failure_context="{failure_context}"/>
+            <Sequence>
+              <Recovery recovery="{clear_costmap_id}"
+                        failure_context="{failure_context}"/>
+            </Sequence>
+          </RecoveryNode>
+        </PipelineSequence>
+      </ReactiveSequence>
+      <ReactiveFallback name="RecoveryActions">
+        <GoalUpdated goal="{goal}" session_id="{session_id}"/>
+        <RecoverySequence name="RecoveryActions" reset_token="{goal_revision}"
+                          failure_context="{failure_context}">
+          <Recovery recovery="{clear_costmap_id}"
+                    failure_context="{failure_context}"/>
+          <Recovery recovery="{spin_id}" failure_context="{failure_context}"/>
+          <Recovery recovery="{wait_id}" failure_context="{failure_context}"/>
+          <Recovery recovery="{backup_id}" failure_context="{failure_context}"/>
+        </RecoverySequence>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

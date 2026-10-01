@@ -1,0 +1,11 @@
+{
+  "recovery": {
+    "name": "rosemap_wait_recovery",
+    "so_name": "libayanami_rosemap_wait_recovery.so",
+    "role": "wait",
+    "sim_cycle_dt": 0.01
+  },
+  "rosemap_wait_recovery": {
+    "wait_duration": 0.5
+  }
+}

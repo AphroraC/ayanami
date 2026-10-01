@@ -1,0 +1,17 @@
+{
+  "recovery": {
+    "name": "rosemap_escape_recovery",
+    "so_name": "libayanami_rosemap_escape_recovery.so",
+    "role": "escape",
+    "sim_cycle_dt": 0.01
+  },
+  "rosemap_escape_recovery": {
+    "escape_speed": 0.4,
+    "exit_distance": 0.4,
+    "min_gradient": 0.001,
+    "direction_count": 36,
+    "sweep_radius": 0.4,
+    "resample_interval": 10,
+    "max_ticks": 600
+  }
+}
