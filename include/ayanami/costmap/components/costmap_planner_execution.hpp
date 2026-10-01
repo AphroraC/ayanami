@@ -15,12 +15,14 @@ namespace costmap {
  * @brief The costmap variant of the global planning execution.
  *
  * Binds a costmap context on top of PlannerExecution:
- * - preRun: checkActivate() idempotently activates the global costmap;
- * - postRun: checkDeactivate() idempotently deactivates the global costmap;
- * - safetyCheck: global wrapper isCurrent() (map freshness, atomic read);
- * - callPlanner: typed call into CostmapPlanner; the module reads the map
- *   under a lock internally via its held map module's readGlobal() callback (shared
- *   lock, zero copy, single planning call <10ms).
+ * - preRun: checkActivate() idempotently activates both costmaps;
+ * - postRun: checkDeactivate() idempotently deactivates both costmaps;
+ * - safetyCheck: both wrappers isCurrent() (map freshness, atomic read) --
+ *   the planner consumes the local overlay on top of the global grid, so a
+ *   stale LOCAL map (silent sensor, unwritten layer input) must gate
+ *   planning exactly like it gates control;
+ * - callPlanner: typed call into CostmapPlanner; the module reads its held
+ *   global copy and snapshots the local map internally (overlay planning).
  */
 class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
  public:
@@ -36,19 +38,31 @@ class CostmapPlannerExecution : public ayanami::components::PlannerExecution {
   ~CostmapPlannerExecution() override = default;
 
   void preRun() override {
-    if (ctx && ctx->globalCostmap()) {
-      ctx->globalCostmap()->checkActivate();
+    if (ctx) {
+      if (ctx->globalCostmap()) {
+        ctx->globalCostmap()->checkActivate();
+      }
+      if (ctx->localCostmap()) {
+        ctx->localCostmap()->checkActivate();
+      }
     }
   }
 
   void postRun() override {
-    if (ctx && ctx->globalCostmap()) {
-      ctx->globalCostmap()->checkDeactivate();
+    if (ctx) {
+      if (ctx->globalCostmap()) {
+        ctx->globalCostmap()->checkDeactivate();
+      }
+      if (ctx->localCostmap()) {
+        ctx->localCostmap()->checkDeactivate();
+      }
     }
   }
 
   bool safetyCheck() override {
-    return !ctx || !ctx->globalCostmap() || ctx->globalCostmap()->isCurrent();
+    return (!ctx || !ctx->globalCostmap() ||
+            ctx->globalCostmap()->isCurrent()) &&
+           (!ctx || !ctx->localCostmap() || ctx->localCostmap()->isCurrent());
   }
 
  protected:

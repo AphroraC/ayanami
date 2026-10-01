@@ -1005,7 +1005,7 @@ TEST(SessionStateDispatchTest, multiControllerHaltCancelsAllMapsNotJustDefault) 
   EXPECT_FALSE(t2.ready());
 
   // cancelAll still visits the full action map and stops the remaining owner.
-  server->cancelAllControllers();
+  server->preemptAllControllers();
   ASSERT_TRUE(waitReady(t1));
   ASSERT_TRUE(waitReady(t2));
   // Both tasks finish as CANCELED.

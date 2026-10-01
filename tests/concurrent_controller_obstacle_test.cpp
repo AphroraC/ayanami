@@ -133,7 +133,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   std::atomic<int> obstacle_feeds{0};
   std::atomic<int> wrapped{0};
 
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   // Obstacle writer thread: the only writer -- drops obstacles via markObservable under the write lock + updateMap
   // publishes a new epoch. If the controller held the write lock for a whole cycle, this would starve (feeds would stop
@@ -158,7 +158,7 @@ TEST(ConcurrentControllerObstacle, noDeadlockNoStarvationSnapshotRefreshes) {
   feeder.join();
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
 
   // Anti-starvation: the controller completes >= 15 cycles and got a valid view every time (no MapUnavailable).
   EXPECT_GE(controller->cycles.load(), 15);

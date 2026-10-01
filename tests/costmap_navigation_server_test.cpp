@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <regex>
 #include <atomic>
 #include <memory>
 #include <shared_mutex>
@@ -125,15 +126,23 @@ std::filesystem::path makeConfigDir(
     const std::string& controller_so,
     const std::string& recovery_so,
     double scan_expected_update_rate = 0.0,
-    double robot_radius = 0.0) {
+    double robot_radius = 0.0,
+    bool global_obstacle = false,
+    double local_update_hz = 10.0,
+    double dump_frequency = 0.0) {
   auto dir = makeTempDir() / ("cfg" + planner_so);
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
 
   // The config_* module file pointers live uniformly in the navigation section of navigation.json (single source).
+  // The logging section points the costmap dump (and file logs) into the
+  // temp dir so tests never write into the source tree.
   writeJson(dir / "config.json",
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\"\n"
+             "  },\n"
+             "  \"logging\": {\n"
+             "    \"logging_dir\": \"" + (dir / "logs").string() + "\"\n"
              "  }\n}\n");
   writeJson(dir / "navigation.json",
              "{\n  \"navigation\": {\n"
@@ -184,6 +193,7 @@ std::filesystem::path makeConfigDir(
         << "    \"config_recovery\": [\"recovery.json\"]\n"
         << "  },\n"
         << "  \"costmap\": {\n"
+        << "    \"dump_frequency\": " << dump_frequency << ",\n"
         << "    \"global_frame\": \"map\",\n"
         << "    \"local_frame\": \"odom\",\n"
         << "    \"robot_frame\": \"base_link\",\n"
@@ -194,28 +204,52 @@ std::filesystem::path makeConfigDir(
                 : std::string())
         << "\n  },\n"
         << "  \"costmap_global\": {\n"
-        << "    \"size_x\": 7,\n    \"size_y\": 9,\n"
+        << "    \"update_frequency\": 5.0,\n"
         << "    \"rolling_window\": false,\n"
         << "    \"track_unknown\": false,\n"
-        << "    \"static_map\": \"" << pgm_path << "\",\n"
-        << "    \"inflation_radius\": 1.5,\n"
-        << "    \"inscribed_radius\": 1.0,\n"
-        << "    \"cost_scaling_factor\": 2.0\n"
+        << "    \"layers\": [\"layer_static.json\", "
+        << (global_obstacle ? "\"layer_obstacle_global.json\", " : "")
+        << "\"layer_inflation.json\"]\n"
         << "  },\n"
         << "  \"costmap_local\": {\n"
         << "    \"size_x\": 20,\n    \"size_y\": 20,\n"
         << "    \"rolling_window\": true,\n"
         << "    \"track_unknown\": false,\n"
-        << "    \"inflation_radius\": 1.5,\n"
-        << "    \"inscribed_radius\": 1.0,\n"
-        << "    \"cost_scaling_factor\": 2.0,\n"
-        << "    \"observation_sources\": [\"scan\", \"cloud\"],\n"
-        << "    \"scan\": {\"type\": \"laserscan\", \"expected_update_rate\": "
-        << scan_expected_update_rate << "},\n"
-        << "    \"cloud\": {\"type\": \"pointcloud\"}\n"
+        << "    \"transform_tolerance\": 0.1,\n"
+        << "    \"update_frequency\": " << local_update_hz << ",\n"
+        << "    \"observation_keep_time\": 0.5,\n"
+        << "    \"layers\": [\"layer_obstacle.json\", \"layer_inflation.json\"]\n"
         << "  }\n"
         << "}\n";
   }
+  // Layer module jsons (modules/ so+json; bare so names resolve next to
+  // libayanami.so via the loader's core-relative fallback).
+  writeJson(dir / "layer_static.json",
+            "{\"layer\": {\"name\": \"static_layer\", \"so_name\": "
+            "\"libayanami_costmap_static_layer.so\"},\n \"static_layer\": "
+            "{\"static_map\": \"" + pgm_path + "\"}}\n");
+  writeJson(dir / "layer_inflation.json",
+            "{\"layer\": {\"name\": \"inflation_layer\", \"so_name\": "
+            "\"libayanami_costmap_inflation_layer.so\"},\n \"inflation_layer\": "
+            "{\"inflation_radius\": 1.5, \"inscribed_radius\": 1.0, "
+            "\"cost_scaling_factor\": 2.0}}\n");
+  const std::string scan_block =
+      "\"scan\": {\"type\": \"laserscan\", \"expected_update_rate\": " +
+      std::to_string(scan_expected_update_rate) + "}";
+  writeJson(dir / "layer_obstacle.json",
+            "{\"layer\": {\"name\": \"obstacle_layer\", \"so_name\": "
+            "\"libayanami_costmap_obstacle_layer.so\"},\n \"obstacle_layer\": {"
+            "\"combination\": \"overwrite\", \"footprint_clearing\": true, "
+            "\"observation_sources\": [\"scan\", \"cloud\"], "
+            + scan_block + ", "
+            "\"cloud\": {\"type\": \"pointcloud\"}}}\n");
+  writeJson(dir / "layer_obstacle_global.json",
+            "{\"layer\": {\"name\": \"obstacle_layer\", \"so_name\": "
+            "\"libayanami_costmap_obstacle_layer.so\"},\n \"obstacle_layer\": {"
+            "\"combination\": \"overwrite\", \"footprint_clearing\": true, "
+            "\"observation_sources\": [\"scan\", \"cloud\"], "
+            + scan_block + ", "
+            "\"cloud\": {\"type\": \"pointcloud\"}}}\n");
   return dir;
 }
 
@@ -474,9 +508,43 @@ TEST(CostmapMapFamilyFactoryTest, factoryCreatesDefaultCostmapContext) {
   EXPECT_EQ(ctx->mapFamily(), "costmap");
 }
 
+// Shipped-tree tests below assert COSTMAP-family geometry/loading, but the
+// active route (config.json::global.config_navigation) legitimately switches
+// between families (e.g. rosemap) and configureCoreMaps follows it. Copy the
+// tree and pin the costmap route, so the suite stays green for either active
+// route (same pattern as config_consistency_test). The copy must be named
+// "config": the route's relative asset paths resolve against the config
+// path's PARENT directory.
+const std::string& pinnedCostmapConfigDir() {
+  static const std::string dir = [] {
+    namespace fs = std::filesystem;
+    const fs::path root =
+        fs::temp_directory_path() / "ayanami_costmap_server_pinned";
+    const fs::path pinned = root / "config";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(pinned, ec);
+    fs::copy(fs::path(AYANAMI_TEST_CONFIG_DIR), pinned,
+             fs::copy_options::recursive, ec);
+    const fs::path cfg = pinned / "config.json";
+    std::ifstream ifs(cfg);
+    std::string doc((std::istreambuf_iterator<char>(ifs)),
+                    std::istreambuf_iterator<char>());
+    ifs.close();
+    const std::regex re("(\"config_navigation\"\\s*:\\s*\")[^\"]*(\")");
+    const std::string patched =
+        std::regex_replace(doc, re,
+                           std::string("$1routes/costmap_navigation.json$2"));
+    std::ofstream ofs(cfg);
+    ofs << patched;
+    return pinned.string();
+  }();
+  return dir;
+}
+
 TEST(CostmapNavigationServerTest, defaultConfigMatchesNavPgmGeometry) {
   CostmapNavigationServer server;
-  server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
+  server.configureCoreMaps(pinnedCostmapConfigDir());
   const auto* global = server.globalCostmap()->get().getCostmap();
   ASSERT_NE(global, nullptr);
   EXPECT_EQ(global->getSizeInCellsX(), 266u);
@@ -487,20 +555,21 @@ TEST(CostmapNavigationServerTest, defaultConfigMatchesNavPgmGeometry) {
 }
 
 TEST(CostmapNavigationServerTest, robotRadiusBuildsCircularFootprint) {
-  // Real config: costmap::robot_radius=0.12 -> a 16-gon approximating the circle (nav_demo semantics).
+  // Real config (aligned to config_sentry): costmap::robot_radius=0.3 -> a
+  // 16-gon approximating the circle (nav_demo semantics).
   CostmapNavigationServer server;
-  server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
+  server.configureCoreMaps(pinnedCostmapConfigDir());
   const auto& footprint =
       server.globalCostmap()->get().getFootprint();
   ASSERT_EQ(footprint.size(), 16u);
   for (const auto& point : footprint) {
-    EXPECT_NEAR(std::hypot(point.x, point.y), 0.12, 1e-9);
+    EXPECT_NEAR(std::hypot(point.x, point.y), 0.3, 1e-9);
   }
-  // 16-gon inscribed = 0.12 * cos(pi/16) ~ 0.1177.
+  // 16-gon inscribed = 0.3 * cos(pi/16) ~ 0.2939.
   EXPECT_NEAR(server.globalCostmap()->get().getInscribedRadius(),
-              0.12 * std::cos(M_PI / 16.0), 1e-6);
+              0.3 * std::cos(M_PI / 16.0), 1e-6);
   EXPECT_NEAR(server.localCostmap()->get().getInscribedRadius(),
-              0.12 * std::cos(M_PI / 16.0), 1e-6);
+              0.3 * std::cos(M_PI / 16.0), 1e-6);
 }
 
 // ---------------- Virtual initialize*Module ----------------
@@ -677,8 +746,8 @@ TEST(CostmapNavigationServerTest, loadModulesWithMissingSoIsFatalAndNamed) {
 // key that no longer exists would otherwise only surface on the robot.
 TEST(CostmapNavigationServerTest, shippedConfigLoadsAllFamilies) {
   CostmapNavigationServer server;
-  server.configureCoreMaps(AYANAMI_TEST_CONFIG_DIR);
-  ASSERT_NO_THROW(server.loadModules(AYANAMI_TEST_CONFIG_DIR))
+  server.configureCoreMaps(pinnedCostmapConfigDir());
+  ASSERT_NO_THROW(server.loadModules(pinnedCostmapConfigDir()))
       << "the shipped config must load: see the critical log for the reason";
 
   EXPECT_NE(server.plannerAction(), nullptr);
@@ -786,14 +855,16 @@ TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
   server.configureCoreMaps(dir.string());
   setupTransforms();
 
-  // Single point: lidar(0,0) -> odom(0.1,0); local origin = robot(-5,-5) -> cell(10,10)
-  server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
+  // Single point: lidar(1.1,0) -> odom(1.2,0); local origin = robot(-5,-5)
+  // -> cell (12,10). The hit doubles as its own ray endpoint, so the
+  // corridor cells before it are freed.
+  server.handleObstaclePointCloud(makePointCloud(1.1f, 0.0f, 0.0f));
 
   auto* master = server.localCostmap()->get().getCostmap();
-  EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_EQ(master->getCost(10, 11), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+  EXPECT_EQ(master->getCost(12, 10), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(12, 11), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   // The decay band within 3 cells is non-zero
-  EXPECT_GT(master->getCost(10, 13), 0);
+  EXPECT_GT(master->getCost(12, 13), 0);
 
   // Map-representation policy: the global map is static+inflation ONLY, so
   // the same physical obstacle must NOT appear there (planner reads the
@@ -801,19 +872,28 @@ TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
   auto* global_master = server.globalCostmap()->get().getCostmap();
   unsigned int global_mx = 0;
   unsigned int global_my = 0;
-  ASSERT_TRUE(global_master->worldToMap(0.1, 0.0, global_mx, global_my));
+  ASSERT_TRUE(global_master->worldToMap(1.2, 0.0, global_mx, global_my));
   EXPECT_EQ(global_master->getCost(global_mx, global_my),
             costmap_2d::FREE_SPACE);
 
-  // After the obstacle moves (lidar(2,0) -> odom(2.1,0) -> cell(14,10)) the old inflation band disappears
-  server.handleObstaclePointCloud(makePointCloud(2.0f, 0.0f, 0.0f));
+  // Obstacle elsewhere (lidar(0,3) -> odom(0.1,3) -> cell (10,16)): the new
+  // ray runs vertically at cell column 10 and never passes through the old
+  // mark (12,10) -- occlusion persistence, no wholesale window wipe.
+  server.handleObstaclePointCloud(makePointCloud(0.0f, 3.0f, 0.0f));
+  EXPECT_EQ(master->getCost(12, 10), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(10, 16), costmap_2d::LETHAL_OBSTACLE);
+
+  // After the obstacle moves (lidar(2.9,0) -> odom(3.0,0) -> cell(16,10)),
+  // the new ray passes THROUGH the old mark and retires it with its
+  // inflation band (the new mark sits 4 cells out, beyond the old band).
+  server.handleObstaclePointCloud(makePointCloud(2.9f, 0.0f, 0.0f));
 
   // The old obstacle cell + old inflation cells return to FREE (more than 3 cells from the new source)
-  EXPECT_EQ(master->getCost(10, 10), costmap_2d::FREE_SPACE);
-  EXPECT_EQ(master->getCost(10, 13), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(master->getCost(12, 10), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(master->getCost(12, 13), costmap_2d::FREE_SPACE);
   // Obstacle at the new position + new inflation band
-  EXPECT_EQ(master->getCost(14, 10), costmap_2d::LETHAL_OBSTACLE);
-  EXPECT_EQ(master->getCost(14, 11), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+  EXPECT_EQ(master->getCost(16, 10), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(16, 11), costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
 
   // The global map is untouched by the whole observation stream.
   EXPECT_EQ(global_master->getCost(global_mx, global_my),
@@ -821,24 +901,14 @@ TEST(CostmapNavigationServerTest, handleObstaclePointCloudMarksAndInflates) {
 }
 
 TEST(CostmapNavigationServerTest, globalObstacleLayerStampsClearsAndInvalidatesPaths) {
-  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
-  {
-    // Enable the global dynamic layer for the "cloud" source (nav2
-    // global_costmap = static + obstacle + inflation).
-    std::ifstream in(dir / "navigation.json");
-    std::string text((std::istreambuf_iterator<char>(in)),
-                     std::istreambuf_iterator<char>());
-    const std::string anchor = "\"costmap_global\": {\n";
-    ASSERT_NE(text.find(anchor), std::string::npos);
-    text.insert(text.find(anchor) + anchor.size(),
-                "    \"observation_sources\": [\"cloud\"],\n");
-    writeJson(dir / "navigation.json", text);
-  }
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so,
+                           /*scan_expected_update_rate=*/0.0,
+                           /*robot_radius=*/0.0,
+                           /*global_obstacle=*/true);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
-  ASSERT_EQ(server.globalObservationSources().size(), 1u);
-  EXPECT_EQ(server.globalObservationSources().front(), "cloud");
 
   // The same observation is stamped into BOTH maps (world point (0.1, 0)).
   server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
@@ -880,16 +950,17 @@ TEST(CostmapNavigationServerTest, globalObstacleLayerStampsClearsAndInvalidatesP
             costmap_2d::LETHAL_OBSTACLE);
 }
 
-TEST(CostmapNavigationServerTest, astarPlanIgnoresLocalObstacle) {
+TEST(CostmapNavigationServerTest, astarPlanOverlaysLocalObstacle) {
   auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so, g_test_controller_so, g_test_recovery_so);
   CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
   setupTransforms();
 
   // Place the observation directly between start and goal in the map frame.
-  // Map-representation/timescale policy: the planner reads the GLOBAL
-  // costmap (static+inflation) only; a fresh LOCAL observation must not
-  // shape the global plan (the local map is the controller's timescale).
+  // Static-global/overlay policy: the global grid carries static+inflation
+  // only, and a fresh LOCAL observation must still shape the plan -- the
+  // planner fuses its held global copy with a fresh local snapshot
+  // (FusedMapView) and routes around the local obstacle's blocking disc.
   server.handleObstaclePointCloud(makePointCloud(0.0f, 0.0f, 0.0f));
 
 auto planner = std::make_shared<ayanami::modules::CostmapAstarPlanner>();
@@ -921,8 +992,8 @@ auto planner = std::make_shared<ayanami::modules::CostmapAstarPlanner>();
           std::abs(pose.pose.position.y()) > 0.25;
     }
   }
-  EXPECT_FALSE(deviated_from_straight_line)
-      << "a local-only obstacle must not deviate the global plan";
+  EXPECT_TRUE(deviated_from_straight_line)
+      << "the overlay planner must route around the local-only obstacle";
 }
 
 TEST(CostmapNavigationServerTest, handleObstaclePointCloudIgnoredWithoutMap) {
@@ -1226,4 +1297,173 @@ int main(int argc, char** argv) {
   if (argc > 7) g_plain_controller_so = argv[7];
   if (argc > 8) g_plain_recovery_so = argv[8];
   return RUN_ALL_TESTS();
+}
+
+TEST(CostmapNavigationServerTest, writerBatchAppliesEveryQueuedFrame) {
+  // P1 regression: frames queued while the writer is between cycles are
+  // consumed as one batch (drain-once) -- every mark lands, and the map is
+  // current after a single waitForMapIdle. Three beams in different
+  // directions: no ray of one frame crosses another frame's endpoint, so
+  // the three marks must coexist.
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  setupTransforms();
+  server.start();
+
+  const auto makeBeam = [](float angle, float range) {
+    ayanami::sensor_msgs::LaserScan scan;
+    scan.header.frame_id = "lidar";
+    scan.angle_min = angle;
+    scan.angle_max = angle;
+    scan.angle_increment = 0.0f;
+    scan.range_min = 0.1f;
+    scan.range_max = 10.0f;
+    scan.ranges = {range};
+    return scan;
+  };
+  server.handleObstacleLaserScan(makeBeam(0.0f, 3.0f));    // odom (3.1, 0)
+  server.handleObstacleLaserScan(makeBeam(3.14159265f, 3.0f));  // odom (-2.9, 0)
+  server.handleObstacleLaserScan(makeBeam(1.57079633f, 3.0f));  // odom (0.1, 3)
+  ASSERT_TRUE(server.waitForMapIdle(2.0));
+  // The endpoint world coordinates land on cell boundaries; float scan
+  // geometry can put the mark in the nominal cell or its neighbor, so the
+  // assertion accepts either (254 mark, or 253 inflated neighbor -- both
+  // prove a source was stamped there).
+  const auto blocked = [](costmap_2d::CostValue cost) {
+    return cost >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  };
+  auto* local = server.localCostmap()->get().getCostmap();
+  EXPECT_TRUE(blocked(local->getCost(16, 10)));
+  EXPECT_TRUE(blocked(local->getCost(4, 10)));
+  EXPECT_TRUE(blocked(local->getCost(10, 16)));
+  EXPECT_TRUE(server.localCostmap()->isCurrent());
+
+  server.stop();
+}
+TEST(CostmapNavigationServerTest, stampedFrameWithoutStampTfIsDropped) {
+  // R3 regression: a frame that CARRIES a stamp but cannot resolve it at
+  // stamp time is DROPPED whole (nav2 parity). The old clear-only fallback
+  // erased the ray-endpoint obstacles the frame just saw; dropping keeps
+  // the map stale-but-stable. A latest-time-by-construction frame keeps
+  // marking.
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  setupTransforms();
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.setTransformSource(
+      [](const std::string& target, const std::string& source,
+         const ayanami::Timestamp& stamp, Eigen::Isometry3d& transform,
+         double) {
+        if (!stamp.isLatest()) {
+          return false;  // stamp-time lookups unavailable
+        }
+        return testTransforms().lookup(target, source, transform);
+      });
+
+  // Latest-time frame first: a mark exists at cell (10,10)
+  // (lidar(0,0) -> odom(0.1,0)).
+  ayanami::sensor_msgs::PointCloud2 fresh = makePointCloud(0.0f, 0.0f, 0.0f);
+  fresh.header.stamp = ayanami::Timestamp::latest();
+  server.handleObstaclePointCloud(fresh);
+  auto* master = server.localCostmap()->get().getCostmap();
+  EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
+
+  // Stamped frame, stamp unresolvable: dropped ENTIRELY -- its ray (which
+  // would pass through the existing mark, since the hit sits beyond it on
+  // the same line) must neither clear nor mark anything.
+  ayanami::sensor_msgs::PointCloud2 degraded = makePointCloud(2.0f, 0.0f, 0.0f);
+  degraded.header.stamp =
+      ayanami::Timestamp(std::chrono::nanoseconds(1000000000));
+  server.handleObstaclePointCloud(degraded);
+  EXPECT_EQ(master->getCost(10, 10), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(14, 10), costmap_2d::FREE_SPACE);
+
+  // Restore the standard stamp-agnostic stub for later tests.
+  setupTransforms();
+}
+
+TEST(CostmapNavigationServerTest, observationBufferOverflowDropsOldestAndCounts) {
+  // R4 regression: the bounded observation buffer must drop the OLDEST
+  // frame under a sustained stall and surface it through the counter (the
+  // throttled warning is the field-visible part). A slow local cycle
+  // (0.5 Hz -> 2 s gate) makes the overflow deterministic: the first cycle
+  // drains once, then 12 submissions pile up against the cap of 8.
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so,
+                           /*scan_expected_update_rate=*/0.0,
+                           /*robot_radius=*/0.0, /*global_obstacle=*/false,
+                           /*local_update_hz=*/0.5);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  setupTransforms();
+  server.start();
+
+  // Prime one real writer cycle first: waitForMapIdle alone can return
+  // while the writer has not run its first cycle yet (the queue starts
+  // empty), which would interleave the drain below with the submissions
+  // and zero the drop counter. One priming frame pins the first cycle and
+  // its update_frequency gate; the 12 submissions then land strictly
+  // inside the 2 s gate window.
+  server.handleObstaclePointCloud(makePointCloud(1.0f, 0.0f, 0.0f));
+  ASSERT_TRUE(server.waitForMapIdle(2.0));
+
+  for (int i = 0; i < 12; ++i) {
+    server.handleObstaclePointCloud(makePointCloud(1.0f, 0.0f, 0.0f));
+  }
+  EXPECT_EQ(server.observationsDropped(), 4u)
+      << "12 frames against the cap of 8 must drop exactly the 4 oldest";
+  // The next cycle (2 s gate) consumes what survived; the aged-out frames
+  // are skipped without processing.
+  EXPECT_TRUE(server.waitForMapIdle(5.0));
+
+  server.stop();
+}
+
+TEST(CostmapNavigationServerTest, periodicDumpWritesPgmAndMetadata) {
+  // Dump-cycle regression: at dump_frequency the writer thread writes both
+  // master grids as PGM + sidecar into the logging dir (the field
+  // diagnostics path; production runs the same code at 0.1 Hz).
+  auto dir = makeConfigDir(g_test_planner_so, g_test_smoother_so,
+                           g_test_controller_so, g_test_recovery_so,
+                           /*scan_expected_update_rate=*/0.0,
+                           /*robot_radius=*/0.0, /*global_obstacle=*/false,
+                           /*local_update_hz=*/10.0, /*dump_frequency=*/50.0);
+  CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+  setupTransforms();
+  server.start();
+
+  // Mark one obstacle so the local dump has a lethal cell to show.
+  server.handleObstaclePointCloud(makePointCloud(1.0f, 0.0f, 0.0f));
+  ASSERT_TRUE(server.waitForMapIdle(2.0));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  bool global_seen = false;
+  bool local_seen = false;
+  while (std::chrono::steady_clock::now() < deadline &&
+         !(global_seen && local_seen)) {
+    std::error_code ec;
+    global_seen = std::filesystem::exists(dir / "logs" / "costmap_global.pgm",
+                                          ec);
+    local_seen = std::filesystem::exists(dir / "logs" / "costmap_local.pgm",
+                                         ec);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(global_seen) << "global costmap PGM was never dumped";
+  ASSERT_TRUE(local_seen) << "local costmap PGM was never dumped";
+
+  // Sidecars parse and carry the static-layer metadata schema.
+  std::ifstream meta((dir / "logs" / "costmap_global.json").string());
+  ASSERT_TRUE(meta);
+  std::string content((std::istreambuf_iterator<char>(meta)),
+                      std::istreambuf_iterator<char>());
+  EXPECT_NE(content.find("\"resolution\""), std::string::npos);
+  EXPECT_NE(content.find("\"origin\""), std::string::npos);
+
+  server.stop();
+  std::filesystem::remove_all(dir / "logs");
 }

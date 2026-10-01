@@ -76,20 +76,33 @@ map_server 加载 `nav_demo/map/ayanami.yaml` → 指向
 `ayanami/config/assets/nav.pgm`（GIMP 精确裁剪的 SLAM 图，与 ayanami 静态层
 同一张图、同一原点，逐像素一致）。
 
+## costmap/field 输出扩展（costmap_viewer / rosemap_viewer）
+
+- rviz_viewer 只发布路径/状态/`cmd_vel`；**全部地图发布由独立扩展承担**。
+- `costmap_viewer`：订阅三个每层工件槽
+  `on_global_costmap_static` / `on_global_costmap_inflation` /
+  `on_local_costmap_inflation`（server 唯一写者在内容变更时无条件发射，
+  generation 门控；静态 global 可能只发射一次），**长期持有缓存**并在独立
+  线程按 `config_extensions.json::costmap_viewer` 的频率重发（global 0.1Hz
+  边沿触发 + 周期重发，local 5Hz）；latched 话题
+  `/ayanami/global_costmap/static`、`/ayanami/global_costmap/inflation`、
+  `/ayanami/local_costmap/obstacle`、`/ayanami/local_costmap/inflation`。
+- `rosemap_viewer`：订阅 `on_rosemap_field`（rosemap server 写者按
+  sequence 门控无条件发射），同样的缓存 + 独立线程 + 可配频率
+  （`config_extensions.json::rosemap_viewer`，默认 5Hz）；latched 话题
+  `/ayanami/rosemap_field`。
+- 转换统一走 `ros_msg_converter.hpp`（lethal→100、NO_INFORMATION→-1、
+  线性映射其余；帧由核心单一来源填充）。
+- 两个扩展都导出 `extern "C"` 发布计数器（costmapViewer*/rosemapViewer*）
+  供测试 dlsym 验证加载顺序与发布行为。
+
 ## rviz_viewer（可视化扩展）
 
-- 构造期注册全部旁路 `CallbackSubscription`（RAII）：
-  12 个 action 流槽（goal/feedback/result × 4 族）+ `on_velocity_command`
-  + `on_costmap_visualization`。
-- 发布 ROS topic（topic 名全部来自 config_ros.json）：
-  `/ayanami/planner/path`、`/ayanami/smoother/path`、`/ayanami/controller/
-  path|status`、`/ayanami/recovery/goal|status`、`/cmd_vel`（+ stamped）、
-  `/ayanami/global_costmap`、`/ayanami/local_costmap` 等。
-- costmap 发布：shared 锁直读 master grid → 拷贝进 OccupancyGrid
-  （lethal→100、NO_INFORMATION→-1、线性映射其余）→ 帧取 wrapper 帧
-  （核心单一来源，无本地兜底）。
-- 导出 `extern "C"` 计数器（rvizViewerGlobalCostmapPubCount 等）供测试
-  dlsym 验证加载顺序与发布行为。
+- 构造期注册旁路 `CallbackSubscription`（RAII）：12 个 action 流槽
+  （goal/feedback/result × 4 族）+ `on_velocity_command`。
+- 发布 ROS topic：`/ayanami/planner/path`、`/ayanami/smoother/path`、
+  `/ayanami/controller/path|status`、`/ayanami/recovery/goal|status`、
+  `/cmd_vel` 等；不再发布任何地图。
 
 ## 消息转换（ros_msg_converter.hpp）
 
@@ -99,10 +112,21 @@ scan/pointcloud 的 frame_id 原样保留，落图时由核心经注入的 tf2 �
 
 ## 输出边界（rviz_viewer / cmd_chassis_publisher）
 
-- `rviz_viewer`：纯旁路可视化扩展——订阅全局回调槽发布路径/costmap/
-  goal/feedback/status/**navigation_status**；不发布任何速度命令，
-  不引入 rm_msgs。话题参数在 `config_extensions.json::rviz_viewer`。
-- `cmd_chassis_publisher`：底盘命令唯一 ROS 输出——订阅
-  `on_velocity_command` 发布 `rm_msgs/ChassisCmd`（mode/accel/power_limit，
-  语义同 cmd_vel_bridge）；参数在 `config_extensions.json::cmd_chassis_publisher`。
+速度输出是**双通道互补分工**，不是重复输出：
+
+- `rviz_viewer`：可视化扩展 + **速度本体通道**——订阅全局回调槽发布路径/
+  costmap/goal/feedback/status/**navigation_status**，并把
+  `on_velocity_command` 的速度本体转发为 `geometry_msgs/Twist` 发布到
+  `/cmd_vel`（rm_chassis_controllers ChassisBase 的输入）。话题参数在
+  `config_extensions.json::rviz_viewer`。
+- `cmd_chassis_publisher`：**命令参数通道**——每收到一条核心速度指令发布一条
+  `rm_msgs/ChassisCmd`（mode / ramp 加速度 / power_limit）。加速度 ramp 与
+  功率限制的**执行在底盘固件**（ChassisBase），不在本层、也不在导航核心；
+  导航核心只通过控制器周期契约（`setCyclePeriod`）保证模块内部积分使用的
+  dt 与真实控制周期一致。参数在 `config_extensions.json::cmd_chassis_publisher`。
 - ayanami_ros 本体只做 ROS 输入（订阅 + TF 同步 + goal 邮箱）。
+- **停机整形归属**：核心的终态/取消只发"恰一次零脉冲"（速度阶跃），减速曲线
+  由下游执行——RM 部署链路中 ChassisCmd 携带 ramp 加速度参数、由底盘固件限幅；
+  `/cmd_vel` 链路中由 rm_chassis_controllers 自身限幅。**非 rm_chassis 的第三方
+  消费者（含无头部署直连 on_velocity_command）需自行做速度整形**，核心不内嵌
+  减速 ramp（保持精简，见 2026-09-28 决策）。

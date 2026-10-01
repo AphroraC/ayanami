@@ -10,8 +10,9 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <vector>
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace ayanami {
 
@@ -20,35 +21,39 @@ namespace {
 bool is_console_sink(const spdlog::sink_ptr& sink) {
   return dynamic_cast<spdlog::sinks::stdout_sink_mt*>(sink.get()) != nullptr ||
          dynamic_cast<spdlog::sinks::stdout_sink_st*>(sink.get()) != nullptr ||
-         dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(sink.get()) !=
-             nullptr ||
-         dynamic_cast<spdlog::sinks::stdout_color_sink_st*>(sink.get()) !=
-             nullptr ||
+         dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(sink.get()) != nullptr ||
+         dynamic_cast<spdlog::sinks::stdout_color_sink_st*>(sink.get()) != nullptr ||
          dynamic_cast<spdlog::sinks::stderr_sink_mt*>(sink.get()) != nullptr ||
          dynamic_cast<spdlog::sinks::stderr_sink_st*>(sink.get()) != nullptr ||
-         dynamic_cast<spdlog::sinks::stderr_color_sink_mt*>(sink.get()) !=
-             nullptr ||
-         dynamic_cast<spdlog::sinks::stderr_color_sink_st*>(sink.get()) !=
-             nullptr;
+         dynamic_cast<spdlog::sinks::stderr_color_sink_mt*>(sink.get()) != nullptr ||
+         dynamic_cast<spdlog::sinks::stderr_color_sink_st*>(sink.get()) != nullptr;
 }
 
 bool is_file_sink(const spdlog::sink_ptr& sink) {
-  return dynamic_cast<spdlog::sinks::rotating_file_sink_mt*>(sink.get()) !=
-             nullptr ||
-         dynamic_cast<spdlog::sinks::rotating_file_sink_st*>(sink.get()) !=
-             nullptr ||
-         dynamic_cast<spdlog::sinks::basic_file_sink_mt*>(sink.get()) !=
-             nullptr ||
-         dynamic_cast<spdlog::sinks::basic_file_sink_st*>(sink.get()) !=
-             nullptr;
+  return dynamic_cast<spdlog::sinks::rotating_file_sink_mt*>(sink.get()) != nullptr ||
+         dynamic_cast<spdlog::sinks::rotating_file_sink_st*>(sink.get()) != nullptr ||
+         dynamic_cast<spdlog::sinks::basic_file_sink_mt*>(sink.get()) != nullptr ||
+         dynamic_cast<spdlog::sinks::basic_file_sink_st*>(sink.get()) != nullptr;
 }
+
+/// All layer loggers, in the order configureLogging assigns them.
+constexpr const char* kLayerLoggers[] = {
+  logging::kRosLogger,
+  logging::kPlannerLogger,
+  logging::kSmootherLogger,
+  logging::kControllerLogger,
+  logging::kRecoveryLogger,
+  logging::kBtLogger,
+  logging::kCostmapLogger,
+};
 
 }  // namespace
 
 spdlog::level::level_enum logLevelFromString(const std::string& level) {
   std::string normalized = level;
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
   if (normalized == "trace") return spdlog::level::trace;
   if (normalized == "debug") return spdlog::level::debug;
   if (normalized == "info") return spdlog::level::info;
@@ -61,77 +66,153 @@ spdlog::level::level_enum logLevelFromString(const std::string& level) {
   return spdlog::level::info;
 }
 
+std::shared_ptr<spdlog::logger> layerLogger(const std::string& name) {
+  if (auto existing = spdlog::get(name)) {
+    return existing;
+  }
+  // Clone the current default logger's output so messages logged before
+  // configureLogging still land somewhere sensible.
+  const auto fallback = spdlog::default_logger();
+  std::vector<spdlog::sink_ptr> sinks = fallback ? fallback->sinks() : std::vector<spdlog::sink_ptr>{};
+  if (sinks.empty()) {
+    sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+  }
+  auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
+  logger->set_level(fallback ? fallback->level() : spdlog::level::info);
+  try {
+    spdlog::register_logger(logger);
+  } catch (const spdlog::spdlog_ex&) {
+    // Lost a creation race: the registered instance wins.
+    return spdlog::get(name);
+  }
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> rosLogger() {
+  static const auto logger = layerLogger(logging::kRosLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> plannerLogger() {
+  static const auto logger = layerLogger(logging::kPlannerLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> smootherLogger() {
+  static const auto logger = layerLogger(logging::kSmootherLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> controllerLogger() {
+  static const auto logger = layerLogger(logging::kControllerLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> recoveryLogger() {
+  static const auto logger = layerLogger(logging::kRecoveryLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> btLogger() {
+  static const auto logger = layerLogger(logging::kBtLogger);
+  return logger;
+}
+
+std::shared_ptr<spdlog::logger> costmapLogger() {
+  static const auto logger = layerLogger(logging::kCostmapLogger);
+  return logger;
+}
+
 void configureLogging() {
   // The logging section's single source of truth: the root config.json (no separate config_logging file).
   const Config* config = GlobalConfig::instance();
 
-  const auto logging_level = logLevelFromString(
-      config->param<std::string>("logging", "logging_level", std::string("info")));
-  const auto console_level = logLevelFromString(
-      config->param<std::string>("logging", "console_level", std::string("info")));
-  const bool console_output =
-      config->param<bool>("logging", "console_output", true);
+  const auto logging_level =
+    logLevelFromString(config->param<std::string>("logging", "logging_level", std::string("info")));
+  const auto console_level =
+    logLevelFromString(config->param<std::string>("logging", "console_level", std::string("info")));
+  const bool console_output = config->param<bool>("logging", "console_output", true);
   const bool file_output = config->param<bool>("logging", "file_output", true);
 
-  auto logger = spdlog::default_logger();
-  if (logger) {
-    // Rebuild the sink set: console (as needed) + file (as needed) + keep other sinks (ringbuffer etc.).
-    std::vector<spdlog::sink_ptr> new_sinks;
+  auto current_default = spdlog::default_logger();
 
-    if (console_output) {
-      auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-      console_sink->set_level(console_level);
-      new_sinks.push_back(std::move(console_sink));
-    }
+  // Rebuild the sink set: console (as needed) + file (as needed) + keep other
+  // sinks (ringbuffer etc.). The same sinks are shared by the default logger
+  // and every layer logger; per-line gating happens at logger level, so the
+  // file sink is left ungated and the console sink keeps its console_level.
+  std::vector<spdlog::sink_ptr> new_sinks;
 
-    if (file_output) {
-      const std::string log_dir = config->param<std::string>(
-          "logging", "logging_dir", std::string("logs"));
-      std::error_code ec;
-      std::filesystem::create_directories(log_dir, ec);
-      if (!ec) {
-        const bool rotate_logs =
-            config->param<bool>("logging", "rotate_logs", true);
-        spdlog::sink_ptr file_sink;
-        const std::string log_path = log_dir + "/ayanami.log";
-        if (rotate_logs) {
-          const size_t max_file_size_bytes = static_cast<size_t>(
-              config->param<int>("logging", "max_file_size_kb", 8192)) *
-              1024;
-          const size_t max_files =
-              static_cast<size_t>(config->param<int>("logging", "max_files", 10));
-          file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-              log_path, max_file_size_bytes, max_files);
-        } else {
-          file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-              log_path, /*truncate=*/true);
-        }
-        file_sink->set_level(logging_level);
-        new_sinks.push_back(std::move(file_sink));
-      }
-    }
-
-    for (const auto& sink : logger->sinks()) {
-      if (!is_console_sink(sink) && !is_file_sink(sink)) {
-        new_sinks.push_back(sink);
-      }
-    }
-    logger->sinks() = std::move(new_sinks);
+  if (console_output) {
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    console_sink->set_level(console_level);
+    new_sinks.push_back(std::move(console_sink));
   }
 
-  // Global level: all registered loggers take logging_level; default_logger
-  // is finally raised to min(logging_level, console_level) (not truncated by
-  // the master switch when the console is more verbose).
+  if (file_output) {
+    const std::string log_dir = config->param<std::string>("logging", "logging_dir", std::string("logs"));
+    std::error_code ec;
+    std::filesystem::create_directories(log_dir, ec);
+    if (!ec) {
+      const bool rotate_logs = config->param<bool>("logging", "rotate_logs", true);
+      spdlog::sink_ptr file_sink;
+      const std::string log_path = log_dir + "/ayanami.log";
+      if (rotate_logs) {
+        const size_t max_file_size_bytes =
+          static_cast<size_t>(config->param<int>("logging", "max_file_size_kb", 8192)) * 1024;
+        const size_t max_files = static_cast<size_t>(config->param<int>("logging", "max_files", 10));
+        file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_path, max_file_size_bytes, max_files);
+      } else {
+        file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_path, /*truncate=*/true);
+      }
+      // Ungated: verbosity is decided per logger (the master switch or the
+      // logger_levels override), so a raised layer actually reaches the file.
+      file_sink->set_level(spdlog::level::trace);
+      new_sinks.push_back(std::move(file_sink));
+    }
+  }
+
+  for (const auto& sink : current_default->sinks()) {
+    if (!is_console_sink(sink) && !is_file_sink(sink)) {
+      new_sinks.push_back(sink);
+    }
+  }
+
+  // Tag every line with the logger name; the framework's unnamed default
+  // logs as [ayanami].
+  for (const auto& sink : new_sinks) {
+    sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v");
+  }
+
+  // Layer loggers share the sink set; per-layer overrides are read with the
+  // quiet optional param (missing keys inherit the master switch).
+  const Config logger_levels = config->child("logging", "logger_levels");
+  std::vector<std::pair<std::shared_ptr<spdlog::logger>, spdlog::level::level_enum>> overrides;
+  for (const char* name : kLayerLoggers) {
+    auto logger = layerLogger(name);
+    logger->sinks() = new_sinks;
+    spdlog::level::level_enum level = logging_level;
+    if (const auto level_str = logger_levels.param<std::string>("logger_levels", name)) {
+      level = logLevelFromString(*level_str);
+    }
+    overrides.emplace_back(std::move(logger), level);
+  }
+
+  // Master switch first (spdlog::set_level covers every registered logger),
+  // then the per-layer overrides -- otherwise it would stomp them.
   spdlog::set_level(logging_level);
-  spdlog::apply_all([logging_level](const std::shared_ptr<spdlog::logger>& l) {
-    l->set_level(logging_level);
-  });
-  if (logger) {
-    const auto min_level =
-        (console_output && console_level < logging_level) ? console_level
-                                                          : logging_level;
-    logger->set_level(min_level);
+  for (const auto& override_entry : overrides) {
+    override_entry.first->set_level(override_entry.second);
   }
+
+  // spdlog's built-in default logger is unnamed (an empty [] tag in the
+  // pattern); replace it with a named one sharing the sink set.
+  // set_default_logger does not register, so spdlog::set_level/apply_all skip
+  // it and its level is managed here: min(logging_level, console_level), so a
+  // more verbose console is not truncated by the master switch.
+  auto default_logger = std::make_shared<spdlog::logger>("ayanami", new_sinks.begin(), new_sinks.end());
+  const auto min_level = (console_output && console_level < logging_level) ? console_level : logging_level;
+  default_logger->set_level(min_level);
+  spdlog::set_default_logger(default_logger);
 }
 
 }  // namespace ayanami

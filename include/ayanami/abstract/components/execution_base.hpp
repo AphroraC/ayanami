@@ -7,7 +7,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
-#include <thread>
 
 namespace ayanami {
 namespace components {
@@ -16,17 +15,15 @@ namespace components {
  * @brief Abstract execution base class (modeled after MBF
  * AbstractExecutionBase, components/).
  *
- * Each execution owns exactly one execution thread: start() spawns it on
- * the spot, and runTask() executes preRun()->run()->postRun() in order.
- * The internal state machine (atomic<int>) + condition_variable publish
- * state updates to control threads (waitForStateUpdate is event-driven;
- * cancel/stop/setState all notify). Derived classes override the
- * run()/preRun()/postRun()/safetyCheck()/publishStopCommand() hooks
- * (map layer overrides, mirroring the MBF §2.2 pattern).
- * Threading model: one thread per long task (isomorphic with the Action
- * driver threads); the single-navigation concurrency upper bound is
- * <= 1 driver thread + <= 1 execution thread per action family, no
- * process-wide thread pool.
+ * SINGLE execution model: the caller's thread drives the task inline via
+ * runBlocking() (preRun()->run()->postRun(); the resident action worker
+ * calls it once per goal) -- there is no execution thread, no spawn, no
+ * join. The internal state machine (atomic<int>) + condition_variable
+ * publish state updates to control threads (waitForStateUpdate is
+ * event-driven; cancel/stop/setState all notify). Derived classes override
+ * the run()/preRun()/postRun()/safetyCheck()/publishStopCommand() hooks
+ * (map layer overrides, mirroring the MBF §2.2 pattern). Tests that need a
+ * concurrent execution spawn their OWN std::thread around runBlocking().
  *
  * This class's internal state machine is independent of
  * actions::GoalStatus (5 states); only the action layer performs the
@@ -49,13 +46,9 @@ public:
   /// @brief Whether currently in the fallback exception terminal state (see k_aborted).
   bool aborted() const { return state.load() == k_aborted; }
 
-  /// @brief Execute asynchronously on the execution's own thread (joins the old thread first if still running).
-  virtual void start();
-
-  /// @brief Execute INLINE on the caller's thread (execution reuse): the
-  /// resident action worker calls this once per goal instead of spawning an
-  /// execution thread per task. Blocks until run() reaches a terminal
-  /// state; the cancel/stop flag reset mirrors start().
+  /// @brief Execute INLINE on the caller's thread: the resident action
+  /// worker calls this once per goal. Blocks until run() reaches a terminal
+  /// state; the cancel/stop flags are reset for the run.
   void runBlocking();
 
   /// @brief Request run to exit (rigorous); run exits with the STOPPED state.
@@ -63,9 +56,6 @@ public:
 
   /// @brief Cancel the execution: set cancel_requested and call the virtual publishStopCommand (safe stop).
   virtual void cancel();
-
-  /// @brief Wait for the run task to fully finish (equivalent to the old implementation joining the execution thread).
-  void join();
 
   /// @brief Wait on the condition for a state update; returns whether it was woken before the timeout.
   bool waitForStateUpdate(std::chrono::microseconds const& duration);
@@ -110,12 +100,8 @@ protected:
   std::string message;
 
 private:
-  /// @brief Execution thread body: preRun -> run -> postRun; clears running when done.
+  /// @brief Task body: preRun -> run -> postRun.
   void runTask();
-
-  /// @brief Whether a run task is still running (mutex-protected; used by start/join predicate waits).
-  bool running{false};
-  std::thread execution_thread;
 };
 
 } // namespace components

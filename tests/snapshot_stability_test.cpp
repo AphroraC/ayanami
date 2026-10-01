@@ -157,8 +157,8 @@ TEST(SnapshotStability, readerHoldsSharedLockBlocksWriterThenRereadSeesNewData) 
     ++writes;
   });
 
-  exec.smoothPath(makePath(), 10.0);
-  exec.join();
+  std::thread exec_th([&] { exec.smoothPath(makePath(), 10.0); });
+  exec_th.join();
   writer.join();
 
   EXPECT_EQ(smoother->calls.load(), 1);
@@ -261,8 +261,8 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
 
   // Slow reader: samples via multiple read-callback rounds owned by the execution.
   for (int i = 0; i < 30; ++i) {
-    exec.smoothPath(makePath(), 10.0);
-    exec.join();
+    std::thread exec_th([&] { exec.smoothPath(makePath(), 10.0); });
+    exec_th.join();
   }
   writer.join();
 
@@ -270,4 +270,120 @@ TEST(SnapshotStability, slowReaderIsNotTornAndWriterIsNotStarved) {
   EXPECT_EQ(smoother->calls.load(), 30);
   EXPECT_EQ(smoother->torn_pairs.load(), 0)
       << "reader observed a torn grid pair under the shared lock (lock exclusivity broken)";
+}
+// ---- generation contract (CostmapWrapper::generation) ----
+
+namespace {
+
+/// Minimal layer that always reports a fixed non-empty dirty window and
+/// paints one cell with its current value (the rebuild half of the mutation
+/// contract).
+class PaintingLayer : public costmap_2d::Layer {
+ public:
+  void setValue(unsigned char v) { value = v; }
+
+  void updateBounds(double, double, double, double* min_x, double* min_y,
+                    double* max_x, double* max_y) override {
+    useExtraBounds(min_x, min_y, max_x, max_y);
+    touch(0.0, 0.0, min_x, min_y, max_x, max_y);
+    touch(0.5, 0.5, min_x, min_y, max_x, max_y);
+  }
+
+  void updateCosts(costmap_2d::Costmap2D& master_grid, int, int, int,
+                   int) override {
+    master_grid.setCost(3, 3, value);
+    data_current.store(true);
+  }
+
+ private:
+  unsigned char value{costmap_2d::FREE_SPACE};
+};
+
+}  // namespace
+
+TEST(SnapshotStability, generationBumpsOnlyOnRealMutation) {
+  // Rebuild half: a layer-reported dirty window bumps the generation; with
+  // no layer-reported window (and a non-rolling map) the cycle is a no-op
+  // and the generation stays.
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
+  lm->addLayer(std::make_shared<PaintingLayer>());
+  auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
+  EXPECT_EQ(wrapper->generation(), 0u);
+
+  // Real rebuild through the layer window.
+  wrapper->updateMap(0.0, 0.0, 0.0);
+  const std::uint64_t after_rebuild = wrapper->generation();
+  EXPECT_GT(after_rebuild, 0u);
+
+  // A snapshot records exactly the generation it was taken at, and the
+  // context's live counter matches it.
+  auto ctx = std::make_shared<CostmapMapContext>();
+  ctx->setGlobalCostmap(wrapper);
+  ayanami::costmap::CostmapSnapshot snap;
+  ASSERT_TRUE(ctx->snapshotGlobal(snap));
+  EXPECT_EQ(snap.generation, after_rebuild);
+  EXPECT_EQ(ctx->globalGeneration(), after_rebuild);
+
+  // Another real rebuild advances the context counter while the OLD
+  // snapshot keeps its own (immutability of the returned copy).
+  wrapper->updateMap(0.0, 0.0, 0.0);
+  EXPECT_GT(wrapper->generation(), after_rebuild);
+  EXPECT_EQ(snap.generation, after_rebuild);
+  EXPECT_NE(ctx->globalGeneration(), snap.generation);
+
+  // No-op half: an empty LayeredCostmap reports no dirty window and does
+  // not roll -> the cycle mutates nothing and bumps nothing.
+  auto plain_lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  plain_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
+  auto plain = std::make_shared<costmap_2d::CostmapWrapper>(plain_lm, "map");
+  plain->updateMap(0.0, 0.0, 0.0);
+  EXPECT_EQ(plain->generation(), 0u);
+
+  // Rolling half: once the window is centered, a sub-cell pose change is a
+  // no-op (no origin shift) while a >=1-cell move shifts the origin and
+  // bumps.
+  auto rolling_lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/true, /*track_unknown=*/false);
+  rolling_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
+  auto rolling = std::make_shared<costmap_2d::CostmapWrapper>(rolling_lm, "map");
+  rolling->updateMap(0.0, 0.0, 0.0);  // initial centering (whole-window jump)
+  const std::uint64_t rolling_base = rolling->generation();
+  rolling->updateMap(0.2, 0.2, 0.0);  // sub-cell: no shift
+  EXPECT_EQ(rolling->generation(), rolling_base);
+  rolling->updateMap(0.8, 0.8, 0.0);  // >= 1 cell: shift -> bump
+  EXPECT_GT(rolling->generation(), rolling_base);
+}
+
+// Buffer reuse: snapshotting twice into the SAME CostmapSnapshot object
+// (the held-copy pattern of planner/smoother/controller) refreshes the
+// content and the generation, and the second copy is as self-consistent as
+// the first -- reuse must never leak stale bytes.
+TEST(SnapshotStability, snapshotBufferReuseRefreshesContentAndGeneration) {
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
+  auto layer = std::make_shared<PaintingLayer>();
+  lm->addLayer(layer);
+  auto wrapper = std::make_shared<costmap_2d::CostmapWrapper>(lm, "map");
+  auto ctx = std::make_shared<CostmapMapContext>();
+  ctx->setGlobalCostmap(wrapper);
+
+  ayanami::costmap::CostmapSnapshot snap;  // deliberately reused below
+
+  layer->setValue(costmap_2d::LETHAL_OBSTACLE);
+  wrapper->updateMap(0.0, 0.0, 0.0);
+  ASSERT_TRUE(ctx->snapshotGlobal(snap));
+  ASSERT_TRUE(snap.valid());
+  EXPECT_EQ(snap.getCost(3, 3), costmap_2d::LETHAL_OBSTACLE);
+  const std::uint64_t first_generation = snap.generation;
+
+  layer->setValue(costmap_2d::FREE_SPACE);
+  wrapper->updateMap(0.0, 0.0, 0.0);
+  ASSERT_TRUE(ctx->snapshotGlobal(snap));
+  EXPECT_TRUE(snap.valid());
+  EXPECT_EQ(snap.getCost(3, 3), costmap_2d::FREE_SPACE);
+  EXPECT_GT(snap.generation, first_generation);
 }

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "ayanami/behavior_tree/resettable_node.hpp"
 #include "ayanami/behavior_tree/action_nodes.hpp"
+#include "ayanami/behavior_tree/deadline.hpp"
+#include "ayanami/behavior_tree/resettable_node.hpp"
 #include "ayanami/behavior_tree/blackboard_protocol.hpp"
 #include "ayanami/behavior_tree/condition_nodes.hpp"
 #include "ayanami/behavior_tree/pipeline_sequence.hpp"
@@ -33,23 +34,30 @@ namespace behavior_tree {
  *   consecutive recoveries rotate instead of repeating the first one;
  * - Current child FAILURE -> move to the next; if all were tried and still
  *   FAILURE -> overall FAILURE.
+ * - RESOURCE_BUSY is TRANSIENT: a dispatch rejected because another
+ *   recovery still holds the exclusive slot (typically the local branch's
+ *   clear-costmap winding down after RecoveryNode's haltChild canceled it).
+ *   Burning the whole ladder on it in one tick aborts recoverable
+ *   navigations -- instead stay on the same child and retry next tick
+ *   (bounded by the outer retry budget and the same-cause pruning).
  *
- * reset_token (resident-tree reset protocol): when the token changes (a new
- * navigation round's goal_revision advance), reset the cursor and halt
+ * reset_token: when the token changes ({goal_revision} -- a goal revision
+ * mid-attempt, or the next attempt's advance), reset the cursor and halt
  * in-flight children -- recovery polling positions do not carry across
- * goals (nav2 avoids this naturally via full tree rebuilds; a resident tree
- * must reset explicitly).
+ * goals.
  */
-class RecoverySequence : public BT::ControlNode,
-                    public ResettableNode {
- public:
+class RecoverySequence : public BT::ControlNode, public ResettableNode {
+public:
   RecoverySequence(const std::string& name, const BT::NodeConfig& config)
-    : BT::ControlNode(name, config), current_child_idx(0) {}
+  : BT::ControlNode(name, config),
+    current_child_idx(0) {}
 
   static BT::PortsList providedPorts() {
     return {
-      BT::InputPort<uint64_t>("reset_token", 0,
-                              "revision that resets the recovery cursor"),
+      BT::InputPort<uint64_t>("reset_token", 0, "revision that resets the recovery cursor"),
+      BT::InputPort<ayanami::FailureContext>(
+        k_failure_context, ayanami::FailureContext{},
+        "the failed child's cause; RESOURCE_BUSY retries in place"),
     };
   }
 
@@ -62,8 +70,7 @@ class RecoverySequence : public BT::ControlNode,
       return BT::NodeStatus::FAILURE;
     }
     while (current_child_idx < childrenCount()) {
-      const BT::NodeStatus status =
-          children_nodes_[current_child_idx]->executeTick();
+      const BT::NodeStatus status = children_nodes_[current_child_idx]->executeTick();
       if (status == BT::NodeStatus::RUNNING) {
         return status;
       }
@@ -72,23 +79,32 @@ class RecoverySequence : public BT::ControlNode,
         resetChildren();
         return BT::NodeStatus::SUCCESS;
       }
-      // FAILURE -> next child
+      // FAILURE -> next child, EXCEPT the transient dispatch conflict:
+      // RESOURCE_BUSY means the recovery never ran (the exclusive slot was
+      // busy) -- retry the SAME child next tick instead of burning the
+      // ladder (and, exhausted, the whole navigation) on a scheduling race.
+      ayanami::FailureContext ctx;
+      if (getInput(k_failure_context, ctx) &&
+          ctx.code == ayanami::ErrorCode::RESOURCE_BUSY) {
+        return BT::NodeStatus::RUNNING;
+      }
       ++current_child_idx;
     }
     current_child_idx = 0;
     return BT::NodeStatus::FAILURE;
   }
 
+  /// @brief Clear the rotation cursor (round state). Called from the
+  /// tree-level halt (pilot terminal/halt/new-attempt paths); must stay
+  /// idempotent. The reset_token cache is kept (ResettableNode,
+  /// change-detection state; token monotonicity makes the kept cache sound).
   void halt() override {
     BT::ControlNode::halt();
     current_child_idx = 0;
   }
 
-  /// @brief Logical reset after a tree-life terminal state (v4 halt only propagates to RUNNING children).
-
- private:
+private:
   size_t current_child_idx;
-  uint64_t reset_token{0};
 };
 
 /// @brief Register the navigation BT node classes (retained nodes +
@@ -102,9 +118,10 @@ class RecoverySequence : public BT::ControlNode,
 /// by the extension module registerNodes and by tests. The core
 /// (BehaviorTreePilot) contains no default navigation XML or policy.
 inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory) {
-  // 4 action nodes (TaskHandle direct)
+  // 4 action nodes (TaskHandle direct) + the smoother-branch degrade node + the smoother-branch degrade node
   factory.registerNodeType<ComputePathToPoseNode>("ComputePathToPose");
   factory.registerNodeType<SmoothPathNode>("SmoothPath");
+  factory.registerNodeType<DegradeToRawPathNode>("DegradeToRawPath");
   factory.registerNodeType<FollowPathNode>("FollowPath");
   factory.registerNodeType<RecoveryActionNode>("Recovery");
   // condition nodes
@@ -113,6 +130,8 @@ inline void registerNavigationBehaviorTreeNodes(BT::BehaviorTreeFactory& factory
   factory.registerNodeType<IsRobotProgressing>("IsRobotProgressing");
   // Control nodes
   factory.registerNodeType<PipelineSequence>("PipelineSequence");
+  // BT-level deadline for slow module calls (watchdog second line)
+  factory.registerNodeType<Deadline>("Deadline");
   factory.registerNodeType<RateController>("RateController");
   factory.registerNodeType<RecoveryNode>("RecoveryNode");
   // rotating recovery sequence (nav2 RoundRobin semantics, production name)

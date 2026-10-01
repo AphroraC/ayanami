@@ -37,7 +37,7 @@
 #include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
-#include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
+#include <costmap_cleanup_recovery/costmap_cleanup_recovery.hpp>
 
 using ayanami::testing::testTransforms;
 namespace {
@@ -47,7 +47,7 @@ using ayanami::ResultT;
 using ayanami::costmap::ClearCostmapCommand;
 using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapMapContext;
-using ayanami::modules::CostmapClearCostmapRecovery;
+using ayanami::modules::CostmapCleanupRecovery;
 
 // 20x20 @0.5m, origin (0,0): the center of cell (4,4) = world (2.25, 2.25).
 constexpr double k_robot_x = 2.25;
@@ -147,8 +147,9 @@ void feedObstacles(
     const std::shared_ptr<costmap_2d::CostmapWrapper>& wrapper,
     const std::shared_ptr<costmap_2d_layers::SimpleObstacleLayer>& layer) {
   std::unique_lock<std::shared_mutex> lock(wrapper->mutex());
-  layer->markObstacles(k_robot_x, k_robot_y);
-  layer->markObstacles(7.75, 7.75);
+  const auto* grid = wrapper->get().getCostmap();
+  layer->markObstacles(*grid, k_robot_x, k_robot_y);
+  layer->markObstacles(*grid, 7.75, 7.75);
   wrapper->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
 }
 
@@ -181,8 +182,8 @@ TEST(RecoveryVsObstacle, clearCommandViaPortOnlyWriterMutates) {
 
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
-  auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
+  auto rec = std::make_shared<CostmapCleanupRecovery>();
+  rec->configure(ayanami::ModuleContext{"costmap_cleanup_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
 
@@ -228,8 +229,8 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
 
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
-  auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
+  auto rec = std::make_shared<CostmapCleanupRecovery>();
+  rec->configure(ayanami::ModuleContext{"costmap_cleanup_recovery",
                                         ayanami::Config("")},
                  ctx->getSharedConstPtr());
 
@@ -247,7 +248,8 @@ TEST(RecoveryVsObstacle, clearCommandAlternatesWithObstacleWithoutDeadlock) {
       go_feed[i].waitFor(std::chrono::seconds(5));
       {
         std::unique_lock<std::shared_mutex> lock(local->mutex());
-        local_layer->markObstacles(k_robot_x, k_robot_y);
+        local_layer->markObstacles(*local->get().getCostmap(), k_robot_x,
+                                   k_robot_y);
         local->updateMapUnlocked(k_robot_x, k_robot_y, 0.0);
         // The read-back under the lock must see its own write (writer serialization, no tearing).
         if (local->get().getCostmap()->getCost(4, 4) !=

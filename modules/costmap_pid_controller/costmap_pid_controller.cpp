@@ -18,6 +18,7 @@
 #include <ayanami/utility/config.hpp>
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -105,17 +106,20 @@ void CostmapPidController::setGoalTolerances(
     // arrives: a silently tightening clamp is exactly the kind of thing that
     // makes "why did it stop 5 cm short?" unexplainable from the logs.
     if (tolerance.position < param.goal_tolerance) {
-      spdlog::info(
-          "CostmapPidController: honoring the goal checker's tighter XY "
-          "tolerance ({:.3f} m) over goal_tolerance ({:.3f} m)",
-          tolerance.position, param.goal_tolerance);
+      SPDLOG_LOGGER_INFO(
+        ayanami::controllerLogger(),
+        "CostmapPidController: honoring the goal checker's tighter XY "
+        "tolerance ({:.3f} m) over goal_tolerance ({:.3f} m)",
+        tolerance.position,
+        param.goal_tolerance);
     }
     if (tolerance.angle > 1.5707963267948966) {
-      spdlog::warn(
-          "CostmapPidController: goal checker angle tolerance is {:.3f} rad "
-          "(> pi/2); the heading contract is effectively vacuous, so arrival "
-          "will be decided on position alone",
-          tolerance.angle);
+      SPDLOG_LOGGER_WARN(
+        ayanami::controllerLogger(),
+        "CostmapPidController: goal checker angle tolerance is {:.3f} rad "
+        "(> pi/2); the heading contract is effectively vacuous, so arrival "
+        "will be decided on position alone",
+        tolerance.angle);
     }
   }
   goal_tolerances = tolerance;
@@ -197,6 +201,9 @@ void CostmapPidController::configureParameters(const ayanami::ModuleContext& con
   pid_w.kp = param.kp_w;
   pid_w.ki = param.ki_w;
   pid_w.kd = param.kd_w;
+
+  // Seed the runtime dt from the fallback before any execution push.
+  cycle_period = param.default_dt;
 }
 
 void CostmapPidController::configure(
@@ -249,7 +256,9 @@ ResultT<void> CostmapPidController::computeVelocityCommand(
   }
 
   last_pose = pose;
-  const double dt = std::max(param.default_dt, 1e-6);
+  // Real inter-call dt from the execution cadence (setCyclePeriod push);
+  // param.default_dt only seeds the member before injection.
+  const double dt = std::max(cycle_period, 1e-6);
 
   // Arrival is entirely the execution layer goal_checker's responsibility; the PID itself uses param's
   // goal_tolerance (its own param) as the XY bound for stopping linear velocity. The injected arrival
@@ -381,6 +390,12 @@ ResultT<void> CostmapPidController::computeVelocityCommand(
 bool CostmapPidController::cancel() {
   canceled.store(true);
   return true;
+}
+
+void CostmapPidController::setCyclePeriod(double seconds) {
+  if (seconds > 0.0) {
+    cycle_period = seconds;
+  }
 }
 
 void CostmapPidController::resetTrackingState() {

@@ -5,8 +5,8 @@
     "role": "backup"
   },
   "costmap_back_up_recovery": {
-    "backup_dist": 0.2,
-    "max_v": 0.2,
+    "backup_dist": 0.35,
+    "max_v": 0.3,
     "collision_radius": 0.3
   }
 }

@@ -4,8 +4,16 @@
     "so_name": "libayanami_simple_progress_checker.so"
   },
   "simple_progress_checker": {
+    // Layered stuck detection: the execution-level checker is the GENTLER
+    // layer (NO_PROGRESS -> FollowPath's local clear-and-retry), so its
+    // window must fire strictly BEFORE the tree-level IsRobotProgressing
+    // backstop (oscillation_timeout = 5 s in both routes). The old 8 s
+    // window inverted the layers: the stricter tree gate fired first and
+    // escalated straight to the system recovery ladder, leaving this
+    // local retry path unreachable. config_consistency_test locks the
+    // time_period < oscillation_timeout invariant.
     "required_movement": 0.25,
     "movement_angle_required": 0.1,
-    "time_period": 8.0
+    "time_period": 4.0
   }
 }

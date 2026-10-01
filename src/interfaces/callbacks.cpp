@@ -22,12 +22,13 @@ CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> NavigationCallbacks::o
 CallbackSlot<void(const ayanami::actions::RecoveryFeedback&)> NavigationCallbacks::on_recovery_feedback;
 CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::RecoveryResult>&)> NavigationCallbacks::on_recovery_result;
 CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> NavigationCallbacks::on_velocity_command;
-CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_costmap_visualization;
-CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGridUpdate&)>
-    NavigationCallbacks::on_costmap_visualization_update;
-
-CallbackSlot<void(const ayanami::nav_msgs::RawCostmap&)>
-    NavigationCallbacks::on_costmap_raw;
+CallbackSlot<void(const ayanami::messages::SwerveCommandsStamped&)>
+    NavigationCallbacks::on_swerve_command;
+CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_global_costmap_static;
+CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_global_costmap_inflation;
+CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_local_costmap_obstacle;
+CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_local_costmap_inflation;
+CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> NavigationCallbacks::on_rosemap_field;
 CallbackSlot<void(const ayanami::actions::NavigationResult&)>
     NavigationCallbacks::on_navigation_result;
 

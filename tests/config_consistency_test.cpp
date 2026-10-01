@@ -15,7 +15,7 @@
 // requestRecovery(full name) -> the costmap_spin_recovery module is actually invoked
 // (the on_velocity_command angular-velocity events = the runRecovery count).
 //
-// argv: 1=config_dir, 2=host.so, 3=astar.so, 4=savitzky.so, 5=pid.so,
+// argv: 1=config_dir, 2=host.so, 3=astar.so, 4=minsnap.so, 5=pid.so,
 // 6=spin.so, 7=back_up.so, 8=wait.so, 9=clear.so
 
 #include <gtest/gtest.h>
@@ -25,7 +25,10 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <regex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -63,6 +66,8 @@ using ayanami::behavior_tree::k_navigation_runtime;
 using ayanami::behavior_tree::k_spin_id;
 // Blackboard keys the shipped production tree references (see the shipped-tree test).
 using ayanami::behavior_tree::k_backup_id;
+using ayanami::behavior_tree::k_oscillation_distance;
+using ayanami::behavior_tree::k_oscillation_timeout;
 using ayanami::behavior_tree::k_clear_costmap_id;
 using ayanami::behavior_tree::k_controller_frequency;
 using ayanami::behavior_tree::k_failure_context;
@@ -80,9 +85,18 @@ using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapNavigation;
 
 std::string g_config_dir;
+
+// These checks document the COSTMAP production route specifically: they read
+// routes/costmap_navigation.json directly instead of the ACTIVE route
+// (config.json::global.config_navigation), so the suite stays green whichever
+// route is currently activated (costmap / rosemap).
+std::string costmapRoutePath() {
+  return (std::filesystem::path(g_config_dir) /
+          "routes/costmap_navigation.json").string();
+}
 std::string g_host_so;
 std::string g_astar_so;
-std::string g_savitzky_so;
+std::string g_minsnap_so;
 std::string g_pid_so;
 std::string g_spin_so;
 std::string g_backup_so;
@@ -105,8 +119,7 @@ struct NavIds {
 // (a single string or a string array), resolved to full paths relative to config_path.
 std::vector<std::string> recoveryFamilyFiles() {
   const ayanami::GlobalConfig* g = ayanami::GlobalConfig::instance();
-  const ayanami::Config navigation(ayanami::GlobalConfig::getConfigPath(
-      "config_navigation"));
+  const ayanami::Config navigation(costmapRoutePath());
   std::vector<std::string> entries;
   if (navigation.hasParam("navigation", "config_recovery")) {
     try {
@@ -139,8 +152,7 @@ NavIds readNavIds() {
   const ayanami::GlobalConfig* global = ayanami::GlobalConfig::instance();
   const std::string directory =
       global->param<std::string>("global", "config_path", ".");
-  const ayanami::Config navigation(ayanami::GlobalConfig::getConfigPath(
-      "config_navigation"));
+  const ayanami::Config navigation(costmapRoutePath());
   const auto navPath = [&](const char* key) {
     const auto relative = navigation.param<std::string>("navigation", key, "");
     const std::filesystem::path path(relative);
@@ -182,8 +194,7 @@ NavIds readNavIds() {
 /// Reads the name field of a module json. module_section is the top-level json section name.
 std::string moduleName(const std::string& config_key,
                        const std::string& module_section) {
-  const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
-      "config_navigation"));
+  const auto nav = ayanami::Config(costmapRoutePath());
   const std::string directory = ayanami::GlobalConfig::instance()->param<std::string>(
       "global", "config_path", ".");
   const std::string relative = nav.param<std::string>(
@@ -195,8 +206,7 @@ std::string moduleName(const std::string& config_key,
 
 /// Locates the module json by role in the config_recovery array and reads its name (unified common factory symbol).
 std::string recoveryModuleName(const std::string& role) {
-  const auto nav = ayanami::Config(ayanami::GlobalConfig::getConfigPath(
-      "config_navigation"));
+  const auto nav = ayanami::Config(costmapRoutePath());
   const std::string directory = ayanami::GlobalConfig::instance()->param<std::string>(
       "global", "config_path", ".");
   const auto files = nav.param<std::vector<std::string>>(
@@ -216,6 +226,41 @@ std::string recoveryModuleName(const std::string& role) {
 /// Owning reference: component lifetime = process lifetime (no dlclose); the host shared_ptr is intentionally leaked to stay alive,
 /// and the test is still responsible for deleting the host.
 CostmapNavigation* createHost(const std::string& config_dir) {
+  // The costmap host must boot against the COSTMAP route, but route selection
+  // lives in config.json::global.config_navigation and the real config dir may
+  // currently activate rosemap (switching is a one-file edit). Run the host
+  // against a temp copy of the config tree whose config.json pins
+  // config_navigation to routes/costmap_navigation.json; relative module and
+  // asset paths inside the route resolve against the copy identically.
+  // Copy into a "<tmp>/.../config" layout: the costmap route's relative
+  // static_map ("config/assets/nav.pgm") resolves against config_path's
+  // PARENT directory, so the copied config dir must be named "config".
+  const auto pinned_root = std::filesystem::temp_directory_path() /
+                           "ayanami_config_consistency_costmap";
+  const auto pinned = pinned_root / "config";
+  std::filesystem::remove_all(pinned_root);
+  std::filesystem::create_directories(pinned);
+  std::filesystem::copy(config_dir, pinned,
+                        std::filesystem::copy_options::recursive);
+  {
+    // Pin the route only for copies of the REAL config tree (which may
+    // currently activate rosemap); self-contained fixtures carry their own
+    // routing and keep it.
+    if (std::filesystem::exists(pinned / "routes" /
+                                "costmap_navigation.json")) {
+      const auto cfg_path = pinned / "config.json";
+      std::ifstream ifs(cfg_path);
+      std::string doc((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+      ifs.close();
+      const std::regex re("(\"config_navigation\"\\s*:\\s*\")[^\"]*(\")");
+      const std::string patched =
+          std::regex_replace(doc, re,
+                             std::string("$1routes/costmap_navigation.json$2"));
+      std::ofstream ofs(cfg_path);
+      ofs << patched;
+    }
+  }
   auto nav = std::dynamic_pointer_cast<AbstractNavigation>(
       ayanami::ExtensionModule::loadModule(g_host_so));
   if (!nav) {
@@ -225,7 +270,7 @@ CostmapNavigation* createHost(const std::string& config_dir) {
   if (host == nullptr) {
     return nullptr;
   }
-  host->initialize(config_dir);
+  host->initialize(pinned.string());
   (void)new std::shared_ptr<AbstractNavigation>(std::move(nav));  // leak-persist
   return host;
 }
@@ -280,7 +325,7 @@ TEST(ConfigConsistencyTest, idsAreFullModuleNames) {
 
   // clear_costmap_id and recovery_id point to the same module (full name).
   EXPECT_EQ(ids.recovery_id, ids.clear_costmap_id);
-  EXPECT_EQ(ids.clear_costmap_id, "costmap_clear_costmap_recovery");
+  EXPECT_EQ(ids.clear_costmap_id, "costmap_cleanup_recovery");
   EXPECT_EQ(recoveryModuleName("clear_costmap"), ids.recovery_id);
 }
 
@@ -308,7 +353,7 @@ TEST(ConfigConsistencyTest, moduleManagersLoadMatchingNames) {
     ModuleManager<AbstractSmoother> mgr;
     ayanami::components::ModuleSpec spec;
     spec.name = moduleName("config_smoother", "smoother");
-    spec.so_name = g_savitzky_so;
+    spec.so_name = g_minsnap_so;
     ASSERT_TRUE(
         mgr.loadModule(spec,
                        ayanami::ModuleContext{spec.name, ayanami::Config("")},
@@ -401,7 +446,7 @@ TEST(ConfigConsistencyTest, requestRecoveryUsesFullModuleName) {
 
   const NavIds ids = readNavIds();
 
-  // Full module name (the recovery_id value = costmap_clear_costmap_recovery) -> valid.
+  // Full module name (the recovery_id value = costmap_cleanup_recovery) -> valid.
   {
     RecoveryGoal goal;
     goal.recovery_id = ids.recovery_id;
@@ -536,20 +581,31 @@ std::filesystem::path makeSpinConfigDir() {
         << "    \"resolution\": 0.5\n"
         << "  },\n"
         << "  \"costmap_global\": {\n"
-        << "    \"size_x\": 20, \"size_y\": 20,\n"
         << "    \"rolling_window\": false, \"track_unknown\": false,\n"
-        << "    \"static_map\": \"\",\n"
-        << "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
-        << "    \"cost_scaling_factor\": 3.0\n"
+        << "    \"layers\": [\"layer_static.json\", \"layer_inflation.json\"]\n"
         << "  },\n"
         << "  \"costmap_local\": {\n"
         << "    \"size_x\": 20, \"size_y\": 20,\n"
         << "    \"rolling_window\": true, \"track_unknown\": false,\n"
-        << "    \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3,\n"
-        << "    \"cost_scaling_factor\": 3.0\n"
+        << "    \"layers\": [\"layer_obstacle.json\", \"layer_inflation.json\"]\n"
         << "  }\n"
         << "}\n";
   }
+  writeFile(dir / "layer_static.json",
+            "{\"layer\": {\"name\": \"static_layer\", \"so_name\": "
+            "\"libayanami_costmap_static_layer.so\"},\n \"static_layer\": "
+            "{\"size_x\": 20, \"size_y\": 20, \"resolution\": 0.5}}\n");
+  writeFile(dir / "layer_inflation.json",
+            "{\"layer\": {\"name\": \"inflation_layer\", \"so_name\": "
+            "\"libayanami_costmap_inflation_layer.so\"},\n \"inflation_layer\": "
+            "{\"inflation_radius\": 0.6, \"inscribed_radius\": 0.3, "
+            "\"cost_scaling_factor\": 3.0}}\n");
+  writeFile(dir / "layer_obstacle.json",
+            "{\"layer\": {\"name\": \"obstacle_layer\", \"so_name\": "
+            "\"libayanami_costmap_obstacle_layer.so\"},\n \"obstacle_layer\": {"
+            "\"combination\": \"overwrite\", \"footprint_clearing\": true, "
+            "\"observation_sources\": [\"scan\"], "
+            "\"scan\": {\"type\": \"laserscan\"}}}\n");
 
   // pilot.loadFromFile needs BT/navigation.xml (id uses the default tree name).
   writeFile(dir / "BT" / "navigation.xml",
@@ -606,12 +662,12 @@ TEST(ConfigConsistencyTest, btRecoveryBranchInvokesSpinModule) {
 
 // ---- The shipped tree XMLs are load-bearing artifacts with no other test coverage ----
 // Every other BT test builds a *copy* of the tree (the extension's embedded default, tests/assets,
-// or an inline constant), so a syntax error or an unregistered node id in config/BT/navigation.xml
+// or an inline constant), so a syntax error or an unregistered node id in config/BT/*.xml
 // would ship unnoticed. This test loads the deployed files themselves.
 TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
   const std::vector<std::string> shipped_trees = {
-      g_config_dir + "/BT/navigation.xml",
-      std::string(AYANAMI_TEST_CONFIG_SENTRY_DIR) + "/BT/navigation.xml",
+      g_config_dir + "/BT/costmap_navigation.xml",
+      g_config_dir + "/BT/rosemap_navigation.xml",
   };
   for (const std::string& xml_path : shipped_trees) {
     SCOPED_TRACE(xml_path);
@@ -636,11 +692,16 @@ TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
     bb->set<uint64_t>(k_goal_revision, 0u);
     bb->set<ayanami::FailureContext>(k_failure_context, ayanami::FailureContext{});
     bb->set<uint32_t>(k_nav_retries, 6u);
-    // The shipped tree references recoveries by role id.
+    // The shipped trees reference recoveries by role id; provide every role
+    // slot any shipped tree may read (costmap roles + rosemap roles).
     bb->set<std::string>(k_clear_costmap_id, "clear_costmap");
     bb->set<std::string>(k_spin_id, "spin");
     bb->set<std::string>(k_wait_id, "wait");
     bb->set<std::string>(k_backup_id, "backup");
+    bb->set<std::string>("escape_id", "escape");
+    // The rosemap tree's oscillation gate reads these navigation-level keys.
+    bb->set<double>(k_oscillation_distance, 0.1);
+    bb->set<double>(k_oscillation_timeout, 5.0);
 
     // Building catches malformed XML and unregistered node ids.
     BT::Tree tree;
@@ -648,9 +709,13 @@ TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
         << "shipped tree failed to build";
     EXPECT_NO_THROW(ayanami::behavior_tree::validateRequiredBlackboardEntries(bb));
 
-    // The smoother branch must gate its own output: the smoother only sees the LOCAL map (family
-    // read contract), so without a tree-level overlay check an overlay-invalid smoothed path reaches
-    // FollowPath unchecked. One IsPathValid per produced path: raw_path + smoothed_path.
+    // The raw path is gated at plan time (planner branch IsPathValid);
+    // the smoothed path is gated by the smoother module's own fused overlay
+    // check at solve time. The tree deliberately carries NO smoothed-path
+    // IsPathValid: re-judging the refinement against the LIVE local map at
+    // 20Hz while the followed raw path is never re-judged let transient
+    // perception marks (registration flicker near walls) reject every
+    // smoothing attempt -- the branch flapped to raw forever (2026-09-30).
     int smooth_count = 0;
     int is_path_valid_count = 0;
     tree.applyVisitor([&](BT::TreeNode* node) {
@@ -664,10 +729,79 @@ TEST(ConfigConsistencyTest, shippedTreesBuildAndGateTheSmoothedPath) {
       }
     });
     EXPECT_EQ(smooth_count, 1);
-    EXPECT_EQ(is_path_valid_count, 2)
-        << "expected one IsPathValid per produced path (raw_path + smoothed_path)";
-    EXPECT_NE(text.find("path=\"{smoothed_path}\""), std::string::npos)
-        << "no IsPathValid is bound to {smoothed_path}";
+    EXPECT_EQ(is_path_valid_count, 1)
+        << "expected exactly one IsPathValid, on the planner branch's raw_path";
+    EXPECT_NE(text.find("path=\"{raw_path}\""), std::string::npos)
+        << "no IsPathValid is bound to {raw_path}";
+
+    // The smoother branch must own a LOCAL RecoveryNode (mirroring the
+    // planner branch): a smoothed-path validation failure is cleared and
+    // retried in place instead of tearing the whole pipeline down to the
+    // system-level ladder (the escalation asymmetry fix).
+    std::vector<const BT::TreeNode*> recovery_nodes;
+    tree.applyVisitor([&](BT::TreeNode* node) {
+      if (node != nullptr && node->registrationName() == "RecoveryNode") {
+        recovery_nodes.push_back(node);
+      }
+    });
+    EXPECT_EQ(recovery_nodes.size(), 4u)
+        << "expected 4 RecoveryNodes: outer navigation + ComputePath + "
+           "SmoothPathGate + FollowPath";
+    std::function<void(const BT::TreeNode*, std::set<std::string>&)> collect =
+        [&](const BT::TreeNode* node, std::set<std::string>& out) {
+          if (node == nullptr) {
+            return;
+          }
+          out.insert(node->registrationName());
+          if (const auto* control = dynamic_cast<const BT::ControlNode*>(node)) {
+            for (const BT::TreeNode* child : control->children()) {
+              collect(child, out);
+            }
+          } else if (const auto* decorator =
+                         dynamic_cast<const BT::DecoratorNode*>(node)) {
+            collect(decorator->child(), out);
+          }
+        };
+    int smoother_local_gates = 0;
+    for (const BT::TreeNode* recovery : recovery_nodes) {
+      std::set<std::string> subtree;
+      collect(recovery, subtree);
+      if (subtree.count("SmoothPath") && subtree.count("Recovery") &&
+          !subtree.count("FollowPath") && !subtree.count("ComputePathToPose")) {
+        ++smoother_local_gates;
+      }
+    }
+    EXPECT_GE(smoother_local_gates, 1)
+        << "the smoother branch must own a local clear-and-retry RecoveryNode";
+  }
+}
+
+// ---- Layered stuck-detection invariant: the GENTLER layer fires first ----
+// The execution-level progress checker (NO_PROGRESS -> FollowPath's local
+// clear-and-retry) must have a strictly shorter window than the tree-level
+// IsRobotProgressing backstop (oscillation_timeout); otherwise the stricter
+// tree gate fires first and escalates straight to the system recovery
+// ladder, leaving the local retry path unreachable (the dead-layer
+// inversion the 4 s recalibration fixed).
+TEST(ConfigConsistencyTest, progressCheckerFiresBeforeOscillationGate) {
+  for (const char* route : {"routes/costmap_navigation.json", "routes/rosemap_navigation.json"}) {
+    SCOPED_TRACE(route);
+    const ayanami::Config route_cfg(g_config_dir + "/" + route);
+    ASSERT_TRUE(route_cfg.hasSection("navigation"));
+    const double oscillation_timeout =
+        route_cfg.param<double>("navigation", "oscillation_timeout", -1.0);
+    ASSERT_GT(oscillation_timeout, 0.0) << "route lacks oscillation_timeout";
+    const std::string checker_file =
+        route_cfg.param<std::string>("navigation", "config_progress_checker", "");
+    ASSERT_FALSE(checker_file.empty()) << "route lacks config_progress_checker";
+    const ayanami::Config checker(g_config_dir + "/" + checker_file);
+    const std::string name =
+        checker.param<std::string>("progress_checker", "name", "simple_progress_checker");
+    const double time_period = checker.param<double>(name, "time_period", -1.0);
+    ASSERT_GT(time_period, 0.0) << "checker lacks time_period";
+    EXPECT_LT(time_period, oscillation_timeout)
+        << "execution-level progress window must be strictly shorter than the "
+           "tree-level oscillation gate, or the local retry layer is dead";
   }
 }
 
@@ -678,7 +812,7 @@ int main(int argc, char** argv) {
   if (argc > 1) g_config_dir = argv[1];
   if (argc > 2) g_host_so = argv[2];
   if (argc > 3) g_astar_so = argv[3];
-  if (argc > 4) g_savitzky_so = argv[4];
+  if (argc > 4) g_minsnap_so = argv[4];
   if (argc > 5) g_pid_so = argv[5];
   if (argc > 6) g_spin_so = argv[6];
   if (argc > 7) g_backup_so = argv[7];

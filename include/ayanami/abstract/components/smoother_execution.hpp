@@ -40,11 +40,11 @@ public:
   explicit SmootherExecution(ayanami::abstract::AbstractSmoother::Ptr smoother)
       : smoother(std::move(smoother)) {}
 
-  /// @brief Record the inputs (taking the path by value) and start the smoothing thread.
-  using ExecutionBase::start;
+  /// @brief Record the inputs (taking the path by value) and run the
+  /// smoothing task to a terminal state on the calling thread.
   void smoothPath(nav_msgs::Path path, double max_duration) {
     prepareGoal(std::move(path), max_duration);
-    ExecutionBase::start();
+    runBlocking();
   }
 
   /// @brief Goal inputs for one smoothing task WITHOUT spawning a thread

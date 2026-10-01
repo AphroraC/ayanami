@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
-#include <queue>
 #include <limits>
 #include <vector>
 
@@ -13,33 +13,43 @@
 namespace costmap_2d_layers {
 
 /// Inflation layer: starting from lethal obstacle cells, propagates outward with a
-/// priority-queue BFS (Dijkstra-style wavefront); cost decays exponentially with Euclidean
+/// distance-ordered wavefront; cost decays exponentially with Euclidean
 /// distance (nav2/legacy style). Each updateCosts rebuilds only the inflation band of the nearest
+///
+/// Wavefront mechanics (nav2 integer-bucket discipline, without the heap):
+/// cells are bucketed by SQUARED integer cell distance (dx*dx+dy*dy), an
+/// exact monotone refinement of the Euclidean order -- O(1) push, buckets
+/// traversed in increasing distance, no floating point in the hot path.
+/// Cost/distance lookups go through one-dimensional flat caches indexed by
+/// |dx| * cache_length + |dy|. The visited set is a uint32 epoch array:
+/// bumping the epoch replaces the per-cycle full clear.
 class InflationLayer : public costmap_2d::Layer {
  public:
   void setInflationRadius(double radius) {
     inflation_radius = radius;
     caches_dirty = true;
     need_reinflation = true;
-    current = false;
+    data_current = false;
   }
 
   void setInscribedRadius(double radius) {
     inscribed_radius = radius;
     caches_dirty = true;
     need_reinflation = true;
-    current = false;
+    data_current = false;
   }
 
   void setCostScalingFactor(double factor) {
     weight = factor;
     caches_dirty = true;
     need_reinflation = true;
-    current = false;
+    data_current = false;
   }
 
-  /// Distance (cells) -> cost: 0 -> LETHAL, within inscribed radius of an obstacle -> 253,
-  // otherwise (253-1) * exp(-weight * (euclid - inscribed)), rounded.
+  /// Distance (cells) -> cost, numerically identical to nav2: 0 cells ->
+  /// LETHAL, within the inscribed radius -> 253, otherwise the exponential
+  /// decay (253-1) * exp(-cost_scaling_factor * (euclid - inscribed)),
+  /// truncated like nav2's static_cast (no rounding).
   costmap_2d::CostValue computeCost(double distance_cells,
                                     double resolution) const {
     if (distance_cells == 0.0) {
@@ -51,8 +61,8 @@ class InflationLayer : public costmap_2d::Layer {
     }
     const double factor = std::exp(
         -weight * (euclideanDistance - inscribed_radius));
-    return static_cast<costmap_2d::CostValue>(std::round(
-        (costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 1) * factor));
+    return static_cast<costmap_2d::CostValue>(
+        (costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 1) * factor);
   }
 
   void updateBounds(double, double, double, double*, double*, double*,
@@ -70,23 +80,22 @@ class InflationLayer : public costmap_2d::Layer {
   unsigned int getCellInflationRadius() const { return cell_inflation_radius; }
 
  private:
+  /// @brief One wavefront entry: the cell plus the lethal source cell it was
+  /// reached from (the cost is a function of the cell offset from its
+  /// source). No stored distance: the bucket index IS the distance.
   struct QueueCell {
-    double distance{0.0};
     unsigned int x{0};
     unsigned int y{0};
     unsigned int src_x{0};
     unsigned int src_y{0};
-    bool operator>(const QueueCell& other) const {
-      return distance > other.distance;
-    }
   };
 
   void ensureCaches(double resolution);
+  /// @brief Push one neighbor of a processing cell into its distance bucket.
+  /// Bails on out-of-bounds, already-visited (epoch), or beyond-radius cells.
   void enqueue(const costmap_2d::Costmap2D& grid,
-               std::priority_queue<QueueCell, std::vector<QueueCell>,
-                                   std::greater<>>& queue,
-               std::vector<bool>& seen, unsigned int mx, unsigned int my,
-               unsigned int src_x, unsigned int src_y) const;
+               std::vector<std::vector<QueueCell>>& buckets, unsigned int mx,
+               unsigned int my, unsigned int src_x, unsigned int src_y);
   costmap_2d::CostValue costLookup(unsigned int mx, unsigned int my,
                                    unsigned int src_x, unsigned int src_y,
                                    double resolution) const;
@@ -97,14 +106,20 @@ class InflationLayer : public costmap_2d::Layer {
   unsigned int cell_inflation_radius{0};
   bool caches_dirty{true};
   bool need_reinflation{true};
-  bool has_last_bounds{false};
-  double last_min_x{std::numeric_limits<double>::max()};
-  double last_min_y{std::numeric_limits<double>::max()};
-  double last_max_x{std::numeric_limits<double>::lowest()};
-  double last_max_y{std::numeric_limits<double>::lowest()};
-  std::vector<std::vector<double>> cached_distances;
-  std::vector<std::vector<costmap_2d::CostValue>> cached_costs;
-  std::vector<bool> seen;
+  /// @brief Flat caches over cell offsets, indexed |dx| * cache_length + |dy|
+  /// (cache_length = cell_inflation_radius + 2). One allocation, contiguous.
+  std::vector<double> cached_distances;
+  std::vector<costmap_2d::CostValue> cached_costs;
+  /// @brief Distance buckets: index = squared cell distance from the source.
+  /// Buckets are traversed in index order, which is exactly the Euclidean
+  /// wavefront order (squared distance is a monotone function of Euclidean
+  /// distance for integer offsets). Capacity is reused across cycles.
+  std::vector<std::vector<QueueCell>> buckets;
+  /// @brief Visited set with per-cycle epochs: a cell is visited in cycle N
+  /// iff seen_epoch[index] == epoch. Bumping the epoch replaces the previous
+  /// full-array clear (no O(map) memset per updateCosts).
+  std::vector<std::uint32_t> seen_epoch;
+  std::uint32_t epoch{0};
 };
 
 }  // namespace costmap_2d_layers

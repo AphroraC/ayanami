@@ -5,7 +5,6 @@
   <description>ayanami: pure C++ navigation framework</description>
   <maintainer email="dev@example.com">ayanami</maintainer>
   <license>MIT</license>
-  <buildtool_depend>catkin</buildtool_depend>
   <buildtool_depend>cmake</buildtool_depend>
   <depend>eigen</depend>
   <depend>spdlog</depend>

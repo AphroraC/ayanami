@@ -764,3 +764,85 @@ TEST(BehaviorTreeActionTest, recoveryForwardsPerCallBehaviorOverrides) {
   EXPECT_EQ(server->recovery_request_count, 1);
   EXPECT_TRUE(server->last_recovery_goal.behavior.empty());
 }
+
+// ---- Smoother failure degradation (production tree semantics) ----
+// The smoother branch wraps SmoothPath in a Fallback with DegradeToRawPath:
+// a smoothing failure degrades the branch to following the raw path (a
+// WARNING with SMOOTHER_FAILED is logged by the node), advances the plan
+// version so the controller adopts the raw path, and clears the consumed
+// failure context -- the navigation continues instead of escalating to the
+// systemic recovery ladder.
+constexpr const char* k_smooth_degrade_xml = R"(
+<root BTCPP_format="4">
+  <BehaviorTree ID="main">
+    <Fallback name="SmoothOrDegrade">
+      <SmoothPath input_path="{smoothed_path}" raw_path="{raw_path}"
+                  path="{smoothed_path}"
+                  failure_context="{failure_context}"/>
+      <DegradeToRawPath input_path="{raw_path}"
+                        path="{smoothed_path}"
+                        failure_context="{failure_context}"/>
+    </Fallback>
+  </BehaviorTree>
+</root>)";
+
+TEST(BehaviorTreeActionTest, smootherFailureDegradesToRawPathFollow) {
+  auto server = std::make_shared<MockNavServer>();
+  server->smooth_failure = ErrorCode::SMOOTHING_FAILED;
+  server->smooth_result = Path{};  // the module failed: no smoothed output
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, server);
+  setRequiredEntries(bb);
+  bb->set<Path>(k_raw_path, makePath(5));
+  bb->set<Path>(k_smoothed_path, Path{});
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(k_smooth_degrade_xml, bb);
+
+  // Tick 1: SmoothPath submits and goes RUNNING.
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::RUNNING);
+  // Tick 2: the module result is a failure -> SmoothPath FAILURE
+  // (SMOOTHER_FAILED context) -> DegradeToRawPath copies the raw path.
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::SUCCESS);
+
+  Path smoothed;
+  ASSERT_TRUE(bb->get<Path>(k_smoothed_path, smoothed));
+  ASSERT_EQ(smoothed.poses.size(), 5u);
+  // The degraded path IS the raw path (same geometry).
+  Path raw;
+  ASSERT_TRUE(bb->get<Path>(k_raw_path, raw));
+  for (std::size_t i = 0; i < raw.poses.size(); ++i) {
+    EXPECT_TRUE(smoothed.poses[i].pose.position.isApprox(
+        raw.poses[i].pose.position));
+  }
+  // The degrade advanced the live version (the controller must adopt the
+  // raw path); the failed smoothing itself did not bump anything.
+  EXPECT_EQ(server->currentPlanVersion(), 1u);
+  // Consume-then-clear: the failure context the degrade logged is cleared.
+  ayanami::FailureContext cause;
+  ASSERT_TRUE(bb->get<ayanami::FailureContext>(k_failure_context, cause));
+  EXPECT_EQ(cause.code, ErrorCode::NONE);
+}
+
+TEST(BehaviorTreeActionTest, degradeWithoutRawPathFails) {
+  auto server = std::make_shared<MockNavServer>();
+  server->smooth_failure = ErrorCode::SMOOTHING_FAILED;
+
+  auto bb = BT::Blackboard::create();
+  setNavServer(bb, server);
+  setRequiredEntries(bb);
+  bb->set<Path>(k_raw_path, Path{});  // nothing to degrade to
+  bb->set<Path>(k_smoothed_path, Path{});
+
+  BT::BehaviorTreeFactory factory;
+  registerNavigationBehaviorTreeNodes(factory);
+  auto tree = factory.createTreeFromText(k_smooth_degrade_xml, bb);
+
+  (void)tree.tickExactlyOnce();  // SmoothPath RUNNING
+  // SmoothPath fails, DegradeToRawPath has no raw path -> real FAILURE.
+  EXPECT_EQ(tree.tickExactlyOnce(), BT::NodeStatus::FAILURE);
+  // No version bump: nothing landed.
+  EXPECT_EQ(server->currentPlanVersion(), 0u);
+}

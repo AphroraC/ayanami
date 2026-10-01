@@ -46,9 +46,13 @@ inline bool clearCostmapArea(const costmap_2d::CostmapWrapper::Ptr& wrapper,
   const double max_y = robot_y + clear_radius;
 
   for (const auto& layer : wrapper->get().getModules()) {
-    if (auto* static_layer =
-            dynamic_cast<costmap_2d_layers::StaticLayer*>(layer.get())) {
-      static_layer->addUpdateBounds(min_x, min_y, max_x, max_y);
+    // Base-class dirty protocol: the cleared region must be repainted from
+    // layer state on the next cycle (extra bounds work for every layer).
+    layer->addExtraBounds(min_x, min_y, max_x, max_y);
+    if (auto* obstacle_layer =
+            dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(
+                layer.get())) {
+      obstacle_layer->clearArea(min_x, min_y, max_x, max_y);
     }
     if (auto* obstacle_layer =
             dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(

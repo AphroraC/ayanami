@@ -4,15 +4,37 @@
     "so_name": "libayanami_costmap_pid_controller.so"
   },
   "costmap_pid_controller": {
-    "max_vel_x": 2.0,
+    // Cruise ceiling (also caps total linear speed in omni mode). 2026-09-29
+    // user request: slower motion overall.
+    "max_vel_x": 1.5,
+    // Spin ceiling: braking distance = w^2/(2*max_acc_theta). At 2.0 rad/s
+    // with 2 rad/s^2 the controller swept ~1 rad past the deadband before it
+    // could stop (the heading overshoot the driver feels); 1.2 + 4.0 shrinks
+    // that to ~0.18 rad (closed-loop sim: post-deadband swing 0.29 -> 0.08
+    // rad; 20 ms command-latency plant behaves identically).
+    // Spin ceiling slightly reduced (1.2 -> 1.0); braking distance
+    // v^2/(2*max_acc_theta) shrinks accordingly. max_acc_theta stays 4.0 --
+    // it is the heading-overshoot fix, do not slow it.
     "max_vel_theta": 1.0,
-    "max_acc_x": 1.0,
-    "max_decel_x": 1.0,
-    "max_acc_theta": 1.0,
-    "kp_v": 1.0,
+    // Matches the firmware ramp below (the binding pair for how fast the
+    // robot actually spools up).
+    "max_acc_x": 1.5,
+    // Above the peak decel demand of the distanceDecay profile (peak
+    // max_vel_x^2/dist_decay = 1.125 at the new cruise speed), with the
+    // firmware ramp (1.5) as the next binding constraint -- arrival profile
+    // stays followable, braking feels gentle.
+    "max_decel_x": 2.0,
+    // The overshoot fix: since the setCyclePeriod contract (dt 0.05 -> real
+    // 0.01) this limit is REAL per-second authority (it used to act 5x
+    // stronger at 100 Hz). 4.0 restores the yaw braking the alignment phase
+    // needs; the chassis firmware caps at 6.0.
+    "max_acc_theta": 4.0,
+    "kp_v": 3.0,
     "ki_v": 0.0,
     "kd_v": 0.0,
-    "kp_w": 1.0,
+    // 3.0 -> 2.0: sim-neutral (yaw swing unchanged 0.079 vs 0.080), headroom
+    // against real-plant heading noise / latency amplification.
+    "kp_w": 2.0,
     "ki_w": 0.0,
     "kd_w": 0.0,
     "dist_decay": 2.0,
@@ -21,6 +43,6 @@
     "default_dt": 0.05,
     "heading_deadband": 0.08,
     "rotate_in_place_angle": 0.45,
-    "mode": "diff"
+    "mode": "omni"
   }
 }

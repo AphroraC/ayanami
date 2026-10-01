@@ -4,37 +4,20 @@ namespace ayanami {
 namespace components {
 
 ExecutionBase::~ExecutionBase() {
-  // If the user forgot to stop, force stop and wait for the run task to finish (equivalent to the old join thread).
+  // Safety net for subclasses destroyed mid-run: request exit (a run that is
+  // between cycles observes should_exit; an inline caller has already
+  // returned, so there is nothing to wait for).
   stop();
-  join();
-}
-
-void ExecutionBase::start() {
-  // Equivalent to the old behavior: if the previous run task is still running, wait for it to finish before restarting.
-  join();
-
-  should_exit = false;
-  cancel_requested = false;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    running = true;
-  }
-  execution_thread = std::thread([this]() { runTask(); });
 }
 
 void ExecutionBase::runBlocking() {
-  // Inline variant of start(): the caller's thread drives preRun -> run ->
-  // postRun directly (execution reuse: the resident action worker calls this
-  // per goal instead of spawning an execution thread per task). The flag
-  // reset mirrors start(), plus a state reset so observers never see the
-  // previous run's terminal state before this run's STARTED.
+  // Inline execution: the caller's thread drives preRun -> run -> postRun
+  // (the resident action worker calls this per goal). The flag reset plus a
+  // state reset ensure observers never see the previous run's terminal
+  // state before this run's STARTED.
   should_exit = false;
   cancel_requested = false;
   state.store(0);
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    running = true;
-  }
   runTask();
 }
 
@@ -55,11 +38,8 @@ void ExecutionBase::runTask() {
     setState(k_aborted, true);
   }
   postRun();
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    running = false;
-  }
-  // Wake control threads waiting in join/waitForStateUpdate (event-driven teardown).
+  // Wake control threads waiting in waitForStateUpdate (event-driven
+  // observation).
   condition.notify_all();
 }
 
@@ -72,12 +52,6 @@ void ExecutionBase::cancel() {
   cancel_requested = true;
   publishStopCommand();
   condition.notify_all();
-}
-
-void ExecutionBase::join() {
-  if (execution_thread.joinable()) {
-    execution_thread.join();
-  }
 }
 
 bool ExecutionBase::waitForStateUpdate(std::chrono::microseconds const& duration) {

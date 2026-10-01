@@ -122,7 +122,8 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
   planner->configure(ayanami::ModuleContext{"test_planner", ayanami::Config("")}, ctx);
   ayanami::costmap::CostmapPlannerExecution exec("test_planner", planner, ctx);
 
-  exec.start(PoseStamped{}, PoseStamped{}, 0.1);
+  exec.prepareGoal(PoseStamped{}, PoseStamped{}, 0.1);
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   // Wait for the planner to take its read view and block (the read window is open and holding the shared lock).
   {
@@ -149,7 +150,7 @@ TEST(PlannerWriterConcurrency, readerWindowBlocksWriterThenSeesNewValue) {
 
   // Release the planner: the read view destructor frees the shared lock -> the writer takes the unique lock and completes its write.
   planner->releasePlanner();
-  exec.join();
+  exec_th.join();
   EXPECT_EQ(planner->calls.load(), 1);
   {
     std::unique_lock<std::shared_mutex> lock(global->mutex());

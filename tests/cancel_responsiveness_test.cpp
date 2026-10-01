@@ -124,6 +124,73 @@ bool readyWithin(Task& t, int max_ms) {
 
 }  // namespace
 
+/// Unresponsive planner: makePlan waits FOREVER on a never-notified gate,
+/// and cancel() deliberately does nothing. Exercises the ActionBase stall
+/// policy (bounded cancelAll + goal rejection + worker-thread leak at
+/// shutdown). The gate is heap-allocated and never freed so the leaked
+/// thread waits on objects that outlive the (destroyed) module instance.
+class StalledPlanner : public ayanami::abstract::AbstractPlanner {
+public:
+  ResultT<void> makePlan(const PoseStamped&, const PoseStamped&,
+                          double, ayanami::nav_msgs::Path& plan_out) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      started.store(true);
+    }
+    started_cv.notify_all();
+    // Process-lifetime gate: the leaked worker waits here past the module's
+    // own destruction, so the gate must not live in the instance.
+    static auto* gate_mutex = new std::mutex;
+    static auto* gate = new std::condition_variable;
+    std::unique_lock<std::mutex> lock(*gate_mutex);
+    gate->wait(lock);  // nobody ever notifies
+    plan_out = Path{};
+    return ResultT<void>::success();
+  }
+
+  bool cancel() override { return true; }  // deliberately unresponsive
+
+  std::atomic<bool> started{false};
+  std::mutex mutex;
+  std::condition_variable started_cv;
+};
+
+TEST(CancelResponsiveness, unresponsiveModuleMarksActionStalledAndShutdownStaysBounded) {
+  auto planner = std::make_shared<StalledPlanner>();
+  ayanami::components::PlannerAction action(planner);
+
+  GetPathGoal goal;
+  goal.start = makePose(0.0, 0.0);
+  goal.goal = makePose(1.0, 1.0);
+  auto task = action.acceptGoal(goal);
+  ASSERT_TRUE(task.valid());
+  {
+    std::unique_lock<std::mutex> lock(planner->mutex);
+    ASSERT_TRUE(planner->started_cv.wait_for(
+        lock, std::chrono::milliseconds(1000),
+        [&] { return planner->started.load(); }));
+  }
+
+  // cancelAll must return BOUNDED even though the module never exits
+  // (kStallWait = 2 s + scheduling margin), marking the action stalled.
+  const auto t0 = std::chrono::steady_clock::now();
+  action.cancelAll();
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  EXPECT_LT(elapsed, std::chrono::milliseconds(3500))
+      << "cancelAll must not hang on a module that ignores cancel";
+
+  // A stalled action rejects further goals: settled CANCELED immediately,
+  // never dispatched into the wedged worker.
+  auto task2 = action.acceptGoal(goal);
+  ASSERT_TRUE(task2.valid());
+  ASSERT_TRUE(readyWithin(task2, 200));
+  EXPECT_EQ(task2.status(), GoalStatus::CANCELED);
+
+  // The destructor (scope exit) runs the worker-leak path and must complete
+  // rather than join the wedged thread -- the test process continuing past
+  // this line is the assertion.
+}
+
 TEST(CancelResponsiveness, cancelDuringPlanningReadyWithinBudget) {
   auto planner = std::make_shared<SlowPlanner>();
   ayanami::components::PlannerAction action(planner);

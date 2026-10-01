@@ -1,5 +1,7 @@
 #include <dlfcn.h>
 
+#include <string>
+
 #include <map>
 #include <mutex>
 #include <string>
@@ -41,6 +43,29 @@ void* openSo(const std::string& so_name) {
   // unloaded even by a future dlclose), a safety cushion for silent
   // unloading; the current path never dlcloses.
   void* handle = dlopen(so_name.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+  if (handle == nullptr && so_name.find('/') == std::string::npos) {
+    // Bare soname and the loader search path does not cover the core
+    // library's directory (ctest plain env: no LD_LIBRARY_PATH, and
+    // DT_RUNPATH does not apply to dlopen): retry next to libayanami.so
+    // itself (modules always deploy beside the core, build tree and install
+    // alike).
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(&openSo), &info) != 0 &&
+        info.dli_fname != nullptr) {
+      const std::string dir = info.dli_fname;
+      const std::size_t slash = dir.find_last_of('/');
+      const std::string fallback =
+          (slash == std::string::npos ? std::string(".")
+                                      : dir.substr(0, slash)) +
+          "/" + so_name;
+      handle = dlopen(fallback.c_str(), RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+      if (handle != nullptr) {
+        registry.emplace(so_name, handle);
+        moduleRefCounts()[so_name] = 1;
+        return handle;
+      }
+    }
+  }
   if (handle == nullptr) {
     spdlog::error("failed to load shared object '{}': {}", so_name, dlerror());
     return nullptr;

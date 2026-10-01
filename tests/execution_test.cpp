@@ -204,12 +204,13 @@ TEST(ExecutionPlanner, startGoalReachesFoundPlanAndOutcomeZero) {
   auto planner = std::make_shared<TestPlanner>();
   ayanami::components::PlannerExecution exec(planner);
   PoseStamped start, goal;
-  exec.start(start, goal, 0.1);
+  exec.prepareGoal(start, goal, 0.1);
+  std::thread exec_th([&] { exec.runBlocking(); });
   ASSERT_TRUE(waitForState(exec, ayanami::components::PlannerExecution::FOUND_PLAN));
   EXPECT_EQ(exec.getState(), ayanami::components::PlannerExecution::FOUND_PLAN);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   EXPECT_GE(planner->calls, 1);
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
@@ -239,7 +240,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::ARRIVED_GOAL));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::ARRIVED_GOAL);
@@ -247,7 +248,7 @@ TEST(ExecutionController, loopsAtFrequencyReachesGoalAndEmitsCmdVel) {
   EXPECT_GE(controller->calls, 3);
   EXPECT_TRUE(received_cmd);
 
-  exec.join();
+  exec_th.join();
 }  // cmd_cb destructor unsubscribes automatically
 
 TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
@@ -279,22 +280,22 @@ TEST(ExecutionController, publishStopCommandEmitsZeroCmdVel) {
 TEST(ExecutionRecovery, runRecoveryReachesDone) {
   auto recovery = std::make_shared<TestRecovery>();
   ayanami::components::RecoveryExecution exec(recovery);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   ASSERT_TRUE(waitForState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE));
   EXPECT_EQ(exec.getState(), ayanami::components::RecoveryExecution::RECOVERY_DONE);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionSmoother, smoothPathReachesSmoothed) {
   auto smoother = std::make_shared<TestSmoother>();
   ayanami::components::SmootherExecution exec(smoother);
   Path path;
-  exec.smoothPath(path, 2.0);
+  std::thread exec_th([&] { exec.smoothPath(path, 2.0); });
   ASSERT_TRUE(waitForState(exec, ayanami::components::SmootherExecution::SMOOTHED_PATH));
   EXPECT_EQ(exec.getState(), ayanami::components::SmootherExecution::SMOOTHED_PATH);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionPlanner, cancelForwardsToPlannerModule) {
@@ -321,14 +322,14 @@ TEST(ExecutionRecovery, cancelForwardsToRecoveryModule) {
 TEST(ExecutionRecovery, cancelDuringBlockingRecoveryEndsInCanceledAndForwards) {
   auto recovery = std::make_shared<BlockingRecovery>();
   ayanami::components::RecoveryExecution exec(recovery);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   // Wait for the recovery to enter its cycle loop (tick returns RUNNING, cancel_requested still false)
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   exec.cancel();
   EXPECT_TRUE(recovery->cancel_called);
   ASSERT_TRUE(waitForState(exec, ayanami::components::RecoveryExecution::CANCELED));
   EXPECT_EQ(exec.getState(), ayanami::components::RecoveryExecution::CANCELED);
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToModule) {
@@ -341,7 +342,7 @@ TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToModule) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   // Wait for at least one computeVelocityCommand to run, then cancel
   for (int i = 0; i < 100 && controller->calls == 0; ++i) {
@@ -356,7 +357,7 @@ TEST(ExecutionController, cancelEndsInCanceledNotStoppedAndForwardsToModule) {
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::CANCELED));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::CANCELED);
   EXPECT_NE(exec.getState(), ayanami::components::ControllerExecution::STOPPED);
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionController, noProgressMapsToNoProgressStateAndFailure) {
@@ -369,13 +370,13 @@ TEST(ExecutionController, noProgressMapsToNoProgressStateAndFailure) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::NO_PROGRESS));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::NO_PROGRESS);
   EXPECT_EQ(exec.getError(), ErrorCode::NO_PROGRESS);
   EXPECT_EQ(controller->calls, 0);  // Terminates on no progress; the controller is never called
-  exec.join();
+  exec_th.join();
 }
 
 TEST(ExecutionController, missingCheckersIsInternalError) {
@@ -386,13 +387,13 @@ TEST(ExecutionController, missingCheckersIsInternalError) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::INTERNAL_ERROR));
   EXPECT_EQ(exec.getState(), ayanami::components::ControllerExecution::INTERNAL_ERROR);
   EXPECT_EQ(exec.getError(), ErrorCode::INTERNAL_ERROR);
   EXPECT_EQ(controller->calls, 0);
-  exec.join();
+  exec_th.join();
 }
 
 // Controller output above the setMaximumVelocity cap -> clamped into the caps and
@@ -439,7 +440,7 @@ TEST(ExecutionController, velocityAboveMaxClampedAndPublished) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   // Every cycle publishes a clamped command -> GOT_LOCAL_CMD (loop keeps running);
   // the over-limit velocity is clamped, never published above the caps.
@@ -463,7 +464,7 @@ TEST(ExecutionController, velocityAboveMaxClampedAndPublished) {
   EXPECT_NEAR(last_cmd.twist.angular.z(), 1.0, 1e-9);
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
 }  // cmd_cb destructor unsubscribes automatically
 
 // With a loose setMaximumVelocity cap the over-limit value is admitted (control: the rejection was truly caused by the cap, nothing else).
@@ -494,11 +495,50 @@ TEST(ExecutionController, velocityWithinMaxIsPublished) {
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   ASSERT_TRUE(waitForState(exec, ayanami::components::ControllerExecution::ARRIVED_GOAL));
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
   EXPECT_TRUE(received);
 
-  exec.join();
+  exec_th.join();
 }  // cmd_cb destructor unsubscribes automatically
+
+TEST(ExecutionController, updatePlanDedupsContentEquivalentPath) {
+  // Content-signature dedup (task: version-advance responsibility in the BT
+  // layer + framework-level dedup): a version bump whose path content is
+  // equivalent (a converged smoother republishing its own output) advances
+  // only the version bookkeeping -- the controller setPlan consumption flag
+  // stays clear, so critic resets never run for a no-op update.
+  auto controller = std::make_shared<TestController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
+
+  Path plan_a;
+  plan_a.poses.resize(3);
+  Path plan_a_equiv = plan_a;
+  plan_a_equiv.poses[1].pose.position.x() = 5e-4;  // 0.5 mm: equivalent
+  Path plan_b = plan_a;
+  plan_b.poses[1].pose.position.x() = 0.5;         // 0.5 m: different
+
+  // Initial plan lands (the run loop would consume it; updatePlan itself
+  // must not bypass a pending one).
+  EXPECT_TRUE(exec.updatePlan(plan_a, 1u));
+  EXPECT_TRUE(exec.hasNewPlan());
+  auto consumed = exec.takeNewPlan();
+  EXPECT_EQ(consumed.second, 1u);
+  EXPECT_FALSE(exec.hasNewPlan());
+
+  // Equivalent content, new version: version advances, no new setPlan.
+  EXPECT_TRUE(exec.updatePlan(plan_a_equiv, 2u));
+  EXPECT_FALSE(exec.hasNewPlan()) << "equivalent path must not re-trigger "
+                                    "controller->setPlan";
+  EXPECT_EQ(exec.getPlanVersion(), 2u);
+
+  // Different content: consumed by the run loop on the next cycle.
+  EXPECT_TRUE(exec.updatePlan(plan_b, 3u));
+  EXPECT_TRUE(exec.hasNewPlan());
+  consumed = exec.takeNewPlan();
+  EXPECT_EQ(consumed.second, 3u);
+}

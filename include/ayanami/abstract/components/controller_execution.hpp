@@ -1,6 +1,7 @@
 #pragma once
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 #include "ayanami/abstract/components/execution_base.hpp"
 #include "ayanami/abstract/core/abstract_controller.hpp"
 #include "ayanami/messages/actions.hpp"
@@ -21,6 +22,27 @@
 namespace ayanami {
 namespace components {
 
+/// @brief Content equivalence of two paths for plan-update dedup: same pose
+/// count and every pose within tolerance (1 mm / ~1e-3 rad). A version bump
+/// whose path content did not materially change (a converged smoother
+/// re-publishing its own output) must not re-trigger controller->setPlan --
+/// (DWB did a full critic reset per replan).
+inline bool pathsEquivalent(const nav_msgs::Path& lhs, const nav_msgs::Path& rhs) {
+  if (lhs.poses.size() != rhs.poses.size()) {
+    return false;
+  }
+  // ABSOLUTE tolerances (1 mm position / 1e-3 quaternion component): a
+  // relative isApprox would never match cells near the origin, which is
+  // exactly where converged in-place refinements live.
+  for (std::size_t i = 0; i < lhs.poses.size(); ++i) {
+    if (!geometry_msgs::poseClose(lhs.poses[i].pose, rhs.poses[i].pose,
+                                  1e-3, 1e-3)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * @brief Local controller execution (periodic loop).
  *
@@ -36,12 +58,16 @@ namespace components {
  * publishStopCommand() also clears explicitly.
  *
  * Failure semantics (responsibility table): when the module returns a
- * failure code or an invalid command, the execution layer publishes a
- * zeroed command and keeps looping (the execution itself keeps no retry
- * count); only when patience > 0 and no valid command has appeared for
- * longer than that duration since start is a terminal state reported
- * (mirroring the nav2 controller failure_tolerance). Retry and recovery
- * decisions are always made by the BT.
+ * failure code, an invalid command, or the safety/pose checks fail, the
+ * execution layer STAYS SILENT for that cycle (no publish at all, nav2
+ * controller_server semantics: it waits for the costmap without
+ * publishing); the last valid command stands until the chassis-side
+ * command timeout stops the robot. Only when patience > 0 and no valid
+ * command has appeared for longer than that duration is a terminal state
+ * reported -- terminal transitions publish exactly ONE zeroed stop pulse
+ * (cancel/arrival/stuck/abort), never a zero stream (mirroring the nav2
+ * controller failure_tolerance). Retry and recovery decisions are always
+ * made by the BT.
  */
 class ControllerExecution : public ExecutionBase {
 public:
@@ -96,14 +122,25 @@ public:
 
   /// @brief In-place update of path+version while running (no cancel/join/
   /// new Execution). Consumed by the run loop on the next cycle.
+  /// Content-signature dedup: a version bump whose path is equivalent to the
+  /// one already held (converged smoother re-publishing its own output)
+  /// advances only the version bookkeeping -- controller->setPlan (and with
+  /// DWB's full critic reset) runs only on a real content change.
   bool updatePlan(const nav_msgs::Path& plan, uint64_t plan_version) {
     std::lock_guard<std::mutex> guard(plan_mutex);
     if (isTerminalLocked()) {
       return false;
     }
+    pending_plan_version = plan_version;
+    if (!new_plan && pathsEquivalent(plan, this->plan)) {
+      // Content unchanged: semantically already applied. Advancing the
+      // applied version here keeps results current (a lagging applied
+      // version would fail the stale-result policy in FollowPath).
+      applied_plan_version = std::max(applied_plan_version, plan_version);
+      return true;
+    }
     new_plan = true;
     this->plan = plan;
-    pending_plan_version = plan_version;
     return true;
   }
 
@@ -279,28 +316,36 @@ protected:
       // which is unreachable if the checker's tolerance is tighter.
       if (controller) {
         controller->setGoalTolerances(goal_checker->getTolerances().pose);
+        // Cycle-period contract: modules that integrate over time take their
+        // dt from the injected cadence (1 / controller_frequency), never from
+        // a period guessed in their own config.
+        controller->setCyclePeriod(
+            std::chrono::duration<double>(period).count());
       }
       while (true) {
         if (cancel_requested) {
           error = ErrorCode::CANCELED;
-          publishStopCommand();
+          // No stop pulse here: cancel() already published exactly one
+          // (immediate, and also covers the not-running case); a second one
+          // at the terminal would be redundant zero spam.
           setState(CANCELED, true);
           return;
         }
         if (should_exit) {
           error = ErrorCode::CANCELED;
-          publishStopCommand();
+          // Same as CANCELED: the cancel()/cancelAll() path published the
+          // single stop pulse already.
           setState(STOPPED, true);
           return;
         }
 
         if (!safetyCheck()) {
-          // Stale/unsafe map: publish zero and count the outage into
+          // Stale/unsafe map: stay silent this cycle (nav2 waits for the
+          // costmap without publishing) and count the outage into
           // controller_patience (nav2 failure_tolerance semantics: <0 =
           // tolerate forever, 0 = first stale cycle aborts). Exceeding it is
           // a MAP_STALE terminal so the BT recovery branch (clear costmap /
-          // replan) takes over instead of looping in zero velocity forever.
-          publishStopCommand();
+          // replan) takes over instead of waiting forever.
           const auto now = std::chrono::steady_clock::now();
           if (!map_stale_since) {
             map_stale_since = now;
@@ -333,10 +378,13 @@ protected:
             setState(INVALID_PLAN, true);
             return;
           }
-          // The version becomes applied only after setPlan succeeds (results report only applied versions).
+          // The version becomes applied only after setPlan succeeds (results
+          // report only applied versions). Monotonic: a concurrent content-
+          // equivalent update may have advanced the applied version past the
+          // consumed one already.
           {
             std::lock_guard<std::mutex> guard(plan_mutex);
-            applied_plan_version = plan_version;
+            applied_plan_version = std::max(applied_plan_version, plan_version);
           }
           // After a new plan is applied: snapshot the goal pose; reset the
           // goal/progress baselines only when the goal actually changed.
@@ -374,9 +422,9 @@ protected:
             setState(INTERNAL_ERROR, true);
             return;
           }
-          // Transient pose loss within the grace window: publish a zeroed
-          // command and keep looping instead of aborting the task.
-          publishStopCommand();
+          // Transient pose loss within the grace window: stay silent and
+          // keep looping instead of aborting the task (the last valid
+          // command stands; the chassis timeout is the stop net).
           setState(NO_LOCAL_CMD, false);
           sleepInterruptibly(period);
           continue;
@@ -424,9 +472,10 @@ protected:
 
         if (result.ok) {
           if (!finiteVelocityCommand(cmd_vel)) {
+            // Silent skip: the cycle counts into patience like any other
+            // failure; no zero spam (the last valid command stands).
             error = ErrorCode::NO_VALID_COMMAND;
             message = "Controller produced a non-finite velocity command";
-            publishStopCommand();
           } else {
             // Over-limit but finite commands are clamped into the caps (a
             // marginal overshoot must not stop the robot); NaN/inf were
@@ -452,8 +501,10 @@ protected:
             setState(INTERNAL_ERROR, true);
             return;
           }
+          // Silent skip within patience: no publish this cycle (nav2
+          // failure_tolerance waits quietly; the chassis command timeout is
+          // the stop net for extended outages).
           setState(NO_LOCAL_CMD, false);
-          publishStopCommand();
         }
 
         sleepInterruptibly(period);
@@ -622,10 +673,12 @@ protected:
 
   /// @brief Goal-change detection for checker resets: position/orientation
   /// only (header stamps change on every replan and must not count).
+  /// Absolute tolerance (see poseClose): the relative isApprox never matched
+  /// near the frame origin, so a near-origin goal would spuriously reset the
+  /// goal/progress checkers on every replan.
   static bool sameGoalPose(const geometry_msgs::PoseStamped& lhs,
                            const geometry_msgs::PoseStamped& rhs) {
-    return lhs.pose.position.isApprox(rhs.pose.position) &&
-           lhs.pose.orientation.isApprox(rhs.pose.orientation);
+    return geometry_msgs::poseClose(lhs.pose, rhs.pose);
   }
 
   /// @brief Clamp a finite command into the velocity limits in place.
@@ -649,11 +702,16 @@ protected:
       const auto now = std::chrono::steady_clock::now();
       if (now - last_clamp_warn_at >= std::chrono::seconds(1)) {
         last_clamp_warn_at = now;
-        spdlog::warn(
-            "ControllerExecution: velocity command exceeded the limits "
-            "(vx={} vy={} wz={}, caps vx={} vy={} wz={}); clamped",
-            linear.x(), linear.y(), angular.z(), max_linear_x, max_linear_y,
-            max_angular_z);
+        SPDLOG_LOGGER_WARN(
+          ayanami::controllerLogger(),
+          "ControllerExecution: velocity command exceeded the limits "
+          "(vx={} vy={} wz={}, caps vx={} vy={} wz={}); clamped",
+          linear.x(),
+          linear.y(),
+          angular.z(),
+          max_linear_x,
+          max_linear_y,
+          max_angular_z);
       }
     }
     linear.x() = clamped_x;

@@ -64,8 +64,27 @@ class CostmapBackUpRecovery final : public ayanami::costmap::CostmapRecovery {
 
   CostmapBackUpRecoveryParam param;
 
-  bool collisionNearRobot(const ayanami::costmap::CostmapReader& costmap,
-                          const ::Eigen::Isometry3d& robot_pose) const;
+  /// Escape-progress bookkeeping: start position of the running escape and
+  /// whether it was recorded; the run fails as "escape stalled" when the
+  /// robot did not physically move by half the backup distance.
+  ::Eigen::Vector2d escape_start_pos_{::Eigen::Vector2d::Zero()};
+  bool escape_progress_valid_{false};
+  /// Two-leg escape: the first stalled leg flips the direction once before
+  /// the run is declared stalled (boxed in).
+  int escape_total_frames_{0};
+  bool tried_opposite_dir_{false};
+
+  /// Any lethal cell within radius_m (meters) of the robot center.
+  bool lethalWithin(const ayanami::costmap::CostmapReader& costmap,
+                    const ::Eigen::Isometry3d& robot_pose,
+                    double radius_m) const;
+
+  /// Split the lethal cells around the pose into front/rear (robot frame)
+  /// and pick the escape direction away from the heavier contact side.
+  /// Returns false when there is no lethal cell to branch on.
+  bool pickEscapeDirection(const ayanami::costmap::CostmapReader& costmap,
+                           const ::Eigen::Isometry3d& robot_pose,
+                           double& escape_dir, double contact_radius) const;
 
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 

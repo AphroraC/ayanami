@@ -1,14 +1,22 @@
 // modules/costmap_astar_planner -- A* global path planning module.
 //
-// Pure C++ (zero ROS): plans on a SHORT-LOCK SNAPSHOT of the GLOBAL costmap
-// master grid (family read contract: planner = global map only; fresh local
-// observations never shape the global plan; the map writer is never delayed
-// by the search because the shared lock is held only for the memcpy).
+// Pure C++ (zero ROS): plans on the OVERLAY of the held global grid copy and
+// a fresh local snapshot (static-global policy: global = static+inflation,
+// fresh dynamic obstacle marks live only in the local rolling map). The
+// overlay fusion is a per-point max (FusedMapView) -- the two grids' cost
+// sources are disjoint, each carries its own inflation. All work runs on
+// these immutable inputs with no map lock held (the global copy refreshes
+// only when the writer's generation advances; the local copy is one
+// short-lock snapshot per call), so the map writer is never delayed by the
+// search.
 // Standard 4/8-connected A*. Rewritten with reference to _legacy
 // AstarPlannerAStar semantics:
-// - Blocking: cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
+// - Blocking: fused cell cost >= INSCRIBED_INFLATED_OBSTACLE (lethal from 253 on)
 // - Traversal cost: step * (neutral_cost + cost_factor * cell_cost)
 // - Goal inside an obstacle: nearestValidGoal searches for the nearest valid cell within tolerance (approximate path)
+// - Start tolerance: a start inside the inscribed band (253) is planned from as-is in ESCAPE mode
+//   (only LETHAL cells block: the band itself must be traversable to leave it); a LETHAL (254)
+//   start is rejected
 // - cancel: checked node by node in the search loop; once interrupted, returns ErrorCode::CANCELED
 
 #include "costmap_astar_planner.hpp"
@@ -41,23 +49,26 @@ struct SearchParams {
   double neutral_cost{1.0};
 };
 
-// Standard A* over a costmap snapshot. Returns {found, cost,
-// cells(start->goal)}. canceled is checked node by node. The snapshot is
-// immutable: the search holds NO map lock (the caller copied the master
-// grid under a short shared lock before calling).
+// Standard A* over the fused overlay view. Returns {found, cost,
+// cells(start->goal)}. canceled is checked node by node. The view is
+// immutable: the search holds NO map lock (the caller prepared the held
+// global copy and the short-lock local snapshot before calling).
 struct AStarResult {
   bool found{false};
   double cost{0.0};
   std::vector<Cell> cells;
 };
 
-AStarResult runAStar(const ayanami::costmap::CostmapSnapshot& grid,
+AStarResult runAStar(const ayanami::costmap::FusedMapView& view,
                      const SearchParams& params, unsigned int sx,
                      unsigned int sy, unsigned int gx, unsigned int gy,
-                     const std::atomic<bool>& canceled) {
-  const auto blocked = [&grid](unsigned int x, unsigned int y) {
-    return grid.getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+                     const std::atomic<bool>& canceled, bool escape_mode) {
+  const auto blocked = [&view, escape_mode](unsigned int x, unsigned int y) {
+    const unsigned char cost = view.costAtCell(x, y);
+    return cost >= (escape_mode ? costmap_2d::LETHAL_OBSTACLE
+                                : costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
   };
+  const auto& grid = *view.global;
   const unsigned int width = grid.size_x;
   const unsigned int height = grid.size_y;
   const std::size_t size =
@@ -150,7 +161,7 @@ AStarResult runAStar(const ayanami::costmap::CostmapSnapshot& grid,
       const double move_cost =
           step * (params.neutral_cost +
                   params.cost_factor *
-                      static_cast<double>(grid.getCost(ux, uy)));
+                      static_cast<double>(view.costAtCell(ux, uy)));
       const double tentative = g_score[cur_idx] + move_cost;
       if (tentative < g_score[nidx]) {
         parent[nidx] = static_cast<int>(cur_idx);
@@ -163,12 +174,12 @@ AStarResult runAStar(const ayanami::costmap::CostmapSnapshot& grid,
 }
 
 // Finds the nearest valid cell within radius=tolerance_cells around (gx,gy) (including itself).
-bool nearestValidGoal(const ayanami::costmap::CostmapSnapshot& grid,
+bool nearestValidGoal(const ayanami::costmap::FusedMapView& view,
                       unsigned int gx, unsigned int gy,
                       double tolerance_cells, unsigned int& ox,
                       unsigned int& oy) {
-  const auto blocked = [&grid](unsigned int x, unsigned int y) {
-    return grid.getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  const auto blocked = [&view](unsigned int x, unsigned int y) {
+    return view.blockedAtCell(x, y);
   };
   const int radius = static_cast<int>(std::ceil(std::max(0.0, tolerance_cells)));
   for (int r = 0; r <= radius; ++r) {
@@ -184,7 +195,7 @@ bool nearestValidGoal(const ayanami::costmap::CostmapSnapshot& grid,
         }
         const unsigned int ux = static_cast<unsigned int>(nx);
         const unsigned int uy = static_cast<unsigned int>(ny);
-        if (ux >= grid.size_x || uy >= grid.size_y) {
+        if (ux >= view.global->size_x || uy >= view.global->size_y) {
           continue;
         }
         if (blocked(ux, uy)) {
@@ -255,26 +266,40 @@ ResultT<void> CostmapAstarPlanner::makePlan(
     return ResultT<void>::failure(
         ErrorCode::MAP_UNAVAILABLE, "CostmapAstarPlanner has no costmap module");
   }
-  // Family read contract: the planner reads the GLOBAL map only, via a
-  // SHORT-LOCK SNAPSHOT. snapshotGlobal holds the map's shared lock only
-  // for the memcpy; the search below runs on the immutable copy with no
-  // map lock held, so the incremental map writer is never delayed by
-  // planning regardless of map size or search duration.
-  ayanami::costmap::CostmapSnapshot snapshot;
-  if (!map_context->snapshotGlobal(snapshot)) {
-    return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
-                                  "CostmapAstarPlanner has no global costmap");
+  // Global grid: held copy refreshed lazily by generation. The global map
+  // is static (static+inflation), so after the first copy every planning
+  // call is one atomic load; the writer bumps the generation on every real
+  // mutation (clear commands included), which triggers exactly one re-copy.
+  const std::uint64_t global_gen = map_context->globalGeneration();
+  if (!have_global_copy || global_gen != global_copy_generation) {
+    if (!map_context->snapshotGlobal(global_copy)) {
+      return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
+                                    "CostmapAstarPlanner has no global costmap");
+    }
+    global_copy_generation = global_copy.generation;
+    have_global_copy = true;
   }
-  return makePlanWithMap(start, goal, tolerance, plan_out, snapshot);
+  // Local overlay: one short-lock snapshot per planning call (the context
+  // reuses the buffer's capacity). An absent or unreadable local map, or an
+  // unavailable map<-odom transform, degrades to global-only planning --
+  // same graceful degradation rule as the smoother's collision check.
+  ayanami::costmap::FusedMapView view;
+  view.global = &global_copy;
+  if (map_context->snapshotLocal(local_snapshot) && local_snapshot.valid()) {
+    if (map_context->localFromGlobal(view.local_from_global)) {
+      view.local = &local_snapshot;
+    }
+  }
+  return makePlanWithMap(start, goal, tolerance, plan_out, view);
 }
 
 ResultT<void> CostmapAstarPlanner::makePlanWithMap(
     const geometry_msgs::PoseStamped& start,
     const geometry_msgs::PoseStamped& goal, double tolerance,
-    nav_msgs::Path& plan_out,
-    const ayanami::costmap::CostmapSnapshot& snapshot) {
-  const auto* grid = &snapshot;
-  if (!snapshot.valid()) {
+    nav_msgs::Path& plan_out, const ayanami::costmap::FusedMapView& view) {
+  const auto* grid = view.global;
+  const auto& snapshot = *grid;
+  if (!view.valid()) {
     return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
                                   "CostmapAstarPlanner has no global costmap");
   }
@@ -313,15 +338,38 @@ ResultT<void> CostmapAstarPlanner::makePlanWithMap(
                                    "Goal pose is outside the global costmap");
   }
 
-  const auto blocked = [grid](unsigned int x, unsigned int y) {
-    return grid->getCost(x, y) >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  const auto blocked = [&view](unsigned int x, unsigned int y) {
+    return view.blockedAtCell(x, y);
   };
-  if (blocked(sx, sy)) {
+  // Start tolerance (nav2 NavFn parity): the robot is already wherever it
+  // is. A start inside the inscribed band (253) is the inflation verdict
+  // around it -- planning FROM it is how the robot drives back out; hard
+  // failing here deadlocks a band-grazing tracker (every replan reports
+  // START_INVALID, a non-recoverable code, so no recovery can ever fix it).
+  // Only a LETHAL start (inside a mapped obstacle: a TF/placement fault)
+  // is rejected.
+  const unsigned char start_cost = view.costAtCell(sx, sy);
+  if (start_cost >= costmap_2d::LETHAL_OBSTACLE) {
     return ResultT<void>::failure(ErrorCode::START_INVALID,
-                                   "Start pose is blocked");
+                                  "Start pose is inside a lethal obstacle");
   }
+  // Escape mode: with the start inside the band, the whole band thickness
+  // toward free space is itself >= 253 -- the strict predicate would leave
+  // the search nowhere to expand and every replan would report
+  // PATH_NOT_FOUND. While escaping, only LETHAL cells block (band cells
+  // stay heavily penalized through the traversal cost, so the search leaves
+  // the band at the first opportunity); a start outside the band keeps the
+  // strict predicate.
+  const bool escape_mode =
+      start_cost >= costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 
-  const double tolerance_m = tolerance > 0.0 ? tolerance : param.tolerance;
+  // Tolerance is CONFIG-owned (costmap_astar_planner.json::tolerance), not
+  // goal-owned: the BT exposes no tolerance port and a fixed goal-side
+  // default would silently override the module's own configuration. The
+  // interface parameter is accepted for the AbstractPlanner contract and
+  // ignored here.
+  (void)tolerance;
+  const double tolerance_m = param.tolerance;
   const double tolerance_cells =
       tolerance_m / std::max(grid->resolution, 1e-9);
 
@@ -330,7 +378,7 @@ ResultT<void> CostmapAstarPlanner::makePlanWithMap(
   unsigned int target_y = gy;
   bool approximate = false;
   if (blocked(gx, gy)) {
-    if (!nearestValidGoal(*grid, gx, gy, tolerance_cells, target_x,
+    if (!nearestValidGoal(view, gx, gy, tolerance_cells, target_x,
                           target_y)) {
       return ResultT<void>::failure(
           ErrorCode::GOAL_INVALID,
@@ -345,7 +393,8 @@ ResultT<void> CostmapAstarPlanner::makePlanWithMap(
   params.neutral_cost = param.neutral_cost;
 
   const AStarResult result =
-      runAStar(*grid, params, sx, sy, target_x, target_y, canceled);
+      runAStar(view, params, sx, sy, target_x, target_y, canceled,
+               escape_mode);
   if (canceled.load()) {
     return ResultT<void>::failure(ErrorCode::CANCELED, "Planning canceled");
   }

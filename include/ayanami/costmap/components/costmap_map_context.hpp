@@ -1,5 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -21,18 +25,18 @@ namespace costmap {
  * @brief The costmap family "map module" (two framed grids).
  *
  * The global and the local costmap live in DIFFERENT frames, with a strict
- * timescale split (nav2 convention):
+ * timescale split (static-global policy):
  * - global costmap frame = global_costmap_frame (typically "map"):
- *   static layer + (optional) dynamic obstacle layer + inflation (nav2
- *   global_costmap shape); the dynamic layer is enabled by
- *   costmap_global.observation_sources and receives the same observations
- *   as the local map, so replanning and path validation see real
- *   obstacles;
+ *   static layer + inflation only (nav2-shaped but STATIC) -- the map-level
+ *   geometry never carries fresh obstacle marks; a dynamic obstacle layer
+ *   remains technically loadable for special deployments
+ *   (costmap_global.layers), but production runs static-only;
  * - local costmap frame = local_costmap_frame (typically "odom"): rolling
- *   window of dynamic obstacle marks. Being in the odometry frame makes the
- *   local map immune to localization (AMCL) jumps: corrections move the
- *   map<-odom edge, not the odom<-sensor edges the local marks were stamped
- *   with, so short-term local geometry stays consistent.
+ *   window carrying ALL dynamic obstacle marks (+ inflation). Being in the
+ *   odometry frame makes the local map immune to localization (AMCL) jumps:
+ *   corrections move the map<-odom edge, not the odom<-sensor edges the
+ *   local marks were stamped with, so short-term local geometry stays
+ *   consistent.
  *
  * Ownership and holding discipline:
  * - Ownership: the host (CostmapNavigation / CostmapNavigationServer) holds
@@ -41,7 +45,9 @@ namespace costmap {
  *   configure(context, map) and never modify the map.
  * - Map reads: modules read through readGlobal()/readLocal(), which hand a
  *   CostmapReader to a callback and release the lock when it returns
- *   (RAII shared lock + zero-copy direct master grid reads).
+ *   (RAII shared lock + zero-copy direct master grid reads), or take
+ *   short-lock snapshots (snapshotGlobal/snapshotLocal, generation-stamped
+ *   -- equal generation means byte-identical content).
  * - Mutable wrapper/layer access (globalCostmap()/localCostmap()) is
  *   provided only to the map writer (CostmapNavigationServer) and the
  *   execution lifecycle (checkActivate/checkDeactivate/current); rule
@@ -50,16 +56,16 @@ namespace costmap {
  *   (the framework has exactly one transform query surface; no per-module
  *   getRobotPose-style wrappers).
  *
- * Family read contract (timescale split):
- * - planner: GLOBAL map only (the planning timescale; fresh local
- *   observations never shape the global plan) -- the module reads the grid
- *   directly under readGlobal() for the duration of one planning call
- *   (nav2-style direct reads; the map writer is incremental, so a search
- *   holding the shared lock only delays the writer, never vice versa);
- * - smoother: GLOBAL+LOCAL read capability as needed (collision checking on
- *   both timescales; paths expressed in the global frame are transformed
- *   into each grid's frame once per call);
- * - controller/recovery: read the local map (family-defined).
+ * Family read contract (timescale split + overlay):
+ * - planner: held GLOBAL copy (generation-gated lazy refresh) + ONE local
+ *   snapshot per planning call, planned on the max-fused overlay
+ *   (FusedMapView); fresh local obstacles divert the plan, the global grid
+ *   carries the map-level geometry. Absent local map / transform degrades
+ *   to global-only;
+ * - smoother: same overlay model (held global copy + one local snapshot
+ *   per call) for two-grid collision checking;
+ * - controller/recovery: read the local map (family-defined), the
+ *   controller generation-gates its private copy.
  */
 class CostmapMapContext : public map::AbstractMapContext,
                        public std::enable_shared_from_this<CostmapMapContext> {
@@ -72,23 +78,35 @@ class CostmapMapContext : public map::AbstractMapContext,
   std::string mapFamily() const override { return "costmap"; }
   map::MapCommandPort::Ptr commandPort() const override { return command_port; }
 
-  /// @brief Path validity check on the GLOBAL map only (the planning
-  /// timescale; semantics aligned with nav2 planner_server::isPathValid,
-  /// which validates against the planning = global costmap). When the
-  /// global dynamic obstacle layer is enabled
-  /// (costmap_global.observation_sources), fresh obstacle marks invalidate
-  /// the plan exactly like nav2; local-only marks remain the controller's
-  /// timescale and surface through the controller's own failure codes.
+  /// @brief Path validity check on the fused global+local overlay (the
+  /// planning timescale; semantics aligned with nav2
+  /// planner_server::isPathValid but overlay-aware: under the static-global
+  /// policy fresh obstacle marks live ONLY in the local rolling map, so a
+  /// plan is valid only when it clears BOTH the global geometry and the
+  /// local marks inside the local window; points outside the local window
+  /// are gated by the global grid alone).
   /// Checking starts from the path point nearest the robot -- segments
   /// already traversed may be occupied by new obstacles and are a source of
   /// false negatives, so they are skipped explicitly; every point must be
   /// in bounds (out of bounds treated as lethal, mirroring nav2) and its
-  /// cost must be neither NO_INFORMATION nor lethal (isLethal >= 253
-  /// includes inscribed, mirroring nav2 use_radius mode). Path validation
+  /// fused cost must be neither NO_INFORMATION nor lethal (isLethal >= 253
+  /// includes inscribed, mirroring nav2 use_radius mode). The local overlay
+  /// (one short-lock snapshot + one lock-free transform lookup) is prepared
+  /// BEFORE the global read lock -- locks never nest; a missing local map or
+  /// transform degrades the whole check to global-only. Path validation
   /// is an O(path length) SPARSE probe: the shared lock is held only for
   /// the point scan (short critical section). Degrades to a non-empty check
   /// when no global wrapper exists; degrades to a full-path check
   /// (conservative) when the robot pose is unavailable.
+  ///
+  /// Robot-adjacent exemption: the contiguous prefix of path points within
+  /// the cached footprint's inscribed radius of the robot pose is exempt
+  /// from the band check -- those points are where the robot ALREADY is. A
+  /// robot that grazed the inscribed band while tracking (a legal 252-cell
+  /// path plus tracking wobble) would otherwise fail every future
+  /// validation AND every replan (START_INVALID deadlock); driving forward
+  /// out of the band is the correct recovery, and points beyond the body
+  /// radius keep full gating.
   bool isPathValid(const ayanami::nav_msgs::Path& path) const {
     if (path.poses.empty()) {
       return false;
@@ -96,6 +114,14 @@ class CostmapMapContext : public map::AbstractMapContext,
     if (!global_costmap) {
       return true;
     }
+    // Local overlay prepared BEFORE the global read lock: one short-lock
+    // snapshot + one lock-free transform lookup, never nested with (or
+    // inside) the global shared lock. A missing local map or transform
+    // degrades the whole check to global-only (static walls still gate).
+    ayanami::costmap::CostmapSnapshot local;
+    Eigen::Isometry3d local_from_global = Eigen::Isometry3d::Identity();
+    const bool have_local = snapshotLocal(local) && local.valid() &&
+                            localFromGlobal(local_from_global);
     return readGlobal([&](const CostmapReader& global) {
       if (!global.valid()) {
         return true;
@@ -116,6 +142,16 @@ class CostmapMapContext : public map::AbstractMapContext,
             start_index = i;
           }
         }
+        // Robot-adjacent exemption (see the class doc): skip the contiguous
+        // prefix of points inside the robot's own body radius. The robot
+        // standing there proves those points survivable; probing them turns
+        // a band-grazing tracking wobble into a permanent validation failure.
+        while (start_index < path.poses.size() &&
+               (path.poses[start_index].pose.position -
+                global.robot_pose().pose.position)
+                   .norm() <= cached_inscribed_radius) {
+          ++start_index;
+        }
       }
       for (std::size_t i = start_index; i < path.poses.size(); ++i) {
         unsigned int mx = 0;
@@ -126,7 +162,21 @@ class CostmapMapContext : public map::AbstractMapContext,
           // out of bounds: treated as lethal, mirroring nav2
           return false;
         }
-        const auto cost = global_grid->getCost(mx, my);
+        auto cost = global_grid->getCost(mx, my);
+        if (have_local) {
+          // Fused overlay: the local window's fresh marks gate the near
+          // path segment exactly like the planner's overlay model.
+          const Eigen::Vector3d p_local =
+              local_from_global * path.poses[i].pose.position;
+          unsigned int lmx = 0;
+          unsigned int lmy = 0;
+          if (local.worldToMap(p_local.x(), p_local.y(), lmx, lmy)) {
+            const unsigned char local_cost = local.getCost(lmx, lmy);
+            if (local_cost > cost) {
+              cost = local_cost;
+            }
+          }
+        }
         if (cost == costmap_2d::NO_INFORMATION ||
             costmap_2d::isLethal(cost)) {
           return false;
@@ -153,9 +203,30 @@ class CostmapMapContext : public map::AbstractMapContext,
   /// @brief Cache the immutable footprint during setup (injected by
   /// configureCoreMaps). Readers take the footprint only from this cache
   /// and never read the live LayeredCostmap (reading mutable state outside
-  /// the write lock).
+  /// the write lock). The inscribed radius (min distance from the footprint
+  /// origin = the robot center to the polygon edges, LayeredCostmap
+  /// semantics) is derived once here: it is the isPathValid robot-adjacent
+  /// exemption radius.
   void setFootprint(costmap_2d::Footprint footprint) {
     cached_footprint = std::move(footprint);
+    double radius = 0.0;
+    const std::size_t n = cached_footprint.size();
+    if (n >= 3) {
+      radius = std::numeric_limits<double>::max();
+      for (std::size_t i = 0; i < n; ++i) {
+        const auto& a = cached_footprint[i];
+        const auto& b = cached_footprint[(i + 1) % n];
+        const double ex = b.x - a.x;
+        const double ey = b.y - a.y;
+        const double length_sq = ex * ex + ey * ey;
+        const double t = length_sq > 0.0
+                             ? std::clamp(-(a.x * ex + a.y * ey) / length_sq,
+                                          0.0, 1.0)
+                             : 0.0;
+        radius = std::min(radius, std::hypot(a.x + t * ex, a.y + t * ey));
+      }
+    }
+    cached_inscribed_radius = radius;
   }
 
   /// @brief Inject the map write-command port (during configureCoreMaps,
@@ -230,9 +301,13 @@ class CostmapMapContext : public map::AbstractMapContext,
   /// is resolved BEFORE the lock (never a transform lookup under a map
   /// lock), and the caller runs its search on the immutable snapshot with
   /// no map lock held -- the writer is never delayed by planning.
-  /// @return false when no global wrapper exists (out is reset to empty).
+  /// The out buffer's costs capacity is reused across calls (assign, not a
+  /// fresh allocation); the copied grid's generation is recorded in
+  /// out.generation.
+  /// @return false when no global wrapper exists (scalar fields are reset so
+  /// valid() is false; the costs buffer keeps its capacity for reuse).
   bool snapshotGlobal(costmap::CostmapSnapshot& out) const {
-    out = costmap::CostmapSnapshot{};
+    resetSnapshotScalars(out);
     if (!global_costmap) {
       return false;
     }
@@ -252,13 +327,82 @@ class CostmapMapContext : public map::AbstractMapContext,
     out.origin_y = grid->getOriginY();
     out.robot_pose = robot_pose;
     out.has_robot_pose = has_robot_pose;
+    out.generation = global_costmap->generation();
     const auto* map = grid->getCharMap();
     out.costs.assign(map, map + static_cast<std::size_t>(out.size_x) *
                                        out.size_y);
     return true;
   }
 
+  /// @brief Local-map counterpart of snapshotGlobal (the smoother's short
+  /// lock copy of the rolling window). Same buffer-reuse and generation
+  /// recording contract as snapshotGlobal.
+  bool snapshotLocal(costmap::CostmapSnapshot& out) const {
+    resetSnapshotScalars(out);
+    if (!local_costmap) {
+      return false;
+    }
+    const std::string frame = local_costmap->globalFrame();
+    ayanami::geometry_msgs::PoseStamped robot_pose;
+    const bool has_robot_pose = robotPoseInFrame(robot_pose, frame);
+    std::shared_lock<std::shared_mutex> lock(local_costmap->mutex());
+    const auto* grid = local_costmap->get().getCostmap();
+    if (!grid || grid->getSizeInCellsX() == 0 || grid->getSizeInCellsY() == 0) {
+      return false;
+    }
+    out.frame = frame;
+    out.size_x = grid->getSizeInCellsX();
+    out.size_y = grid->getSizeInCellsY();
+    out.resolution = grid->getResolution();
+    out.origin_x = grid->getOriginX();
+    out.origin_y = grid->getOriginY();
+    out.robot_pose = robot_pose;
+    out.has_robot_pose = has_robot_pose;
+    out.generation = local_costmap->generation();
+    const auto* map = grid->getCharMap();
+    out.costs.assign(map, map + static_cast<std::size_t>(out.size_x) *
+                                       out.size_y);
+    return true;
+  }
+
+  /// @brief Current master-grid generation (CostmapWrapper::generation(); 0
+  /// when the map does not exist). Lock-free atomic read: a consumer that
+  /// holds a snapshot compares against this to skip re-copying an unchanged
+  /// grid -- equal generation means byte-identical content.
+  std::uint64_t globalGeneration() const {
+    return global_costmap ? global_costmap->generation() : 0;
+  }
+  std::uint64_t localGeneration() const {
+    return local_costmap ? local_costmap->generation() : 0;
+  }
+
+  /// @brief Resolve the global-frame -> local-frame transform (where the
+  /// local grid sits inside the global grid), OUTSIDE any map lock, for
+  /// callers that combine a global copy with a local snapshot (overlay
+  /// planning). Uses the RobotStateController with latest-time semantics;
+  /// returns false when the transform is unavailable.
+  bool localFromGlobal(Eigen::Isometry3d& local_from_global) const {
+    return ayanami::components::RobotStateController::instance()
+        .lookupTransform(local_frame, global_frame,
+                         ayanami::Timestamp::latest(), local_from_global, 0.0);
+  }
+
  private:
+  /// @brief Reset a snapshot's scalar fields for reuse: valid() becomes
+  /// false while the costs buffer KEEPS its capacity (the next successful
+  /// snapshot assign()s into it instead of reallocating).
+  static void resetSnapshotScalars(costmap::CostmapSnapshot& out) {
+    out.size_x = 0;
+    out.size_y = 0;
+    out.resolution = 0.05;
+    out.origin_x = 0.0;
+    out.origin_y = 0.0;
+    out.frame.clear();
+    out.robot_pose = ayanami::geometry_msgs::PoseStamped{};
+    out.has_robot_pose = false;
+    out.generation = 0;
+  }
+
   /// @brief Resolve the robot pose in the requested frame via the
   /// RobotStateController singleton (the framework-wide TF query surface).
   bool robotPoseInFrame(ayanami::geometry_msgs::PoseStamped& pose,
@@ -316,6 +460,9 @@ class CostmapMapContext : public map::AbstractMapContext,
   std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};
   costmap_2d::Footprint cached_footprint;
+  /// @brief Inscribed radius of cached_footprint (0 when unset) -- the
+  /// isPathValid robot-adjacent exemption radius.
+  double cached_inscribed_radius{0.0};
   map::MapCommandPort::Ptr command_port;
 };
 

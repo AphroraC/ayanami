@@ -31,7 +31,7 @@ class AbstractController : public virtual ExtensionModule {
   /// the value a .so reports against the one it was built with and refuses a
   /// mismatch (two modules agreeing on class names but disagreeing on layout is
   /// exactly the failure RTTI cannot catch).
-  static constexpr std::uint32_t kApiVersion = 1;
+  static constexpr std::uint32_t kApiVersion = 2;
   std::uint32_t apiVersion() const override { return kApiVersion; }
 
 
@@ -64,6 +64,17 @@ class AbstractController : public virtual ExtensionModule {
   /// a checker is present. A controller that never receives it must fall back
   /// to its configure-time parameters (standalone/test use).
   virtual void setGoalTolerances(const ayanami::PoseTolerance&) {}
+
+  /// @brief Nominal period between two computeVelocityCommand calls, pushed
+  /// by the execution before each run (seconds) -- the controller-family
+  /// analogue of AbstractRecovery::setCyclePeriod.
+  ///
+  /// The execution owns the cadence (navigation.controller_frequency), so a
+  /// module that integrates over time (PID axes, steer-rate limiting) must
+  /// take its dt from here instead of guessing a period in its own config;
+  /// two configs silently disagreeing is exactly the failure this contract
+  /// removes. Default: no-op, for modules whose logic is period-independent.
+  virtual void setCyclePeriod(double seconds) { (void)seconds; }
 
   virtual void activate() {}
   virtual void deactivate() {}

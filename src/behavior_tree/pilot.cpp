@@ -1,18 +1,19 @@
-// BehaviorTreePilot implementation (one tree instance per navigation attempt +
-// pending_goal blackboard overwrite + preemption owned by the tick thread).
+// BehaviorTreePilot implementation (RESIDENT tree, nav2 BtActionServer
+// model: the tree and the blackboard are built once and reused across
+// navigation attempts; every attempt ends with haltTree, and the next
+// goal's applyPendingGoal re-arms the per-attempt blackboard keys).
 //
 // Preemption discipline: beginNavigation only performs latest-wins mailbox
 // delivery (overwrite pending_goal + wake), **never halts the BT tree
 // cross-thread**. All actual preemption lands on the run thread:
-// applyPendingGoal: local haltTree (tick thread) ->
-// controllerAction->cancelAll -> publish one zero velocity (Global
-// Constraint P9) -> startNewSession (session+1 / plan_version reset to
-// zero, sharing the same object with NavigationServerBase) -> rewrite the
-// blackboard. halt is only a request flag (halt_requested), consumed
-// locally by the run thread's consumeHaltRequest (for stopping the tree on
-// stop/destruction; after join there are no concurrent ticks). The FACTORY
-// (nodes + tree definitions) is built once; the tree INSTANCE is per attempt,
-// so a tree life is a tree object and no state can cross between attempts.
+// applyPendingGoal (new attempt: defensive haltTree + blackboard reset;
+// revision: blackboard rewrite only, the running controller keeps its
+// path) and consumeHaltRequest (haltTree -> CANCELED -> controller
+// cancelAll). halt is only a request flag (halt_requested), consumed
+// locally by the run thread. The FACTORY and the TREE are built once; the
+// blackboard is rewritten per goal; per-node caches are cleared by each
+// node's halt() override or re-baselined at the IDLE edge (nav2
+// discipline), with tokens kept monotonic across attempts.
 
 #include "ayanami/behavior_tree/pilot.hpp"
 #include <ayanami/utility/bootstrap.hpp>
@@ -25,6 +26,7 @@
 #include "ayanami/utility/extension_module.hpp"
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -39,15 +41,14 @@ namespace behavior_tree {
 // navigation.behavior_tree_extension is absent (production configs always
 // give it explicitly).
 namespace {
-constexpr const char* k_default_tree_extension_so =
-    "libayanami_navigation_behavior_tree.so";
+constexpr const char* k_default_tree_extension_so = "libayanami_navigation_behavior_tree.so";
 }  // namespace
 
-BehaviorTreePilot::BehaviorTreePilot()
-    : session_state(
-          std::make_shared<components::NavigationSessionState>()) {}
+BehaviorTreePilot::BehaviorTreePilot() : session_state(std::make_shared<components::NavigationSessionState>()) {}
 
-BehaviorTreePilot::~BehaviorTreePilot() { stop(); }
+BehaviorTreePilot::~BehaviorTreePilot() {
+  stop();
+}
 
 void BehaviorTreePilot::configure(const std::string& config_path) {
   ayanami::bootstrap(config_path);
@@ -56,17 +57,18 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   const std::string k_sec = "navigation";
   planner_frequency = cfg.param<double>(k_sec, "planner_frequency", 10.0);
   smoother_frequency = cfg.param<double>(k_sec, "smoother_frequency", -1.0);
-  controller_frequency =
-      cfg.param<double>(k_sec, "controller_frequency", 20.0);
+  controller_frequency = cfg.param<double>(k_sec, "controller_frequency", 20.0);
   tick_frequency = cfg.param<double>(k_sec, "tick_frequency", 100.0);
-  max_nav_retries = static_cast<uint32_t>(
-      std::max(0, cfg.param<int>(k_sec, "max_nav_retries", 6)));
-  oscillation_distance =
-      cfg.param<double>(k_sec, "oscillation_distance", 0.1);
-  oscillation_timeout =
-      cfg.param<double>(k_sec, "oscillation_timeout", 5.0);
+  max_nav_retries = static_cast<uint32_t>(std::max(0, cfg.param<int>(k_sec, "max_nav_retries", 6)));
+  oscillation_distance = cfg.param<double>(k_sec, "oscillation_distance", 0.1);
+  oscillation_timeout = cfg.param<double>(k_sec, "oscillation_timeout", 5.0);
+  // BT watchdog budgets: planner/smoother branch deadline (seconds; <= 0 =
+  // unlimited) and the outer RecoveryNode same-cause pruning budget.
+  planner_timeout = cfg.param<double>(k_sec, "planner_timeout", 2.0);
+  smoother_timeout = cfg.param<double>(k_sec, "smoother_timeout", 2.0);
+  max_same_cause = static_cast<uint32_t>(std::max(0, cfg.param<int>(k_sec, "max_same_cause", 3)));
 
-// Generic tree extensions: the config names extension .so(s), cached at
+  // Generic tree extensions: the config names extension .so(s), cached at
   // configure time and loaded during buildFactory via
   // ExtensionModule::loadModule. The navigation section's value may be a single
   // string or a string array (one shared helper handles both spellings).
@@ -82,8 +84,7 @@ void BehaviorTreePilot::configure(const std::string& config_path) {
   // agnostic of recovery roles -- BT only orchestrates.
 }
 
-void BehaviorTreePilot::setNavigationRuntime(
-    components::NavigationRuntime::Ptr runtime) {
+void BehaviorTreePilot::setNavigationRuntime(components::NavigationRuntime::Ptr runtime) {
   navigation_runtime = std::move(runtime);
   if (navigation_runtime) {
     // Shared session/version single source of truth: pilot and server use
@@ -92,68 +93,63 @@ void BehaviorTreePilot::setNavigationRuntime(
     navigation_runtime->setSessionState(session_state);
   }
   if (bt_blackboard) {
-    bt_blackboard->set<components::NavigationRuntime::Ptr>(
-        k_navigation_runtime, navigation_runtime);
+    bt_blackboard->set<components::NavigationRuntime::Ptr>(k_navigation_runtime, navigation_runtime);
   }
   if (!factory_built) {
     buildFactory(xml_path, tree_id);
   }
 }
 
-void BehaviorTreePilot::loadFromFile(const std::string& xml_path,
-                                     const std::string& tree_id) {
+void BehaviorTreePilot::loadFromFile(const std::string& xml_path, const std::string& tree_id) {
   if (factory_built) {
-    throw std::runtime_error(
-        "BehaviorTreePilot: loadFromFile must be called only once");
+    throw std::runtime_error("BehaviorTreePilot: loadFromFile must be called only once");
   }
   this->xml_path = xml_path;
   this->tree_id = tree_id;
   buildFactory(xml_path, tree_id);
 }
 
-void BehaviorTreePilot::beginNavigation(
-    const geometry_msgs::PoseStamped& goal) {
+void BehaviorTreePilot::beginNavigation(const geometry_msgs::PoseStamped& goal) {
   if (!factory_built) {
-    throw std::runtime_error(
-        "BehaviorTreePilot: beginNavigation before loadFromFile");
+    throw std::runtime_error("BehaviorTreePilot: beginNavigation before loadFromFile");
   }
   {
     std::lock_guard<std::mutex> lk(goal_mutex);
     // latest wins: overwrite pending_goal (a new goal replaces the old one, no queuing).
     pending_goal = goal;
   }
-  // Wake the tick loop. Two waiting places: its mailbox wait (idle, no instance)
-  // and the tree's own sleep (attempt in flight). The tree one is guarded --
-  // there is no tree object to poke while idle.
+  // Wake the tick loop. Two waiting places: its mailbox wait (idle, no
+  // attempt in flight) and the tree's own sleep (attempt in flight). The
+  // tree one is guarded -- only an in-flight attempt can be inside
+  // bt_tree.sleep.
   goal_cv.notify_all();
-  if (instance_active.load()) {
+  if (attempt_active.load()) {
     bt_tree.emitWakeUpSignal();
   }
 }
 
 void BehaviorTreePilot::run() {
   if (!factory_built) {
-    spdlog::error("BehaviorTreePilot::run: factory not built");
+    SPDLOG_LOGGER_ERROR(ayanami::btLogger(), "BehaviorTreePilot::run: factory not built");
     return;
   }
   running.store(true);
   const double hz = tick_frequency > 0.0 ? tick_frequency : 100.0;
-  const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::duration<double>(1.0 / hz));
+  const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(1.0 / hz));
   const auto safe_period = std::max(period, std::chrono::milliseconds(1));
- // Navigation-finished idle state (nav2 navigator semantics): the tree
- // returning SUCCESS/FAILURE means this navigation attempt is over -- no
- // more idly re-running the finished tree (measured: after arrival it
- // idled at ~100Hz replanning+smoothing, inflating plan_version at 60/s);
- // wait for a new goal (beginNavigation mailbox) to wake the next tree
- // life.
+  // Navigation-finished idle state (nav2 navigator semantics): the tree
+  // returning SUCCESS/FAILURE means this navigation attempt is over -- no
+  // more idly re-running the finished tree (measured: after arrival it
+  // idled at ~100Hz replanning+smoothing, inflating plan_version at 60/s);
+  // wait for a new goal (beginNavigation mailbox) to wake the next attempt
+  // on the SAME resident tree.
   bool navigation_finished = true;  // idle until a goal arrives
   while (true) {
     // Preemption belongs to the tick thread: halt requests / pending goals
     // are consumed locally (never cross-thread haltTree).
     consumeHaltRequest();
     if (kill_switch.load()) break;
-    // A failure while building the attempt's tree (an unparsable XML, an
+    // A failure while building the resident tree (an unparsable XML, an
     // unresolvable module reference, a violated blackboard protocol) is a
     // configuration error, and it happens on THIS thread: letting it escape
     // would call std::terminate and take the process down with no diagnosis.
@@ -161,59 +157,102 @@ void BehaviorTreePilot::run() {
     // navigation result -- and stop ticking, because a pilot that cannot build
     // its tree cannot recover by trying again.
     try {
-    if (applyPendingGoal()) {
-      navigation_finished = false;  // new goal / goal revision: resume ticking
-    }
-    if (!instance_active.load()) {
-      // Idle between attempts. There is no tree instance, so nothing may touch
-      // bt_tree (tick/sleep/emitWakeUpSignal on a default-constructed Tree is a
-      // null-root access): wait on the mailbox instead, which a new goal wakes.
-      std::unique_lock<std::mutex> lk(goal_mutex);
-      goal_cv.wait_for(lk, safe_period, [this] {
-        return pending_goal.has_value() || kill_switch.load() ||
-               halt_requested.load();
-      });
-      continue;
-    }
-    const BT::NodeStatus tick_status = bt_tree.tickOnce();
-    if (tick_status != BT::NodeStatus::RUNNING) {
-      emitNavigationResult(tick_status == BT::NodeStatus::SUCCESS
-                               ? actions::GoalStatus::SUCCEEDED
-                               : actions::GoalStatus::ABORTED);
-      // The attempt is over: drop the instance. The next goal builds a fresh
-      // one, so nothing -- RateController caches, retry budgets, rotation
-      // cursors -- can carry over. This is the whole point of not keeping a
-      // resident tree, and it replaces the former reset protocol.
-      releaseTreeInstance();
-      navigation_finished = true;
-    }
-    // Wake race fix: tickOnce's inner layer may consume beginNavigation's
-    // wake signal against a stale blackboard, making the subsequent sleep
-    // last a full period. If a new goal was delivered during the tick,
-    // consume it immediately and add one extra tick, guaranteeing a new goal
-    // takes effect within at most one tick period.
-    if (applyPendingGoal()) {
-      navigation_finished = false;
-      bt_tree.tickOnce();
-    }
-    // Only sleep on a live instance: the terminal branch above may have just
-    // released it, and sleeping a default-constructed Tree is a null-root access.
-    // Without an instance the top of the loop waits on the mailbox instead.
-    if (instance_active.load()) {
-      bt_tree.sleep(safe_period);
-    }
+      if (applyPendingGoal()) {
+        navigation_finished = false;  // new goal / goal revision: resume ticking
+      }
     } catch (const std::exception& e) {
-      spdlog::critical("BehaviorTreePilot: navigation attempt failed to start: {}",
-                       e.what());
+      SPDLOG_LOGGER_CRITICAL(
+        ayanami::btLogger(),
+        "BehaviorTreePilot: navigation attempt failed to start: {}",
+        e.what());
       failure_context = e.what();
       emitNavigationResult(actions::GoalStatus::ABORTED);
-      releaseTreeInstance();
-      // A refused attempt has no record to keep: the blackboard only becomes
-      // meaningful once the attempt actually starts. (A FINISHED attempt keeps
-      // its blackboard -- see releaseTreeInstance.)
+      // The resident tree could not be built (or its validation refused it):
+      // a configuration error will not fix itself by retrying.
+      attempt_active.store(false);
       bt_blackboard.reset();
       navigation_finished = true;
-      break;  // a configuration error will not fix itself by retrying
+      break;
+    }
+    if (!attempt_active.load()) {
+        // Idle between attempts. Before the first goal there is no tree yet,
+        // and after a finished attempt the resident tree is all-IDLE: either
+        // way nothing may tick or sleep it -- wait on the mailbox instead,
+        // which a new goal wakes.
+        std::unique_lock<std::mutex> lk(goal_mutex);
+        goal_cv.wait_for(lk, safe_period, [this] {
+          return pending_goal.has_value() || kill_switch.load() || halt_requested.load();
+        });
+        continue;
+      }
+    // Tick-time exceptions are NOT build/configuration errors: a node threw
+    // at runtime. Supervised abort -- preempt the controller, halt the tree
+    // (every action node's onHalted cancels its in-flight task) and report
+    // ABORTED -- then KEEP TICKING so the next goal can re-arm the resident
+    // tree. (The old catch-all used to break out here WITHOUT preempting,
+    // leaving a healthy controller publishing velocity with no supervision.)
+    // Only a repeating failure stops the pilot for good.
+    try {
+      const BT::NodeStatus tick_status = bt_tree.tickOnce();
+      tick_error_streak = 0;  // a clean tick ends any earlier streak
+      if (tick_status != BT::NodeStatus::RUNNING) {
+        emitNavigationResult(
+          tick_status == BT::NodeStatus::SUCCESS ? actions::GoalStatus::SUCCEEDED : actions::GoalStatus::ABORTED);
+        // nav2 BtActionServer::executeCallback parity (impl.hpp haltAllActions
+        // after every run, "just in case"): the attempt is over -- halt the
+        // RESIDENT tree so every node returns to IDLE and its halt() override
+        // clears cached state. The tree object and the blackboard stay; the
+        // next goal re-arms them (defensive halt + per-attempt blackboard
+        // reset in applyPendingGoal).
+        bt_tree.haltTree();
+        attempt_active.store(false);
+        navigation_finished = true;
+      }
+      // Wake race fix: tickOnce's inner layer may consume beginNavigation's
+      // wake signal against a stale blackboard, making the subsequent sleep
+      // last a full period. If a new goal was delivered during the tick,
+      // consume it immediately and add one extra tick, guaranteeing a new goal
+      // takes effect within at most one tick period.
+      if (applyPendingGoal()) {
+        navigation_finished = false;
+        bt_tree.tickOnce();
+      }
+    } catch (const std::exception& e) {
+      SPDLOG_LOGGER_CRITICAL(
+        ayanami::btLogger(),
+        "BehaviorTreePilot: tick-time exception (streak {}/{}): {}; "
+        "preempting in-flight actions and aborting the attempt",
+        tick_error_streak + 1, kMaxTickErrorStreak, e.what());
+      failure_context = e.what();
+      // Belt and braces: onHalted of the action nodes already cancels their
+      // in-flight tasks, but the exception may have unwound mid-tick BEFORE
+      // the nodes that would halt normally got the chance.
+      if (navigation_runtime) {
+        navigation_runtime->preemptAllControllers();
+      }
+      try {
+        bt_tree.haltTree();
+      } catch (...) {
+        // haltTree itself failing must not kill the tick loop; the next
+        // goal re-arms with a defensive halt anyway.
+      }
+      emitNavigationResult(actions::GoalStatus::ABORTED);
+      attempt_active.store(false);
+      navigation_finished = true;
+      if (++tick_error_streak >= kMaxTickErrorStreak) {
+        SPDLOG_LOGGER_CRITICAL(
+          ayanami::btLogger(),
+          "BehaviorTreePilot: {} consecutive tick exceptions -- a repeating "
+          "runtime failure rather than a transient; the pilot stops ticking",
+          tick_error_streak);
+        break;
+      }
+    }
+    // Only sleep while an attempt is in flight: the terminal branch above
+    // may have just ended it (the tree stays, but nothing should tick or
+    // sleep it until the next goal re-arms the attempt).
+    if (attempt_active.load()) {
+      bt_tree.sleep(safe_period);
     }
   }
   running.store(false);
@@ -226,9 +265,9 @@ void BehaviorTreePilot::halt() {
   // Request flag: the actual haltTree runs in the run thread's consumeHaltRequest (never cross-thread).
   halt_requested.store(true);
   // The loop may be waiting on either the mailbox or the tree sleep; wake both
-  // (the tree one only when an instance exists).
+  // (the tree one only while an attempt is in flight).
   goal_cv.notify_all();
-  if (instance_active.load()) {
+  if (attempt_active.load()) {
     bt_tree.emitWakeUpSignal();
   }
 }
@@ -238,14 +277,15 @@ void BehaviorTreePilot::consumeHaltRequest() {
     return;
   }
   // This thread (the tick thread) owns bt_tree access, so halt is safe. The
-  // instance is halted (RUNNING children get onHalted) and then released: a
-  // halted attempt is over, and keeping the object would resurrect its state if
-  // a goal arrived without an intervening createTreeInstance.
-  if (instance_active.load()) {
+  // RESIDENT tree is halted (every node returns to IDLE, halt() overrides
+  // clear per-node state) and KEPT: the next goal starts a fresh attempt on
+  // it via applyPendingGoal's defensive halt + blackboard reset.
+  if (attempt_active.load()) {
     bt_tree.haltTree();
+    attempt_active.store(false);
   }
   // Session-level terminal outcome for an in-flight navigation: CANCELED
-  // (never emitted twice for the same tree life; no goal -> no emission).
+  // (never emitted twice for the same attempt; no goal -> no emission).
   if (navigation_started && !navigation_result_emitted) {
     emitNavigationResult(actions::GoalStatus::CANCELED);
   }
@@ -260,8 +300,7 @@ void BehaviorTreePilot::consumeHaltRequest() {
   }
 }
 
-void BehaviorTreePilot::emitNavigationResult(
-    actions::GoalStatus status) {
+void BehaviorTreePilot::emitNavigationResult(actions::GoalStatus status) {
   navigation_result_emitted = true;
   actions::NavigationResult result;
   result.status = status;
@@ -303,7 +342,7 @@ void BehaviorTreePilot::stop() {
   halt_requested.store(true);
   kill_switch.store(true);
   goal_cv.notify_all();
-  if (instance_active.load()) {
+  if (attempt_active.load()) {
     bt_tree.emitWakeUpSignal();  // wake from sleep so run exits soon
   }
   if (tick_thread.joinable()) {
@@ -326,27 +365,46 @@ bool BehaviorTreePilot::applyPendingGoal() {
     goal = std::move(pending_goal);
     pending_goal.reset();
   }
-  // The first goal starts a session. Later goals revise the active task: the
-  // controller keeps following its current path until the revised path is
-  // available, while the planner updates in place.
-  navigation_result_emitted = false;  // new tree life: fresh emission
+  // A goal consumed while no attempt is in flight starts a NEW attempt: it
+  // opens a fresh session (the stale-result guards key off it -- in-flight
+  // results of the finished attempt must be rejected) and re-arms the
+  // resident tree. A goal consumed while an attempt is in flight is an
+  // IN-PLACE revision: same session, the controller keeps following its
+  // current path until the revised one is available.
+  const bool new_attempt = !attempt_active.load();
+  navigation_result_emitted = false;  // new attempt: fresh emission
   if (!navigation_started) {
-    session_state->startNewSession();
     navigation_started = true;
     goal_revision = 0;
   } else {
     ++goal_revision;
   }
-
-  // A goal arriving with no live instance means the previous attempt is over
-  // (or none has started): this is a NEW attempt, so build a fresh tree and
-  // blackboard. A goal arriving while the instance is still active is a REVISION
-  // of the running task: the instance stays, the running controller keeps
-  // following its path, and only the blackboard entries below change.
-  if (!instance_active.load()) {
-    createTreeInstance();
+  if (new_attempt) {
+    session_state->startNewSession();
   }
 
+  if (!tree_built) {
+    // First goal of the process: build the RESIDENT tree + blackboard once
+    // (by now setNavigationRuntime has run, so nodes capture the runtime at
+    // construction). Throws on configuration errors (caught by run()).
+    buildResidentTree();
+  } else if (new_attempt) {
+    // NEW attempt on the RESIDENT tree (nav2 BtActionServer parity: the
+    // same tree serves goal after goal). haltTree is defensive -- the
+    // terminal/halt paths already halted; it exists so a node that cached
+    // state outside those paths cannot leak it into this attempt ("just in
+    // case", and every shipped halt() is idempotent). The per-attempt reset
+    // drops the finished attempt's path artifacts so nothing observes the
+    // previous route (nav2: ComputePathToPoseAction::halt empties {path}).
+    bt_tree.haltTree();
+    resetAttemptBlackboard(bt_blackboard);
+  }
+
+  // Per-goal blackboard rewrite (new attempt or in-flight revision alike):
+  // the task-level keys. Tokens ({goal_revision}, {raw_path_revision}) are
+  // the change signals nodes key their caches off; goal_revision stays
+  // monotonic across attempts by design (never reset), so kept token caches
+  // still detect every change.
   bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal, *goal);
   // Raw-path revision restarts with the round: the smoother branch's
   // reset_token must see a change when this round's first plan lands.
@@ -355,14 +413,15 @@ bool BehaviorTreePilot::applyPendingGoal() {
   bt_blackboard->set<uint64_t>(k_session_id, session_state->currentSessionId());
   bt_blackboard->set<uint64_t>(k_goal_revision, goal_revision);
   // failure_context cleared each navigation round (failure context is only valid for this session).
-  bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});  return true;
+  bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});
+  attempt_active.store(true);
+  return true;
 }
 
-void BehaviorTreePilot::buildFactory(const std::string& xml_path,
-                                     const std::string& tree_id) {
-  // Node/tree registration happens once. Instances are created per navigation
-  // attempt (createTreeInstance), so everything that does not depend on the goal
-  // stays here.
+void BehaviorTreePilot::buildFactory(const std::string& xml_path, const std::string& tree_id) {
+  // Node/tree registration happens once. The resident tree instance is
+  // built later, on the first goal (buildResidentTree), so everything that
+  // does not depend on the goal stays here.
   this->resolved_tree_id.clear();
   std::string fallback_tree_id;
   // Generic tree: load and hold the configured BehaviorTreeExtension(s);
@@ -371,14 +430,11 @@ void BehaviorTreePilot::buildFactory(const std::string& xml_path,
   for (const auto& so_name : tree_extension_so_names) {
     auto ext_module = ExtensionModule::loadModule(so_name);
     if (!ext_module) {
-      throw std::runtime_error("BehaviorTreePilot: failed to load BT extension '" +
-                               so_name + "'");
+      throw std::runtime_error("BehaviorTreePilot: failed to load BT extension '" + so_name + "'");
     }
-    auto ext =
-        std::dynamic_pointer_cast<BehaviorTreeExtension>(std::move(ext_module));
+    auto ext = std::dynamic_pointer_cast<BehaviorTreeExtension>(std::move(ext_module));
     if (!ext) {
-      throw std::runtime_error("BehaviorTreePilot: '" + so_name +
-                               "' is not a BehaviorTreeExtension");
+      throw std::runtime_error("BehaviorTreePilot: '" + so_name + "' is not a BehaviorTreeExtension");
     }
     ext->registerNodes(factory);
     ext->registerTrees(factory);
@@ -392,33 +448,33 @@ void BehaviorTreePilot::buildFactory(const std::string& xml_path,
   // behavior_tree_xml), but a configured file that is missing is a deployment
   // error, not something to paper over with a fallback -- the stack would
   // otherwise run a different policy than the config says.
-  const bool xml_exists =
-      !xml_path.empty() && std::filesystem::exists(xml_path);
+  const bool xml_exists = !xml_path.empty() && std::filesystem::exists(xml_path);
   if (!xml_path.empty() && !xml_exists) {
-    throw std::runtime_error("BehaviorTreePilot: behavior_tree_xml '" + xml_path +
-                             "' does not exist");
+    throw std::runtime_error("BehaviorTreePilot: behavior_tree_xml '" + xml_path + "' does not exist");
   }
   if (xml_exists) {
     factory.registerBehaviorTreeFromFile(xml_path);
   }
-  resolved_tree_id =
-      tree_id.empty() ? fallback_tree_id : tree_id;
+  resolved_tree_id = tree_id.empty() ? fallback_tree_id : tree_id;
   if (resolved_tree_id.empty()) {
     throw std::runtime_error(
-        "BehaviorTreePilot: no bt_tree id configured and extension provides no "
-        "default");
+      "BehaviorTreePilot: no bt_tree id configured and extension provides no "
+      "default");
   }
   factory_built = true;
 }
 
-void BehaviorTreePilot::createTreeInstance() {
-  // A fresh blackboard per attempt: the required entries, the extension-provided
-  // ones (recovery role ids), and the injected runtime. Nothing is inherited
-  // from the previous attempt.
+void BehaviorTreePilot::buildResidentTree() {
+  // The RESIDENT tree + blackboard: built ONCE (first goal of the process)
+  // and reused across navigation attempts. The required entries, the
+  // extension-provided ones (recovery role ids) and the injected runtime go
+  // in here; nodes capture the runtime at construction. Per-attempt
+  // isolation does not come from rebuilding: applyPendingGoal resets the
+  // per-attempt blackboard keys, and haltTree (terminal / halt / new
+  // attempt) re-arms every node's halt() override and IDLE edge.
   bt_blackboard = BT::Blackboard::create();
   writeRequiredBlackboardEntries();
-  bt_blackboard->set<components::NavigationRuntime::Ptr>(
-      k_navigation_runtime, navigation_runtime);
+  bt_blackboard->set<components::NavigationRuntime::Ptr>(k_navigation_runtime, navigation_runtime);
   for (const auto& ext : tree_extensions) {
     ext->provideBlackboardEntries(bt_blackboard);
   }
@@ -428,14 +484,13 @@ void BehaviorTreePilot::createTreeInstance() {
   for (const auto& ext : tree_extensions) {
     for (const char* key : ext->requiredBlackboardEntries()) {
       if (!bt_blackboard->getEntry(key)) {
-        throw std::runtime_error(std::string("blackboard entry '") + key +
-                                 "' required by BT extension is missing");
+        throw std::runtime_error(std::string("blackboard entry '") + key + "' required by BT extension is missing");
       }
     }
   }
   bt_tree = factory.createTree(resolved_tree_id, bt_blackboard);
   validateTreePorts();
-  instance_active.store(true);
+  tree_built = true;
 }
 
 void BehaviorTreePilot::validateTreePorts() const {
@@ -443,23 +498,22 @@ void BehaviorTreePilot::validateTreePorts() const {
     return;  // nothing to resolve against (test doubles / map-free use)
   }
   const auto planner_modules =
-      navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Planner);
+    navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Planner);
   const auto smoother_modules =
-      navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Smoother);
-  const auto controller_modules = navigation_runtime->moduleNames(
-      ayanami::components::NavigationRuntime::ModuleFamily::Controller);
+    navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Smoother);
+  const auto controller_modules =
+    navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Controller);
   const auto recovery_modules =
-      navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Recovery);
+    navigation_runtime->moduleNames(ayanami::components::NavigationRuntime::ModuleFamily::Recovery);
 
-  auto check = [](const BT::TreeNode* node, const char* port,
-                  const std::vector<std::string>& known, bool required) {
+  auto check = [](const BT::TreeNode* node, const char* port, const std::vector<std::string>& known, bool required) {
     std::string id;
     if (!node->getInput(port, id) || id.empty()) {
       if (required) {
         throw std::runtime_error(
-            "BT: node '" + node->name() + "' has an empty '" + port +
-            "' port; the reference resolves to nothing (a recovery role that no "
-            "loaded module declares, or an unbound blackboard entry)");
+          "BT: node '" + node->name() + "' has an empty '" + port +
+          "' port; the reference resolves to nothing (a recovery role that no "
+          "loaded module declares, or an unbound blackboard entry)");
       }
       return;  // empty is legal for *_id: it means "family default"
     }
@@ -467,9 +521,8 @@ void BehaviorTreePilot::validateTreePorts() const {
       return;  // runtime cannot enumerate this family: skip the membership check
     }
     if (std::find(known.begin(), known.end(), id) == known.end()) {
-      throw std::runtime_error("BT: node '" + node->name() + "' references '" +
-                               port + "' = '" + id +
-                               "', which is not a loaded module");
+      throw std::runtime_error(
+        "BT: node '" + node->name() + "' references '" + port + "' = '" + id + "', which is not a loaded module");
     }
   };
 
@@ -492,19 +545,8 @@ void BehaviorTreePilot::validateTreePorts() const {
   });
 }
 
-void BehaviorTreePilot::releaseTreeInstance() {
-  // The tree goes (it is the live machinery, and its whole point is that nothing
-  // survives an attempt); the blackboard STAYS as the finished attempt's record.
-  // That keeps the outcome observable -- paths, session, plan version, failure
-  // context -- without keeping any node state alive, which is what the resident
-  // model used to conflate.
-  bt_tree = BT::Tree{};
-  instance_active.store(false);
-}
-
 void BehaviorTreePilot::writeRequiredBlackboardEntries() {
-  bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal,
-                                               geometry_msgs::PoseStamped{});
+  bt_blackboard->set<geometry_msgs::PoseStamped>(k_goal, geometry_msgs::PoseStamped{});
   bt_blackboard->set<nav_msgs::Path>(k_raw_path, nav_msgs::Path{});
   bt_blackboard->set<nav_msgs::Path>(k_smoothed_path, nav_msgs::Path{});
   bt_blackboard->set<double>(k_planner_frequency, planner_frequency);
@@ -515,9 +557,18 @@ void BehaviorTreePilot::writeRequiredBlackboardEntries() {
   bt_blackboard->set<uint64_t>(k_goal_revision, 0u);
   bt_blackboard->set<FailureContext>(k_failure_context, FailureContext{});
   bt_blackboard->set<uint32_t>(k_nav_retries, max_nav_retries);
+  bt_blackboard->set<double>(k_tick_frequency, tick_frequency);
   bt_blackboard->set<double>(k_oscillation_distance, oscillation_distance);
   bt_blackboard->set<double>(k_oscillation_timeout, oscillation_timeout);
+  const auto secondsToMsec = [](double seconds) -> uint32_t {
+    return seconds > 0.0
+               ? static_cast<uint32_t>(seconds * 1000.0)
+               : 0u;  // 0 = the Deadline decorator passes through untouched
+  };
+  bt_blackboard->set<uint32_t>(k_planner_timeout, secondsToMsec(planner_timeout));
+  bt_blackboard->set<uint32_t>(k_smoother_timeout, secondsToMsec(smoother_timeout));
+  bt_blackboard->set<uint32_t>(k_max_same_cause, max_same_cause);
 }
 
-} // namespace behavior_tree
-} // namespace ayanami
+}  // namespace behavior_tree
+}  // namespace ayanami

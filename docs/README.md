@@ -9,8 +9,9 @@ planner / smoother / controller / recovery 四组件和行为树组织方式，�
   `src/ayanami_ros`（唯一的 ROS1 边界层）。
 - 算法模块通过 dlopen（`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`）加载，
   以 `create_extension_module` 工厂符号暴露。
-- 行为树（BehaviorTree.CPP v4，vendored）：工厂建一次，**树实例每次导航尝试建一次**；
-  目标更新走 latest-wins 邮箱；恢复调度完全由行为树决定。
+- 行为树（BehaviorTree.CPP v4，vendored）：工厂与树实例都只建一次（**常驻树**：
+  首个 goal 建树，每尝试终态 `haltTree()` 归 IDLE 后原树再武装）；
+  目标更新走 latest-wins 邮箱（in-flight 时为原地 goal 修订）；恢复调度完全由行为树决定。
 
 ## 快速开始（docker 环境 dynamicx）
 

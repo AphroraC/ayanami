@@ -63,6 +63,12 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   /// heading" distance (see goalToleranceXy).
   void setGoalTolerances(const ayanami::PoseTolerance& tolerance) override;
 
+  /// @brief Cycle-period contract (AbstractController): the execution pushes
+  /// 1/controller_frequency before each run; the PID's integral/derivative
+  /// and acceleration limiting run on this dt. Falls back to
+  /// param.default_dt when not injected (standalone/test use).
+  void setCyclePeriod(double seconds) override;
+
  private:
   struct CostmapPidControllerParam {
     double max_vel_x = 2.0;
@@ -79,6 +85,8 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
     double dist_decay = 2.0;
     double goal_tolerance = 0.1;
     double slide_window = 1.0;
+    // Fallback dt for standalone/test use (no execution layer attached); in
+    // navigation the injected cycle period (setCyclePeriod) wins.
     double default_dt = 0.05;
     double heading_deadband = 0.08;
     double rotate_in_place_angle = 0.45;
@@ -122,6 +130,10 @@ class CostmapPidController final : public ayanami::costmap::CostmapController {
   size_t last_track_idx = 1;
   uint64_t plan_signature = 0;
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
+
+  /// @brief Injected cycle period (s); seeded from param.default_dt at
+  /// configure time, overwritten by the execution's setCyclePeriod push.
+  double cycle_period = 0.05;
 
   std::atomic<bool> canceled{false};
 };

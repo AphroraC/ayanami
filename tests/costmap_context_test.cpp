@@ -562,44 +562,107 @@ TEST(CostmapMapContextTest, isPathValidRejectsEmptyUnknownLethalAndOutOfBounds) 
   EXPECT_TRUE(ctx.isPathValid(makePathAt({{2.0, 2.0}})));
 }
 
-// ---------- planner family read contract: GLOBAL map only ----------
+// ---------- path validation gates on the global+local fused overlay ----------
 
-TEST(CostmapMapContextTest, isPathValidIgnoresLocalMarks) {
+TEST(CostmapMapContextTest, isPathValidFusesLocalOverlay) {
   CostmapMapContext ctx;
   // Same-frame local (identity transform path).
   ctx.setFrames("map_p", "map_p", "base_p");
 
-  // global: 10x10 @0.5m origin (0,0), all free along the path.
+  // global: 10x10 @0.5m origin (0,0) covering [0,5)x[0,5), all free.
   auto global_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       "map_p", false, false);
   global_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
   auto global =
       std::make_shared<costmap_2d::CostmapWrapper>(global_lm, "map_p");
 
-  // local: lethal right on the path point.
+  // local: a SMALL rolling window covering [0,2)x[0,2) only (cells 0..3);
+  // the two grids share the frame so the overlay transform is identity.
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       "map_p", true, false);
-  local_lm->resizeMap(10, 10, 0.5, 0.0, 0.0);
-  local_lm->getCostmap()->setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
+  local_lm->resizeMap(4, 4, 0.5, 0.0, 0.0);
   auto local =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, "map_p");
 
   ctx.setGlobalCostmap(global);
   ctx.setLocalCostmap(local);
 
-  // world (1.5,1.0) -> cell (3,2): lethal in the LOCAL map, free in the
-  // global one. Path validation is a planner-timescale (global) check and
-  // must NOT be invalidated by local dynamic marks.
-  EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));
-
-  // The same lethal cell in the GLOBAL map does invalidate.
-  global_lm->getCostmap()->setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
+  // 1. A fresh local mark INSIDE the local window gates the near path
+  // segment: world (1.5,1.0) -> local cell (3,2) lethal, global free
+  // (overlay planning keeps fresh dynamic marks in the validity verdict).
+  local_lm->getCostmap()->setCost(3, 2, costmap_2d::LETHAL_OBSTACLE);
   EXPECT_FALSE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));
+
+  // 2. A global lethal gates regardless of the local window: world
+  // (3.5,1.0) -> global cell (7,2) lethal while the point lies outside
+  // the local window ([0,2)x[0,2)) -- the global grid gates alone there.
+  global_lm->getCostmap()->setCost(7, 2, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{3.5, 1.0}})));
+
+  // 3. A local mark far OUTSIDE the local window does not gate: with the
+  // global mark lifted, the far point (3.5,1.0) is valid again -- the
+  // local lethal at (3,2) covers a different part of the map and must not
+  // leak into the far segment's verdict.
+  global_lm->getCostmap()->setCost(7, 2, costmap_2d::FREE_SPACE);
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{3.5, 1.0}})));
+
+  // 4. Clearing the local mark re-validates the near segment (the fusion
+  // tracks the local map's own content).
+  local_lm->getCostmap()->setCost(3, 2, costmap_2d::FREE_SPACE);
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.5, 1.0}})));
 }
 
 TEST(CostmapMapContextTest, isPathValidDegeneratesWithoutMap) {
   CostmapMapContext ctx;  // No global wrapper
   EXPECT_FALSE(ctx.isPathValid(makePathAt({})));
   EXPECT_TRUE(ctx.isPathValid(makePathAt({{1.0, 1.0}})));
+}
+
+// ---------- robot-adjacent exemption: where the robot already is must not
+// fail validation (a band-grazing robot would otherwise fail every future
+// check and every replan -- the stop-into-recovery deadlock) ----------
+
+TEST(CostmapMapContextTest, isPathValidExemptsRobotAdjacentPrefix) {
+  auto lm = makeGrid();  // 10x10 @ 0.5m, origin (0,0)
+  auto* grid = lm->getCostmap();
+  // The robot stands on cell (1,1); world (0.75,0.5) is cell (1,1) too.
+  grid->setCost(1, 1, costmap_2d::LETHAL_OBSTACLE);
+  // A lethal cell 2 cells east: world (1.0,0.5) -> cell (2,1), 0.5m from the
+  // robot center -- beyond the body radius, still gated.
+  grid->setCost(2, 1, costmap_2d::LETHAL_OBSTACLE);
+
+  CostmapMapContext ctx;
+  ctx.setFrames("map", "odom", "base_link");
+  ctx.setGlobalCostmap(makeWrapper(lm));
+  // 16-gon circle approximation of robot_radius 0.3 -> inscribed ~0.294
+  // (the configureCoreMaps footprint shape).
+  costmap_2d::Footprint footprint;
+  for (int i = 0; i < 16; ++i) {
+    const double angle = 6.28318530717958647692 * i / 16.0;
+    footprint.push_back({0.3 * std::cos(angle), 0.3 * std::sin(angle), 0.0});
+  }
+  ctx.setFootprint(footprint);
+  // map<-base_link: the robot pose resolves to world (0.5, 0.5).
+  Eigen::Isometry3d map_from_base = Eigen::Isometry3d::Identity();
+  map_from_base.translation() = Eigen::Vector3d(0.5, 0.5, 0.0);
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
+                       map_from_base);
+
+  // 1. A point AT the robot on a lethal cell is exempt (the deadlock case).
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{0.5, 0.5}})));
+  // 2. The prefix within the body radius is exempt: (0.75,0.5) sits on the
+  // same lethal cell, 0.25m from the robot.
+  EXPECT_TRUE(ctx.isPathValid(makePathAt({{0.5, 0.5}, {0.75, 0.5}})));
+  // 3. Beyond the body radius the check is full-strength again.
+  EXPECT_FALSE(ctx.isPathValid(makePathAt({{0.5, 0.5}, {1.0, 0.5}})));
+  // 4. The exemption needs the robot pose: an unresolvable robot frame
+  // degrades to the conservative full-path check.
+  auto lm_no_robot = makeGrid();
+  lm_no_robot->getCostmap()->setCost(1, 1, costmap_2d::LETHAL_OBSTACLE);
+  CostmapMapContext ctx_no_robot;
+  ctx_no_robot.setFrames("map", "odom", "base_missing");
+  ctx_no_robot.setGlobalCostmap(makeWrapper(lm_no_robot));
+  ctx_no_robot.setFootprint(footprint);
+  EXPECT_FALSE(ctx_no_robot.isPathValid(makePathAt({{0.5, 0.5}})));
 }
 

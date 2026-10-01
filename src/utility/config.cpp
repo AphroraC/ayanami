@@ -169,6 +169,10 @@ Config Config::child(const std::string& section,
   if (sub == module->end() || !sub->is_object()) {
     return Config();
   }
+  // Reading a sub-object consumes the parent key: the unused-keys audit of
+  // the parent section must not flag nested blocks (e.g. per-source
+  // parameter blocks under an obstacle layer section) as typos.
+  recordConsumed(section, key);
   Config child_config;
   child_config.config = nlohmann::json{{key, *sub}};
   return child_config;

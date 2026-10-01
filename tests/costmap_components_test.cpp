@@ -197,7 +197,8 @@ TEST(CostmapComponentsTest, plannerExecutionActivatesBeforeAndDeactivatesAfter) 
       "test_planner", planner, makeContext(wrapper));
 
   EXPECT_FALSE(wrapper->isActive());
-  exec.start(PoseStamped{}, PoseStamped{}, 0.1);
+  exec.prepareGoal(PoseStamped{}, PoseStamped{}, 0.1);
+  std::thread exec_th([&] { exec.runBlocking(); });
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->entered.wait_for(
@@ -208,7 +209,7 @@ TEST(CostmapComponentsTest, plannerExecutionActivatesBeforeAndDeactivatesAfter) 
   EXPECT_TRUE(wrapper->isActive());
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
   // After execution: postRun has called checkDeactivate
   EXPECT_FALSE(wrapper->isActive());
 }
@@ -219,7 +220,8 @@ TEST(CostmapComponentsTest, plannerExecutionDoesNotHoldCostmapMutex) {
   ayanami::costmap::CostmapPlannerExecution exec(
       "test_planner", planner, makeContext(wrapper));
 
-  exec.start(PoseStamped{}, PoseStamped{}, 0.1);
+  exec.prepareGoal(PoseStamped{}, PoseStamped{}, 0.1);
+  std::thread exec_th([&] { exec.runBlocking(); });
   {
     std::unique_lock<std::mutex> lock(planner->mutex);
     ASSERT_TRUE(planner->entered.wait_for(
@@ -232,10 +234,10 @@ TEST(CostmapComponentsTest, plannerExecutionDoesNotHoldCostmapMutex) {
   wrapper->mutex().unlock();
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
 }
 
-// ---- CostmapControllerExecution: safetyCheck uses isCurrent; no velocity when not current ----
+// ---- CostmapControllerExecution: safetyCheck uses isCurrent; SILENT when not current ----
 
 TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   auto wrapper = makeWrapper();
@@ -243,33 +245,32 @@ TEST(CostmapComponentsTest, controllerSafetyCheckStopsWhenCostmapNotCurrent) {
   auto controller = std::make_shared<TestController>();
   ayanami::costmap::CostmapControllerExecution exec(
       "test_controller", controller, makeContext(nullptr, wrapper));
-  // Checker injected (the execution requires a checker to exist; this scenario only verifies safetyCheck issues no velocity).
+  // Checker injected (the execution requires a checker to exist; this scenario only verifies safetyCheck publishes nothing).
   exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
   exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
 
-  std::atomic<int> stop_cmds{0};
+  std::atomic<int> published{0};
   int cb_id = ayanami::interfaces::NavigationCallbacks::on_velocity_command.add(
-      [&](const TwistStamped& cmd) {
-        // Not current: only the zeroed stop command is allowed, no non-zero velocity of any kind
-        EXPECT_DOUBLE_EQ(cmd.twist.linear.x(), 0.0);
-        EXPECT_DOUBLE_EQ(cmd.twist.linear.y(), 0.0);
-        EXPECT_DOUBLE_EQ(cmd.twist.angular.z(), 0.0);
-        stop_cmds++;
-      });
+      [&](const TwistStamped&) { published++; });
 
   Path plan;
   plan.poses.resize(4);
   exec.setNewPlan(plan);
   exec.setControllerFrequency(500.0);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  // With safetyCheck false, the stop command is published every cycle and computeVelocityCommands is never called
+  // With safetyCheck false the loop stays SILENT (nav2 semantics: wait for
+  // the costmap without publishing) and computeVelocityCommands is never
+  // called. The only allowed publication is the single zeroed stop pulse
+  // from exec.cancel() below.
   EXPECT_EQ(controller->calls, 0);
-  EXPECT_GE(stop_cmds.load(), 1);
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
+  // cancel() contributes exactly ONE zeroed stop pulse (the safety-cancel
+  // contract); the stale-map cycles themselves published nothing.
+  EXPECT_LE(published.load(), 1);
   ayanami::interfaces::NavigationCallbacks::on_velocity_command.remove(cb_id);
 }
 
@@ -291,7 +292,7 @@ TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   plan.poses.resize(4);
   exec.setNewPlan(plan);
   exec.setControllerFrequency(500.0);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
 
   for (int i = 0; i < 100 &&
                   exec.getState() !=
@@ -304,7 +305,7 @@ TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
   EXPECT_EQ(exec.getError(), ErrorCode::NO_PROGRESS);
   EXPECT_EQ(controller->calls, 0);
 
-  exec.join();
+  exec_th.join();
 }
 
 // ---- CostmapRecoveryExecution: activates/deactivates both the global+local costmaps ----
@@ -318,7 +319,7 @@ TEST(CostmapComponentsTest, recoveryExecutionActivatesDeactivatesBothCostmaps) {
 
   EXPECT_FALSE(global->isActive());
   EXPECT_FALSE(local->isActive());
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   {
     std::unique_lock<std::mutex> lock(recovery->mutex);
     ASSERT_TRUE(recovery->entered.wait_for(
@@ -329,7 +330,7 @@ TEST(CostmapComponentsTest, recoveryExecutionActivatesDeactivatesBothCostmaps) {
   EXPECT_TRUE(local->isActive());
 
   exec.cancel();
-  exec.join();
+  exec_th.join();
   EXPECT_FALSE(global->isActive());
   EXPECT_FALSE(local->isActive());
 }

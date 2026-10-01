@@ -61,7 +61,13 @@ public:
 
   bool cancel() override { return true; }
 
+  void setCyclePeriod(double seconds) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    cycle_period = seconds;
+  }
+
   std::atomic<int> calls{0};
+  double cycle_period = 0.0;
   std::mutex mutex;
   std::vector<std::size_t> applied_sizes;
 };
@@ -98,9 +104,11 @@ class TestControllerAction : public ayanami::components::ControllerAction {
  public:
   using ControllerAction::ControllerAction;
   void initCheckers(ayanami::abstract::AbstractGoalChecker::Ptr goal,
-                    ayanami::abstract::AbstractProgressChecker::Ptr progress) {
+                    ayanami::abstract::AbstractProgressChecker::Ptr progress,
+                    double frequency = 0.0) {
     this->goal = std::move(goal);
     this->progress = std::move(progress);
+    this->frequency = frequency;
   }
 
  protected:
@@ -108,12 +116,16 @@ class TestControllerAction : public ayanami::components::ControllerAction {
     auto exec = ControllerAction::createExecution();
     exec->setGoalChecker(goal);
     exec->setProgressChecker(progress);
+    if (frequency > 0.0) {
+      exec->setControllerFrequency(frequency);
+    }
     return exec;
   }
 
  private:
   ayanami::abstract::AbstractGoalChecker::Ptr goal;
   ayanami::abstract::AbstractProgressChecker::Ptr progress;
+  double frequency{0.0};
 };
 
 Path makePath(std::size_t size) {
@@ -142,6 +154,47 @@ bool waitReady(Task& t, int max_ms = 5000) {
 }
 
 }  // namespace
+
+// Cycle-period contract: the execution pushes 1/controller_frequency before
+// each run, so a module that integrates over time never has to guess its dt
+// from its own config (the shipped route runs 100 Hz while module defaults
+// assumed 20 Hz -- a silent 5x distortion this contract removes).
+TEST(ControllerSession, executionPushesCyclePeriodIntoTheController) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity());
+
+  // Default cadence (20 Hz): pushed period 0.05 s.
+  {
+    auto controller = std::make_shared<RecordingController>();
+    TestControllerAction action(controller);
+    action.initCheckers(
+        std::make_shared<LambdaGoalChecker>(
+            [&controller] { return controller->calls >= 1; }),
+        std::make_shared<AlwaysTrueProgressChecker>());
+    auto task = action.acceptGoal([&] { ExePathGoal g; g.path = makePath(4); return g; }());
+    ASSERT_TRUE(task.valid());
+    ASSERT_TRUE(waitReady(task));
+    std::lock_guard<std::mutex> lock(controller->mutex);
+    EXPECT_NEAR(controller->cycle_period, 0.05, 1e-9);
+  }
+
+  // Injected cadence (100 Hz): pushed period 0.01 s.
+  {
+    auto controller = std::make_shared<RecordingController>();
+    TestControllerAction action(controller);
+    action.initCheckers(
+        std::make_shared<LambdaGoalChecker>(
+            [&controller] { return controller->calls >= 1; }),
+        std::make_shared<AlwaysTrueProgressChecker>(), 100.0);
+    auto task = action.acceptGoal([&] { ExePathGoal g; g.path = makePath(4); return g; }());
+    ASSERT_TRUE(task.valid());
+    ASSERT_TRUE(waitReady(task));
+    std::lock_guard<std::mutex> lock(controller->mutex);
+    EXPECT_NEAR(controller->cycle_period, 0.01, 1e-9);
+  }
+}
 
 TEST(ControllerSession, tenPosePlanRunsFramesAndArrivesAtGoal) {
   auto& robot_state = ayanami::components::RobotStateController::instance();

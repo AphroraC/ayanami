@@ -47,7 +47,7 @@
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <costmap_back_up_recovery/costmap_back_up_recovery.hpp>
-#include <costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.hpp>
+#include <costmap_cleanup_recovery/costmap_cleanup_recovery.hpp>
 #include <costmap_spin_recovery/costmap_spin_recovery.hpp>
 #include <costmap_wait_recovery/costmap_wait_recovery.hpp>
 #include <ayanami/utility/config.hpp>
@@ -63,7 +63,7 @@ using ayanami::costmap::CostmapCommandPort;
 using ayanami::costmap::CostmapMapContext;
 using ayanami::geometry_msgs::TwistStamped;
 using ayanami::modules::CostmapBackUpRecovery;
-using ayanami::modules::CostmapClearCostmapRecovery;
+using ayanami::modules::CostmapCleanupRecovery;
 using ayanami::modules::CostmapSpinRecovery;
 using ayanami::modules::CostmapWaitRecovery;
 
@@ -277,7 +277,7 @@ TEST(CostmapRecoveryModulesTest, modulesSourceHasNoDirectPublish) {
       "costmap_spin_recovery/costmap_spin_recovery.cpp",
       "costmap_back_up_recovery/costmap_back_up_recovery.cpp",
       "costmap_wait_recovery/costmap_wait_recovery.cpp",
-      "costmap_clear_costmap_recovery/costmap_clear_costmap_recovery.cpp"};
+      "costmap_cleanup_recovery/costmap_cleanup_recovery.cpp"};
   const std::vector<std::string> forbidden = {
       "on_velocity_command", "NavigationCallbacks", "sleep_for", "<thread>"};
   for (const auto& rel : files) {
@@ -306,10 +306,10 @@ TEST(CostmapRecoveryModulesTest, spinCompletesWithSuccessViaExecution) {
   // The execution owns the cadence (production: CostmapNavigationServer reads
   // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
   exec.setCyclePeriod(std::chrono::milliseconds(10));
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
-  exec.join();
+  exec_th.join();
 
   EXPECT_TRUE(anyNonZeroAngular());            // Pure angular velocity was emitted
   EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);  // zero velocity in the terminal state
@@ -325,7 +325,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
                  ctx->getSharedConstPtr());
   ayanami::costmap::CostmapRecoveryExecution exec("spin", rec, ctx);
   exec.setCyclePeriod(std::chrono::milliseconds(10));
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   // Wait until at least one angular velocity frame is emitted, then cancel.
   for (int i = 0; i < 100 && !anyNonZeroAngular(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -333,7 +333,7 @@ TEST(CostmapRecoveryModulesTest, spinCancelEmitsZeroAndCanceledViaExecution) {
   EXPECT_TRUE(anyNonZeroAngular());
   exec.cancel();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::CANCELED);
-  exec.join();
+  exec_th.join();
   EXPECT_NEAR(lastEmitted().twist.angular.z(), 0.0, 1e-9);
   detachVelocityCapture();
 }
@@ -355,9 +355,9 @@ TEST(CostmapRecoveryModulesTest, spinVelocityExceedingMaxThetaIsClamped) {
   // into the cap (policy: over-limit suggestions are clamped + warned, never
   // zeroed; only non-finite values are zeroed).
   exec.setMaximumVelocity(1.0, 1.0, 0.1);
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
-  exec.join();
+  exec_th.join();
   EXPECT_TRUE(anyNonZeroAngular())
       << "the in-progress spin suggestion (0.3 rad/s) must be clamped to the "
          "cap, not zeroed";
@@ -380,12 +380,13 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
   {
     std::unique_lock<std::shared_mutex> lock(global->mutex());
     costmap_2d::Costmap2D* grid = global->get().getCostmap();
-    // The robot is at cell (4,4) (world 2.25,2.25); that cell + neighborhood are set lethal.
-    for (unsigned int y = 3; y <= 5; ++y) {
-      for (unsigned int x = 3; x <= 5; ++x) {
-        grid->setCost(x, y, costmap_2d::LETHAL_OBSTACLE);
-      }
-    }
+    // The robot is at cell (4,4) (world 2.25,2.25); lethal on the two
+    // REAR diagonal neighbors (centers 0.71m away): inside the near-obstacle
+    // belt (<= 1.5*0.3 + 0.5) but OUTSIDE the contact belt (<= 0.15 + 0.5).
+    // The robot is not touching anything, and backing up leads INTO the
+    // near obstacles -- the direction-aware refusal fires.
+    grid->setCost(3, 3, costmap_2d::LETHAL_OBSTACLE);
+    grid->setCost(3, 5, costmap_2d::LETHAL_OBSTACLE);
     global->updateMapUnlocked(2.25, 2.25, 0.0);
   }
   auto ctx = makeContext(global);
@@ -405,8 +406,88 @@ TEST(CostmapRecoveryModulesTest, backUpCollisionFailsWithMessage) {
       << outcome.message;
 }
 
+// Contact on the REAR only (robot backing into an obstacle): the escape must
+// pick the forward direction and emit a positive linear velocity instead of
+// refusing forever (the old contract refused on any nearby lethal cell,
+// deadlocking a touching robot against both the planner and the recoveries).
+TEST(CostmapRecoveryModulesTest, backUpContactAtRearEscapesForward) {
+  auto global = makeWrapper(20, 0.5);
+  {
+    std::unique_lock<std::shared_mutex> lock(global->mutex());
+    costmap_2d::Costmap2D* grid = global->get().getCostmap();
+    // Lethal belt one cell behind the robot cell (10,10): centers ~0.35m
+    // away -- inside the contact-area exclusion, so not an escape blocker.
+    for (unsigned int y = 9; y <= 11; ++y) {
+      grid->setCost(9, y, costmap_2d::LETHAL_OBSTACLE);
+    }
+    global->updateMapUnlocked(5.0, 5.0, 0.0);
+  }
+  auto ctx = makeContext(global);
+  setRobot(5.0, 5.0);
+
+  auto rec = std::make_shared<CostmapBackUpRecovery>();
+  rec->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
+                                        ayanami::Config(moduleConfig("backup.json"))},
+                 ctx->getSharedConstPtr());
+
+  rec->start();
+  ayanami::RecoveryCycleData cycle;
+  const ResultT<void> outcome = rec->tick(cycle);
+  ASSERT_TRUE(outcome.ok) << outcome.message;
+  EXPECT_EQ(cycle.status, ayanami::RecoveryStatus::RUNNING);
+  ASSERT_TRUE(cycle.velocity.has_value());
+  // Rear contact: escape FORWARD (positive x).
+  EXPECT_GT(cycle.velocity->twist.linear.x(), 0.0);
+}
+
+// Contact with lethal all around (boxed): the escape is still ATTEMPTED --
+// around a touching robot the map is the least trustworthy input, so the
+// verdict is physical progress instead. The robot pose never moves here, so
+// the run ends in the stall failure once the escape frames run out.
+TEST(CostmapRecoveryModulesTest, backUpContactBoxedFailsOnStall) {
+  auto global = makeWrapper(20, 0.5);
+  {
+    std::unique_lock<std::shared_mutex> lock(global->mutex());
+    costmap_2d::Costmap2D* grid = global->get().getCostmap();
+    for (unsigned int y = 9; y <= 11; ++y) {
+      grid->setCost(9, y, costmap_2d::LETHAL_OBSTACLE);   // rear contact belt
+      grid->setCost(11, y, costmap_2d::LETHAL_OBSTACLE);  // front contact belt
+      grid->setCost(7, y, costmap_2d::LETHAL_OBSTACLE);   // deep behind
+      grid->setCost(13, y, costmap_2d::LETHAL_OBSTACLE);  // deep ahead
+    }
+    global->updateMapUnlocked(5.0, 5.0, 0.0);
+  }
+  auto ctx = makeContext(global);
+  setRobot(5.0, 5.0);
+
+  auto rec = std::make_shared<CostmapBackUpRecovery>();
+  rec->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
+                                        ayanami::Config(moduleConfig("backup.json"))},
+                 ctx->getSharedConstPtr());
+  rec->setCyclePeriod(0.01);  // frames = ceil(0.02 / 0.2 / 0.01) = 10
+
+  rec->start();
+  ayanami::RecoveryCycleData cycle;
+  ResultT<void> outcome;
+  bool failed = false;
+  for (int i = 0; i < 30 && !failed; ++i) {
+    outcome = rec->tick(cycle);
+    if (!outcome.ok) {
+      failed = true;
+      EXPECT_EQ(outcome.error, ErrorCode::RECOVERY_FAILED);
+      EXPECT_NE(outcome.message.find("escape stalled"), std::string::npos)
+          << outcome.message;
+    } else {
+      EXPECT_EQ(cycle.status, ayanami::RecoveryStatus::RUNNING);
+    }
+  }
+  // The pose never moved: the escape must end in the stall failure.
+  EXPECT_TRUE(failed);
+}
+
 TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
   attachVelocityCapture();
+  setRobot(5.0, 5.0);
   auto ctx = makeContext(makeWrapper(20, 0.5));
   auto rec = std::make_shared<CostmapBackUpRecovery>();
   rec->configure(ayanami::ModuleContext{"costmap_back_up_recovery",
@@ -416,10 +497,23 @@ TEST(CostmapRecoveryModulesTest, backUpCompletesOnFreeMapViaExecution) {
   // The execution owns the cadence (production: CostmapNavigationServer reads
   // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
   exec.setCyclePeriod(std::chrono::milliseconds(10));
-  exec.start();
+  // The escape verdict is physical progress: drift the robot pose backward
+  // (-x, the back-up direction) while the execution runs.
+  std::atomic<bool> mover_run{true};
+  std::thread mover([&] {
+    double x = 5.0;
+    while (mover_run.load()) {
+      setRobot(x, 5.0);
+      x -= 0.002;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+  std::thread exec_th([&] { exec.runBlocking(); });
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
-  exec.join();
+  exec_th.join();
+  mover_run.store(false);
+  mover.join();
 
   EXPECT_TRUE(anyNonZeroLinear());              // Negative linear velocity was emitted
   EXPECT_NEAR(lastEmitted().twist.linear.x(), 0.0, 1e-9);  // zero velocity in the terminal state
@@ -439,13 +533,13 @@ TEST(CostmapRecoveryModulesTest, waitCompletesAfterDurationViaExecution) {
   // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
   exec.setCyclePeriod(std::chrono::milliseconds(10));
   const auto start = std::chrono::steady_clock::now();
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   waitExecutionState(exec, ayanami::components::RecoveryExecution::RECOVERY_DONE);
   const auto elapsed = std::chrono::duration<double>(
                            std::chrono::steady_clock::now() - start)
                            .count();
   EXPECT_EQ(exec.getError(), ErrorCode::NONE);
-  exec.join();
+  exec_th.join();
 
   // wait_duration=0.1 with a 10ms cycle => about 10 frames (total duration clearly > 0).
   EXPECT_GE(elapsed, 0.05);
@@ -461,15 +555,15 @@ TEST(CostmapRecoveryModulesTest, waitCancelReturnsImmediatelyViaExecution) {
   // The execution owns the cadence (production: CostmapNavigationServer reads
   // it from the module json's recovery.sim_cycle_dt); the module takes it from here.
   exec.setCyclePeriod(std::chrono::milliseconds(10));
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   exec.cancel();
   waitExecutionState(exec, ayanami::components::RecoveryExecution::CANCELED);
-  exec.join();
+  exec_th.join();
   EXPECT_EQ(exec.getError(), ErrorCode::CANCELED);
 }
 
-// ---------- CostmapClearCostmapRecovery (via the command port, no motion) ----------
+// ---------- CostmapCleanupRecovery (via the command port, no motion) ----------
 
 TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   auto global = makeWrapper(20, 0.5);
@@ -483,16 +577,16 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
   // Mark dynamic obstacles near and far from the robot through the real layer.
   {
     std::unique_lock<std::shared_mutex> lock(global->mutex());
-    global_obstacles->markObstacles(2.25, 2.25);
-    global_obstacles->markObstacles(2.75, 2.75);
-    global_obstacles->markObstacles(7.75, 7.75);
+    global_obstacles->markObstacles(*global->get().getCostmap(), 2.25, 2.25);
+    global_obstacles->markObstacles(*global->get().getCostmap(), 2.75, 2.75);
+    global_obstacles->markObstacles(*global->get().getCostmap(), 7.75, 7.75);
     global->updateMapUnlocked(2.25, 2.25, 0.0);
   }
   {
     std::unique_lock<std::shared_mutex> lock(local->mutex());
-    local_obstacles->markObstacles(2.25, 2.25);
-    local_obstacles->markObstacles(2.75, 2.75);
-    local_obstacles->markObstacles(7.75, 7.75);
+    local_obstacles->markObstacles(*local->get().getCostmap(), 2.25, 2.25);
+    local_obstacles->markObstacles(*local->get().getCostmap(), 2.75, 2.75);
+    local_obstacles->markObstacles(*local->get().getCostmap(), 7.75, 7.75);
     local->updateMapUnlocked(2.25, 2.25, 0.0);
   }
   auto ctx = makeContext(global, local);
@@ -503,8 +597,8 @@ TEST(CostmapRecoveryModulesTest, clearCostmapClearsRadiusOnBothMaps) {
       ctx->robotFrame());
   // The command port is exposed via the map context (fetched as map->commandPort inside configure).
   ctx->setCommandPort(port);
-  auto rec = std::make_shared<CostmapClearCostmapRecovery>();
-  rec->configure(ayanami::ModuleContext{"costmap_clear_costmap_recovery",
+  auto rec = std::make_shared<CostmapCleanupRecovery>();
+  rec->configure(ayanami::ModuleContext{"costmap_cleanup_recovery",
                                         ayanami::Config(moduleConfig("clear.json"))},
                  ctx->getSharedConstPtr());
 
@@ -538,7 +632,7 @@ TEST(CostmapRecoveryModulesTest, moduleFactoriesCreateCorrectTypes) {
   EXPECT_NE(std::dynamic_pointer_cast<CostmapWaitRecovery>(
                 ayanami::ExtensionModule::loadModule(g_wait_so)),
             nullptr);
-  EXPECT_NE(std::dynamic_pointer_cast<CostmapClearCostmapRecovery>(
+  EXPECT_NE(std::dynamic_pointer_cast<CostmapCleanupRecovery>(
                 ayanami::ExtensionModule::loadModule(g_clear_so)),
             nullptr);
 }
@@ -566,7 +660,7 @@ int main(int argc, char** argv) {
       "config_spin_recovery": "spin.json",
       "config_back_up_recovery": "backup.json",
       "config_wait_recovery": "wait.json",
-      "config_clear_costmap_recovery": "clear.json"
+      "config_cleanup_recovery": "clear.json"
     }})";
   }
   // Section convention: module params live under the json "name" field
@@ -585,7 +679,7 @@ int main(int argc, char** argv) {
         "wait_duration": 0.1
       }})");
   writeJsonFile(dir / "clear.json", R"({
-      "costmap_clear_costmap_recovery": {
+      "costmap_cleanup_recovery": {
         "clear_radius": 1.0, "affected_maps": "both"
       }})");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);

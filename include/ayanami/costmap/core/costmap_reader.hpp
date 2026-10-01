@@ -13,12 +13,18 @@ namespace ayanami {
 namespace costmap {
 
 /**
- * @brief Callback-scoped read access to one costmap: the map input for a single
- * algorithm call (planner/smoother/controller/recovery).
+ * @brief Callback-scoped read access to one costmap: one of the two map read
+ * contracts (the other is CostmapSnapshot).
  *
- * Replaces the old CostmapSnapshot (full deep copy / COW epoch): the reader
- * holds the map's shared lock via RAII and exposes the master grid directly,
- * zero copy.
+ * The READER contract: the map's shared lock is held via RAII for the whole
+ * callback and the master grid is exposed directly, zero copy. Because the
+ * lock blocks the map writer, a reader callback must be a SHORT, bounded
+ * operation -- sparse probes like path validity checks or a recovery's
+ * collision scan. Long-hold algorithms (a whole trajectory scoring cycle, a full
+ * search) must use the SNAPSHOT contract instead (CostmapMapContext::
+ * snapshotGlobal/snapshotLocal + CostmapSnapshot): the shared lock lives
+ * only for the copy there. CostmapAstarPlanner::makePlan is
+ * the reference snapshot consumer.
  *
  * Scope is the whole point. A reader is only ever handed to a callback by
  * CostmapMapContext::readGlobal()/readLocal(), so its lifetime is bounded by

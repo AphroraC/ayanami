@@ -3,7 +3,6 @@
 #include <behaviortree_cpp/control_node.h>
 #include <spdlog/spdlog.h>
 
-
 #include <cstddef>
 #include <stdexcept>
 
@@ -21,9 +20,10 @@ namespace behavior_tree {
  * - All SUCCESS -> reset back to the beginning and return SUCCESS.
  */
 class PipelineSequence : public BT::ControlNode {
- public:
+public:
   PipelineSequence(const std::string& name, const BT::NodeConfig& config)
-    : BT::ControlNode(name, config), current_child_idx(0) {}
+  : BT::ControlNode(name, config),
+    current_child_idx(0) {}
 
   static BT::PortsList providedPorts() { return {}; }
 
@@ -51,15 +51,16 @@ class PipelineSequence : public BT::ControlNode {
     return BT::NodeStatus::SUCCESS;
   }
 
+  /// @brief Clear the pipeline cursor (round state). Called from the
+  /// tree-level halt (pilot terminal/halt/new-attempt paths); idempotent.
   void halt() override {
     BT::ControlNode::halt();
     current_child_idx = 0;
   }
 
-
- private:
+private:
   size_t current_child_idx;
 };
 
-} // namespace behavior_tree
-} // namespace ayanami
+}  // namespace behavior_tree
+}  // namespace ayanami

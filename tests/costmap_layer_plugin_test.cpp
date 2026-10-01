@@ -4,9 +4,10 @@
 // Coverage:
 // 1. family loading through ModuleManager (dlopen -> cast -> apiVersion ->
 //    configureParameters) for the static / obstacle / inflation plugins;
-// 2. the obstacle layer's filtering policy: height/range-filtered marking,
-//    previous-window clearing without raytrace endpoints, footprint
-//    clearing;
+// 2. the obstacle layer's policy: height/range-filtered marking, every hit
+//    doubling as its own ray endpoint (occluded marks survive; a ray
+//    through an old mark retires it), footprint clearing, and the
+//    decay_time / decay_sweep_interval parameter plumbing;
 // 3. the server-level plugin path: costmap_global.layers /
 //    costmap_local.layers compose the maps, the same observation is stamped
 //    into BOTH maps, and a clear command retires the global marks while the
@@ -20,11 +21,13 @@
 
 #include <unistd.h>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <pcl/point_types.h>
@@ -32,6 +35,7 @@
 #include <spdlog/spdlog.h>
 
 #include <costmap_2d/layered_costmap.hpp>
+#include <costmap_2d_layers/simple_obstacle_layer.hpp>
 #include <costmap_server/costmap_wrapper.hpp>
 
 #include <ayanami/abstract/components/module_manager.hpp>
@@ -107,8 +111,8 @@ TEST(CostmapLayerPluginTest, familyLoadAppliesParameters) {
 
   auto obstacle_plugin = loadLayer(
       manager, "obstacle_layer", g_obstacle_so,
-      "{\"combination\": \"overwrite\", \"clear_to_free\": true, "
-      "\"footprint_clearing\": false, \"clear_margin\": 1.5, "
+      "{\"combination\": \"overwrite\", "
+      "\"footprint_clearing\": false, "
       "\"observation_sources\": [\"cloud\"], "
       "\"cloud\": {\"type\": \"pointcloud\", \"obstacle_max_range\": 5.0}}");
   ASSERT_NE(obstacle_plugin, nullptr);
@@ -120,12 +124,12 @@ TEST(CostmapLayerPluginTest, familyLoadAppliesParameters) {
   EXPECT_DOUBLE_EQ(sources.front().obstacle_max_range, 5.0);
 }
 
-TEST(CostmapLayerPluginTest, obstacleObserveFiltersMarksAndClears) {
+TEST(CostmapLayerPluginTest, obstacleObserveRaysMarkAndPreserve) {
   Manager manager;
   auto obstacle_plugin = loadLayer(
       manager, "obstacle_layer", g_obstacle_so,
-      "{\"combination\": \"overwrite\", \"clear_to_free\": true, "
-      "\"footprint_clearing\": true, \"clear_margin\": 1.5, "
+      "{\"combination\": \"overwrite\", "
+      "\"footprint_clearing\": true, "
       "\"observation_sources\": [\"cloud\"], "
       "\"cloud\": {\"type\": \"pointcloud\", \"min_obstacle_height\": 0.0, "
       "\"max_obstacle_height\": 1.0, \"obstacle_min_range\": 0.0, "
@@ -148,37 +152,97 @@ TEST(CostmapLayerPluginTest, obstacleObserveFiltersMarksAndClears) {
 
   const auto& source = obstacle_plugin->observationSources().front();
   std::vector<Eigen::Vector3d> hits;
-  std::vector<Eigen::Vector3d> no_clearing;
+  std::vector<Eigen::Vector3d> endpoints;
   ayanami::costmap::MapObservation observation;
   observation.source = &source;
   // Sensor 0.1 m ahead of the robot: robot (5,5) -> sensor (5.1,5).
   observation.t_frame_sensor = Eigen::Translation3d(5.1, 5.0, 0.0) *
                                Eigen::Quaterniond::Identity();
   observation.points = &hits;
-  observation.clearing_points = &no_clearing;
+  observation.clearing_points = &endpoints;
   observation.robot_pose_xy_yaw = Eigen::Vector3d(5.0, 5.0, 0.0);
   observation.has_robot_pose = true;
 
-  // First hit at world (5.6, 5) -> cell (11, 10); the z=5 m point is
-  // dropped by the height window.
+  // Frame 1: front hit at world (5.6,5) -> cell (11,10) plus a rear hit at
+  // world (7.1,5) -> cell (14,10); the z=5 m point drops via the height
+  // window. Every hit doubles as its own ray endpoint.
   hits.emplace_back(0.5, 0.0, 0.0);
-  hits.emplace_back(0.5, 0.0, 5.0);
+  hits.emplace_back(2.0, 0.0, 0.0);
+  hits.emplace_back(2.0, 0.0, 5.0);
+  endpoints.emplace_back(0.5, 0.0, 0.0);
+  endpoints.emplace_back(2.0, 0.0, 0.0);
   obstacle_plugin->observe(observation);
   lm->updateMap(5.0, 5.0, 0.0);
 
   auto* master = lm->getCostmap();
   EXPECT_EQ(master->getCost(11, 10), costmap_2d::LETHAL_OBSTACLE);
-  // The robot's own cells stay free (footprint clearing).
+  EXPECT_EQ(master->getCost(14, 10), costmap_2d::LETHAL_OBSTACLE);
+  // The corridor before the front hit stays free; the robot's own cells
+  // stay free (footprint clearing).
   EXPECT_EQ(master->getCost(10, 10), costmap_2d::FREE_SPACE);
 
-  // Second observation elsewhere, no raytrace endpoints: the previous
-  // window (expanded by clear_margin) retires the old mark.
-  hits.clear();
-  hits.emplace_back(3.5, 0.0, 0.0);  // world (8.6, 5) -> cell (17, 10)
+  // Frame 2 (occlusion): only the FRONT hit is re-observed. Its ray ends ON
+  // the front hit, so the occluded rear mark (14,10) must survive -- marks
+  // retire via decay or a ray that actually passes through them, never a
+  // wholesale window wipe.
+  hits.assign(1, Eigen::Vector3d(0.5, 0.0, 0.0));
+  endpoints.assign(1, Eigen::Vector3d(0.5, 0.0, 0.0));
+  obstacle_plugin->observe(observation);
+  lm->updateMap(5.0, 5.0, 0.0);
+  EXPECT_EQ(master->getCost(11, 10), costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(master->getCost(14, 10), costmap_2d::LETHAL_OBSTACLE);
+
+  // Frame 3 (retirement): a hit BEYOND the old marks shoots its ray
+  // through both -- the old cells retire, the far endpoint re-marks.
+  hits.assign(1, Eigen::Vector3d(3.5, 0.0, 0.0));  // world (8.6,5) -> cell (17,10)
+  endpoints.assign(1, Eigen::Vector3d(3.5, 0.0, 0.0));
   obstacle_plugin->observe(observation);
   lm->updateMap(5.0, 5.0, 0.0);
   EXPECT_EQ(master->getCost(11, 10), costmap_2d::FREE_SPACE);
+  EXPECT_EQ(master->getCost(14, 10), costmap_2d::FREE_SPACE);
   EXPECT_EQ(master->getCost(17, 10), costmap_2d::LETHAL_OBSTACLE);
+}
+
+TEST(CostmapLayerPluginTest, obstacleDecayParametersPlumbThrough) {
+  Manager manager;
+  auto obstacle_plugin = loadLayer(
+      manager, "obstacle_layer", g_obstacle_so,
+      "{\"decay_time\": 0.05, \"decay_sweep_interval\": 0.02, "
+      "\"observation_sources\": [\"cloud\"], "
+      "\"cloud\": {\"type\": \"pointcloud\"}}");
+  ASSERT_NE(obstacle_plugin, nullptr);
+  auto* obs = dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(
+      obstacle_plugin->layer().get());
+  ASSERT_NE(obs, nullptr);
+  EXPECT_DOUBLE_EQ(obs->decayTime(), 0.05);
+
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  lm->resizeMap(20, 20, 0.5, 0.0, 0.0);
+  lm->addLayer(obstacle_plugin->layer());
+
+  const auto& source = obstacle_plugin->observationSources().front();
+  std::vector<Eigen::Vector3d> hits;
+  std::vector<Eigen::Vector3d> endpoints;
+  ayanami::costmap::MapObservation observation;
+  observation.source = &source;
+  observation.t_frame_sensor = Eigen::Translation3d(5.0, 5.0, 0.0) *
+                               Eigen::Quaterniond::Identity();
+  observation.points = &hits;
+  observation.clearing_points = &endpoints;
+
+  hits.emplace_back(0.5, 0.0, 0.0);  // world (5.5,5) -> cell (11,10)
+  endpoints.emplace_back(0.5, 0.0, 0.0);
+  obstacle_plugin->observe(observation);
+  lm->updateMap(5.0, 5.0, 0.0);
+  auto* master = lm->getCostmap();
+  EXPECT_EQ(master->getCost(11, 10), costmap_2d::LETHAL_OBSTACLE);
+
+  // Past decay_time (with the sweep interval elapsed) the next updateMap
+  // sweep retires the mark: occlusion tolerance, then age-out.
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+  lm->updateMap(5.0, 5.0, 0.0);
+  EXPECT_EQ(master->getCost(11, 10), costmap_2d::FREE_SPACE);
 }
 
 TEST(CostmapLayerPluginTest, serverComposesMapsFromLayerLists) {
@@ -218,25 +282,22 @@ TEST(CostmapLayerPluginTest, serverComposesMapsFromLayerLists) {
                       "2.0, \"inscribed_radius\": 0.2}"));
   writeJson(modules_dir / "obstacle.json",
             layerJson("obstacle_layer", g_obstacle_so,
-                      "{\"combination\": \"overwrite\", \"clear_to_free\": "
-                      "true, \"footprint_clearing\": true, \"clear_margin\": "
-                      "1.0, \"observation_sources\": [\"cloud\"], \"cloud\": "
+                      "{\"combination\": \"overwrite\", "
+                      "\"footprint_clearing\": true, "
+                      "\"observation_sources\": [\"cloud\"], \"cloud\": "
                       "{\"type\": \"pointcloud\", \"obstacle_max_range\": "
                       "6.0}}"));
   writeJson(modules_dir / "obstacle_global.json",
             layerJson("obstacle_layer", g_obstacle_so,
-                      "{\"combination\": \"overwrite\", \"clear_to_free\": "
-                      "false, \"footprint_clearing\": true, \"clear_margin\": "
-                      "1.0, \"observation_sources\": [\"cloud\"], \"cloud\": "
+                      "{\"combination\": \"overwrite\", "
+                      "\"footprint_clearing\": true, "
+                      "\"observation_sources\": [\"cloud\"], \"cloud\": "
                       "{\"type\": \"pointcloud\", \"obstacle_max_range\": "
                       "6.0}}"));
 
   ayanami::bootstrap(dir.string());
   ayanami::costmap::CostmapNavigationServer server;
   server.configureCoreMaps(dir.string());
-  // The legacy costmap_global.observation_sources key is unused on the
-  // plugin path.
-  ASSERT_EQ(server.globalObservationSources().size(), 0u);
   ASSERT_NE(server.globalCostmap(), nullptr);
 
   // Robot pose in both map frames (identity chains).

@@ -3,6 +3,7 @@
 #include <behaviortree_cpp/action_node.h>
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <string>
 
@@ -62,7 +63,7 @@ class ModuleSelectorNode : public BT::SyncActionNode {
     }
     if (selected != last_selected) {
       last_selected = selected;
-      spdlog::info("[bt] {} selected module id '{}'", name(), selected);
+      SPDLOG_LOGGER_INFO(ayanami::btLogger(), "{} selected module id '{}'", name(), selected);
     }
     setOutput("selected_id", selected);
     return BT::NodeStatus::SUCCESS;

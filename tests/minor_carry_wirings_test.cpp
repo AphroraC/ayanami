@@ -34,6 +34,7 @@
 #include <costmap_server/costmap_wrapper.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/ostream_sink.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <ayanami/abstract/components/planner_execution.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
@@ -138,25 +139,32 @@ std::filesystem::path makeNavigationConfigDir(
              "    \"resolution\": 0.5\n"
              "  },\n"
              "  \"costmap_global\": {\n"
-             "    \"size_x\": 20,    \"size_y\": 20,\n"
              "    \"rolling_window\": false,\n"
              "    \"track_unknown\": false,\n"
-             "    \"static_map\": \"\",\n"
-             "    \"inflation_radius\": 0.6,\n"
-             "    \"inscribed_radius\": 0.3,\n"
-             "    \"cost_scaling_factor\": 3.0\n"
+             "    \"layers\": [\"layer_static.json\", \"layer_inflation.json\"]\n"
              "  },\n"
              "  \"costmap_local\": {\n"
              "    \"size_x\": 20,    \"size_y\": 20,\n"
              "    \"rolling_window\": true,\n"
              "    \"track_unknown\": false,\n"
-             "    \"inflation_radius\": 0.6,\n"
-             "    \"inscribed_radius\": 0.3,\n"
-             "    \"cost_scaling_factor\": 3.0,\n"
-             "    \"observation_sources\": [\"scan\"],\n"
-             "    \"scan\": {\"type\": \"laserscan\"}\n"
+             "    \"layers\": [\"layer_obstacle.json\", \"layer_inflation.json\"]\n"
              "  }\n"
              "}\n");
+  write_file(dir / "layer_static.json",
+             "{\"layer\": {\"name\": \"static_layer\", \"so_name\": "
+             "\"libayanami_costmap_static_layer.so\"},\n \"static_layer\": "
+             "{\"size_x\": 20, \"size_y\": 20, \"resolution\": 0.5}}\n");
+  write_file(dir / "layer_inflation.json",
+             "{\"layer\": {\"name\": \"inflation_layer\", \"so_name\": "
+             "\"libayanami_costmap_inflation_layer.so\"},\n \"inflation_layer\": "
+             "{\"inflation_radius\": 0.6, \"inscribed_radius\": 0.3, "
+             "\"cost_scaling_factor\": 3.0}}\n");
+  write_file(dir / "layer_obstacle.json",
+             "{\"layer\": {\"name\": \"obstacle_layer\", \"so_name\": "
+             "\"libayanami_costmap_obstacle_layer.so\"},\n \"obstacle_layer\": {"
+             "\"combination\": \"overwrite\", \"footprint_clearing\": true, "
+             "\"observation_sources\": [\"scan\"], "
+             "\"scan\": {\"type\": \"laserscan\"}}}\n");
   return dir;
 }
 
@@ -291,14 +299,17 @@ TEST(MinorCarryWiring, configureCoreMapsTwiceWarns) {
   const auto ctx1 = server.costmapContext();
   ASSERT_NE(ctx1, nullptr);
 
-  // Attach an ostream sink to capture spdlog output (default logger).
+  // Attach an ostream sink to capture spdlog output (default logger + the
+  // costmap layer logger; the twice-configure warn is emitted on the latter).
   std::ostringstream oss;
   auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
   spdlog::default_logger()->sinks().push_back(sink);
+  ayanami::costmapLogger()->sinks().push_back(sink);
 
   server.configureCoreMaps(dir.string());
 
   spdlog::default_logger()->sinks().pop_back();
+  ayanami::costmapLogger()->sinks().pop_back();
 
   // A second configure does not replace the context (same ptr).
   EXPECT_EQ(server.costmapContext(), ctx1);

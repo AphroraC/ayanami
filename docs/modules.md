@@ -188,3 +188,12 @@ class MyTreeExtension final : public BehaviorTreeExtension {
 参考实现：`modules/navigation_behavior_tree`（生产默认树的内嵌单一来源 +
 `registerNavigationBehaviorTreeNodes`）。扩展经由
 `navigation.behavior_tree_extension` 配置加载，可叠加多个。
+
+## planner tolerance 语义（一致性说明）
+
+`GetPathGoal.tolerance` 是 goal 级字段，但当前两个 astar planner 均**不消费它**
+（`makePlan` 形参 `(void)tolerance`）：邻域降级的半径由各模块 config 自持
+（`costmap_astar_planner.json::tolerance` / `rosemap_astar_planner.json::tolerance`，
+costmap 路由现配 0.25）。这是有意的家族约定——goal 级字段若未来透传，需要
+planner 族 kApiVersion 再次 bump 并同步两模块；在那之前，调整容差半径请改模块
+json 而不是期望 goal 字段生效。

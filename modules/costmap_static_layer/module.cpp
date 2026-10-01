@@ -1,6 +1,7 @@
 #include "costmap_static_layer_plugin.hpp"
 
 #include <ayanami/utility/extension_module.hpp>
+#include <ayanami/utility/logging.hpp>
 
 #include <Eigen/Geometry>
 
@@ -54,12 +55,26 @@ void CostmapStaticLayerPlugin::loadMap() {
       throw std::runtime_error("invalid JSON map metadata: " +
                                metadata_path.string());
     }
+    // Map-server semantics from the map json (all keys optional; defaults
+    // match map_server: negate=false, 0.65/0.196, trinary).
+    costmap_2d_layers::StaticMapSemantics semantics;
+    semantics.negate =
+        map_cfg.param<int>("map", "negate", 0) != 0;
+    semantics.occupied_thresh = map_cfg.param<double>(
+        "map", "occupied_thresh", semantics.occupied_thresh);
+    semantics.free_thresh =
+        map_cfg.param<double>("map", "free_thresh", semantics.free_thresh);
+    semantics.trinary = map_cfg.param<std::string>("map", "mode", "trinary") !=
+                        "scale";
+    // The between-threshold band resolves per the layered costmap's
+    // track_unknown policy (the layer does not own that decision).
+    const auto* layered = impl_->layeredCostmap();
+    semantics.track_unknown = layered ? layered->isTrackingUnknown() : false;
     // Runs from onAddedToMap: the master is set, so processMap sizes it to
     // the map geometry.
-    impl_->setMapPath(map_path, *map_resolution, map_origin->x(),
-                      map_origin->y());
+    impl_->setMapPath(map_path, *map_resolution, map_origin->x(), map_origin->y(), semantics);
   } catch (const std::exception& e) {
-    spdlog::error("CostmapStaticLayerPlugin: {}", e.what());
+    SPDLOG_LOGGER_ERROR(ayanami::costmapLogger(), "CostmapStaticLayerPlugin: {}", e.what());
   }
 }
 

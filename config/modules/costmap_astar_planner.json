@@ -5,7 +5,12 @@
   },
   "costmap_astar_planner": {
     "use_diagonal": true,
-    "tolerance": 0.0,
+    // Neighborhood fallback: a blocked/out-of-bounds goal is approximated by
+    // the nearest valid cell within this radius (nearestValidGoal ring
+    // search). Must exceed the inflation inscribed_radius (0.3): a goal
+    // clicked inside the 253 band needs a reachable approximation just
+    // outside it.
+    "tolerance": 0.35,
     "cost_factor": 0.5,
     "lethal_cost": 254,
     "neutral_cost": 1.0,

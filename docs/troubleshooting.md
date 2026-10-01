@@ -17,7 +17,7 @@
    `TF 健康诊断: 边不可用 [...]`、`markObstacles: robot pose FAIL`。
 4. `rostopic echo -n1 /ayanami/controller/status` —— 最近一次控制器终态
    （NoProgress / TRANSFORM_UNAVAILABLE / RESOURCE_BUSY ...）。
-5. `rostopic hz /ayanami/local_costmap` —— 可视化停更 = ayanami_ros loop
+5. `rostopic hz /ayanami/local_costmap/inflation` —— 可视化停更 = ayanami_ros loop
    线程被阻塞/饿死（见坑 T4）。
 6. RViz 里局部代价图是否跟随机器人（窗口钉死 = 落图管线被阻塞，见案例 B）。
 
@@ -81,6 +81,7 @@
 
 - roslaunch 标准输出（无头运行重定向到 /tmp/*.log）；
 - spdlog 同时按 logging 段轮转写 `logs/`；
+- 每行带分层 logger 标签：`[ros] / [planner] / [smoother] / [controller] / [recovery] / [BT] / [costmap]`（框架基础设施为 `[ayanami]`），级别统一由 `logging_level` 控制；
 - ctest 输出在 build/<pkg>/Testing/Temporary/LastTest.log。
 
 ## 已知坑（源码/环境级）
@@ -97,7 +98,7 @@
 | P9 | 多个残留 roslaunch/gzserver 同发同名 TF → 帧缺失/乱序（ayanami 日志会提示） | 环境 | 重启前彻底 pkill |
 | P10 | 二次 configureCoreMaps 会替换 context 使模块指针悬挂 | costmap_navigation_server.cpp | 已加守护（warn + return） |
 | P11 | 持地图锁做 TF 查询（map 锁 → robot-state 锁） | costmap_map_context.hpp buildReader | 已修：机器人位姿在**加锁之前**解析。无回归测试（timeout=0 的查询不可观测），靠代码审查保证 |
-| P12 | 平滑器只看得见 local 图，其产物此前没有任何树级校验 → 平滑可以把路径推进全局图的障碍里 | config/BT/navigation.xml + costmap_savitzky_smoother | 已修：smoother 分支补 `IsPathValid path="{smoothed_path}"`；平滑器自身的碰撞回滚仍是 SUCCESS（优雅降级，不是失败） |
+| P12 | 平滑器只看得见 local 图，其产物此前没有任何树级校验 → 平滑可以把路径推进全局图的障碍里 | config/BT/navigation.xml + costmap_minsnap_smoother | 已修：smoother 分支补 `IsPathValid path="{smoothed_path}"`；平滑器自身的碰撞回滚仍是 SUCCESS（优雅降级，不是失败） |
 | P13 | 到达容差两处独立配置，出厂值 angle_tolerance=2.6 rad 使朝向检查失效（只否掉 31 度的圆） | simple_goal_checker.json + 控制器 | 已修机制：容差**单一来源**（checker 经执行层下推给控制器，控制器视其为上界）；数值按保守处理未改，启动日志会点名该过宽配置 |
 | P14 | 模块 json 的参数写在**家族段**里 → 模块读自己的段读不到，静默跑默认值 | 多处夹具 | 已加校验：加载时要求存在以模块名命名的参数段，缺失即拒绝；另有「未消费键」审计 |
 | P15 | 树引用的恢复角色无人声明 → 黑板键为空串，错误只在**恢复分支真的被派发时**出现（机器人已卡住） | pilot 建树 | 已修：建树期解析每个 Recovery/`*_id` 端口，空引用或未加载的 id 即拒绝该树；建树异常被 pilot 捕获（否则 tick 线程上的未捕获异常会 terminate 进程） |

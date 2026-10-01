@@ -50,21 +50,6 @@ public:
   virtual void incrementPlanVersion() = 0;
   virtual bool requestPlanUpdate(
       uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) = 0;
-  /// @brief Planner in-place goal update (the requestPlanUpdate analogue):
-  /// while a planning task is still running, its start/goal/tolerance are
-  /// replaced wholesale (no cancel/join/new Execution); the same TaskHandle
-  /// keeps running and the run loop replans for the latest goal. Called by
-  /// ComputePathToPose when the goal port changes mid-flight. Default:
-  /// unsupported (test doubles / map-free servers).
-  virtual bool requestPathUpdate(uint64_t goal_id,
-                                 const ayanami::actions::GetPathGoal& goal) {
-    (void)goal_id;
-    (void)goal;
-    return false;
-  }
-  virtual void cancelAllControllers() = 0;
-  virtual void cancelAllPlanners() {}
-  virtual void cancelAllSmoothers() {}
   /// @brief Non-blocking preemption: mark the running controller canceled
   /// (a zeroed command is published synchronously by cancel()) and let the
   /// task wind down on its own thread. Used by runtime preemption paths
@@ -171,20 +156,15 @@ public:
   virtual bool requestPlanUpdate(uint64_t goal_id,
                                  const ayanami::actions::ExePathGoal& goal);
 
-  /// @brief Planner in-place goal update (see NavigationRuntime).
-  bool requestPathUpdate(uint64_t goal_id,
-                         const ayanami::actions::GetPathGoal& goal) override;
-
   /// @brief Cancel the entire controller action map (all logical ids, not
   /// just the default id): cleans up every possibly running controller task
   /// on preemption / new session / halt. Derived classes may override.
-  virtual void cancelAllControllers();
-
-  /// @brief Non-blocking variant of cancelAllControllers (see
-  /// NavigationRuntime::preemptAllControllers).
+  /// @brief Non-blocking preemption: mark the running controller canceled
+  /// (a zeroed command is published synchronously by cancel()) and let the
+  /// task wind down on its own thread. Used by runtime preemption paths
+  /// (halt / recovery start) that run on the BT tick thread and must not
+  /// block on a slow module call.
   void preemptAllControllers() override;
-  virtual void cancelAllPlanners();
-  virtual void cancelAllSmoothers();
 
   // ---- Session/version (single source of truth = shared NavigationSessionState) ----
   uint64_t currentSessionId() const;
@@ -268,6 +248,13 @@ protected:
   std::map<std::string, std::unique_ptr<SmootherAction>> smoother_actions;
   std::map<std::string, std::unique_ptr<ControllerAction>> controller_actions;
   std::map<std::string, std::unique_ptr<RecoveryAction>> recovery_actions;
+  /// @brief Per-recovery-module controller preemption policy, read from each
+  /// recovery json's "recovery.preempts_controller" (default true). Motion
+  /// recoveries (spin/back_up/wait) need the robot stopped; map-only
+  /// recoveries (clear-costmap) do NOT -- preempting the controller for a
+  /// clear turned every map refresh into a stop-fail-retry cascade (the
+  /// stop on light recovery entry, 2026-09-29 log forensics).
+  std::map<std::string, bool> recovery_preempts_controller;
   std::string default_planner;
   std::string default_smoother;
   std::string default_controller;
@@ -304,6 +291,13 @@ protected:
   /// @brief Cached patience values (config readback for tests/observability).
   double controllerPatience() const { return controller_patience; }
   double recoveryPatience() const { return recovery_patience; }
+  /// @brief The preemption policy a recovery module was loaded with
+  /// (config readback for tests/observability; false = dispatching this
+  /// recovery leaves the running controller alone).
+  bool recoveryPreemptsController(const std::string& name) const {
+    const auto iter = recovery_preempts_controller.find(name);
+    return iter == recovery_preempts_controller.end() ? true : iter->second;
+  }
   // Session/version single source of truth: built-in by default;
   // BehaviorTreePilot injects the shared instance on setNavigationRuntime
   // (spec single-source discipline, removing divergent pilot-only counts).

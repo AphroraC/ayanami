@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,10 @@ struct CostmapSnapshot {
   /// has_robot_pose before use.
   ayanami::geometry_msgs::PoseStamped robot_pose;
   bool has_robot_pose{false};
+  /// @brief Master-grid generation the copy was taken at (CostmapWrapper::
+  /// generation()); a consumer can compare this against the current value to
+  /// detect "the grid changed since this snapshot" without re-copying.
+  std::uint64_t generation{0};
   /// @brief Raw master-grid costs, row-major (index = y * size_x + x).
   std::vector<unsigned char> costs;
 

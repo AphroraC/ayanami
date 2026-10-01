@@ -42,11 +42,10 @@ NavigationCore
   的 memcpy（`CostmapSnapshot`，含几何/帧/机器人位姿），A* 随后在不可变
   副本上搜索——**全程不持有地图锁**，搜索再慢（不可达目标/大图）也不
   会阻塞写者落图。锁内耗时被钉在 O(N) 拷贝上，由机制保证而非纪律约定。
-- **smoother 用自有副本**：订阅 `NavigationCallbacks::on_costmap_raw`
-  （无损代价图全量拷贝，宿主仅在内容变化时发射），平滑全程零活图锁；
-  输入路径与地图 revision 均未变化时直接返回缓存输出（备忘录）。
-- **controller 读 local**（dwb 每 cycle `readLocal()`；pid 不读图）。
-  局部图帧可能与路径/位姿帧不同：dwb 在模块内经 RSC 变换（已有逻辑）。
+- **smoother 短锁快照**：每次平滑调用 `snapshotGlobal()/snapshotLocal()`
+  （共享锁只住 memcpy），平滑全程零活图锁。
+- **controller 读 local**：pid 控制器不读图（评分与帧无关）；
+  局部图帧可能与路径/位姿帧不同，需要读图的控制器在模块内经 RSC 变换。
 - **读接口只有一个**：`readGlobal(fn)` / `readLocal(fn)`，把
   `const CostmapReader&` 交给回调，锁在回调返回时释放。按值返回视图的
   按值返回视图的 `lockLocal()/lockGlobal()` 已删除——那样写时"把视图存成成员或塞进 lambda"
@@ -92,6 +91,11 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
         └─ 两图顺序落图（local 先、global 后，与读者锁序一致）
 ```
 
+- **层组合是必需配置**：`costmap_{global,local}.layers`（有序层模块
+  json 路径，modules/ so+json 模式）缺失即启动报错——legacy 硬编码组合已
+  删除。观测过滤参数（marking/clearing/高度/距离窗/活跃度/衰减）归消费
+  它的障碍层 json 所有；全局障碍层建议启用 `decay_time`（遮挡残留的
+  时间衰减），局部滚动图靠滚窗自然淘汰。
 - **唯一写者**：CostmapNavigationServer 是地图的唯一写者；模块与 BT 只读。
 - 写命令端口：`CostmapCommandPort : MapCommandPort`
   （`ClearCostmapCommand{affected_maps, clear_radius, enabled}`），恢复模块
@@ -113,7 +117,7 @@ costmap 头**；`map_family_abstraction_test` 用一个 Grid 假族证明该接�
 | Costmap2D | `packages/costmap_2d` | 主 grid、worldToMap、updateOrigin（滚动平移）、resetMap |
 | LayeredCostmap | 同上 | 层列表 + updateMap：rolling→updateOrigin；updateBounds 收集脏窗；resetMap 脏窗；updateCosts |
 | StaticLayer | `packages/costmap_layers` | PGM+JSON 元数据加载；clear 后 addUpdateBounds 恢复 |
-| SimpleObstacleLayer | 同上 | markObstacles（延迟标记列表）/raytraceFreespace（Bresenham 清除）/clearArea；组合方式 MAXIMUM（全局）/OVERWRITE（局部） |
+| SimpleObstacleLayer | 同上 | 栅格化占用（presence 网格锚定 master，滚动随 origin 整格平移）：markObstacles/raytraceFreespace/clearArea 写 presence，updateCosts 只重写 dirty 窗口；decay_time 时间衰减（清除遮挡残留，全局层启用）；组合方式 MAXIMUM（全局）/OVERWRITE（局部） |
 | InflationLayer | 同上 | 只做 `cost > old` 膨胀覆盖 |
 | CostmapWrapper | `packages/costmap_server` | LayeredCostmap + `std::shared_mutex` + active/current + updateMap(Unlocked)；自身记录帧名 |
 | CostmapReader | `ayanami/costmap/core/costmap_reader.hpp` | 回调作用域的零拷贝读访问（shared_lock + master grid 指针 + 帧名/footprint/robot_pose/current）；移动语义、不可拷贝，只由 readGlobal/readLocal 交给回调 |

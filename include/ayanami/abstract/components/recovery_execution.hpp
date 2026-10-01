@@ -13,6 +13,7 @@
 #include <memory>
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 namespace ayanami {
 namespace components {
@@ -222,9 +223,9 @@ protected:
       try {
         recovery->finish();
       } catch (const std::exception& e) {
-        spdlog::warn("RecoveryExecution: recovery finish() threw: {}", e.what());
+        SPDLOG_LOGGER_WARN(ayanami::recoveryLogger(), "RecoveryExecution: recovery finish() threw: {}", e.what());
       } catch (...) {
-        spdlog::warn("RecoveryExecution: recovery finish() threw (unknown)");
+        SPDLOG_LOGGER_WARN(ayanami::recoveryLogger(), "RecoveryExecution: recovery finish() threw (unknown)");
       }
     }
   }
@@ -258,10 +259,14 @@ protected:
         const auto now = std::chrono::steady_clock::now();
         if (now - last_clamp_warn_at >= std::chrono::seconds(1)) {
           last_clamp_warn_at = now;
-          spdlog::warn(
-              "RecoveryExecution: velocity suggestion exceeded the limits "
-              "(vx={} wz={}; caps vx={} wz={}); clamped",
-              linear.x(), angular.z(), max_linear_x, max_angular_z);
+          SPDLOG_LOGGER_WARN(
+            ayanami::recoveryLogger(),
+            "RecoveryExecution: velocity suggestion exceeded the limits "
+            "(vx={} wz={}; caps vx={} wz={}); clamped",
+            linear.x(),
+            angular.z(),
+            max_linear_x,
+            max_angular_z);
         }
       }
       linear.x() = clamped_x;
@@ -293,4 +298,4 @@ protected:
 };
 
 } // namespace components
-} // namespace ayanami
+}  // namespace ayanami

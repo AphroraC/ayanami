@@ -182,10 +182,19 @@ class CostmapNavigationServer
   /// map-frame robot pose and recompute (when no window is dirty, updateMap
   /// exits early right after updateOrigin, so the cost is negligible). When
   /// the scan stream stops, the window still follows the robot -- otherwise
-  /// DWB forward trajectories gradually "leave the map" and the robot gets
-  /// stuck at the edge of a frozen window with an undetectable current flag.
+  /// the controller's forward trajectories gradually "leave the map" and the
+  /// robot gets stuck at the edge of a frozen window with an undetectable
+  /// current flag.
   /// Pose resolution happens before taking the map lock.
   void updateRollingWindows();
+
+  /// @brief Dump both master grids as PGM + metadata sidecar into the dump
+  /// directory (costmap.dump_frequency Hz on the writer thread; 0 disables,
+  /// production runs at 0.1 Hz into the logging dir). Field diagnostics:
+  /// the dumped PGM shows exactly the master costs (free=white, inflation
+  /// gradient, lethal=black) and the sidecar carries resolution/origin.
+  /// Runs as a short-lock snapshot copy + out-of-lock file I/O.
+  void dumpCostmaps();
 
   /// @brief Block until every observation submitted so far has been applied
   /// by the map writer (test/observability seam; a no-op when the writer
@@ -199,11 +208,11 @@ class CostmapNavigationServer
     return observation_sources;
   }
 
-  /// @brief Source names the GLOBAL map consumes (configure-time parse of
-  /// costmap_global.observation_sources; empty = static-only global map).
-  const std::vector<std::string>& globalObservationSources() const {
-    return global_observation_sources;
+  /// @brief Total observation frames dropped by the bounded buffer.
+  std::uint64_t observationsDropped() const {
+    return observations_dropped.load();
   }
+
 
  private:
   /// @brief One buffered observation in the writer's latest-wins mailbox:
@@ -215,13 +224,75 @@ class CostmapNavigationServer
     ayanami::Timestamp stamp;
     std::vector<Eigen::Vector3d> points;
     std::vector<Eigen::Vector3d> clearing_points;
+    /// @brief Arrival time (steady clock): the observation keep-time window
+    /// ages frames from here.
+    std::chrono::steady_clock::time_point received{std::chrono::steady_clock::now()};
   };
+
+  /// @brief One cycle of the map pipeline for one map (nav2
+  /// update_frequency decoupling): take every buffered observation this map
+  /// has not consumed yet (keep-time window), resolve each frame's
+  /// stamp-time transform OUTSIDE the write lock, apply them to the
+  /// consuming layers, then run ONE updateMap for the whole batch. Sensor
+  /// rate therefore no longer multiplies the mark/raytrace/inflation work:
+  /// N queued frames cost one rebuild. Runs at the map's configured
+  /// update_frequency (costmap_local/global.update_frequency) and subsumes
+  /// the rolling-window recenter for the writer path.
+  void runMapCycle(bool is_local, bool force = false);
+
+  /// @brief Whether the periodic global map cycle can do real work: true
+  /// when the global map consumes observations (dynamic obstacle layer) or
+  /// rolls. A static global (static+inflation, non-rolling) changes
+  /// exclusively through clear commands, so its periodic cycle is skipped.
+  bool globalMapNeedsCycle() const;
+
+  /// @brief Generation-gated per-layer artifact emission: emits
+  /// on_costmap_global_{static,inflation} (global) or
+  /// on_costmap_local_{obstacle,inflation} (local) whenever the map's master
+  /// generation
+  /// changed since the last emission. NO rate parameters anywhere: the sole
+  /// writer emits unconditionally on every real content update, and an
+  /// unchanged map emits nothing. Called on the writer thread after each
+  /// map cycle / clear command, and once from configureCoreMaps (a static
+  /// global may never cycle again -- the initial emission is the only one).
+  void emitMapLayers(bool is_local);
+
+  /// @brief Static-zone mark filter (costmap_local.filter_static_marks):
+  /// local-map cloud hits inside a globally blocked cell are not marked.
+  bool filter_static_marks{true};
+
+  /// @brief Stamp-time sensor transform for one observation into one map's
+  /// frame (no locks held). Bounded wait up to transform_tolerance. A
+  /// stamped frame whose stamp-time transform never arrives is DROPPED
+  /// whole (marks preserved, map stale-but-stable); a frame published
+  /// without a stamp resolves at latest time. Returns false when the frame
+  /// is dropped or the latest transform is unavailable.
+  bool resolveObservationTransform(const PendingObservation& observation,
+                                   const std::string& map_frame,
+                                   bool is_local_map,
+                                   Eigen::Isometry3d& t_frame_sensor,
+                                   double* tf_wait_ms);
+
+  /// @brief Latest robot pose in the map's frame, with the local map's
+  /// rolling pose-cache fallback (never (0,0,0); see last_local_robot).
+  bool resolveRobotPoseInMapFrame(const std::string& map_frame,
+                                  bool is_local_map, double& robot_x,
+                                  double& robot_y, double& robot_yaw);
   /// @brief A clear command queued for the writer thread, with the promise
   /// the submitter waits on (bounded).
   struct PendingClear {
     ClearCostmapCommand command;
     std::shared_ptr<std::promise<bool>> done;
   };
+
+  /// @brief Layer-emission bookkeeping: the master generation each map's
+  /// artifacts were last emitted at (atomic: the inline no-writer test path
+  /// runs cycles on arbitrary caller threads; production traffic is
+  /// single-writer).
+  std::atomic<std::uint64_t> emitted_global_generation{0};
+  std::atomic<std::uint64_t> emitted_local_generation{0};
+  std::atomic<bool> global_layers_ever_emitted{false};
+  std::atomic<bool> local_layers_ever_emitted{false};
 
   /// @brief Enqueue an observation into the writer's bounded FIFO, or, when
   /// the writer thread is not running, process inline on the caller's
@@ -235,9 +306,6 @@ class CostmapNavigationServer
   ///        rasterization work).
   /// @param stamp_fallback Optional out-param: true when the stamp-time TF
   ///        never arrived and the pass degraded to latest-time semantics.
-  void processObservation(const PendingObservation& observation,
-                          double* tf_wait_ms = nullptr,
-                          bool* stamp_fallback = nullptr);
   /// @brief The stamp-time TF lookup with a bounded poll (up to
   /// transform_tolerance, ~5ms granularity) before the latest fallback.
   /// @param wait_seconds Optional out-param: how long the poll waited for
@@ -247,10 +315,6 @@ class CostmapNavigationServer
                              const ayanami::Timestamp& stamp,
                              Eigen::Isometry3d& transform,
                              double* wait_seconds = nullptr) const;
-  /// @brief Clear the footprint area (rotated-footprint bounding box) before
-  /// stamping, so the robot can never mark itself.
-  void clearFootprintRegion(costmap_2d_layers::SimpleObstacleLayer& layer,
-                            double robot_x, double robot_y, double robot_yaw);
   /// @brief Writer-thread bookkeeping: per-source liveness check (silent
   /// source -> map not-current, throttled warning).
   void checkSourceLiveness();
@@ -262,33 +326,21 @@ class CostmapNavigationServer
   void stopWriter();
   void writerLoop();
 
-  /// @brief Per-map previous observation state (bounded clearing window).
-  struct PrevMapObservation {
-    std::vector<Eigen::Vector2d> points;
-    bool valid{false};
-  };
-
   /// @brief Stamp one buffered observation into ONE map (frame transform,
-  /// source filtering, raytrace/mark, footprint clearing, updateMap).
-  /// Each target map resolves its own stamp-time TF and robot pose, so the
-  /// global and the local map consume the same observation independently.
+  /// layer-plugin dispatch, updateMap). Each target map resolves its own
+  /// stamp-time TF and robot pose, so the global and the local map consume
+  /// the same observation independently.
   /// @param is_local_map enables the rolling-window last-pose fallback and
   ///        the last_local_robot_* cache (global stamping is best-effort).
   /// @param tf_wait_ms/stamp_fallback optional out-params (local path only).
   /// @return false when the map could not be stamped (TF unavailable).
-  bool stampObservationOnMap(
-      const PendingObservation& observation, const std::string& map_frame,
-      const costmap_2d::CostmapWrapper::Ptr& wrapper,
-      costmap_2d_layers::SimpleObstacleLayer* obstacle_layer,
-      PrevMapObservation& prev, double inflation_radius, bool is_local_map,
-      double* tf_wait_ms, bool* stamp_fallback,
-      const std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins);
-
   /// @brief Load one map's layer plugin list (section "layers": ordered
-  /// module json paths, list order = composition order). Returns false
-  /// when the key is absent (legacy hardcoded composition); throws on a
-  /// failed load in the plugin path.
-  bool loadLayerPlugins(
+  /// layer entries, list order = composition order). Each entry is either
+  /// an INLINE layer name (so_name + parameters in
+  /// <section>.<name> of the same config -- the production spelling) or a
+  /// module json path (file spelling, test compat). The key is REQUIRED;
+  /// throws on absence or on a failed load.
+  void loadLayerPlugins(
       const std::string& section, const ayanami::Config& cfg,
       const std::string& config_dir,
       const costmap_2d::LayeredCostmap::Ptr& layered_costmap,
@@ -296,8 +348,8 @@ class CostmapNavigationServer
           ayanami::costmap::CostmapLayerPlugin>& manager,
       std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins);
 
-  /// @brief Transform-and-stamp entry (superseded by processObservation;
-  /// declared deleted to catch stale call sites at compile time).
+  /// @brief Transform-and-stamp entry (deleted: the observation pipeline is
+  /// runMapCycle -- inline callers force the same cycle the writer uses).
   void markObstaclesInFrame(const std::string& frame_id,
                             const ayanami::Timestamp& stamp,
                             const std::vector<Eigen::Vector3d>& points,
@@ -329,7 +381,21 @@ class CostmapNavigationServer
   /// frame's sector from the map. The cap bounds latency: the oldest frame
   /// is dropped only after k_max_pending_observations newer ones pile up
   /// (a sustained processing stall).
-  std::deque<PendingObservation> pending_observations;
+  /// @brief Observation buffer shared by both map cycles (nav2
+  /// ObservationBuffer role): frames enter once and each map consumes at
+  /// its own update_frequency via a cursor; storage frees when both
+  /// cursors pass. The cap bounds latency: the oldest frame is dropped
+  /// only after k_max_pending_observations newer ones pile up.
+  std::deque<std::shared_ptr<const PendingObservation>> observation_buffer;
+  std::size_t local_cursor{0};
+  std::size_t global_cursor{0};
+  /// @brief Frames older than this are dropped at consumption time
+  /// (costmap_local.observation_keep_time; <=0 keeps everything).
+  double observation_keep_time{0.5};
+  /// @brief False when no global layer plugin consumes any observation kind:
+  /// the global cursor then tracks the buffer tail so the shared storage
+  /// still compacts.
+  bool global_consumes_observations{false};
   static constexpr std::size_t k_max_pending_observations = 8;
   std::vector<PendingClear> pending_clears;
   mutable std::mutex writer_mutex;
@@ -339,11 +405,12 @@ class CostmapNavigationServer
   /// @brief Submitted-vs-applied observation counters (waitForMapIdle).
   std::atomic<std::uint64_t> observation_submitted{0};
   std::atomic<std::uint64_t> observation_applied{0};
+  /// @brief Frames dropped by the bounded buffer (a sustained processing
+  /// stall makes the writer unable to keep up; surfaced via the throttled
+  /// warning below and the counter getter for tests/monitoring).
+  std::atomic<std::uint64_t> observations_dropped{0};
   /// @brief Bounded wait for the stamp-time TF (costmap_local.transform_tolerance).
   double transform_tolerance{0.1};
-  /// @brief Stamp the robot's own footprint area as free before marking
-  /// (costmap_local.footprint_clearing): the robot can never mark itself.
-  bool footprint_clearing{true};
   /// @brief Per-source last-observation timestamps (writer thread only),
   /// index-aligned with observation_sources.
   std::vector<std::chrono::steady_clock::time_point> source_last_seen;
@@ -351,6 +418,14 @@ class CostmapNavigationServer
   std::vector<std::chrono::steady_clock::time_point> source_stale_warn_at;
   /// @brief Throttle for the map-update-duration warning.
   std::chrono::steady_clock::time_point last_map_update_warn_at{};
+  /// @brief Throttle for the observation-buffer-overflow warning.
+  std::chrono::steady_clock::time_point last_drop_warn_at{};
+  // ---- periodic costmap dump (costmap.dump_frequency Hz; 0 = disabled) ----
+  std::chrono::duration<double> dump_period{0.0};
+  std::chrono::steady_clock::time_point last_dump{};
+  /// @brief Directory the PGM dumps land in (logging section's logging_dir,
+  /// same value the file logger uses; relative resolves against cwd).
+  std::string dump_dir{"logs"};
   /// @brief Throttle for the outside-window dropped-points warning.
   std::chrono::steady_clock::time_point last_outside_window_warn_at{};
 
@@ -358,40 +433,28 @@ class CostmapNavigationServer
   // fail; warn at fixed intervals only, avoiding flooding at 5.5Hz laser
   // per frame). The map-frame sensor chain must lack TF for longer than
   // the interval before warning again.
-  std::atomic<std::chrono::steady_clock::time_point> map_tf_warn_at{};
-  std::atomic<std::chrono::steady_clock::time_point> robot_diag_at{};
+  // steady_clock nanoseconds (epoch 0 = never warned); atomic<int64_t>
+  // rather than atomic<time_point>, whose default constructor is deleted
+  // on older libstdc++ (pre-C++20) and breaks builds there.
+  std::atomic<std::int64_t> map_tf_warn_at{0};
+  std::atomic<std::int64_t> robot_diag_at{0};
   // Robot pose cache for the LOCAL map frame (the only rolling/stamped
   // map): on a transient pose query failure, roll the window with the last
   // successful value and never fall back to (0,0,0) -- otherwise the
   // rolling costmap window gets anchored back to the frame origin and, once
-  // the robot walks out of the window, dwb has no path (stuttering in
-  // place).
+  // the robot walks out of the window, the controller has no path
+  // (stuttering in place).
   bool has_last_local_robot{false};
   double last_local_robot_x{0.0}, last_local_robot_y{0.0};
   double last_local_robot_yaw{0.0};
-  // Dynamic-marker layers: the local map always has one; the global map
-  // has one when costmap_global.observation_sources is configured (nav2
-  // static + obstacle + inflation shape). The writer stamps every enabled
-  // map; a clear command retires marks and the StaticLayer restores the
-  // global base map.
-  costmap_2d_layers::SimpleObstacleLayer* local_obstacle_layer{nullptr};
-  costmap_2d_layers::SimpleObstacleLayer* global_obstacle_layer{nullptr};
-  costmap_2d_layers::StaticLayer* global_static_layer{nullptr};
-  double local_inflation_radius{0.6};
-  double global_inflation_radius{0.5};
-  double local_resolution{0.05};
-  // Source names (blocks under costmap_local) whose observations are also
-  // stamped into the global map; empty = legacy static-only global map.
-  std::vector<std::string> global_observation_sources;
-  // Previous observations per map (world frame of that map) for bounded
-  // clearing when a source has no raytrace endpoints.
-  PrevMapObservation prev_local;
-  PrevMapObservation prev_global;
- // Decoupled rolling-window updates (spinOnce): period and last trigger time
+  // (composition and observation policy live entirely in the layer plugins;
+  // the server holds no layer pointers and no per-map stamping state)
+ // Decoupled map update cycle periods (update_frequency; rolling + observation
+ // application + rebuild run at this cadence, independent of sensor rate)
   std::chrono::duration<double> local_roll_period{0.1};   // 10Hz default
   std::chrono::duration<double> global_roll_period{0.2};  // 5Hz default
-  std::chrono::steady_clock::time_point last_local_roll{};
-  std::chrono::steady_clock::time_point last_global_roll{};
+  std::chrono::steady_clock::time_point last_local_cycle{};
+  std::chrono::steady_clock::time_point last_global_cycle{};
  // Map-stamp scan-time query stats (ok/fallback to latest) and throttled diagnostic timestamps
   std::atomic<std::uint64_t> stamp_query_ok{0};
   std::atomic<std::uint64_t> stamp_query_fallback{0};

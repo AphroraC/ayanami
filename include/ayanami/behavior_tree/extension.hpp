@@ -29,9 +29,22 @@ namespace behavior_tree {
  *   factory, returning the list of registered tree ids.
  * - defaultTreeId: fallback tree name when the config gives no explicit
  *   tree_id.
+ *
+ * Resident-tree discipline (nav2 parity): the pilot builds the tree ONCE
+ * and reuses it across navigation attempts; every attempt ends with
+ * bt_tree.haltTree() and the next attempt re-baselines at each node's IDLE
+ * edge. Nodes registered by an extension MUST therefore be halt-safe:
+ * - clear per-node cached state (counters, cursors, caches, blackboard
+ *   artifacts) in the halt() override (idempotent -- the pilot halts an
+ *   already-halted tree defensively), or
+ * - re-establish their baseline on the first tick after a halt
+ *   (`status() == BT::NodeStatus::IDLE` edge, nav2 GoalUpdatedCondition
+ *   pattern).
+ * A node that does neither leaks state into the next attempt -- the same
+ * responsibility level nav2 places on its plugin authors.
  */
 class BehaviorTreeExtension : public virtual ExtensionModule {
- public:
+public:
   using Ptr = std::shared_ptr<BehaviorTreeExtension>;
 
   ~BehaviorTreeExtension() override = default;
@@ -43,8 +56,7 @@ class BehaviorTreeExtension : public virtual ExtensionModule {
   virtual void registerNodes(BT::BehaviorTreeFactory& factory) const = 0;
 
   /// @brief Register this extension's trees (XML) into the factory; returns the registered tree ids.
-  virtual std::vector<std::string> registerTrees(
-      BT::BehaviorTreeFactory& factory) const = 0;
+  virtual std::vector<std::string> registerTrees(BT::BehaviorTreeFactory& factory) const = 0;
 
   /// @brief Fallback tree name when the config gives no explicit tree_id (empty by default = no fallback).
   virtual std::string defaultTreeId() const { return ""; }
@@ -55,16 +67,12 @@ class BehaviorTreeExtension : public virtual ExtensionModule {
   /// session/revision/failure context); family- or tree-specific entries
   /// (e.g. recovery role ids) are declared here so the core stays agnostic
   /// of what the recoveries actually do -- BT only orchestrates.
-  virtual std::vector<const char*> requiredBlackboardEntries() const {
-    return {};
-  }
+  virtual std::vector<const char*> requiredBlackboardEntries() const { return {}; }
 
   /// @brief Write this extension's blackboard entries (called once per
   /// extension in buildTree, before createTree). Read your own config via
   /// GlobalConfig (asuka pattern) -- the pilot passes no parameters.
-  virtual void provideBlackboardEntries(BT::Blackboard::Ptr blackboard) const {
-    (void)blackboard;
-  }
+  virtual void provideBlackboardEntries(BT::Blackboard::Ptr blackboard) const { (void)blackboard; }
 };
 
 }  // namespace behavior_tree

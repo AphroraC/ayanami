@@ -6,9 +6,7 @@
 #include "ayanami/abstract/core/abstract_planner.hpp"
 #include "ayanami/types.hpp"
 
-#include <cstdint>
 #include <memory>
-#include <mutex>
 
 namespace ayanami {
 namespace components {
@@ -21,12 +19,6 @@ namespace components {
  * mapped immediately to an ErrorCode terminal state, and retries are
  * decided by the BT (RecoveryNode) -- the execution layer does no retry/
  * patience loop.
- *
- * latest-wins goal seam: setNewGoal stores the latest start/goal/tolerance
- * into a pending slot; run() adopts the latest pending goal before each
- * module call, and after a module call returns, if the revision has
- * advanced it restarts with the latest goal (no cancel / no join / no new
- * thread).
  *
  * The internal state machine is independent of actions::GoalStatus:
  * INITIALIZED->STARTED->PLANNING->(FOUND_PLAN | NO_PLAN_FOUND | CANCELED |
@@ -50,30 +42,23 @@ public:
   explicit PlannerExecution(ayanami::abstract::AbstractPlanner::Ptr planner)
       : planner(std::move(planner)) {}
 
-  /// @brief Record start/goal/tolerance and start the planning thread.
+  /// @brief Record start/goal/tolerance and run the planning task to a
+  /// terminal state on the calling thread.
   /// An empty start is resolved to the latest robot pose HERE (framework
   /// responsibility); modules always receive a fully valid start.
-  using ExecutionBase::start;
   void start(const geometry_msgs::PoseStamped& start,
              const geometry_msgs::PoseStamped& goal, double tolerance) {
     prepareGoal(start, goal, tolerance);
-    ExecutionBase::start();
+    runBlocking();
   }
 
-  /// @brief Goal inputs for one planning task WITHOUT spawning a thread
-  /// (execution reuse: the resident action worker calls prepareGoal +
-  /// runBlocking). Also resets the latest-wins seam state so nothing from a
-  /// previous task leaks into this one.
+  /// @brief Goal inputs for one planning task (the resident action worker
+  /// calls prepareGoal + runBlocking).
   void prepareGoal(const geometry_msgs::PoseStamped& start,
                    const geometry_msgs::PoseStamped& goal, double tolerance) {
-    std::lock_guard<std::mutex> lock(goal_mutex);
     start_pose = resolveStart(start);
     goal_pose = goal;
     goal_tolerance = tolerance;
-    pending_start = start_pose;
-    pending_goal = goal;
-    pending_tolerance = tolerance;
-    goal_revision.store(0);
     plan = nav_msgs::Path{};
   }
 
@@ -83,46 +68,6 @@ public:
     if (planner) planner->cancel();
     condition.notify_all();
   }
-
-  /// @brief In-place goal update while running (latest-wins update seam).
-  ///
-  /// Purely execution-level (the module is NOT involved): the pending
-  /// start/goal/tolerance land in a revision-guarded slot and the run loop
-  /// adopts the latest revision before (and after) each module call, so a
-  /// goal change neither cancels the task nor spawns a new execution
-  /// (requestPlanUpdate analogue for the planner family). The module's
-  /// cooperative cancel() is invoked so a long-running search returns
-  /// promptly and the loop replans for the new goal on the same thread.
-  /// @return false means the execution has reached a terminal state (the
-  /// update will not be consumed); the caller should fall back to a new
-  /// request.
-  bool setNewGoal(const geometry_msgs::PoseStamped& start,
-                  const geometry_msgs::PoseStamped& goal, double tolerance) {
-    {
-      std::lock_guard<std::mutex> lock(goal_mutex);
-      if (isTerminalState()) {
-        return false;
-      }
-      pending_start = resolveStart(start);
-      pending_goal = goal;
-      pending_tolerance = tolerance;
-      goal_revision.fetch_add(1);
-      // Cooperative interrupt of the in-flight module call, taken under the
-      // SAME mutex the run loop uses for its post-call revision check: the
-      // bump and the cancel are atomic with respect to that check, so a
-      // result released by THIS cancel can never be committed as a terminal
-      // state for the superseded goal (the check always observes the new
-      // revision and replans instead).
-      if (planner) {
-        planner->cancel();
-      }
-    }
-    condition.notify_all();
-    return true;
-  }
-
-  /// @brief Current pending goal revision (for latest-wins observation/testing).
-  uint64_t pendingRevision() const { return goal_revision.load(); }
 
   PlanningState getState() const {
     return static_cast<PlanningState>(state.load());
@@ -149,98 +94,47 @@ protected:
 
   void run() override {
     setState(STARTED, false);
-    // Currently adopted goal revision (latest-wins): each loop round adopts the latest pending goal.
-    uint64_t adopted_revision = 0;
-    ayanami::geometry_msgs::PoseStamped cur_start = this->start_pose;
-    ayanami::geometry_msgs::PoseStamped cur_goal = this->goal_pose;
-    double cur_tolerance = this->goal_tolerance;
     try {
-      while (true) {
-        if (cancel_requested) {
-          error = ErrorCode::CANCELED;
-          setState(CANCELED, true);
-          return;
-        }
-        if (should_exit) {
-          error = ErrorCode::CANCELED;
-          setState(STOPPED, true);
-          return;
-        }
-        // latest-wins: if setNewGoal has pushed a new revision, adopt the latest pending goal.
-        {
-          std::lock_guard<std::mutex> lock(goal_mutex);
-          if (goal_revision.load() != adopted_revision) {
-            cur_start = pending_start;
-            cur_goal = pending_goal;
-            cur_tolerance = pending_tolerance;
-            adopted_revision = goal_revision.load();
-          }
-        }
-        setState(PLANNING, false);
-
-        // in-place: the module writes the result member directly (single-shot
-        // execution; the FOUND_PLAN terminal state makes the write visible to
-        // the action reader via the state machine's happens-before edge), so
-        // no buffer + move round-trip is needed.
-        const ResultT<void> result =
-            callPlanner(cur_start, cur_goal, cur_tolerance, plan);
-
-        // A new goal arrived during the module call (revision advanced): do
-        // not commit this result; replan for the latest goal on the same
-        // execution thread (latest-wins, no cancel/new thread).
-        {
-          std::lock_guard<std::mutex> lock(goal_mutex);
-          if (goal_revision.load() != adopted_revision) {
-            continue;
-          }
-        }
-
-        if (cancel_requested) {
-          error = ErrorCode::CANCELED;
-          setState(CANCELED, true);
-          return;
-        }
-        if (result.ok) {
-          // Commit-path revision recheck, atomic against setNewGoal (which
-          // stores the revision and interrupts the module under the same
-          // mutex): a goal that arrived between the post-call check and this
-          // commit must NOT be answered with the superseded plan.
-          {
-            std::lock_guard<std::mutex> lock(goal_mutex);
-            if (goal_revision.load() != adopted_revision) {
-              continue;
-            }
-          }
-          // plan was written in place by the module (see callPlanner arg).
-          error = ErrorCode::NONE;
-          message = result.message;
-          setState(FOUND_PLAN, true);
-          return;
-        }
-        {
-          std::lock_guard<std::mutex> lock(goal_mutex);
-          if (goal_revision.load() != adopted_revision) {
-            continue;
-          }
-        }
-        // Return the error code immediately on failure (retries are decided by the BT).
-        error = result.error;
-        message = result.message;
-        setState(NO_PLAN_FOUND, true);
+      if (cancel_requested) {
+        error = ErrorCode::CANCELED;
+        setState(CANCELED, true);
         return;
       }
+      if (should_exit) {
+        error = ErrorCode::CANCELED;
+        setState(STOPPED, true);
+        return;
+      }
+      setState(PLANNING, false);
+
+      // in-place: the module writes the result member directly (single-shot
+      // execution; the FOUND_PLAN terminal state makes the write visible to
+      // the action reader via the state machine's happens-before edge), so
+      // no buffer + move round-trip is needed.
+      const ResultT<void> result =
+          callPlanner(start_pose, goal_pose, goal_tolerance, plan);
+
+      if (cancel_requested) {
+        error = ErrorCode::CANCELED;
+        setState(CANCELED, true);
+        return;
+      }
+      if (result.ok) {
+        // plan was written in place by the module (see callPlanner arg).
+        error = ErrorCode::NONE;
+        message = result.message;
+        setState(FOUND_PLAN, true);
+        return;
+      }
+      // Return the error code immediately on failure (retries are decided by the BT).
+      error = result.error;
+      message = result.message;
+      setState(NO_PLAN_FOUND, true);
     } catch (...) {
       error = ErrorCode::INTERNAL_ERROR;
       message = "Unknown error occurred";
       setState(INTERNAL_ERROR, true);
     }
-  }
-
-  /// @brief Whether the current state is terminal (run has exited / no longer consumes new goals).
-  bool isTerminalState() const {
-    const auto s = static_cast<PlanningState>(state.load());
-    return s == FOUND_PLAN || s == NO_PLAN_FOUND || s == CANCELED ||
-           s == STOPPED || s == INTERNAL_ERROR;
   }
 
 protected:
@@ -262,13 +156,6 @@ protected:
   geometry_msgs::PoseStamped goal_pose;
   double goal_tolerance{0.0};
   nav_msgs::Path plan;
-
-  // ---- latest-wins update seam state (thread-safe) ----
-  mutable std::mutex goal_mutex;
-  geometry_msgs::PoseStamped pending_start;
-  geometry_msgs::PoseStamped pending_goal;
-  double pending_tolerance{0.0};
-  std::atomic<uint64_t> goal_revision{0};
 };
 
 } // namespace components

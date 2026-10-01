@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -151,6 +152,12 @@ class Costmap2D {
   double getResolution() const { return resolution; }
   double getOriginX() const { return origin_x; }
   double getOriginY() const { return origin_y; }
+  /// @brief Re-anchor the grid without touching the cell data (the snapshot
+  /// restore path: same geometry, new rolling origin).
+  void setOrigin(double ox, double oy) {
+    this->origin_x = ox;
+    this->origin_y = oy;
+  }
   CostValue getDefaultValue() const { return default_value; }
   void setDefaultValue(CostValue value) { default_value = value; }
 
@@ -240,51 +247,104 @@ class Costmap2D {
     return true;
   }
 
-  /// Rolling window: shifts the map data so the new origin is aligned (discipline: members referenced via explicit this->)
-  void updateOrigin(double new_origin_x, double new_origin_y) {
-    if (size_x == 0 || size_y == 0 || resolution <= 0.0) {
-      origin_x = new_origin_x;
-      origin_y = new_origin_y;
-      return;
+  /// Rolling window: shifts the map data so the new origin is aligned
+  /// (discipline: members referenced via explicit this->). In-place: the
+  /// surviving overlap is moved with memmove (per-row horizontal, one
+  /// contiguous block vertical) and only the vacated strips are filled with
+  /// the default -- no temporary whole-map allocation, O(shift) bytes
+  /// touched instead of O(map) allocated + copied.
+  /// @return true when a whole-cell shift actually happened (the origin moved
+  /// and data was re-laid); a sub-cell request changes nothing and returns
+  /// false (the aligned origin only advances with an actual shift).
+  bool updateOrigin(double new_origin_x, double new_origin_y) {
+    if (this->size_x == 0 || this->size_y == 0 || this->resolution <= 0.0) {
+      this->origin_x = new_origin_x;
+      this->origin_y = new_origin_y;
+      return false;
     }
 
     const int cell_ox = static_cast<int>(
-        std::floor((new_origin_x - origin_x) / resolution));
+        std::floor((new_origin_x - this->origin_x) / this->resolution));
     const int cell_oy = static_cast<int>(
-        std::floor((new_origin_y - origin_y) / resolution));
-    const double aligned_origin_x = origin_x + cell_ox * resolution;
-    const double aligned_origin_y = origin_y + cell_oy * resolution;
+        std::floor((new_origin_y - this->origin_y) / this->resolution));
+    const double aligned_origin_x = this->origin_x + cell_ox * this->resolution;
+    const double aligned_origin_y = this->origin_y + cell_oy * this->resolution;
     if (cell_ox == 0 && cell_oy == 0) {
-      return;
+      return false;
     }
 
-    const int old_start_x = std::max(0, cell_ox);
-    const int old_start_y = std::max(0, cell_oy);
-    const int new_start_x = std::max(0, -cell_ox);
-    const int new_start_y = std::max(0, -cell_oy);
-    const int cell_size_x = static_cast<int>(size_x) - std::abs(cell_ox);
-    const int cell_size_y = static_cast<int>(size_y) - std::abs(cell_oy);
+    const unsigned int sx = this->size_x;
+    const unsigned int sy = this->size_y;
+    const unsigned int shift_x = static_cast<unsigned int>(std::abs(cell_ox));
+    const unsigned int shift_y = static_cast<unsigned int>(std::abs(cell_oy));
 
-    std::vector<CostValue> new_data(static_cast<std::size_t>(size_x) * size_y,
-                                    default_value);
-    if (cell_size_x > 0 && cell_size_y > 0) {
-      const unsigned int reg_x = static_cast<unsigned int>(cell_size_x);
-      const unsigned int reg_y = static_cast<unsigned int>(cell_size_y);
-      for (unsigned int y = 0; y < reg_y; ++y) {
-        const auto src = data.begin() +
-                         static_cast<std::ptrdiff_t>(
-                             (static_cast<unsigned int>(old_start_y) + y) * size_x +
-                             static_cast<unsigned int>(old_start_x));
-        auto dst = new_data.begin() +
-                   static_cast<std::ptrdiff_t>(
-                       (static_cast<unsigned int>(new_start_y) + y) * size_x +
-                       static_cast<unsigned int>(new_start_x));
-        std::copy(src, src + reg_x, dst);
+    // Horizontal: new(x, y) = old(x + cell_ox, y).
+    if (cell_ox != 0 && shift_x < sx) {
+      for (unsigned int y = 0; y < sy; ++y) {
+        CostValue* row = this->data.data() + static_cast<std::size_t>(y) * sx;
+        if (cell_ox > 0) {
+          std::memmove(row, row + shift_x,
+                       static_cast<std::size_t>(sx - shift_x) * sizeof(CostValue));
+        } else {
+          std::memmove(row + shift_x, row,
+                       static_cast<std::size_t>(sx - shift_x) * sizeof(CostValue));
+        }
       }
     }
-    data.swap(new_data);
-    origin_x = aligned_origin_x;
-    origin_y = aligned_origin_y;
+
+    // Vertical: new(x, y) = shifted(x, y + cell_oy); row-major rows are one
+    // contiguous block.
+    if (cell_oy != 0 && shift_y < sy) {
+      if (cell_oy > 0) {
+        std::memmove(this->data.data(),
+                     this->data.data() + static_cast<std::size_t>(shift_y) * sx,
+                     static_cast<std::size_t>(sy - shift_y) * sx * sizeof(CostValue));
+      } else {
+        std::memmove(this->data.data() + static_cast<std::size_t>(shift_y) * sx,
+                     this->data.data(),
+                     static_cast<std::size_t>(sy - shift_y) * sx * sizeof(CostValue));
+      }
+    }
+
+    // Fill the vacated strips with the default. The y-strip fill runs last
+    // and covers full rows, so any x-strip work inside vacated rows is
+    // subsumed; a shift at least the map dimension vacates everything.
+    const auto fill_strip_x = [&](unsigned int x0, unsigned int x1) {
+      if (x0 >= x1) {
+        return;
+      }
+      for (unsigned int y = 0; y < sy; ++y) {
+        std::fill(this->data.begin() + static_cast<std::ptrdiff_t>(y * sx + x0),
+                  this->data.begin() + static_cast<std::ptrdiff_t>(y * sx + x1),
+                  this->default_value);
+      }
+    };
+    const auto fill_strip_y = [&](unsigned int y0, unsigned int y1) {
+      if (y0 >= y1) {
+        return;
+      }
+      std::fill(this->data.begin() + static_cast<std::ptrdiff_t>(y0) * sx,
+                this->data.begin() + static_cast<std::ptrdiff_t>(y1) * sx,
+                this->default_value);
+    };
+    if (shift_x >= sx) {
+      this->resetMap();
+    } else {
+      if (cell_ox > 0) {
+        fill_strip_x(sx - shift_x, sx);
+      } else if (cell_ox < 0) {
+        fill_strip_x(0, shift_x);
+      }
+      if (cell_oy > 0) {
+        fill_strip_y(sy - shift_y, sy);
+      } else if (cell_oy < 0) {
+        fill_strip_y(0, shift_y);
+      }
+    }
+
+    this->origin_x = aligned_origin_x;
+    this->origin_y = aligned_origin_y;
+    return true;
   }
 
  private:

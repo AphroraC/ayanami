@@ -10,6 +10,8 @@
 
 #include <costmap_2d/layer.hpp>
 
+#include <spdlog/spdlog.h>
+
 namespace costmap_2d {
 
 /// Host of the master costmap: owns the master grid plus the module layer list; each cycle updateMap drives every layer
@@ -44,10 +46,16 @@ class LayeredCostmap {
   }
 
   // Drive all enabled layers: first updateBounds collects the bounds to refresh, then updateCosts writes the master grid.
-  void updateMap(double robot_x, double robot_y, double robot_yaw) {
+  // @return true when the master grid actually changed this cycle (a rolling
+  // origin shift happened, or a non-empty dirty window was rebuilt); a no-op
+  // cycle (empty dirty window, no shift) returns false -- CostmapWrapper uses
+  // this to decide whether to bump its generation counter.
+  bool updateMap(double robot_x, double robot_y, double robot_yaw) {
+    bool mutated = false;
     if (rolling_window) {
-      costmap.updateOrigin(robot_x - costmap.getSizeInMetersX() * 0.5,
-                            robot_y - costmap.getSizeInMetersY() * 0.5);
+      mutated =
+          costmap.updateOrigin(robot_x - costmap.getSizeInMetersX() * 0.5,
+                               robot_y - costmap.getSizeInMetersY() * 0.5);
     }
 
     double min_x = std::numeric_limits<double>::max();
@@ -60,7 +68,7 @@ class LayeredCostmap {
 
     if (min_x > max_x || min_y > max_y) {
       minx = miny = maxx = maxy = 0.0;
-      return;
+      return mutated;
     }
 
     minx = min_x;
@@ -83,6 +91,7 @@ class LayeredCostmap {
                       static_cast<unsigned int>(max_i),
                       static_cast<unsigned int>(max_j));
     updateCostsForLayers(modules, costmap, min_i, min_j, max_i, max_j);
+    return true;
   }
 
   bool isCurrent() const {
@@ -149,15 +158,55 @@ class LayeredCostmap {
   const std::vector<Layer::Ptr>& getModules() const { return modules; }
 
  private:
+  /// @brief Collect the dirty rectangle from every enabled layer. The
+  /// rectangle is only-grow: a layer that shrank it is a protocol violation
+  /// (stale consumers would miss repaints), so the previous bounds are
+  /// restored and the layer is named in a warning (nav2 "Illegal bounds
+  /// change" semantics).
   static void updateBoundsForLayers(const std::vector<Layer::Ptr>& layers,
                                     double robot_x, double robot_y,
                                     double robot_yaw, double& min_x,
                                     double& min_y, double& max_x,
                                     double& max_y) {
     for (const auto& layer : layers) {
-      if (layer->isEnabled()) {
-        layer->updateBounds(robot_x, robot_y, robot_yaw, &min_x, &min_y,
-                            &max_x, &max_y);
+      if (!layer->isEnabled()) {
+        continue;
+      }
+      const double previous_min_x = min_x;
+      const double previous_min_y = min_y;
+      const double previous_max_x = max_x;
+      const double previous_max_y = max_y;
+      layer->updateBounds(robot_x, robot_y, robot_yaw, &min_x, &min_y,
+                          &max_x, &max_y);
+      constexpr double k_epsilon = 1e-9;
+      const bool shrank = min_x > previous_min_x + k_epsilon ||
+                          min_y > previous_min_y + k_epsilon ||
+                          max_x < previous_max_x - k_epsilon ||
+                          max_y < previous_max_y - k_epsilon;
+      if (shrank) {
+        // Route via the host's "costmap" layer logger when registered;
+        // this sub-library depends on spdlog only.
+        std::shared_ptr<spdlog::logger> costmap_logger = spdlog::get("costmap");
+        if (!costmap_logger) {
+          costmap_logger = spdlog::default_logger();
+        }
+        costmap_logger->warn(
+          "LayeredCostmap: layer '{}' shrank the dirty bounds "
+          "([{:g}, {:g}] x [{:g}, {:g}] -> [{:g}, {:g}] x [{:g}, {:g}]); "
+          "restoring the previous bounds (bounds are only-grow)",
+          layer->getName(),
+          previous_min_x,
+          previous_max_x,
+          previous_min_y,
+          previous_max_y,
+          min_x,
+          max_x,
+          min_y,
+          max_y);
+        min_x = previous_min_x;
+        min_y = previous_min_y;
+        max_x = previous_max_x;
+        max_y = previous_max_y;
       }
     }
   }

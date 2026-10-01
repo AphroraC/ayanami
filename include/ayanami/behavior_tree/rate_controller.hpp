@@ -4,7 +4,6 @@
 #include <behaviortree_cpp/decorator_node.h>
 #include <spdlog/spdlog.h>
 
-
 #include <chrono>
 #include <functional>
 
@@ -23,21 +22,20 @@ namespace behavior_tree {
  * The clock is injectable (steady clock by default) so tests can advance
  * time deterministically.
  */
-class RateController : public BT::DecoratorNode,
-                    public ResettableNode {
- public:
+class RateController : public BT::DecoratorNode, public ResettableNode {
+public:
   using ClockFn = std::function<BT::TimePoint()>;
 
   RateController(const std::string& name, const BT::NodeConfig& config)
-    : RateController(name, config, [] { return BT::TimePoint::clock::now(); }) {}
+  : RateController(name, config, [] { return BT::TimePoint::clock::now(); }) {}
 
   RateController(const std::string& name, const BT::NodeConfig& config, ClockFn clock)
-    : BT::DecoratorNode(name, config),
-      clock_fn(std::move(clock)),
-      hz(-1.0),
-      last_status(BT::NodeStatus::FAILURE),
-      last_time(),
-      started(false) {}
+  : BT::DecoratorNode(name, config),
+    clock_fn(std::move(clock)),
+    hz(-1.0),
+    last_status(BT::NodeStatus::FAILURE),
+    last_time(),
+    started(false) {}
 
   static BT::PortsList providedPorts() {
     return {
@@ -89,12 +87,12 @@ class RateController : public BT::DecoratorNode,
       return status;
     }
 
- // nav2 semantics (rate_controller.cpp): an in-flight RUNNING child is
- // polled every tick; the rate only gates "starting a new round" --
- // otherwise, once the planner result is ready it would wait up to a full
- // 1/hz before being consumed, adding a fixed 0-1s delay to every replan.
- // The timer resets when the child returns SUCCESS (failure does not reset,
- // mirroring nav2).
+    // nav2 semantics (rate_controller.cpp): an in-flight RUNNING child is
+    // polled every tick; the rate only gates "starting a new round" --
+    // otherwise, once the planner result is ready it would wait up to a full
+    // 1/hz before being consumed, adding a fixed 0-1s delay to every replan.
+    // The timer resets when the child returns SUCCESS (failure does not reset,
+    // mirroring nav2).
     const auto period = std::chrono::duration<double>(1.0 / hz);
     if (last_status == BT::NodeStatus::RUNNING || now - last_time >= period) {
       const BT::NodeStatus status = child_node_->executeTick();
@@ -107,28 +105,26 @@ class RateController : public BT::DecoratorNode,
     return last_status;
   }
 
+  /// @brief Clear the single-shot cache (round state). Called from the
+  /// tree-level halt (pilot terminal/halt/new-attempt paths) and from the
+  /// reset_token change path; must stay idempotent -- the pilot may halt an
+  /// already-halted tree. The reset_token cache itself is deliberately kept
+  /// (ResettableNode): it is change-detection state, not round state, and
+  /// the token's monotonicity across attempts is what makes a kept cache
+  /// still detect every change.
   void halt() override {
     BT::DecoratorNode::halt();
     started = false;
     last_status = BT::NodeStatus::FAILURE;
   }
 
-  /// @brief Clear the single-shot cache so the next tick starts a fresh round.
-  ///
-  /// Called from two places: halt() (BT.CPP v4's haltChildren only reaches
-  /// RUNNING children) and the reset_token change path. The reset_token cache
-  /// itself is deliberately kept -- it is change-detection state, not round
-  /// state. There is no tree-life reset any more: the pilot builds a new tree
-  /// per navigation attempt, so nothing crosses between attempts.
-
- private:
+private:
   ClockFn clock_fn;
   double hz;
   BT::NodeStatus last_status;
   BT::TimePoint last_time;
   bool started;
-  uint64_t reset_token{0};
 };
 
-} // namespace behavior_tree
-} // namespace ayanami
+}  // namespace behavior_tree
+}  // namespace ayanami

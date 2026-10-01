@@ -105,7 +105,7 @@ AbstractActionBase；单导航纪律下旧并发槽收敛为单在飞记录 + pe
   TaskHandle（主流）；request* 会**盖上当前 session_id / plan_version**
   （测试 mock 必须复刻同一契约），并按 goal 级 id 派发到对应 action。
 - `requestRecovery` 资源协议：CAS `recovery_exclusive` → 校验 id →
-  **同步 `cancelAllControllers()`** → acceptGoal →
+  **非阻塞 `preemptAllControllers()`** → acceptGoal →
   `onComplete(释放互斥)`。恢复期间其余 request* 返回 RESOURCE_BUSY
   结构化拒绝（valid+ready+ABORTED，不产生旁路事件）。
 - `requestPlanUpdate`：controller in-place 路径更新（无 cancel/join）。

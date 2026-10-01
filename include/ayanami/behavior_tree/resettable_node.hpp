@@ -16,16 +16,18 @@ namespace behavior_tree {
  * cached token value and the read-and-compare step, so each node only reacts to
  * consumeResetToken() returning true.
  *
- * Scope: this is the WITHIN-attempt reset. The pilot builds one tree instance per
- * navigation attempt, so a new attempt needs no reset at all; tokens exist for
- * the case that remains -- the goal being revised while the tree is still
- * running, where the running instance must notice that the task changed.
+ * Scope: the WITHIN-attempt reset (a goal revision while the tree is
+ * running). On the pilot's resident tree the token caches survive across
+ * navigation attempts by design: tokens ({goal_revision},
+ * {raw_path_revision}) are monotonic for the process life -- the pilot
+ * never resets them -- so a kept cache still detects every change, at a
+ * revision change or an attempt boundary alike.
  */
 class ResettableNode {
- public:
+public:
   virtual ~ResettableNode() = default;
 
- protected:
+protected:
   /// @brief Read the token port; return true (exactly once) when the value
   /// changed since the previous call. @p node is the BT node owning the
   /// port (usually *this).
@@ -39,7 +41,7 @@ class ResettableNode {
     return true;
   }
 
- private:
+private:
   uint64_t reset_token{0};
 };
 

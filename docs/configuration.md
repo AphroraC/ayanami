@@ -12,7 +12,7 @@ config/
 ├── assets/                   # nav.pgm + nav.json（静态地图元数据）、rmuc26.*
 └── modules/                  # 每模块一个文件：<family> 段 + <name> 参数段
     ├── costmap_astar_planner.json
-    ├── costmap_savitzky_smoother.json
+    ├── costmap_minsnap_smoother.json
     ├── costmap_dwb_controller.json
     ├── costmap_pid_controller.json
     ├── costmap_clear_costmap_recovery.json   # recovery.role = clear_costmap
@@ -32,6 +32,29 @@ config/
 - 模块 json 的 `<family>` 段（如 `planner: {name, so_name}`）是**模块 id 的
   单一来源**：name 即模块逻辑 id（无独立 `*_id` 配置键）。
 - 日志配置（logging 段）位于根 `config.json`，没有独立的 config_logging 文件。
+
+## logging 段（根 config.json）
+
+日志按框架层拆分为命名 logger，每行输出携带 `[名字]` 标签
+（`[%Y-%m-%d %H:%M:%S.%e] [名字] [级别] 消息`）：
+
+| logger 名 | 负责层 |
+|---|---|
+| `ros` | ROS 适配层（ayanami_ros 边界、rviz_viewer / cmd_chassis_publisher 扩展） |
+| `planner` / `smoother` / `controller` / `recovery` | 导航四组件（各自 execution/action 层与插件模块；goal/progress checker 归 controller） |
+| `BT` | 行为树层（pilot、BT 节点、navigation_behavior_tree 扩展） |
+| `costmap` | 代价地图（costmap 导航服务器、层插件、LayeredCostmap/CostmapWrapper/InflationLayer） |
+| （默认 logger `ayanami`） | 框架基础设施（config/插件加载等未分层消息） |
+
+日志等级统一由 `logging_level` 一个开关控制（`console_level` 单独控制控制台）；调试时可选择性写入 `logging.logger_levels`（如 `{"costmap": "debug"}`）按层覆盖，出厂配置不含该键。
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `logging_level` | info | 全局主开关：所有 logger 的级别基准 |
+| `console_level` | info | 控制台 sink 独立级别 |
+| `console_output` / `file_output` | true | 控制台 / 文件输出开关 |
+| `logging_dir` | logs | 日志目录（绝对或相对 cwd；costmap PGM dump 也落这里） |
+| `rotate_logs` / `max_file_size_kb` / `max_files` | true / 8192 / 10 | 轮转参数（文件固定为 `<dir>/ayanami.log`） |
 
 ## navigation 段（costmap_navigation.json）
 
@@ -67,8 +90,11 @@ config/
 | `costmap_local.update_frequency` | 10.0 | 滚动窗口解耦更新频率（spinOnce 驱动，与传感器流无关） |
 | `costmap_global.update_frequency` | 5.0 | 同上（仅 global 启用 rolling_window 时生效） |
 
-组合语义：全局障碍层 `MAXIMUM` + `setClearToFree(false)`（静态层先恢复，
-动态标记只做 cost>old 叠加）；局部障碍层 `OVERWRITE`。
+`costmap_{global,local}.layers` 为**必需**键（层模块 json 列表，顺序即
+组合顺序）；障碍层参数：`combination`（overwrite/maximum）、
+`clear_margin`（前窗清除外扩）、`footprint_clearing`、`decay_time`
+（占用衰减秒数，0=关闭；全局层建议启用）、`observation_sources` +
+逐源子块（过滤参数归层所有）。
 
 ## ayanami_ros 段（config_ros.json）
 
@@ -147,3 +173,13 @@ AyanamiROS 构造
 （`libayanami_<name>.so`）。loader 在加载时校验前两者一致且参数段存在，不一致即
 拒绝加载。`.so` 基名不参与校验——同一个 `.so` 挂多个逻辑名（各自一套参数）是合法
 的别名用法，recovery 的 role 列表正是这么用的。
+
+
+## inflation.inscribed_radius 语义（2026-09-29）
+
+`costmap_global/costmap_local` 的 `inflation_layer.inscribed_radius` **必须等于
+robot_radius**（0.3）：253（INSCRIBED）致死带 = 机器人真实足印区。此前配 0.12 时
+规划器合法产出"中心线距障碍 0.15~0.3m"的路径（车体壳层蹭墙），近距点云随即把墙沿
+标记为 lethal，路径中心线落入 253 带内 → IsPathValid 失败 → 恢复级联 → 停车。
+配套：`costmap_astar_planner.tolerance`（0.35）须大于该值，使落在 253 带内的目标点
+仍能在带外找到近似可达点。

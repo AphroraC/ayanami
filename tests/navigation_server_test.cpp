@@ -15,6 +15,7 @@
 #include <ayanami/abstract/core/abstract_recovery.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/messages/failure.hpp>
+#include <ayanami/messages/recovery_params.hpp>
 #include <ayanami/types.hpp>
 #include <ayanami/utility/config.hpp>
 
@@ -27,6 +28,8 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+
+using ayanami::ResultT;
 #include <string>
 #include <thread>
 #include <vector>
@@ -604,12 +607,18 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
     ASSERT_TRUE(recovery_done.load());
   }
 
-  // 5. Cleanup: in the runtime resource protocol requestRecovery internally calls cancelAllControllers before
-  // starting a recovery (cancel+join). Calling it directly here verifies the join semantics;
-  // planner/smoother are called the same way to guarantee thread exit.
-  server.cancelAllControllers();
-  server.cancelAllPlanners();
-  server.cancelAllSmoothers();
+  // 5. Cleanup: in the runtime resource protocol requestRecovery internally calls preemptAllControllers before
+  // starting a recovery (non-blocking preemption: the execution is marked
+  // canceled and the worker winds down; the settled TaskHandles prove the
+  // executions reached their terminal states, which is the join
+  // equivalent).
+  server.preemptAllControllers();
+  // The planner/smoother slots have no runtime-level preemption API (one
+  // preemption dimension = preemptAllControllers for the controller family,
+  // per the single-navigation contract); their in-flight tasks are canceled
+  // through the TaskHandle, which forwards to the execution and module.
+  ptask.cancel();
+  stask.cancel();
   ASSERT_TRUE(waitReady(ptask, 2000));
   EXPECT_EQ(ptask.status(), ayanami::actions::GoalStatus::CANCELED);
   ASSERT_TRUE(waitReady(stask, 2000));
@@ -624,6 +633,138 @@ TEST(NavigationServerBaseTest, requestRecoveryIsExclusiveWithoutServerPreemption
   auto exe_after = server.requestExecution(egoal);
   ASSERT_TRUE(exe_after.valid());
   EXPECT_FALSE(exe_after.ready());
+}
+
+// ---- Non-motion recovery must NOT preempt the running controller ----
+// The stop-fail-retry cascade forensics (2026-09-29): preempting the
+// controller for a map-only clear-costmap turned every recovery dispatch
+// into a stop + stale-failure + retry cycle. The per-module
+// recovery.preempts_controller policy gates the preemption in
+// requestRecovery: motion recoveries (default true) preempt; a clear
+// (false) leaves the running controller alone.
+namespace preempt_probe {
+
+class NeverDoneController : public ayanami::abstract::AbstractController {
+ public:
+  ResultT<void> computeVelocityCommand(
+      const ayanami::geometry_msgs::PoseStamped&,
+      const ayanami::geometry_msgs::TwistStamped&,
+      ayanami::geometry_msgs::TwistStamped& cmd) override {
+    cmd = ayanami::geometry_msgs::TwistStamped{};
+    return ResultT<void>::success();
+  }
+  bool setPlan(const ayanami::nav_msgs::Path&) override { return true; }
+  bool cancel() override {
+    canceled.store(true);
+    return true;
+  }
+  std::atomic<bool> canceled{false};
+};
+
+class NeverReachedChecker : public ayanami::abstract::AbstractGoalChecker {
+ public:
+  void reset() override {}
+  bool isGoalReached(const PoseStamped&, const PoseStamped&,
+                     const ayanami::geometry_msgs::TwistStamped&) override {
+    return false;
+  }
+  ayanami::GoalCheckerTolerances getTolerances() const override { return {}; }
+};
+
+class AlwaysProgressChecker
+    : public ayanami::abstract::AbstractProgressChecker {
+ public:
+  void reset() override {}
+  bool check(const PoseStamped&) override { return true; }
+};
+
+class InstantRecovery : public ayanami::abstract::AbstractRecovery {
+ public:
+  ResultT<void> tick(ayanami::RecoveryCycleData& cycle) override {
+    cycle.status = ayanami::RecoveryStatus::SUCCESS;
+    return ResultT<void>::success();
+  }
+};
+
+class ProbeControllerAction : public ayanami::components::ControllerAction {
+ public:
+  using ControllerAction::ControllerAction;
+
+ protected:
+  ayanami::components::ControllerExecution::Ptr createExecution() override {
+    auto exec = ControllerAction::createExecution();
+    exec->setGoalChecker(std::make_shared<NeverReachedChecker>());
+    exec->setProgressChecker(std::make_shared<AlwaysProgressChecker>());
+    return exec;
+  }
+};
+
+class PreemptProbeServer : public ayanami::components::NavigationServerBase {
+ public:
+  PreemptProbeServer() {
+    default_controller = "ctrl";
+    // The execution requires injected checkers (a direct-installed action
+    // gets them through the subclass, mirroring the production
+    // configureControllerExecution injection).
+    controller_actions["ctrl"] =
+        std::make_unique<ProbeControllerAction>(
+            std::make_shared<NeverDoneController>());
+    recovery_actions["clear_rec"] =
+        std::make_unique<ayanami::components::RecoveryAction>(
+            std::make_shared<InstantRecovery>());
+    recovery_actions["motion_rec"] =
+        std::make_unique<ayanami::components::RecoveryAction>(
+            std::make_shared<InstantRecovery>());
+    recovery_preempts_controller["clear_rec"] = false;
+    recovery_preempts_controller["motion_rec"] = true;
+  }
+};
+
+}  // namespace preempt_probe
+
+TEST(NavigationServerBaseTest, nonMotionRecoveryLeavesControllerRunning) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity());
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity());
+  preempt_probe::PreemptProbeServer server;
+
+  ayanami::actions::ExePathGoal goal;
+  goal.path.poses.push_back(pose("map", 0.0, 0.0));
+  goal.path.poses.push_back(pose("map", 1.0, 0.0));
+  auto exe = server.requestExecution(goal);
+  ASSERT_TRUE(exe.valid());
+  // Let the controller loop spin up (it never completes on its own).
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ASSERT_FALSE(exe.ready()) << "the probe controller must stay RUNNING";
+
+  {
+    ayanami::actions::RecoveryGoal goal;
+    goal.recovery_id = "clear_rec";
+    auto rec = server.requestRecovery(goal);
+    ASSERT_TRUE(rec.valid());
+    ASSERT_TRUE(waitReady(rec));
+    EXPECT_EQ(rec.status(), ayanami::actions::GoalStatus::SUCCEEDED);
+  }
+  // The controller must have survived the map-only recovery untouched.
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_FALSE(exe.ready())
+      << "a non-motion recovery must not preempt the running controller";
+
+  {
+    ayanami::actions::RecoveryGoal goal;
+    goal.recovery_id = "motion_rec";
+    auto rec = server.requestRecovery(goal);
+    ASSERT_TRUE(rec.valid());
+    ASSERT_TRUE(waitReady(rec));
+    EXPECT_EQ(rec.status(), ayanami::actions::GoalStatus::SUCCEEDED);
+  }
+  // A motion recovery preempts (default true): the controller task settles
+  // CANCELED.
+  ASSERT_TRUE(waitReady(exe, 2000));
+  EXPECT_EQ(exe.status(), ayanami::actions::GoalStatus::CANCELED);
 }
 
 int main(int argc, char** argv) {

@@ -1,6 +1,7 @@
 #include "costmap_obstacle_layer_plugin.hpp"
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <costmap_2d/layered_costmap.hpp>
 
@@ -20,12 +21,14 @@ void CostmapObstacleLayerPlugin::configureParameters(
 
   param_.combination =
       file.param<std::string>(section, "combination", param_.combination);
-  param_.clear_to_free =
-      file.param<bool>(section, "clear_to_free", param_.clear_to_free);
+  param_.decay_time =
+      file.param<double>(section, "decay_time", param_.decay_time);
+  impl_->setDecayTime(param_.decay_time);
+  param_.decay_sweep_interval = file.param<double>(
+      section, "decay_sweep_interval", param_.decay_sweep_interval);
+  impl_->setDecaySweepInterval(param_.decay_sweep_interval);
   param_.footprint_clearing = file.param<bool>(section, "footprint_clearing",
                                                param_.footprint_clearing);
-  param_.clear_margin =
-      file.param<double>(section, "clear_margin", param_.clear_margin);
   if (param_.combination == "overwrite") {
     impl_->setCombinationMethod(
         costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::OVERWRITE);
@@ -36,7 +39,6 @@ void CostmapObstacleLayerPlugin::configureParameters(
     impl_->setCombinationMethod(
         costmap_2d_layers::SimpleObstacleLayer::CombinationMethod::MAXIMUM);
   }
-  impl_->setClearToFree(param_.clear_to_free);
 
   // Observation sources: names + per-source child blocks under this
   // layer's own section (same schema the server used to own).
@@ -45,10 +47,13 @@ void CostmapObstacleLayerPlugin::configureParameters(
                                                  "observation_sources")) {
     Config source_cfg = file.child(section, name);
     if (!source_cfg.hasSection(name)) {
-      spdlog::warn(
-          "obstacle layer '{}': observation_sources declares '{}' but there "
-          "is no '{}' parameter block; source ignored",
-          section, name, name);
+      SPDLOG_LOGGER_WARN(
+        ayanami::costmapLogger(),
+        "obstacle layer '{}': observation_sources declares '{}' but there "
+        "is no '{}' parameter block; source ignored",
+        section,
+        name,
+        name);
       continue;
     }
     ayanami::costmap::ObservationSourceConfig source;
@@ -112,10 +117,6 @@ void CostmapObstacleLayerPlugin::observe(
   // marking range window from the sensor origin (nav2 semantics).
   std::vector<Eigen::Vector2d> world;
   world.reserve(observation.points->size());
-  double min_x = std::numeric_limits<double>::max();
-  double min_y = std::numeric_limits<double>::max();
-  double max_x = std::numeric_limits<double>::lowest();
-  double max_y = std::numeric_limits<double>::lowest();
   if (source->marking) {
     for (const auto& p : *observation.points) {
       const Eigen::Vector3d w = t_frame_sensor * p;
@@ -129,48 +130,26 @@ void CostmapObstacleLayerPlugin::observe(
         continue;
       }
       world.emplace_back(w.x(), w.y());
-      min_x = std::min(min_x, w.x());
-      min_y = std::min(min_y, w.y());
-      max_x = std::max(max_x, w.x());
-      max_y = std::max(max_y, w.y());
     }
   }
 
+  // Ray endpoints are consumed as-is (skipped below raytrace_min_range,
+  // clamped to raytrace_max_range). A frame with NO endpoints (e.g. an
+  // empty obstacle cloud) clears nothing: retired marks age out via
+  // decay_time instead of being wiped wholesale.
   if (source->clearing) {
-    if (!observation.clearing_points->empty()) {
-      for (const auto& endpoint : *observation.clearing_points) {
-        const double range = endpoint.head<2>().norm();
-        if (range < source->raytrace_min_range) {
-          continue;
-        }
-        Eigen::Vector3d clamped = endpoint;
-        if (range > source->raytrace_max_range) {
-          clamped = endpoint * (source->raytrace_max_range / range);
-        }
-        const Eigen::Vector3d world_end = t_frame_sensor * clamped;
-        impl_->raytraceFreespace(*grid, sensor_origin.x(), sensor_origin.y(),
-                                 world_end.x(), world_end.y());
+    for (const auto& endpoint : *observation.clearing_points) {
+      const double range = endpoint.head<2>().norm();
+      if (range < source->raytrace_min_range) {
+        continue;
       }
-    } else if (has_prev_points_) {
-      double clear_min_x = min_x;
-      double clear_min_y = min_y;
-      double clear_max_x = max_x;
-      double clear_max_y = max_y;
-      for (const auto& old : prev_points_) {
-        clear_min_x = std::min(clear_min_x, old.x());
-        clear_min_y = std::min(clear_min_y, old.y());
-        clear_max_x = std::max(clear_max_x, old.x());
-        clear_max_y = std::max(clear_max_y, old.y());
+      Eigen::Vector3d clamped = endpoint;
+      if (range > source->raytrace_max_range) {
+        clamped = endpoint * (source->raytrace_max_range / range);
       }
-      // The expansion margin is the configured clear margin (the map's
-      // inflation radius) + one cell: the band can reach up to
-      // ceil(radius/res) cells, and world->cell rounding would exclude
-      // cells lying exactly on the radius boundary.
-      const double margin =
-          param_.clear_margin +
-          std::max(master->getCostmap()->getResolution(), 0.0);
-      impl_->clearArea(clear_min_x - margin, clear_min_y - margin,
-                       clear_max_x + margin, clear_max_y + margin);
+      const Eigen::Vector3d world_end = t_frame_sensor * clamped;
+      impl_->raytraceFreespace(*grid, sensor_origin.x(), sensor_origin.y(),
+                               world_end.x(), world_end.y());
     }
   }
 
@@ -186,19 +165,23 @@ void CostmapObstacleLayerPlugin::observe(
         ++outside_window;
         continue;
       }
-      impl_->markObstacles(w.x(), w.y());
+      impl_->markObstacles(*grid, w.x(), w.y());
     }
     if (outside_window > 0) {
       const auto now = std::chrono::steady_clock::now();
       if (now - last_outside_warn_at_ >= std::chrono::seconds(5)) {
         last_outside_warn_at_ = now;
-        spdlog::warn(
-            "obstacle layer '{}': {} of {} marked points fell outside the "
-            "'{}' map ({:.0f}x{:.0f} m); enlarge the map size or reduce "
-            "obstacle_max_range",
-            impl_->getName(), outside_window, world.size(),
-            master->getGlobalFrameID(), grid->getSizeInMetersX(),
-            grid->getSizeInMetersY());
+        SPDLOG_LOGGER_WARN(
+          ayanami::costmapLogger(),
+          "obstacle layer '{}': {} of {} marked points fell outside the "
+          "'{}' map ({:.0f}x{:.0f} m); enlarge the map size or reduce "
+          "obstacle_max_range",
+          impl_->getName(),
+          outside_window,
+          world.size(),
+          master->getGlobalFrameID(),
+          grid->getSizeInMetersX(),
+          grid->getSizeInMetersY());
       }
     }
   }
@@ -231,9 +214,6 @@ void CostmapObstacleLayerPlugin::observe(
                        fp_max_x + margin, fp_max_y + margin);
     }
   }
-
-  prev_points_ = std::move(world);
-  has_prev_points_ = true;
 }
 
 }  // namespace modules

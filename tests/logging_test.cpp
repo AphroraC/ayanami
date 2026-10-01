@@ -1,5 +1,6 @@
 // logging_test: logLevelFromString parsing + configureLogging behavior
-// (console_output / file_output / rotation parameters / level, modeled on the asuka parameter set).
+// (console_output / file_output / rotation parameters / level, modeled on the asuka parameter set)
+// + the per-layer named loggers (ros/planner/smoother/controller/recovery/BT/costmap).
 //
 // Coverage:
 // 1. Level string parsing (trace/debug/info/warn/warning/error/critical/off/unknown)
@@ -7,6 +8,10 @@
 // the console sink is removed
 // 3. logging_level is globally synchronized to registered loggers
 // 4. Rotation parameters passed through (rotating_file_sink)
+// 5. Layer loggers registered, share the sink set, and tag lines with [name]
+// 6. logger_levels overrides the master gate per layer (raised layer reaches
+//    the file; a quieted layer drops its verbose lines)
+// 7. The framework default logger is named "ayanami" in the output
 
 #include <gtest/gtest.h>
 
@@ -26,25 +31,22 @@
 namespace {
 
 std::filesystem::path makeTempDir() {
-  const auto dir =
-      std::filesystem::temp_directory_path() / "ayanami_logging_test";
+  const auto dir = std::filesystem::temp_directory_path() / "ayanami_logging_test";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   return dir;
 }
 
-void write_file(const std::filesystem::path& path,
-                const std::string& content) {
+void write_file(const std::filesystem::path& path, const std::string& content) {
   std::ofstream ofs(path);
   ofs << content;
 }
 
 bool has_console_sink(const std::shared_ptr<spdlog::logger>& logger) {
   for (const auto& sink : logger->sinks()) {
-    if (dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(sink.get()) !=
-            nullptr ||
-        dynamic_cast<spdlog::sinks::stdout_color_sink_st*>(sink.get()) !=
-            nullptr) {
+    if (
+      dynamic_cast<spdlog::sinks::stdout_color_sink_mt*>(sink.get()) != nullptr ||
+      dynamic_cast<spdlog::sinks::stdout_color_sink_st*>(sink.get()) != nullptr) {
       return true;
     }
   }
@@ -53,14 +55,11 @@ bool has_console_sink(const std::shared_ptr<spdlog::logger>& logger) {
 
 bool has_file_sink(const std::shared_ptr<spdlog::logger>& logger) {
   for (const auto& sink : logger->sinks()) {
-    if (dynamic_cast<spdlog::sinks::rotating_file_sink_mt*>(sink.get()) !=
-            nullptr ||
-        dynamic_cast<spdlog::sinks::rotating_file_sink_st*>(sink.get()) !=
-            nullptr ||
-        dynamic_cast<spdlog::sinks::basic_file_sink_mt*>(sink.get()) !=
-            nullptr ||
-        dynamic_cast<spdlog::sinks::basic_file_sink_st*>(sink.get()) !=
-            nullptr) {
+    if (
+      dynamic_cast<spdlog::sinks::rotating_file_sink_mt*>(sink.get()) != nullptr ||
+      dynamic_cast<spdlog::sinks::rotating_file_sink_st*>(sink.get()) != nullptr ||
+      dynamic_cast<spdlog::sinks::basic_file_sink_mt*>(sink.get()) != nullptr ||
+      dynamic_cast<spdlog::sinks::basic_file_sink_st*>(sink.get()) != nullptr) {
       return true;
     }
   }
@@ -79,9 +78,14 @@ std::filesystem::path makeConfigDir(const std::string& logging_json) {
   }
   // The caller passes a complete {"logging": {...}} object: after stripping the outer braces it is merged at the same
   // level as the global section, keeping the JSON valid.
-  write_file(dir / "config.json",
-             "{\n  \"global\": {}," + json.substr(1) + "\n");
+  write_file(dir / "config.json", "{\n  \"global\": {}," + json.substr(1) + "\n");
   return dir;
+}
+
+std::string readLogFile(const std::filesystem::path& dir) {
+  std::ifstream ifs(dir / "ayanami.log");
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  return content;
 }
 
 }  // namespace
@@ -102,13 +106,13 @@ TEST(LoggingTest, logLevelFromStringParses) {
 
 TEST(LoggingTest, fileOutputTrueWritesLogFile) {
   const auto dir = makeConfigDir(
-      "{\n  \"logging\": {\n"
-      "    \"console_output\": false,\n"
-      "    \"file_output\": true,\n"
-      "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
-      "    \"logging_level\": \"debug\",\n"
-      "    \"rotate_logs\": false\n"
-      "  }\n}\n");
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": false,\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"debug\",\n"
+    "    \"rotate_logs\": false\n"
+    "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
   ayanami::configureLogging();
 
@@ -123,23 +127,22 @@ TEST(LoggingTest, fileOutputTrueWritesLogFile) {
 
   std::ifstream ifs(dir / "ayanami.log");
   ASSERT_TRUE(ifs.good());
-  std::string content((std::istreambuf_iterator<char>(ifs)),
-                      std::istreambuf_iterator<char>());
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
   EXPECT_NE(content.find("logging test marker 42"), std::string::npos);
 }
 
 TEST(LoggingTest, consoleOutputTrueKeepsConsoleAndRotatingSink) {
   const auto dir = makeConfigDir(
-      "{\n  \"logging\": {\n"
-      "    \"console_output\": true,\n"
-      "    \"console_level\": \"debug\",\n"
-      "    \"file_output\": true,\n"
-      "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
-      "    \"logging_level\": \"info\",\n"
-      "    \"rotate_logs\": true,\n"
-      "    \"max_file_size_kb\": 1024,\n"
-      "    \"max_files\": 3\n"
-      "  }\n}\n");
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": true,\n"
+    "    \"console_level\": \"debug\",\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"info\",\n"
+    "    \"rotate_logs\": true,\n"
+    "    \"max_file_size_kb\": 1024,\n"
+    "    \"max_files\": 3\n"
+    "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
   ayanami::configureLogging();
 
@@ -159,13 +162,13 @@ TEST(LoggingTest, consoleOutputTrueKeepsConsoleAndRotatingSink) {
 
 TEST(LoggingTest, reconfigureIsIdempotentNoSinkDuplication) {
   const auto dir = makeConfigDir(
-      "{\n  \"logging\": {\n"
-      "    \"console_output\": true,\n"
-      "    \"file_output\": true,\n"
-      "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
-      "    \"logging_level\": \"info\",\n"
-      "    \"rotate_logs\": true\n"
-      "  }\n}\n");
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": true,\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"info\",\n"
+    "    \"rotate_logs\": true\n"
+    "  }\n}\n");
   ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
   ayanami::configureLogging();
   auto logger = spdlog::default_logger();
@@ -175,6 +178,112 @@ TEST(LoggingTest, reconfigureIsIdempotentNoSinkDuplication) {
   // Reconfiguring: the sink is rebuilt rather than appended to.
   ayanami::configureLogging();
   EXPECT_EQ(logger->sinks().size(), sink_count);
+}
+
+TEST(LoggingTest, layerLoggersRegisteredAndTagged) {
+  const auto dir = makeConfigDir(
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": false,\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"info\",\n"
+    "    \"rotate_logs\": false\n"
+    "  }\n}\n");
+  ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
+  ayanami::configureLogging();
+
+  // All seven layer loggers exist in the registry and the accessors return
+  // the registered instances.
+  ASSERT_NE(spdlog::get("ros"), nullptr);
+  ASSERT_NE(spdlog::get("planner"), nullptr);
+  ASSERT_NE(spdlog::get("smoother"), nullptr);
+  ASSERT_NE(spdlog::get("controller"), nullptr);
+  ASSERT_NE(spdlog::get("recovery"), nullptr);
+  ASSERT_NE(spdlog::get("BT"), nullptr);
+  ASSERT_NE(spdlog::get("costmap"), nullptr);
+  EXPECT_EQ(ayanami::rosLogger(), spdlog::get("ros"));
+  EXPECT_EQ(ayanami::plannerLogger(), spdlog::get("planner"));
+  EXPECT_EQ(ayanami::smootherLogger(), spdlog::get("smoother"));
+  EXPECT_EQ(ayanami::controllerLogger(), spdlog::get("controller"));
+  EXPECT_EQ(ayanami::recoveryLogger(), spdlog::get("recovery"));
+  EXPECT_EQ(ayanami::btLogger(), spdlog::get("BT"));
+  EXPECT_EQ(ayanami::costmapLogger(), spdlog::get("costmap"));
+
+  // Layer loggers share the sink set with the default logger and inherit the
+  // master level when no override is configured.
+  for (const auto& name : {"ros", "planner", "smoother", "controller", "recovery", "BT", "costmap"}) {
+    EXPECT_TRUE(has_file_sink(spdlog::get(name))) << name;
+    EXPECT_FALSE(has_console_sink(spdlog::get(name))) << name;
+    EXPECT_EQ(spdlog::get(name)->level(), spdlog::level::info) << name;
+  }
+
+  // Lines carry the [name] tag.
+  ayanami::costmapLogger()->warn("costmap tag marker");
+  ayanami::btLogger()->info("BT tag marker");
+  ayanami::recoveryLogger()->error("recovery tag marker");
+  for (const auto& name : spdlog::get("costmap")->sinks()) {
+    name->flush();
+  }
+  const std::string content = readLogFile(dir);
+  EXPECT_NE(content.find("[costmap] [warning] costmap tag marker"), std::string::npos);
+  EXPECT_NE(content.find("[BT] [info] BT tag marker"), std::string::npos);
+  EXPECT_NE(content.find("[recovery] [error] recovery tag marker"), std::string::npos);
+}
+
+TEST(LoggingTest, loggerLevelsOverrideMasterGate) {
+  const auto dir = makeConfigDir(
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": false,\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"info\",\n"
+    "    \"rotate_logs\": false,\n"
+    "    \"logger_levels\": {\n"
+    "      \"costmap\": \"debug\",\n"
+    "      \"controller\": \"warn\"\n"
+    "    }\n"
+    "  }\n}\n");
+  ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
+  ayanami::configureLogging();
+
+  EXPECT_EQ(spdlog::get("costmap")->level(), spdlog::level::debug);
+  EXPECT_EQ(spdlog::get("controller")->level(), spdlog::level::warn);
+  // Unlisted layers inherit the master switch.
+  EXPECT_EQ(spdlog::get("planner")->level(), spdlog::level::info);
+
+  // A raised layer reaches the file (the file sink is ungated; gating
+  // happens at logger level).
+  ayanami::costmapLogger()->debug("costmap debug reaches the file");
+  // A quieted layer drops its verbose lines but keeps warn and above.
+  ayanami::controllerLogger()->debug("controller debug must not appear");
+  ayanami::controllerLogger()->warn("controller warn appears");
+  for (const auto& sink : spdlog::get("costmap")->sinks()) {
+    sink->flush();
+  }
+  const std::string content = readLogFile(dir);
+  EXPECT_NE(content.find("[costmap] [debug] costmap debug reaches the file"), std::string::npos);
+  EXPECT_EQ(content.find("controller debug must not appear"), std::string::npos);
+  EXPECT_NE(content.find("[controller] [warning] controller warn appears"), std::string::npos);
+}
+
+TEST(LoggingTest, defaultLoggerNamedAyanami) {
+  const auto dir = makeConfigDir(
+    "{\n  \"logging\": {\n"
+    "    \"console_output\": false,\n"
+    "    \"file_output\": true,\n"
+    "    \"logging_dir\": \"LOGGING_DIR_PLACEHOLDER\",\n"
+    "    \"logging_level\": \"info\",\n"
+    "    \"rotate_logs\": false\n"
+    "  }\n}\n");
+  ayanami::GlobalConfig::instance(dir.string(), /*override_path=*/true);
+  ayanami::configureLogging();
+
+  // The framework default logger is named so its lines are tagged too.
+  EXPECT_EQ(spdlog::default_logger()->name(), "ayanami");
+  spdlog::warn("framework default marker");
+  spdlog::default_logger()->flush();
+  const std::string content = readLogFile(dir);
+  EXPECT_NE(content.find("[ayanami] [warning] framework default marker"), std::string::npos);
 }
 
 int main(int argc, char** argv) {

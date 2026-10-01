@@ -241,12 +241,19 @@ TEST(CostmapAstarPlannerTest, goalInObstacleWithToleranceFindsNearest) {
       }
     }
   });
-  auto planner = makePlanner(wrapper);
+  // Tolerance is config-owned now: inject it through the module config
+  // instead of the (ignored) goal parameter.
+  ayanami::Config cfg("");
+  cfg.overrideParam<double>("test_astar", "tolerance", 1.0);
+  auto ctx = makeContext(wrapper);
+  auto planner = std::make_shared<CostmapAstarPlanner>();
+  planner->configure(ayanami::ModuleContext{"test_astar", cfg},
+                     ctx->getSharedConstPtr());
 
   auto start = cellCenter(2, 2);
   auto goal = cellCenter(10, 10);
 ayanami::nav_msgs::Path plan;
-    const ResultT<void> result = planner->makePlan(start, goal, 1.0, plan);
+    const ResultT<void> result = planner->makePlan(start, goal, 0.0, plan);
 
   ASSERT_TRUE(result.ok) << result.message;
   ASSERT_FALSE(plan.poses.empty());
@@ -305,6 +312,42 @@ ayanami::nav_msgs::Path plan;
   ASSERT_FALSE(result.ok);
   EXPECT_EQ(result.error, ErrorCode::START_INVALID);
   EXPECT_TRUE(plan.poses.empty());
+}
+
+TEST(CostmapAstarPlannerTest, startInInscribedBandEscapesToFreeSpace) {
+  // Physical band-graze: a lethal block with its natural inscribed halo.
+  // The robot's center sits ON a halo cell (253): the 5Hz replan must not
+  // fail (START_INVALID / PATH_NOT_FOUND deadlock -- no recovery fixes a
+  // position). Escape mode plans OUT of the band: 253 cells stay passable
+  // for this search, LETHAL cells stay blocked. Only a LETHAL start stays
+  // rejected (startInObstacle above).
+  auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& m) {
+    for (unsigned int y = 8; y <= 11; ++y) {
+      for (unsigned int x = 8; x <= 11; ++x) {
+        m.setCost(x, y, costmap_2d::LETHAL_OBSTACLE);
+      }
+    }
+    // The inflation halo: the ring of cells within the inscribed radius.
+    for (unsigned int y = 7; y <= 12; ++y) {
+      for (unsigned int x = 7; x <= 12; ++x) {
+        if (x >= 8 && x <= 11 && y >= 8 && y <= 11) {
+          continue;
+        }
+        m.setCost(x, y, costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+      }
+    }
+  });
+  auto planner = makePlanner(wrapper);
+
+  auto start = cellCenter(7, 9);  // On the halo, adjacent to the block
+  auto goal = cellCenter(2, 2);
+  ayanami::nav_msgs::Path plan;
+  const ResultT<void> result = planner->makePlan(start, goal, 0.1, plan);
+
+  ASSERT_TRUE(result.ok) << result.message;
+  ASSERT_FALSE(plan.poses.empty());
+  EXPECT_NEAR(plan.poses.front().pose.position.x(), start.pose.position.x(), 1e-6);
+  EXPECT_NEAR(plan.poses.front().pose.position.y(), start.pose.position.y(), 1e-6);
 }
 
 // ---------- Cancel mid-planning ----------

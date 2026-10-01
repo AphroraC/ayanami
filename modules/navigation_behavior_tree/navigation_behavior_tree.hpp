@@ -48,6 +48,11 @@ class NavigationBehaviorTreeExtension
   static constexpr const char* k_default_tree_id =
       "NavigateWithReplanningAndSmoothing";
 
+  /// @brief Config-driven role id cache backing requiredBlackboardEntries
+  /// (the interface returns const char*, so the strings must outlive the
+  /// call; the extension object is held by the pilot).
+  mutable std::vector<std::string> role_id_cache;
+
 };
 
 }  // namespace modules

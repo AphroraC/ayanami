@@ -23,14 +23,33 @@ std::string readToken(std::istream& in) {
   return token;
 }
 
-costmap_2d::CostValue pixelToCost(unsigned char pixel) {
-  if (pixel == 0) {
+/// @brief Map-server pixel interpretation: occupancy ratio is negate-aware
+/// (standard maps are black-occupied), thresholds and the between-band
+/// resolution follow the configured semantics. The previous hardcoding
+/// (0 -> lethal, >=254 -> free, everything else -> unknown) silently
+/// declared every antialiased wall edge traversable-unknown regardless of
+/// the map json's declared mode/thresholds.
+costmap_2d::CostValue pixelToCost(unsigned char pixel,
+                                  const StaticMapSemantics& semantics) {
+  const double ratio_raw = static_cast<double>(pixel) / 255.0;
+  const double occupancy =
+      semantics.negate ? ratio_raw : (1.0 - ratio_raw);
+  if (occupancy > semantics.occupied_thresh) {
     return costmap_2d::LETHAL_OBSTACLE;
   }
-  if (pixel >= 254) {
+  if (occupancy < semantics.free_thresh) {
     return costmap_2d::FREE_SPACE;
   }
-  return costmap_2d::NO_INFORMATION;
+  if (semantics.trinary) {
+    return semantics.track_unknown ? costmap_2d::NO_INFORMATION
+                                   : costmap_2d::FREE_SPACE;
+  }
+  // Scale mode: grayscale occupancy linearly to cost (saturating below
+  // LETHAL: the cell is below the occupied threshold by construction).
+  const double scaled =
+      std::round(occupancy * static_cast<double>(costmap_2d::LETHAL_OBSTACLE));
+  return static_cast<costmap_2d::CostValue>(
+      std::min(scaled, static_cast<double>(costmap_2d::LETHAL_OBSTACLE) - 1.0));
 }
 
 }  // namespace
@@ -43,7 +62,7 @@ void StaticLayer::setMap(const costmap_2d::Costmap2D& map) {
 void StaticLayer::queueMap(const costmap_2d::Costmap2D& map) {
   std::lock_guard<std::mutex> lock(map_mutex);
   pending_map = map;
-  current = false;
+  data_current = false;
 }
 
 void StaticLayer::processMap(const costmap_2d::Costmap2D& map) {
@@ -70,12 +89,14 @@ void StaticLayer::processMap(const costmap_2d::Costmap2D& map) {
   }
   has_map = true;
   has_updated_data = true;
-  current = true;
+  data_current = true;
   full_update = true;
 }
 
 void StaticLayer::setMapPath(const std::string& path, double resolution,
-                             double origin_x, double origin_y) {
+                             double origin_x, double origin_y,
+                             const StaticMapSemantics& semantics) {
+  this->semantics = semantics;
   std::ifstream input(path, std::ios::binary);
   if (!input) {
     throw std::runtime_error("failed to open PGM map: " + path);
@@ -126,7 +147,7 @@ void StaticLayer::setMapPath(const std::string& path, double resolution,
       const unsigned int mx = static_cast<unsigned int>(i % width);
       const unsigned int image_y = static_cast<unsigned int>(i / width);
       const unsigned int my = height - image_y - 1;
-      loaded_map.setCost(mx, my, pixelToCost(pixel));
+      loaded_map.setCost(mx, my, pixelToCost(pixel, semantics));
     }
   } else {  // P2 ASCII
     for (std::size_t i = 0; i < pixel_count; ++i) {
@@ -137,7 +158,7 @@ void StaticLayer::setMapPath(const std::string& path, double resolution,
       const unsigned int mx = static_cast<unsigned int>(i % width);
       const unsigned int image_y = static_cast<unsigned int>(i / width);
       const unsigned int my = height - image_y - 1;
-      loaded_map.setCost(mx, my, pixelToCost(pixel));
+      loaded_map.setCost(mx, my, pixelToCost(pixel, semantics));
     }
   }
 
@@ -159,22 +180,6 @@ void StaticLayer::matchSize() {
   }
 }
 
-void StaticLayer::addUpdateBounds(double min_x, double min_y, double max_x,
-                                  double max_y) {
-  if (!has_extra_bounds) {
-    extra_min_x = min_x;
-    extra_min_y = min_y;
-    extra_max_x = max_x;
-    extra_max_y = max_y;
-    has_extra_bounds = true;
-    return;
-  }
-  extra_min_x = std::min(extra_min_x, min_x);
-  extra_min_y = std::min(extra_min_y, min_y);
-  extra_max_x = std::max(extra_max_x, max_x);
-  extra_max_y = std::max(extra_max_y, max_y);
-}
-
 void StaticLayer::updateBounds(double, double, double, double* min_x,
                                double* min_y, double* max_x, double* max_y) {
   {
@@ -189,8 +194,8 @@ void StaticLayer::updateBounds(double, double, double, double* min_x,
     return;
   }
   map_received_in_update_bounds = true;
-  if (master && !master->isRolling() && !has_updated_data &&
-      !has_extra_bounds && !full_update) {
+  if (master && !master->isRolling() && !has_updated_data && !full_update &&
+      !useExtraBounds(min_x, min_y, max_x, max_y)) {
     return;
   }
   if (full_update) {
@@ -215,13 +220,7 @@ void StaticLayer::updateBounds(double, double, double, double* min_x,
       have_master_origin = true;
     }
   }
-  if (has_extra_bounds) {
-    *min_x = std::min(*min_x, extra_min_x);
-    *min_y = std::min(*min_y, extra_min_y);
-    *max_x = std::max(*max_x, extra_max_x);
-    *max_y = std::max(*max_y, extra_max_y);
-    has_extra_bounds = false;
-  }
+  useExtraBounds(min_x, min_y, max_x, max_y);
   has_updated_data = false;
 }
 
@@ -264,7 +263,7 @@ void StaticLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i,
       }
     }
   }
-  current = true;
+  data_current = true;
 }
 
 }  // namespace costmap_2d_layers

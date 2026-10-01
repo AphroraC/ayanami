@@ -9,6 +9,7 @@
 #include <map>
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <ayanami/utility/config.hpp>
 
@@ -49,18 +50,27 @@ std::vector<std::string> NavigationBehaviorTreeExtension::registerTrees(
         "' does not exist");
   }
   factory.registerBehaviorTreeFromFile(resolved);
-  spdlog::info("NavigationBehaviorTreeExtension: registered tree(s) from {}",
-               resolved);
+  SPDLOG_LOGGER_INFO(ayanami::btLogger(), "NavigationBehaviorTreeExtension: registered tree(s) from {}", resolved);
   return {k_default_tree_id};
 }
 
-std::vector<const char*>
-NavigationBehaviorTreeExtension::requiredBlackboardEntries() const {
-  // Tree role entries ("<role>_id") referenced by the default tree.
-  return {"clear_costmap_id", "spin_id", "wait_id", "backup_id"};
-}
-
 namespace {
+
+/// @brief The tree's recovery role list: config-owned
+/// (navigation.recovery_roles, single string or list). The default keeps
+/// the costmap-family ladder for backward compatibility.
+std::vector<std::string> configuredRoles() {
+  std::vector<std::string> roles;
+  if (!GlobalConfig::instance()) {
+    return roles;
+  }
+  Config cfg(GlobalConfig::getConfigPath("config_navigation"));
+  roles = cfg.paramStringOrList("navigation", "recovery_roles");
+  if (roles.empty()) {
+    roles = {"clear_costmap", "spin", "wait", "backup"};
+  }
+  return roles;
+}
 
 /// @brief Role -> module logical name mapping from the ordered
 /// config_recovery family: each module json declares recovery.role; the
@@ -99,6 +109,26 @@ std::map<std::string, std::string> recoveryRoleMapping() {
 
 }  // namespace
 
+std::vector<const char*>
+NavigationBehaviorTreeExtension::requiredBlackboardEntries() const {
+  // Tree role entries ("<role>_id") referenced by the tree. The role list is
+  // config-owned (navigation.recovery_roles, default = the costmap-family
+  // ladder) so different families ship different recovery ladders without
+  // touching the core; the strings are cached on the extension object (the
+  // interface returns const char* and the extension outlives tree creation).
+  if (role_id_cache.empty()) {
+    for (const auto& role : configuredRoles()) {
+      role_id_cache.push_back(role + "_id");
+    }
+  }
+  std::vector<const char*> entries;
+  entries.reserve(role_id_cache.size());
+  for (const auto& entry : role_id_cache) {
+    entries.push_back(entry.c_str());
+  }
+  return entries;
+}
+
 void NavigationBehaviorTreeExtension::provideBlackboardEntries(
     BT::Blackboard::Ptr blackboard) const {
   // Role mapping: the tree references modules by role id ("<role>_id"),
@@ -107,16 +137,17 @@ void NavigationBehaviorTreeExtension::provideBlackboardEntries(
   // creation never fails on assembly; an undeclared role only surfaces when
   // the BT actually dispatches that recovery (unknown recovery id).
   const auto mapping = recoveryRoleMapping();
-  for (const char* role : {"clear_costmap", "spin", "wait", "backup"}) {
+  for (const auto& role : configuredRoles()) {
     auto it = mapping.find(role);
     if (it != mapping.end()) {
-      blackboard->set<std::string>(std::string(role) + "_id", it->second);
+      blackboard->set<std::string>(role + "_id", it->second);
     } else {
-      blackboard->set<std::string>(std::string(role) + "_id", std::string());
-      spdlog::warn(
-          "NavigationBehaviorTreeExtension: no recovery declares role '{}'; "
-          "the corresponding recovery branch will fail if dispatched",
-          role);
+      blackboard->set<std::string>(role + "_id", std::string());
+      SPDLOG_LOGGER_WARN(
+        ayanami::btLogger(),
+        "NavigationBehaviorTreeExtension: no recovery declares role '{}'; "
+        "the corresponding recovery branch will fail if dispatched",
+        role);
     }
   }
 }

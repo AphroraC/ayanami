@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -40,9 +41,9 @@ using ayanami::geometry_msgs::PoseStamped;
 using ayanami::nav_msgs::Path;
 
 // Poll until the predicate holds or the deadline expires (test helper).
-static bool waitUntilCondition(const std::function<bool()>& predicate,
-                               std::chrono::milliseconds timeout =
-                                   std::chrono::milliseconds(2000)) {
+static bool waitUntilCondition(
+  const std::function<bool()>& predicate,
+  std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!predicate()) {
     if (std::chrono::steady_clock::now() > deadline) {
@@ -63,17 +64,17 @@ namespace {
 /// with: a recovery that cannot resolve is a configuration error, not something
 /// to discover while the robot is stuck.
 /// @return the JSON array literal for the navigation section's config_recovery.
-std::string writeRecoveryRoleFiles(const std::filesystem::path& dir,
-                                   const std::string& module_name,
-                                   const std::string& so_name = "") {
+std::string writeRecoveryRoleFiles(
+  const std::filesystem::path& dir,
+  const std::string& module_name,
+  const std::string& so_name = "") {
   const char* roles[] = {"clear_costmap", "spin", "wait", "backup"};
   std::string list;
   for (const char* role : roles) {
     const std::string file = std::string("role_") + role + ".json";
     {
       std::ofstream ofs(dir / file);
-      ofs << "{ \"recovery\": { \"name\": \"" << module_name
-          << "\", \"role\": \"" << role << "\"";
+      ofs << "{ \"recovery\": { \"name\": \"" << module_name << "\", \"role\": \"" << role << "\"";
       if (!so_name.empty()) {
         ofs << ", \"so_name\": \"" << so_name << "\"";
       }
@@ -114,29 +115,19 @@ Path makePath(size_t n) {
  * FollowPath stays pending as RUNNING (for preemption/halt verification).
  */
 class MockNavServer : public ayanami::components::NavigationServerBase {
- public:
-  using PathServer = ayanami::components::ActionServer<
-      GetPathGoal, GetPathResult, ayanami::actions::GetPathFeedback>;
-  using SmoothServer = ayanami::components::ActionServer<
-      SmoothPathGoal, SmoothPathResult, ayanami::actions::SmoothPathFeedback>;
-  using ExeServer = ayanami::components::ActionServer<
-      ExePathGoal, ExePathResult, ayanami::actions::ExePathFeedback>;
-  using RecoveryServer = ayanami::components::ActionServer<
-      RecoveryGoal, RecoveryResult, ayanami::actions::RecoveryFeedback>;
+public:
+  using PathServer = ayanami::components::ActionServer<GetPathGoal, GetPathResult, ayanami::actions::GetPathFeedback>;
+  using SmoothServer =
+    ayanami::components::ActionServer<SmoothPathGoal, SmoothPathResult, ayanami::actions::SmoothPathFeedback>;
+  using ExeServer = ayanami::components::ActionServer<ExePathGoal, ExePathResult, ayanami::actions::ExePathFeedback>;
+  using RecoveryServer =
+    ayanami::components::ActionServer<RecoveryGoal, RecoveryResult, ayanami::actions::RecoveryFeedback>;
 
   MockNavServer() {
-    path_server.setCancelCallback([this](uint64_t) {
-      cancel_count.fetch_add(1);
-    });
-    smooth_server.setCancelCallback([this](uint64_t) {
-      cancel_count.fetch_add(1);
-    });
-    exe_server.setCancelCallback([this](uint64_t) {
-      cancel_count.fetch_add(1);
-    });
-    recovery_server.setCancelCallback([this](uint64_t) {
-      cancel_count.fetch_add(1);
-    });
+    path_server.setCancelCallback([this](uint64_t) { cancel_count.fetch_add(1); });
+    smooth_server.setCancelCallback([this](uint64_t) { cancel_count.fetch_add(1); });
+    exe_server.setCancelCallback([this](uint64_t) { cancel_count.fetch_add(1); });
+    recovery_server.setCancelCallback([this](uint64_t) { cancel_count.fetch_add(1); });
   }
 
   TaskHandle<GetPathResult> requestPath(const GetPathGoal& goal) override {
@@ -156,8 +147,7 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
     return task;
   }
 
-  TaskHandle<SmoothPathResult> requestSmoothing(
-      const SmoothPathGoal& goal) override {
+  TaskHandle<SmoothPathResult> requestSmoothing(const SmoothPathGoal& goal) override {
     auto g = goal;
     g.session_id = currentSessionId();
     g.plan_version = currentPlanVersion();
@@ -244,9 +234,8 @@ class MockNavServer : public ayanami::components::NavigationServerBase {
 /// RAII thread running pilot.run: destruction stops first (kill_switch + wakeup) then joins,
 /// so no thread is left hanging even when an assertion fails and exits early.
 class PilotRunner {
- public:
-  explicit PilotRunner(BehaviorTreePilot* pilot)
-      : pilot(pilot), thread([this] { this->pilot->run(); }) {}
+public:
+  explicit PilotRunner(BehaviorTreePilot* pilot) : pilot(pilot), thread([this] { this->pilot->run(); }) {}
 
   ~PilotRunner() {
     pilot->stop();
@@ -258,7 +247,7 @@ class PilotRunner {
   PilotRunner(const PilotRunner&) = delete;
   PilotRunner& operator=(const PilotRunner&) = delete;
 
- private:
+private:
   BehaviorTreePilot* pilot;
   std::thread thread;
 };
@@ -267,8 +256,7 @@ class PilotRunner {
 /// (navigation section). planner_frequency uses 100Hz so the RateController
 /// replans nearly every tick (async ComputePath rate-limited polling, minor 5).
 std::filesystem::path makeConfigDir() {
-  const auto dir =
-      std::filesystem::temp_directory_path() / "ayanami_pilot_test";
+  const auto dir = std::filesystem::temp_directory_path() / "ayanami_pilot_test";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   {
@@ -284,7 +272,8 @@ std::filesystem::path makeConfigDir() {
         "behavior_tree_id": "NavigateWithReplanningAndSmoothing",
 
 
-        "config_recovery": )" + writeRecoveryRoleFiles(dir, "test_recovery") + R"(,
+        "config_recovery": )" +
+             writeRecoveryRoleFiles(dir, "test_recovery") + R"(,
         "planner_frequency": 100.0,
         "smoother_frequency": -1.0,
         "controller_frequency": 20.0,
@@ -295,17 +284,20 @@ std::filesystem::path makeConfigDir() {
   // The tree XML is a required config asset (no embedded fallback): copy the
   // shipped one in, so the fixture tests the same tree the robot runs.
   std::filesystem::create_directories(dir / "BT");
-  std::filesystem::copy_file(AYANAMI_TEST_BT_XML, dir / "BT" / "navigation.xml",
-                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::copy_file(
+    AYANAMI_TEST_BT_XML,
+    dir / "BT" / "navigation.xml",
+    std::filesystem::copy_options::overwrite_existing);
   return dir;
 }
 
 template <typename T>
-bool waitUntil(const BT::Blackboard::Ptr& bb, const char* key,
-               const std::function<bool(const T&)>& pred,
-               int timeout_ms = 1000) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+bool waitUntil(
+  const BT::Blackboard::Ptr& bb,
+  const char* key,
+  const std::function<bool(const T&)>& pred,
+  int timeout_ms = 1000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   T val;
   while (std::chrono::steady_clock::now() < deadline) {
     if (bb->get<T>(key, val) && pred(val)) {
@@ -316,10 +308,8 @@ bool waitUntil(const BT::Blackboard::Ptr& bb, const char* key,
   return false;
 }
 
-bool waitForInt(const std::atomic<int>& counter,
-                const std::function<bool(int)>& pred, int timeout_ms = 1000) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+bool waitForInt(const std::atomic<int>& counter, const std::function<bool(int)>& pred, int timeout_ms = 1000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (std::chrono::steady_clock::now() < deadline) {
     if (pred(counter.load())) {
       return true;
@@ -331,8 +321,7 @@ bool waitForInt(const std::atomic<int>& counter,
 
 template <typename Server>
 bool waitForActiveGoal(const Server& server, int timeout_ms = 1000) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (std::chrono::steady_clock::now() < deadline) {
     if (server.activeGoalCount() > 0) {
       return true;
@@ -342,16 +331,13 @@ bool waitForActiveGoal(const Server& server, int timeout_ms = 1000) {
   return false;
 }
 
-
 /// @brief Wait until the pilot's tick thread has consumed the goal and produced
 /// this attempt's blackboard. The assertion is on the blackboard rather than on
 /// attemptActive(): with synchronous module mocks the whole tree can reach a
 /// terminal status within a tick, and a finished attempt keeps its blackboard as
 /// the record while the live instance is already gone.
-bool waitUntilPilotAttempt(const ayanami::behavior_tree::BehaviorTreePilot* pilot,
-                           int timeout_ms = 2000) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+bool waitUntilPilotAttempt(const ayanami::behavior_tree::BehaviorTreePilot* pilot, int timeout_ms = 2000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (std::chrono::steady_clock::now() < deadline) {
     if (pilot->blackboard() != nullptr) {
       return true;
@@ -375,11 +361,8 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
   pilot.setNavigationRuntime(server);
 
   std::atomic<int> vel_count{0};
-  ayanami::CallbackSubscription vel_cb =
-      ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
-          [&vel_count](const ayanami::geometry_msgs::TwistStamped&) {
-            vel_count.fetch_add(1);
-          });
+  ayanami::CallbackSubscription vel_cb = ayanami::interfaces::NavigationCallbacks::on_velocity_command.subscribe(
+    [&vel_count](const ayanami::geometry_msgs::TwistStamped&) { vel_count.fetch_add(1); });
 
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
@@ -391,10 +374,8 @@ TEST(BehaviorTreePilotTest, basicNavigationWritesPathsBumpsSessionAndVelocity) {
   ASSERT_NE(bb, nullptr);
 
   // raw_path / smoothed_path in the blackboard within 100ms
-  EXPECT_TRUE(waitUntil<Path>(
-      bb, k_raw_path, [](const Path& p) { return !p.poses.empty(); }));
-  EXPECT_TRUE(waitUntil<Path>(
-      bb, k_smoothed_path, [](const Path& p) { return !p.poses.empty(); }));
+  EXPECT_TRUE(waitUntil<Path>(bb, k_raw_path, [](const Path& p) { return !p.poses.empty(); }));
+  EXPECT_TRUE(waitUntil<Path>(bb, k_smoothed_path, [](const Path& p) { return !p.poses.empty(); }));
 
   // session_id increments (pilot increments on every beginNavigation; applyPendingGoal writes the blackboard)
   uint64_t sid = 0;
@@ -439,12 +420,11 @@ TEST(BehaviorTreePilotTest, undeclaredRecoveryRoleRefusesToBuildTheTree) {
 
   std::atomic<int> results{0};
   ayanami::actions::NavigationResult last;
-  ayanami::CallbackSubscription cb =
-      ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
-          [&](const ayanami::actions::NavigationResult& r) {
-            last = r;
-            results.fetch_add(1);
-          });
+  ayanami::CallbackSubscription cb = ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
+    [&](const ayanami::actions::NavigationResult& r) {
+      last = r;
+      results.fetch_add(1);
+    });
 
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
@@ -453,11 +433,17 @@ TEST(BehaviorTreePilotTest, undeclaredRecoveryRoleRefusesToBuildTheTree) {
   }
   EXPECT_EQ(results.load(), 1) << "the refused attempt must be reported";
   EXPECT_EQ(last.status, ayanami::actions::GoalStatus::ABORTED);
-  EXPECT_EQ(pilot.blackboard(), nullptr)
-      << "a refused attempt must not leave a usable attempt behind";
+  EXPECT_EQ(pilot.blackboard(), nullptr) << "a refused attempt must not leave a usable attempt behind";
 }
 
-TEST(BehaviorTreePilotTest, secondAttemptGetsAFreshBlackboard) {
+// nav2 BtActionServer parity: the SAME tree + blackboard serve goal after
+// goal. The resident model keeps the node objects alive across attempts, so
+// the guarantees shift from "nothing survives" to explicit re-arming:
+// haltTree at the terminal status runs every node's halt() override, and the
+// per-attempt blackboard keys (goal / revisions / failure context / path
+// artifacts) are reset before the next attempt's first tick -- the finished
+// attempt's route must never be observable by the next one.
+TEST(BehaviorTreePilotTest, secondAttemptReusesTheResidentTree) {
   const auto dir = makeConfigDir();
   auto server = std::make_shared<MockNavServer>();
   server->path_result = makePath(2);
@@ -472,27 +458,51 @@ TEST(BehaviorTreePilotTest, secondAttemptGetsAFreshBlackboard) {
   PilotRunner runner(&pilot);
   pilot.beginNavigation(makePose(1.0, 2.0));
   ASSERT_TRUE(waitUntilPilotAttempt(&pilot));
-  const auto first_bb = pilot.blackboard();
-  ASSERT_NE(first_bb, nullptr);
+  const auto bb = pilot.blackboard();
+  ASSERT_NE(bb, nullptr);
+  const void* tree_addr = &pilot.tree();
 
   // Let the first attempt reach a terminal status: a goal arriving while the
-  // tree is still running is a REVISION (same instance), which is a different
+  // tree is still running is a REVISION (same attempt), which is a different
   // path from "a new attempt".
   for (int i = 0; i < 1000 && pilot.attemptActive(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  ASSERT_FALSE(pilot.attemptActive())
-      << "first attempt did not finish; the rest of this test would be a revision test";
+  ASSERT_FALSE(pilot.attemptActive()) << "first attempt did not finish; the rest of this test would be a revision test";
 
+  // The finished attempt's record is observable on the resident blackboard.
+  uint64_t revision_first = 0;
+  ASSERT_TRUE(bb->get<uint64_t>(k_goal_revision, revision_first));
+  Path first_raw;
+  ASSERT_TRUE(bb->get<Path>(k_raw_path, first_raw));
+  ASSERT_FALSE(first_raw.poses.empty()) << "the finished attempt's record must keep its raw path";
+
+  // Attempt 2 with a planner task that never lands (path_sync=false): the
+  // per-attempt reset is then deterministically observable, with no race
+  // against a fresh planner write.
+  server->path_sync = false;
   pilot.beginNavigation(makePose(3.0, 4.0));
-  for (int i = 0; i < 1000 && pilot.blackboard() == first_bb; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_NE(pilot.blackboard(), first_bb)
-      << "a new navigation attempt must start from a fresh blackboard";
-  // The finished attempt's record is still readable (the blackboard is kept, the
-  // tree is not).
-  ASSERT_NE(pilot.blackboard(), nullptr);
+  // The pilot consumed the new goal (revision advanced) on the SAME tree and
+  // the SAME blackboard instance.
+  EXPECT_TRUE(waitUntil<uint64_t>(bb, k_goal_revision, [&](uint64_t v) { return v > revision_first; }));
+  EXPECT_EQ(&pilot.tree(), tree_addr) << "a new attempt must reuse the resident tree (nav2 BtActionServer)";
+  EXPECT_EQ(pilot.blackboard(), bb) << "a new attempt must reuse the resident blackboard";
+  EXPECT_TRUE(waitUntil<PoseStamped>(bb, k_goal, [&](const PoseStamped& g) {
+    return g.pose.position.isApprox(makePose(3.0, 4.0).pose.position, 1e-6);
+  }));
+
+  // The finished attempt's path artifacts are GONE: a new attempt must never
+  // observe the previous route (nav2 clears {path} on halt).
+  Path raw_now;
+  ASSERT_TRUE(bb->get<Path>(k_raw_path, raw_now));
+  EXPECT_TRUE(raw_now.poses.empty()) << "raw_path must be reset at the attempt boundary";
+  Path smoothed_now;
+  ASSERT_TRUE(bb->get<Path>(k_smoothed_path, smoothed_now));
+  EXPECT_TRUE(smoothed_now.poses.empty()) << "smoothed_path must be reset at the attempt boundary";
+
+  // The planner never lands (path_sync=false): end the attempt via halt
+  // (the runner destructor stops the tick loop).
+  pilot.halt();
 }
 
 TEST(BehaviorTreePilotTest, newGoalRevisesTaskWithoutStoppingController) {
@@ -542,15 +552,12 @@ TEST(BehaviorTreePilotTest, newGoalRevisesTaskWithoutStoppingController) {
   ASSERT_TRUE(bb->get<uint64_t>(k_session_id, sid_after));
   EXPECT_EQ(sid_after, sid_before);
 
-  EXPECT_TRUE(waitUntil<uint64_t>(bb, k_goal_revision,
-      [&](uint64_t value) { return value > revision_before; }));
+  EXPECT_TRUE(waitUntil<uint64_t>(bb, k_goal_revision, [&](uint64_t value) { return value > revision_before; }));
 
   // The new goal was written to the blackboard (pending_goal overwritten)
-  EXPECT_TRUE(waitUntil<PoseStamped>(
-      bb, k_goal,
-      [&](const PoseStamped& g) {
-        return g.pose.position.isApprox(new_goal.pose.position, 1e-6);
-      }));
+  EXPECT_TRUE(waitUntil<PoseStamped>(bb, k_goal, [&](const PoseStamped& g) {
+    return g.pose.position.isApprox(new_goal.pose.position, 1e-6);
+  }));
 }
 
 TEST(BehaviorTreePilotTest, emitsSessionNavigationResultOncePerTreeLife) {
@@ -577,13 +584,12 @@ TEST(BehaviorTreePilotTest, emitsSessionNavigationResultOncePerTreeLife) {
   std::atomic<int> result_count{0};
   ayanami::actions::GoalStatus last_status = GoalStatus::PENDING;
   ErrorCode last_code = ErrorCode::NONE;
-  ayanami::CallbackSubscription result_cb =
-      ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
-          [&](const ayanami::actions::NavigationResult& result) {
-            last_status = result.status;
-            last_code = result.context.code;
-            result_count.fetch_add(1);
-          });
+  ayanami::CallbackSubscription result_cb = ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
+    [&](const ayanami::actions::NavigationResult& result) {
+      last_status = result.status;
+      last_code = result.context.code;
+      result_count.fetch_add(1);
+    });
 
   pilot.beginNavigation(makePose(1.0, 2.0));
   PilotRunner runner(&pilot);
@@ -605,6 +611,68 @@ TEST(BehaviorTreePilotTest, emitsSessionNavigationResultOncePerTreeLife) {
   EXPECT_EQ(last_status, GoalStatus::SUCCEEDED);
   EXPECT_EQ(last_code, ErrorCode::NONE);
   EXPECT_LE(result_count.load(), 3);  // no storm of emissions
+}
+
+// Tick-time exceptions (a node throwing at runtime, e.g. a map query blowing
+// up mid-tick) must supervised-abort the attempt: the controller is
+// preempted, the tree halted, ABORTED reported once -- and the tick loop
+// SURVIVES so the next goal can re-arm the resident tree. The old catch-all
+// broke out of the loop without preempting anything, leaving a healthy
+// controller publishing velocity with no supervision.
+TEST(BehaviorTreePilotTest, tickTimeExceptionAbortsSupervisedAndKeepsTicking) {
+  const auto dir = makeConfigDir();
+
+  // MockNavServer + a throwing isPathValid (the IsPathValid condition calls
+  // NavigationRuntime::isPathValid on the tick thread; the throw unwinds
+  // through tickOnce) + a counted preempt override.
+  class ThrowingTickServer : public MockNavServer {
+   public:
+    bool isPathValid(const ayanami::nav_msgs::Path&) const override {
+      if (throw_enabled.load()) {
+        throw std::runtime_error("injected tick-time failure");
+      }
+      return true;
+    }
+    void preemptAllControllers() override { preempt_count.fetch_add(1); }
+    std::atomic<int> preempt_count{0};
+    std::atomic<bool> throw_enabled{false};
+  };
+
+  auto server = std::make_shared<ThrowingTickServer>();
+  server->path_result = makePath(2);
+  server->smooth_result = makePath(2);
+  server->exe_sync = true;
+  server->exe_reached = true;
+  server->throw_enabled = true;  // the FIRST attempt explodes mid-tick
+
+  BehaviorTreePilot pilot;
+  pilot.configure(dir.string());
+  pilot.loadFromFile("", "");
+  pilot.setNavigationRuntime(server);
+
+  std::atomic<int> result_count{0};
+  ayanami::actions::GoalStatus last_status = GoalStatus::PENDING;
+  ayanami::CallbackSubscription result_cb = ayanami::interfaces::NavigationCallbacks::on_navigation_result.subscribe(
+    [&](const ayanami::actions::NavigationResult& result) {
+      last_status = result.status;
+      result_count.fetch_add(1);
+    });
+
+  pilot.beginNavigation(makePose(1.0, 2.0));
+  PilotRunner runner(&pilot);
+
+  // Supervised abort: exactly one ABORTED result, and the controller was
+  // explicitly preempted (the catch's belt-and-braces path).
+  ASSERT_TRUE(waitUntilCondition([&] { return result_count.load() >= 1; }));
+  EXPECT_EQ(last_status, GoalStatus::ABORTED);
+  EXPECT_GE(server->preempt_count.load(), 1);
+
+  // The loop survived: a second goal (no throw this time) navigates to a
+  // terminal SUCCEEDED result on the SAME pilot.
+  server->throw_enabled = false;
+  pilot.beginNavigation(makePose(3.0, 4.0));
+  EXPECT_TRUE(waitUntilCondition([&] { return result_count.load() >= 2; }));
+  EXPECT_EQ(last_status, GoalStatus::SUCCEEDED);
 }
 
 TEST(BehaviorTreePilotTest, haltCancelsRunningActions) {

@@ -4,6 +4,7 @@
 
 #include "ayanami/messages/actions.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
+#include "ayanami/messages/swerve.hpp"
 #include "ayanami/utility/callback_slot.hpp"
 
 namespace ayanami {
@@ -47,18 +48,27 @@ struct NavigationCallbacks {
   // ---- State / output / observation (the remaining slots;
   // on_robot_state_updated had no production emit point and was removed) ----
   static CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> on_velocity_command;
-  static CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGrid&)> on_costmap_visualization;
-  /// @brief Incremental costmap update (nav2 OccupancyGridUpdate analogue):
-  /// emitted INSTEAD of a full on_costmap_visualization emission when the
-  /// map geometry is unchanged and only cells inside one window changed.
-  /// Receivers keep the last full grid per map name and apply the window;
-  /// without a cached full grid an update must be ignored (a full grid is
-  /// always emitted first / on any geometry change).
-  static CallbackSlot<void(const std::string&, const ayanami::nav_msgs::OccupancyGridUpdate&)> on_costmap_visualization_update;
-  /// @brief Lossless raw-cost grid copy (full grid, emitted only on
-  /// geometry/content change). The smoother subscribes instead of holding
-  /// live-map locks; visualization slots stay lossy ROS occupancy.
-  static CallbackSlot<void(const ayanami::nav_msgs::RawCostmap&)> on_costmap_raw;
+  /// @brief Derived swerve wheel-level view of the latest velocity command
+  /// (rigid-body inverse of the twist; fl, fr, rl, rr). Telemetry for a
+  /// future direct-chassis bridge / diagnostics -- the twist channel stays
+  /// authoritative.
+  static CallbackSlot<void(const ayanami::messages::SwerveCommandsStamped&)> on_swerve_command;
+  // ---- Costmap layer streams (one slot per layer artifact; the sole map
+  // writer emits unconditionally whenever that artifact's content changes --
+  // generation-gated, so an unchanged map stays silent and no rate parameter
+  // exists anywhere). Receivers hold their own cache: a global-map artifact
+  // may be emitted only once (static global policy), the receiver republishes.
+  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_global_costmap_static;
+  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_global_costmap_inflation;
+  /// @brief The local map's raw obstacle marks (SimpleObstacleLayer's
+  /// presence grid, NO inflation): dynamic obstacles only, no decayed halo.
+  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_local_costmap_obstacle;
+  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_local_costmap_inflation;
+  /// @brief The rosemap family's single field artifact (binarized occupancy
+  /// + EDT source grid), emitted by the sole rosemap writer whenever the
+  /// snapshot sequence advances -- same generation-gated unconditional
+  /// semantics as the costmap layer slots.
+  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_rosemap_field;
   // ---- session-level navigation terminal outcome (once per tree life) ----
   static CallbackSlot<void(const ayanami::actions::NavigationResult&)> on_navigation_result;
 };

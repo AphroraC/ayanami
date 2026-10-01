@@ -18,6 +18,7 @@
 #include "ayanami/utility/config.hpp"
 
 #include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
 
 #include <filesystem>
 #include <utility>
@@ -223,7 +224,13 @@ void NavigationServerBase::loadModules(const std::string& config_path) {
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_recovery")) {
     ayanami::Config cfg(path);
     const std::string name = cfg.param<std::string>("recovery", "name", "");
-    if (!name.empty()) recovery_sequence.push_back(name);
+    if (!name.empty()) {
+      recovery_sequence.push_back(name);
+      // Preemption policy travels with the module descriptor (default true:
+      // an undeclared recovery is treated as motion-affecting).
+      recovery_preempts_controller[name] =
+          cfg.param<bool>("recovery", "preempts_controller", true);
+    }
     recovery_modules.loadSingleFromConfig(
         cfg, "recovery", name,
         [this, cfg](const std::string& loaded_name,
@@ -367,11 +374,12 @@ void NavigationServerBase::createActions() {
     });
     planner_actions[name] = std::move(action);
   }
-  if (!planner_actions.empty() &&
-      planner_actions.find(default_planner) == planner_actions.end()) {
-    spdlog::error("NavigationServerBase::createActions: default planner '{}' "
-                  "not loaded",
-                  default_planner);
+  if (!planner_actions.empty() && planner_actions.find(default_planner) == planner_actions.end()) {
+    SPDLOG_LOGGER_ERROR(
+      ayanami::plannerLogger(),
+      "NavigationServerBase::createActions: default planner '{}' "
+      "not loaded",
+      default_planner);
   }
 
   for (const auto& name : smoother_modules.getLoadedNames()) {
@@ -386,11 +394,12 @@ void NavigationServerBase::createActions() {
     });
     smoother_actions[name] = std::move(action);
   }
-  if (!smoother_actions.empty() &&
-      smoother_actions.find(default_smoother) == smoother_actions.end()) {
-    spdlog::error("NavigationServerBase::createActions: default smoother '{}' "
-                  "not loaded",
-                  default_smoother);
+  if (!smoother_actions.empty() && smoother_actions.find(default_smoother) == smoother_actions.end()) {
+    SPDLOG_LOGGER_ERROR(
+      ayanami::smootherLogger(),
+      "NavigationServerBase::createActions: default smoother '{}' "
+      "not loaded",
+      default_smoother);
   }
 
   for (const auto& name : controller_modules.getLoadedNames()) {
@@ -407,11 +416,12 @@ void NavigationServerBase::createActions() {
     });
     controller_actions[name] = std::move(action);
   }
-  if (!controller_actions.empty() &&
-      controller_actions.find(default_controller) == controller_actions.end()) {
-    spdlog::error("NavigationServerBase::createActions: default controller "
-                  "'{}' not loaded",
-                  default_controller);
+  if (!controller_actions.empty() && controller_actions.find(default_controller) == controller_actions.end()) {
+    SPDLOG_LOGGER_ERROR(
+      ayanami::controllerLogger(),
+      "NavigationServerBase::createActions: default controller "
+      "'{}' not loaded",
+      default_controller);
   }
 
   for (const auto& name : recovery_modules.getLoadedNames()) {
@@ -429,7 +439,7 @@ void NavigationServerBase::createActions() {
     recovery_actions[name] = std::move(action);
   }
   if (recovery_actions.empty()) {
-    spdlog::warn("NavigationServerBase::createActions: no recovery modules loaded");
+    SPDLOG_LOGGER_WARN(ayanami::recoveryLogger(), "NavigationServerBase::createActions: no recovery modules loaded");
   }
 }
 
@@ -439,15 +449,18 @@ void NavigationServerBase::configureControllerExecution(
   if (auto checker = goal_checker_modules.getModule(default_goal_checker)) {
     exec->setGoalChecker(std::move(checker));
   } else if (!default_goal_checker.empty()) {
-    spdlog::warn("NavigationServerBase: goal checker '{}' not loaded",
-                 default_goal_checker);
+    SPDLOG_LOGGER_WARN(
+      ayanami::controllerLogger(),
+      "NavigationServerBase: goal checker '{}' not loaded",
+      default_goal_checker);
   }
-  if (auto checker =
-          progress_checker_modules.getModule(default_progress_checker)) {
+  if (auto checker = progress_checker_modules.getModule(default_progress_checker)) {
     exec->setProgressChecker(std::move(checker));
   } else if (!default_progress_checker.empty()) {
-    spdlog::warn("NavigationServerBase: progress checker '{}' not loaded",
-                 default_progress_checker);
+    SPDLOG_LOGGER_WARN(
+      ayanami::controllerLogger(),
+      "NavigationServerBase: progress checker '{}' not loaded",
+      default_progress_checker);
   }
   // Velocity limit injection (navigation.max_vel_{x,y,theta} cache;
   // over-limit but finite commands are clamped by the execution, and
@@ -620,20 +633,27 @@ NavigationServerBase::requestRecovery(
   auto iter = recovery_actions.find(goal.recovery_id);
   if (iter == recovery_actions.end() || !iter->second) {
     recovery_exclusive.store(false);
-    spdlog::error("NavigationServerBase::requestRecovery: no recovery action "
-                  "for '{}'",
-                  goal.recovery_id);
+    SPDLOG_LOGGER_ERROR(
+      ayanami::recoveryLogger(),
+      "NavigationServerBase::requestRecovery: no recovery action "
+      "for '{}'",
+      goal.recovery_id);
     return rejectedHandle<ayanami::actions::RecoveryResult>(
         ErrorCode::INVALID_INPUT,
         "unknown recovery module id: " + goal.recovery_id, currentSessionId(),
         currentPlanVersion());
   }
-  // Stop the controller after validating the recovery id. Non-blocking:
+  // Stop the controller ONLY for recoveries that move or hold the robot
+  // (spin/back_up/wait): a map-only clear must not kill trajectory
+  // execution -- preempting it turned every costmap refresh into a
+  // stop -> stale-failure -> retry cascade. Non-blocking when it fires:
   // the preemption marks the controller canceled (cancel() already
   // published a zeroed command synchronously) and the task winds down on
   // its own thread, so the BT tick thread never blocks on a slow module
   // call.
-  preemptAllControllers();
+  if (recoveryPreemptsController(goal.recovery_id)) {
+    preemptAllControllers();
+  }
   ayanami::actions::RecoveryGoal g = goal;
   g.session_id = currentSessionId();
   g.plan_version = currentPlanVersion();
@@ -651,22 +671,6 @@ NavigationServerBase::requestRecovery(
   }
 }
 
-bool NavigationServerBase::requestPathUpdate(
-    uint64_t goal_id, const ayanami::actions::GetPathGoal& goal) {
-  // The in-place update addresses the goal by id: search every loaded
-  // planner action (the goal may run on a non-default module).
-  std::lock_guard<std::mutex> request_lock(planner_request_mutex);
-  for (auto& kv : planner_actions) {
-    if (kv.second && kv.second->updateGoal(goal_id, goal)) {
-      return true;
-    }
-  }
-  spdlog::error("NavigationServerBase::requestPathUpdate: no running "
-                "planner goal {} to update",
-                goal_id);
-  return false;
-}
-
 bool NavigationServerBase::requestPlanUpdate(
     uint64_t goal_id, const ayanami::actions::ExePathGoal& goal) {
   // The in-place update addresses the goal by id: search every loaded
@@ -678,40 +682,18 @@ bool NavigationServerBase::requestPlanUpdate(
       return true;
     }
   }
-  spdlog::error("NavigationServerBase::requestPlanUpdate: no running "
-                "controller goal {} to update",
-                goal_id);
+  SPDLOG_LOGGER_ERROR(
+    ayanami::controllerLogger(),
+    "NavigationServerBase::requestPlanUpdate: no running "
+    "controller goal {} to update",
+    goal_id);
   return false;
-}
-
-void NavigationServerBase::cancelAllControllers() {
-  std::lock_guard<std::mutex> request_lock(controller_request_mutex);
-  // Preemption/new-session/halt discipline: cancel the ENTIRE controller
-  // action map -- with multiple controller modules, tasks beyond the default
-  // id must stop too, otherwise stale velocity output remains.
-  for (auto& kv : controller_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
 }
 
 void NavigationServerBase::preemptAllControllers() {
   std::lock_guard<std::mutex> request_lock(controller_request_mutex);
   for (auto& kv : controller_actions) {
     if (kv.second) kv.second->preemptAll();
-  }
-}
-
-void NavigationServerBase::cancelAllPlanners() {
-  std::lock_guard<std::mutex> request_lock(planner_request_mutex);
-  for (auto& kv : planner_actions) {
-    if (kv.second) kv.second->cancelAll();
-  }
-}
-
-void NavigationServerBase::cancelAllSmoothers() {
-  std::lock_guard<std::mutex> request_lock(smoother_request_mutex);
-  for (auto& kv : smoother_actions) {
-    if (kv.second) kv.second->cancelAll();
   }
 }
 

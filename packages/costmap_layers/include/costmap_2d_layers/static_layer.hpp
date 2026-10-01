@@ -9,6 +9,24 @@
 
 namespace costmap_2d_layers {
 
+/// @brief PGM pixel -> cost interpretation, the map_server yaml semantics
+/// (nav2 StaticLayer::interpretValue counterpart). Defaults match map_server.
+struct StaticMapSemantics {
+  /// @brief negate=1 inverts occupancy: white pixels become occupied
+  /// (standard maps are black-occupied, so negate defaults to false).
+  bool negate{false};
+  /// @brief occupancy ratio above this -> LETHAL_OBSTACLE.
+  double occupied_thresh{0.65};
+  /// @brief occupancy ratio below this -> FREE_SPACE.
+  double free_thresh{0.196};
+  /// @brief trinary: between the thresholds resolves through track_unknown;
+  /// scale: grayscale occupancy linearly mapped to cost.
+  bool trinary{true};
+  /// @brief trinary between-threshold resolution: true -> NO_INFORMATION,
+  /// false -> FREE_SPACE (the master default when not tracking unknown).
+  bool track_unknown{false};
+};
+
 /// Static map layer: holds a read-only map and writes the map costs back into the master grid each update cycle.
 /// Pure C++ (no ROS publisher); the map is injected via setMap / setMapPath.
 class StaticLayer : public costmap_2d::Layer {
@@ -21,10 +39,13 @@ class StaticLayer : public costmap_2d::Layer {
   void queueMap(const costmap_2d::Costmap2D& map);
 
   /// Loads a static map from a PGM (P5/P2, 8-bit) file.
-  /// Pixel mapping: 0 (black) -> LETHAL_OBSTACLE, 255 (white) -> FREE_SPACE,
-  /// everything else -> NO_INFORMATION. A PGM carries no resolution; the caller supplies it.
+  /// Pixel mapping follows the map semantics (see StaticMapSemantics):
+  /// occupancy ratio (negate-aware) above occupied_thresh -> LETHAL, below
+  /// free_thresh -> FREE, and between them trinary-resolved or scaled. A PGM
+  /// carries no resolution; the caller supplies it.
   void setMapPath(const std::string& path, double resolution = 1.0,
-                  double origin_x = 0.0, double origin_y = 0.0);
+                  double origin_x = 0.0, double origin_y = 0.0,
+                  const StaticMapSemantics& semantics = {});
 
   void updateBounds(double robot_x, double robot_y, double robot_yaw,
                     double* min_x, double* min_y, double* max_x,
@@ -38,18 +59,19 @@ class StaticLayer : public costmap_2d::Layer {
   void deactivate() override {}
   void reset() override {
     full_update = has_map;
-    current = false;
+    data_current = false;
   }
   void matchSize() override;
 
   bool hasMap() const { return has_map; }
-
-  // Request restoration of a world-coordinate region on the next update.
-  void addUpdateBounds(double min_x, double min_y, double max_x,
-                       double max_y);
+  /// @brief Read-only view of the layer's own map grid (PGM geometry and
+  /// costs; static content -- only mutated by setMap/queueMap at configure
+  /// time, safe to read without a lock afterwards).
+  const costmap_2d::Costmap2D& layerMap() const { return map; }
 
  private:
   void processMap(const costmap_2d::Costmap2D& map);
+  StaticMapSemantics semantics;
   costmap_2d::Costmap2D map;
   std::optional<costmap_2d::Costmap2D> pending_map;
   std::mutex map_mutex;
@@ -57,14 +79,9 @@ class StaticLayer : public costmap_2d::Layer {
   bool map_received_in_update_bounds{false};
   bool has_updated_data{false};
   bool full_update{false};
-  bool has_extra_bounds{false};
   bool have_master_origin{false};
   double last_master_origin_x{0.0};
   double last_master_origin_y{0.0};
-  double extra_min_x{0.0};
-  double extra_min_y{0.0};
-  double extra_max_x{0.0};
-  double extra_max_y{0.0};
 };
 
 }  // namespace costmap_2d_layers

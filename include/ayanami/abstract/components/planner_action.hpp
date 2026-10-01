@@ -87,29 +87,6 @@ public:
   bool cancelGoal(uint64_t goal_id) { return action_server->cancelGoal(goal_id); }
 
   /// @brief In-place goal update of the running planning task (the planner
-  /// analogue of ControllerAction::updatePlan). No cancel / no join / no new
-  /// Execution: the execution adopts the latest start/goal/tolerance via its
-  /// revision-guarded pending slot and replans on its own thread. The same
-  /// TaskHandle keeps running; the goal CONTENT is replaced wholesale.
-  /// Returns false when the goal is no longer running (task already
-  /// finished/canceled) or the execution has reached a terminal state -- the
-  /// caller should re-check the finished task instead of treating the miss
-  /// as a failure.
-  bool updateGoal(uint64_t goal_id, const Goal& goal) {
-    auto exec = Base::executionForGoal(goal_id);
-    if (!exec) {
-      return false;
-    }
-    if (!exec->setNewGoal(goal.start, goal.goal, goal.tolerance)) {
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(goal_mutex);
-    if (active_goal_id == goal_id) {
-      active_goal = goal;  // finishResult reports the latest stamped goal
-    }
-    return true;
-  }
-
   /// @brief Settle a goal preempted from the pending slot (canceled before
   /// its driver started) so its TaskHandle never hangs.
   void finishPendingGoal(const GoalHandleType& gh) override {

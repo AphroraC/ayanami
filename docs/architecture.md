@@ -110,11 +110,11 @@ Ayanami 内部**没有进程级线程池**（WorkerPool 已移除）。线程模
 5. **地图读契约**（三族各取所需，写者永不被算法阻塞）：
    - planner：`snapshotGlobal()` 短锁快照——共享锁只住一次 memcpy，A* 在
      不可变副本上跑（`costmap_snapshot.hpp`）；
-   - smoother：订阅 `NavigationCallbacks::on_costmap_raw` 持有自有副本
-     （有损的 occupancy 可视化槽不变），平滑全程零活锁图；
+   - smoother：`snapshotGlobal()/snapshotLocal()` 短锁快照，平滑全程零
+     活锁图；
    - controller / recovery：`readLocal()` 直读（滚动窗小、调用短）。
-   全局图 = static + (可选) obstacle + inflation（nav2 形状，
-   `costmap_global.observation_sources` 或层 json 启用）。local costmap
+   全局图 = static + obstacle + inflation（nav2 形状，层组合由
+   `costmap_*.layers`（必需）从层插件 json 加载）。local costmap
    建在 odom 系（定位跳变免疫）。视图禁止存为长生命周期成员。
 6. **恢复调度归 BT**：执行层失败只返回结构化 `ErrorCode`，不做重试决策；
    恢复动作的编排全部在行为树（RecoveryNode / RecoverySequence）。

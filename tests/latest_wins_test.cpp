@@ -119,7 +119,7 @@ bool readyWithin(Task& t, int max_ms) {
 
 /// Planner whose makePlan blocks until report releases it and encodes the
 /// latest goal it received into the path. cancel() (invoked by the
-/// execution's in-place setNewGoal seam) interrupts the wait so the run
+/// module's cooperative cancel, invoked on strong preemption) interrupts the wait so the run
 /// loop can replan for the newest revision.
 class LatestWinsPlanner : public ayanami::abstract::AbstractPlanner {
  public:
@@ -243,66 +243,3 @@ TEST(LatestWins, sameSlotSecondGoalEjectsFirstPromptly) {
   EXPECT_LE(planner->calls.load(), 3);
 }
 
-TEST(LatestWins, updateGoalHundredGoalsSingleExecutionLatestWins) {
-  constexpr int kGoals = 100;
-  auto planner = std::make_shared<LatestWinsPlanner>();
-  CountingPlannerAction action(planner);
-
-  std::vector<ayanami::components::TaskHandle<ayanami::actions::GetPathResult>>
-      tasks;
-  tasks.reserve(kGoals);
-
-  // The first goal creates the single execution and blocks in makePlan.
-  GetPathGoal first = makeGoal(1);
-  first.goal = makePose(1.0, 7.0);
-  tasks.push_back(action.acceptGoal(first));
-  ASSERT_TRUE(tasks.front().valid());
-
-  // Wait for the first execution thread to enter the module (goals 2..100 afterwards all take the in-place updateGoal path).
-  {
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(2000);
-    while (planner->running.load() == 0 &&
-           std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    ASSERT_GE(planner->running.load(), 1);
-  }
-
-  // 99 consecutive goal revisions preempt in place (the goal id is encoded
-  // into the goal pose x): the same TaskHandle keeps running, the execution
-  // adopts the latest revision via its pending slot and replans.
-  for (int i = 2; i <= kGoals; ++i) {
-    GetPathGoal g = makeGoal(i);
-    g.goal = makePose(static_cast<double>(i), 7.0);
-    ASSERT_TRUE(action.updateGoal(tasks.front().goal_id(), g))
-        << "in-place update rejected at goal " << i;
-  }
-
-  // The single in-flight task is still running (not settled by the updates).
-  ASSERT_FALSE(tasks.front().ready());
-
-  // Only one execution (created by the first goal; updates never rebuild).
-  EXPECT_EQ(action.executions_created.load(), 1);
-  // Each in-place update interrupts the in-flight module call cooperatively.
-  EXPECT_GE(planner->cancel_calls.load(), 1);
-
-  // Module max concurrency 1 (driven by a single execution thread, never reentered).
-  EXPECT_EQ(planner->max_running.load(), 1);
-
-  // Release: the execution thread adopts the latest (goal 100) and succeeds.
-  planner->release();
-  ASSERT_TRUE(readyWithin(tasks.front(), 3000));
-  EXPECT_EQ(tasks.front().status(), GoalStatus::SUCCEEDED);
-  EXPECT_EQ(tasks.front().result().error, ErrorCode::NONE);
-
-  // The result corresponds to the newest goal (goal id encoded x = 100, y = 7).
-  const auto& result = tasks.front().result();
-  ASSERT_GE(result.path.poses.size(), 1u);
-  EXPECT_DOUBLE_EQ(result.path.poses.back().pose.position.x(),
-                   static_cast<double>(kGoals));
-  EXPECT_DOUBLE_EQ(result.path.poses.back().pose.position.y(), 7.0);
-
-  // No concurrency residue.
-  EXPECT_EQ(planner->running.load(), 0);
-}

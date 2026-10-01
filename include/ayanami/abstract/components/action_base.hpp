@@ -2,6 +2,8 @@
 
 #include "ayanami/abstract/components/action_server.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -27,7 +29,7 @@ namespace components {
  * task; the worker calls ExecutionBase::runBlocking inline, mirroring the
  * nav2 controller_server single-loop model).
  *
- * Goal flow: start()/submitGoal() parks the goal in a one-slot latest-wins
+ * Goal flow: submitGoal() parks the goal in a one-slot latest-wins
  * mailbox (a goal dropped from the slot is settled CANCELED immediately);
  * an in-flight execution is cooperatively canceled so the worker reaches
  * the newest goal promptly -- its own goal then settles CANCELED through
@@ -42,6 +44,18 @@ namespace components {
  * waits until the worker is idle (synchronous stop/destructor path).
  * In-place updates (updatePlan/updateGoal) address the in-flight execution
  * by goal id via executionForGoal().
+ *
+ * Stall policy (the watchdog second line): ExecutionBase has no execution
+ * thread, so a module call that never returns occupies the worker forever
+ * and no cancel can interrupt it. cancelAll() therefore waits BOUNDED
+ * (kStallWait); on expiry the action is marked stalled -- further goals are
+ * settled CANCELED without dispatch -- and stopWorker() moves the stuck
+ * thread into a process-lifetime leak container instead of joining (a
+ * joinable std::thread destructor would terminate; joining would hang
+ * forever). Residual risk, documented: if the stuck module EVER returns
+ * after the action object was destroyed, the leaked thread touches freed
+ * memory -- treated as a module violating the cancel contract in an already
+ * fatal situation; process exit reclaims the thread.
  */
 template <typename Goal, typename Execution>
 class ActionBase {
@@ -52,15 +66,15 @@ class ActionBase {
   ActionBase() = default;
   virtual ~ActionBase() { stopWorker(); }
 
-  /// @brief Submit one goal to the resident worker (legacy signature kept:
-  /// the supplied execution pointer is IGNORED -- the base reuses its own
-  /// lazily created execution).
-  void start(const GoalHandleType& goal_handle, ExecutionPtr) {
-    submitGoal(goal_handle);
-  }
-
   /// @brief Submit one goal (latest-wins mailbox, see class comment).
   void submitGoal(const GoalHandleType& goal_handle) {
+    if (stalled_.load()) {
+      // The worker is wedged inside a module call that ignored cancel: no
+      // new goal can ever run. Settle immediately through the derived
+      // CANCELED publisher so the TaskHandle never hangs.
+      finishPendingGoal(goal_handle);
+      return;
+    }
     ensureWorker();
     std::optional<GoalHandleType> dropped;
     ExecutionPtr exec;
@@ -138,13 +152,28 @@ class ActionBase {
     }
   }
 
-  /// @brief Cancel everything and WAIT for the in-flight goal to fully
+  /// @brief Bound on how long cancelAll() tolerates an unresponsive module
+  /// (seconds). Expiry marks the action stalled -- see the class comment.
+  static constexpr std::chrono::seconds kStallWait{2};
+
+  /// @brief Cancel everything and WAIT (bounded) for the in-flight goal to
   /// finish (destructor / stop path where module lifetime requires a
-  /// synchronous shutdown).
+  /// synchronous shutdown). A module that ignores cancel keeps the worker
+  /// occupied: after kStallWait the action is marked stalled and this
+  /// returns, so one broken module cannot hang the whole server shutdown.
   void cancelAll() {
     preemptAll();
     std::unique_lock<std::mutex> lock(task_mutex);
-    idle_cv.wait(lock, [this] { return !in_flight_; });
+    const bool idle =
+        idle_cv.wait_for(lock, kStallWait, [this] { return !in_flight_; });
+    if (!idle) {
+      stalled_.store(true);
+      spdlog::critical(
+          "ActionBase: cancelAll timed out after {} s -- a module ignored "
+          "cancel; the action is marked stalled (further goals are rejected) "
+          "and its worker thread will be leaked at shutdown",
+          kStallWait.count());
+    }
   }
 
   bool isRunning() const {
@@ -218,8 +247,36 @@ class ActionBase {
       std::lock_guard<std::mutex> lock(worker_lifecycle_mutex);
       worker_stop = true;
     }
+    if (stalled_.load()) {
+      // The worker is wedged inside a module call: joining would hang
+      // forever and destroying a joinable std::thread would terminate.
+      // Move the thread object into a process-lifetime container (never
+      // destroyed -> no terminate) and let process exit reclaim the stuck
+      // thread. See the class comment for the documented residual risk.
+      static auto* leaked_threads = new std::vector<std::thread>();
+      {
+        std::lock_guard<std::mutex> lock(worker_lifecycle_mutex);
+        if (worker.joinable()) {
+          leaked_threads->push_back(std::move(worker));
+          spdlog::critical(
+              "ActionBase: stalled worker thread leaked (module ignored "
+              "cancel); process exit will reclaim it");
+        }
+      }
+      return;
+    }
     {
       std::lock_guard<std::mutex> lock(task_mutex);
+      if (pending_goal_) {
+        // Destructor path only (well-behaved owners cancelAll() while the
+        // derived action is still alive). A goal still parked here can no
+        // longer be settled: the virtual finishPendingGoal would dispatch to
+        // THIS base's no-op after derived destruction, so its TaskHandle
+        // would hang silently -- say so loudly instead.
+        spdlog::error(
+            "ActionBase: a pending goal is dropped at worker stop without a "
+            "result; cancelAll() must run before destruction");
+      }
       pending_goal_.reset();
       if (in_flight_ && execution_) {
         execution_->cancel();
@@ -277,6 +334,10 @@ class ActionBase {
   bool in_flight_{false};
   uint64_t in_flight_goal_id{0};
   mutable std::mutex task_mutex;
+  /// @brief Set by cancelAll() when the in-flight module ignored cancel for
+  /// kStallWait: the action rejects all further goals and its worker thread
+  /// is leaked at shutdown (see the class comment).
+  std::atomic<bool> stalled_{false};
   /// @brief Worker mailbox/idle signaling.
   std::condition_variable worker_cv;
   std::condition_variable idle_cv;

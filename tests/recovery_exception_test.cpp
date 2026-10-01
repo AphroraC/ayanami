@@ -118,7 +118,7 @@ TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   };
 
   ThrowingExecution exec;
-  exec.start();
+  std::thread exec_th([&] { exec.runBlocking(); });
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
   while (std::chrono::steady_clock::now() < deadline && !exec.aborted()) {
@@ -126,7 +126,7 @@ TEST(RecoveryExceptionTest, escapedRunExceptionHitsAbortedSentinel) {
   }
   EXPECT_TRUE(exec.aborted());
   EXPECT_EQ(exec.getState(), ayanami::components::ExecutionBase::k_aborted);
-  exec.join();
+  exec_th.join();
 }
 
 // Resource protocol regression: requestRecovery via the full server; after a start exception the mutex must be

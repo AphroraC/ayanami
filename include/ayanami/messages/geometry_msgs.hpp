@@ -62,6 +62,23 @@ struct Pose {
   using ConstPtr = std::shared_ptr<const Pose>;
 };
 
+/// @brief Absolute-tolerance pose comparison. Eigen's isApprox is a RELATIVE
+/// comparison and silently fails for near-zero vectors -- goals/poses at or
+/// near the frame origin would never compare equal at any noise level. All
+/// "same pose?" decisions go through here: position in meters, orientation
+/// as quaternion-coefficient distance.
+inline bool poseClose(const Pose& lhs, const Pose& rhs,
+                      double position_tol = 1e-6,
+                      double orientation_tol = 1e-6) {
+  if ((lhs.position - rhs.position).cwiseAbs().maxCoeff() > position_tol) {
+    return false;
+  }
+  return (lhs.orientation.coeffs() - rhs.orientation.coeffs())
+             .cwiseAbs()
+             .maxCoeff() <= orientation_tol;
+}
+
+
 /**
  * @brief Velocity (body frame; linear forward / angular yaw dominant).
  */
