@@ -3,5 +3,10 @@ include(CMakeFindDependencyMacro)
 find_dependency(Eigen3)
 find_dependency(spdlog)
 find_dependency(Threads)
+# PUBLIC dependencies of ayanami::ayanami (must resolve before the exported
+# targets are included; mirrors glim's glim-config.cmake.in).
+find_dependency(PCL REQUIRED COMPONENTS common)
+# BehaviorTree.CPP is statically embedded in libayanami (PRIVATE) -- not a
+# find_dependency.
 include("${CMAKE_CURRENT_LIST_DIR}/ayanamiTargets.cmake")
 check_required_components(ayanami)

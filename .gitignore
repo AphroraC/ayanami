@@ -68,3 +68,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# runtime dumps & working notes (costmap pgm/json dumps, ayanami.log, scratch)
+logs/
+
+# debug scratch programs (not wired into the test build)
+tests/debug_*.cpp

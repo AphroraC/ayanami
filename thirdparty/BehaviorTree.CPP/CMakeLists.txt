@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 #---- project configuration ----
 option(BTCPP_SHARED_LIBS "Build shared libraries" ON)
+option(BTCPP_INSTALL "Install BehaviorTree.CPP" ON)
 option(BTCPP_BUILD_TOOLS "Build commandline tools" ON)
 option(BTCPP_EXAMPLES   "Build tutorials and examples" OFF)
 option(BUILD_TESTING "Build the unit tests" OFF)
@@ -316,6 +317,9 @@ file(WRITE ${PROJECT_SOURCE_DIR}/.clangd
 ######################################################
 # INSTALL
 
+# ayanami: guarded so the private static embed (BTCPP_INSTALL=OFF, forced in
+# cmake/thirdparty.cmake) keeps BT out of the install space entirely.
+if(BTCPP_INSTALL)
 INSTALL(TARGETS ${BTCPP_LIBRARY}
     EXPORT ${BTCPP_LIBRARY}Targets
     ARCHIVE DESTINATION ${BTCPP_LIB_DESTINATION}
@@ -329,3 +333,4 @@ INSTALL( DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     FILES_MATCHING PATTERN "*.h*")
 
 export_btcpp_package()
+endif()
