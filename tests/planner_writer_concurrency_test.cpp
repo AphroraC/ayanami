@@ -23,9 +23,9 @@
 #include <string>
 #include <thread>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>

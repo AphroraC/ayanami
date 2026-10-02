@@ -21,10 +21,10 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/costmap/components/costmap_map_context.hpp>
@@ -60,7 +60,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
   if (obstacle_fn) {
     obstacle_fn(layer_map);
   }
-  auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto static_layer = std::make_shared<costmap_2d::StaticLayer>();
   static_layer->setMap(layer_map);
   lm->addLayer(static_layer);
   lm->updateMap(0.0, 0.0, 0.0);
@@ -113,6 +113,38 @@ ayanami::geometry_msgs::PoseStamped cellCenter(unsigned int mx, unsigned int my,
 }
 
 }  // namespace
+
+// ---------- isPathValid (the planner-owned replan trigger) ----------
+
+TEST(CostmapAstarPlannerTest, isPathValidConsultsTheMap) {
+  // A lethal wall at column x=10 on an otherwise free 20x20 map.
+  auto wrapper = makeWrapper(20, 0.5, [](costmap_2d::Costmap2D& grid) {
+    for (unsigned int y = 0; y < grid.getSizeInCellsY(); ++y) {
+      grid.setCost(10, y, costmap_2d::LETHAL_OBSTACLE);
+    }
+  });
+  auto planner = makePlanner(wrapper);
+
+  // A path crossing the wall is invalid; one beside it is valid; an empty
+  // path is invalid by definition (abstract default contract).
+  ayanami::nav_msgs::Path crossing;
+  crossing.poses = {cellCenter(2, 10), cellCenter(10, 10), cellCenter(17, 10)};
+  EXPECT_FALSE(planner->isPathValid(crossing));
+  ayanami::nav_msgs::Path clear;
+  // All probes off the wall column (x = 10).
+  clear.poses = {cellCenter(2, 2), cellCenter(5, 2), cellCenter(17, 2)};
+  EXPECT_TRUE(planner->isPathValid(clear));
+  ayanami::nav_msgs::Path empty;
+  EXPECT_FALSE(planner->isPathValid(empty));
+}
+
+TEST(CostmapAstarPlannerTest, isPathValidWithoutMapFallsBackToNonEmpty) {
+  // No map injected: the abstract default (non-empty = valid) applies.
+  CostmapAstarPlanner planner;
+  ayanami::nav_msgs::Path path;
+  path.poses = {makePose(0.0, 0.0)};
+  EXPECT_TRUE(planner.isPathValid(path));
+}
 
 // ---------- makePlan success path ----------
 

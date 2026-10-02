@@ -239,6 +239,13 @@ void CostmapAstarPlanner::configureParameters(const ayanami::ModuleContext& cont
                        param.use_final_approach);
 }
 
+bool CostmapAstarPlanner::isPathValid(const nav_msgs::Path& path) const {
+  if (!map_context) {
+    return !path.poses.empty();
+  }
+  return map_context->isPathValid(path);
+}
+
 void CostmapAstarPlanner::configure(
     const ModuleContext& context,
     ayanami::costmap::CostmapMapContext::ConstPtr map) {

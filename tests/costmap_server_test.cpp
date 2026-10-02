@@ -2,11 +2,11 @@
 
 #include <memory>
 
-#include <costmap_2d/cost_values.hpp>
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/cost_values.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 namespace {
 
@@ -25,7 +25,7 @@ std::shared_ptr<costmap_2d::LayeredCostmap> makeRollingGrid(
 
 TEST(CostmapServerTest, constructionHoldsLayeredCostmapWithStaticLayer) {
   auto lm = makeRollingGrid(20, 0.5);
-  auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto layer = std::make_shared<costmap_2d::StaticLayer>();
   costmap_2d::Costmap2D layer_map(10, 10, 0.5, 0.0, 0.0);
   layer_map.setCost(2, 2, costmap_2d::LETHAL_OBSTACLE);
   layer->setMap(layer_map);

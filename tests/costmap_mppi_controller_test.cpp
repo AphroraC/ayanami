@@ -21,10 +21,10 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
@@ -360,7 +360,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
   if (obstacle_fn) {
     obstacle_fn(layer_map);
   }
-  auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto static_layer = std::make_shared<costmap_2d::StaticLayer>();
   static_layer->setMap(layer_map);
   lm->addLayer(static_layer);
   lm->updateMap(0.0, 0.0, 0.0);
@@ -683,42 +683,6 @@ TEST(CostmapMppiControllerTest, hModeGateSwitchesAndTracks) {
                   .ok);
   EXPECT_EQ(controller->lastSolveMode(),
             ayanami::modules::mppi::SolveMode::Twist3D);
-}
-
-TEST(CostmapMppiControllerTest, swerveTelemetryMatchesCommandTwist) {
-  auto wrapper = makeWrapper(40, 0.5);
-  auto controller = makeController(wrapper);
-  ASSERT_TRUE(controller->setPlan(
-      makePathPoints({{1.0, 1.0}, {9.0, 1.0}})));
-  ayanami::messages::SwerveCommandsStamped received;
-  bool received_any = false;
-  ayanami::CallbackSubscription sub =
-      ayanami::interfaces::NavigationCallbacks::on_swerve_command.subscribe(
-          [&](const ayanami::messages::SwerveCommandsStamped& stamped) {
-            received = stamped;
-            received_any = true;
-          });
-  TwistStamped cmd;
-  ASSERT_TRUE(controller
-                  ->computeVelocityCommand(makePose(1.0, 1.0, 0.0),
-                                           TwistStamped{}, cmd)
-                  .ok);
-  ASSERT_TRUE(received_any);
-  EXPECT_EQ(received.header.frame_id, "map");
-  // The four wheel commands must reproduce the published twist through
-  // the diagonal pair (the same inverse the chassis controller runs).
-  const auto geometry = ayanami::modules::swerve::SwerveGeometry{
-      0.2, 0.2, 0.2, 0.2, 0.076};
-  const double a = received.wheels[0].rotor * geometry.tire_radius *
-                   std::cos(received.wheels[0].steer);
-  const double b = received.wheels[0].rotor * geometry.tire_radius *
-                   std::sin(received.wheels[0].steer);
-  const double c = received.wheels[3].rotor * geometry.tire_radius *
-                   std::cos(received.wheels[3].steer);
-  const double d = received.wheels[3].rotor * geometry.tire_radius *
-                   std::sin(received.wheels[3].steer);
-  EXPECT_NEAR(0.5 * (a + c), cmd.twist.linear.x(), 1e-6);
-  EXPECT_NEAR(0.5 * (b + d), cmd.twist.linear.y(), 1e-6);
 }
 
 TEST(CostmapMppiControllerTest, moduleFactoryCreatesController) {

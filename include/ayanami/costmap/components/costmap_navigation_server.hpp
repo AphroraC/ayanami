@@ -13,22 +13,19 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include "ayanami/abstract/components/navigation_server_base.hpp"
-#include "ayanami/costmap/components/costmap_action.hpp"
+#include "ayanami/costmap/components/costmap_commands.hpp"
 #include "ayanami/costmap/components/costmap_map_context.hpp"
-#include "ayanami/map/map_family_factory.hpp"
-#include "ayanami/costmap/core/costmap_command.hpp"
-#include "ayanami/costmap/core/costmap_layer_plugin.hpp"
+#include "ayanami/costmap/components/costmap_layers_builder.hpp"
 #include "ayanami/costmap/core/costmap_observation.hpp"
 #include "ayanami/costmap/core/costmap_controller.hpp"
 #include "ayanami/costmap/core/costmap_planner.hpp"
-#include "ayanami/costmap/core/costmap_recovery.hpp"
 #include "ayanami/costmap/core/costmap_smoother.hpp"
 #include "ayanami/messages/sensor_msgs.hpp"
 
-namespace costmap_2d_layers {
+namespace costmap_2d {
 class SimpleObstacleLayer;
 class StaticLayer;
 }
@@ -53,10 +50,6 @@ namespace costmap {
  *   Algorithm modules receive only name-based initialization; no
  *   CostmapMapContext is injected -- all map access goes through lock-based
  *   direct reads in the executions.
- * - Overrides createActions(): the production path constructs Costmap*Action
- *   directly (with CostmapMapContext + execution configuration: checkers/
- *   velocity limits/robot state source), replacing the base class's
- *   new*Execution virtual factory indirection layer.
  * - configureCoreMaps(config_path) reads config_navigation and builds the
  *   global/local LayeredCostmap pair in DIFFERENT frames (nav2 convention):
  *   global = StaticLayer + (optional SimpleObstacleLayer) + InflationLayer
@@ -110,18 +103,7 @@ class CostmapNavigationServer
   /// @brief Read config_navigation and build the global/local costmaps
   /// (StaticLayer + InflationLayer + SimpleObstacleLayer), injecting the
   /// map_context.
-  /// @param factory Map-family factory (the sole context creation point);
-  ///        falls back to CostmapMapFamilyFactory when empty. Contexts
-  ///        created via the factory are recorded in mapFamilyFactory for
-  ///        test/assembly auditing.
-  void configureCoreMaps(
-      const std::string& config_path,
-      ayanami::map::MapFamilyFactory::Ptr factory = nullptr);
-
-  /// @brief The map-family factory actually used by configureCoreMaps (the abstract surface; the core only knows this type).
-  ayanami::map::MapFamilyFactory::Ptr mapFamilyFactory() const {
-    return map_family_factory;
-  }
+  void configureCoreMaps(const std::string& config_path);
 
   // ---- Virtual initialize*Module overrides: costmap family injection ----
   bool initializePlannerModule(
@@ -133,19 +115,6 @@ class CostmapNavigationServer
   bool initializeControllerModule(
       const std::string& name, const ayanami::Config& module_config,
       ayanami::abstract::AbstractController::Ptr) override;
-  bool initializeRecoveryModule(
-      const std::string& name, const ayanami::Config& module_config,
-      ayanami::abstract::AbstractRecovery::Ptr) override;
-
-  /// @brief Path validity (the BT-readable surface of the responsibility
-  /// table's "is the path stale"): delegates to the costmap context's
-  /// overlay check (global+local, lethal/unknown/out of bounds).
-  bool isPathValid(const ayanami::nav_msgs::Path& path) const override {
-    return costmap_context && costmap_context->isPathValid(path);
-  }
-
-  // ---- createActions override: production path = Costmap*Action (costmap_action) ----
-  void createActions() override;
 
   // ---- Obstacle observation signal entry points ----
   /// @brief Transform the point cloud (sensor frame) into the shared map
@@ -167,9 +136,6 @@ class CostmapNavigationServer
   costmap_2d::CostmapWrapper::Ptr localCostmap() const {
     return costmap_context ? costmap_context->localCostmap() : nullptr;
   }
-
-  /// @brief Map change command port (write commands such as clear; recovery modules submit through it).
-  CostmapCommandPort::Ptr commandPort() const { return command_port; }
 
   /// @brief Execute one clear-costmap command (sole-writer path: mutate the
   /// layer + updateMap -> publish a new epoch). Reused by the command port
@@ -334,20 +300,6 @@ class CostmapNavigationServer
   ///        the last_local_robot_* cache (global stamping is best-effort).
   /// @param tf_wait_ms/stamp_fallback optional out-params (local path only).
   /// @return false when the map could not be stamped (TF unavailable).
-  /// @brief Load one map's layer plugin list (section "layers": ordered
-  /// layer entries, list order = composition order). Each entry is either
-  /// an INLINE layer name (so_name + parameters in
-  /// <section>.<name> of the same config -- the production spelling) or a
-  /// module json path (file spelling, test compat). The key is REQUIRED;
-  /// throws on absence or on a failed load.
-  void loadLayerPlugins(
-      const std::string& section, const ayanami::Config& cfg,
-      const std::string& config_dir,
-      const costmap_2d::LayeredCostmap::Ptr& layered_costmap,
-      ayanami::components::ModuleManager<
-          ayanami::costmap::CostmapLayerPlugin>& manager,
-      std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins);
-
   /// @brief Transform-and-stamp entry (deleted: the observation pipeline is
   /// runMapCycle -- inline callers force the same cycle the writer uses).
   void markObstaclesInFrame(const std::string& frame_id,
@@ -356,22 +308,14 @@ class CostmapNavigationServer
                             const std::vector<Eigen::Vector3d>& clearing_points = {}) = delete;
 
   CostmapMapContext::Ptr costmap_context;
-  CostmapCommandPort::Ptr command_port;
-  ayanami::map::MapFamilyFactory::Ptr map_family_factory;
-  /// @brief Layer plugin family: one manager + one loaded list per map
-  /// (the same layer json may be listed by both maps; each instance then
-  /// owns its own layer object and parameters).
-  ayanami::components::ModuleManager<ayanami::costmap::CostmapLayerPlugin>
-      global_layer_modules;
-  ayanami::components::ModuleManager<ayanami::costmap::CostmapLayerPlugin>
-      local_layer_modules;
-  std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr> global_layer_plugins;
-  std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr> local_layer_plugins;
-  /// @brief Per-recovery module configs (stashed by initializeRecoveryModule,
-  /// consumed by createActions to inject per-module execution settings such
-  /// as the tick cycle period).
-  std::map<std::string, ayanami::Config> recovery_configs;
-
+  /// @brief Static layer composition handles (the fixed global build =
+  /// static+inflation, local build = obstacle+inflation; built once by
+  /// configureCoreMaps via buildGlobalLayers/buildLocalLayers). The writer
+  /// routes observations through local_obstacle_applier; the emission path
+  /// reads the layer grids through these handles directly.
+  costmap_2d::StaticLayer::Ptr global_static_layer;
+  costmap_2d::SimpleObstacleLayer::Ptr local_obstacle_layer;
+  CostmapObstacleApplier::Ptr local_obstacle_applier;
   // ---- observation sources + writer thread state (single literal writer) ----
   std::vector<ObservationSourceConfig> observation_sources;
   /// @brief Observation FIFO (nav2 observation_keep_time analogue): frames

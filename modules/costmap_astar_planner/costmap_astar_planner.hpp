@@ -62,6 +62,11 @@ class CostmapAstarPlanner final : public ayanami::costmap::CostmapPlanner {
 
   bool cancel() override;
 
+  /// @brief Fused-overlay validity probe (CostmapMapContext::isPathValid:
+  /// global geometry + fresh local marks, nearest-point start, out-of-map
+  /// treated as lethal). The planner holds the map, so the FSM asks it.
+  bool isPathValid(const nav_msgs::Path& path) const override;
+
  private:
   struct CostmapAstarPlannerParam {
     bool use_diagonal = true;

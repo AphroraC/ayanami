@@ -2,16 +2,13 @@
   "extensions": {
     "loading_extension_modules": [
       "libayanami_rviz_viewer.so",
-      // "libayanami_costmap_viewer.so",
-      "libayanami_cmd_chassis_publisher.so",
-      "libayanami_rosemap_viewer.so"
+      "libayanami_rose_viewer.so",
+      "libayanami_cmd_chassis_publisher.so"
     ]
   },
   "rviz_viewer": {
     "planner_path_topic": "/ayanami/planner/path",
     "smoother_path_topic": "/ayanami/smoother/path",
-    "smoother_input_path_topic": "/ayanami/smoother/input_path",
-    "controller_path_topic": "/ayanami/controller/path",
     "planner_goal_topic": "/ayanami/planner/goal",
     "planner_feedback_topic": "/ayanami/planner/feedback",
     "smoother_feedback_topic": "/ayanami/smoother/feedback",
@@ -22,25 +19,25 @@
     "recovery_status_topic": "/ayanami/recovery/status",
     "navigation_status_topic": "/ayanami/navigation_status"
   },
-  "costmap_viewer": {
+  "rose_viewer": {
     "global_static_topic": "/ayanami/global_costmap/static",
     "global_inflation_topic": "/ayanami/global_costmap/inflation",
     "local_obstacle_topic": "/ayanami/local_costmap/obstacle",
     "local_inflation_topic": "/ayanami/local_costmap/inflation",
+    "esdf_field_topic": "/ayanami/esdf/field",
+    "esdf_occupancy_topic": "/ayanami/esdf/occupancy",
     "global_static_rate": 0.1,
     "global_inflation_rate": 0.1,
     "local_obstacle_rate": 5.0,
-    "local_inflation_rate": 5.0
-  },
-  "rosemap_viewer": {
-    "field_topic": "/ayanami/rosemap_field",
-    "field_rate": 5.0
+    "local_inflation_rate": 5.0,
+    "esdf_rate": 2.0,
+    "esdf_stride": 2
   },
   "cmd_chassis_publisher": {
     "cmd_chassis_topic": "/cmd_chassis",
     "mode": 0,
-    "accel_linear_x": 1.5,
-    "accel_linear_y": 1.5,
+    "accel_linear_x": 1.8,
+    "accel_linear_y": 1.8,
     "accel_angular_z": 6.0,
     "power_limit": 100.0
   }

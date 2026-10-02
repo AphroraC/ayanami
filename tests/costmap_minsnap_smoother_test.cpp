@@ -27,10 +27,10 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
@@ -63,7 +63,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(
   if (obstacle_fn) {
     obstacle_fn(layer_map);
   }
-  auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto static_layer = std::make_shared<costmap_2d::StaticLayer>();
   static_layer->setMap(layer_map);
   lm->addLayer(static_layer);
   lm->updateMap(0.0, 0.0, 0.0);

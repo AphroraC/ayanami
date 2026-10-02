@@ -2,16 +2,17 @@
 
 Ayanami 是一个**纯 C++、不依赖 ROS** 的单机器人导航框架，专注于**同一时间内的一次导航任务**。
 它借鉴了 move_base_flex 的"抽象地图 + 依赖地图"模块分层与 nav2 的
-planner / smoother / controller / recovery 四组件和行为树组织方式，并针对
-稳健、精简、高效、可扩展的目标做了多项结构决策。
+planner / smoother / controller / recovery 四组件划分，编排采用**单体 FSM**
+（`FsmDriver`，行为树的语义继承者），并针对稳健、精简、高效、可扩展的目标
+做了多项结构决策。
 
 - 仓库布局：`src/ayanami`（纯 C++ 核心 + 模块，零 ROS 头文件）与
   `src/ayanami_ros`（唯一的 ROS1 边界层）。
 - 算法模块通过 dlopen（`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`）加载，
   以 `create_extension_module` 工厂符号暴露。
-- 行为树（BehaviorTree.CPP v4，vendored）：工厂与树实例都只建一次（**常驻树**：
-  首个 goal 建树，每尝试终态 `haltTree()` 归 IDLE 后原树再武装）；
-  目标更新走 latest-wins 邮箱（in-flight 时为原地 goal 修订）；恢复调度完全由行为树决定。
+- 单体 FSM（`FsmDriver`）：goal latest-wins 邮箱 + 常驻 PLAN/CONTROL 双线程；
+  重试预算、恢复轮转、不可恢复短路、原地修订、节流重规划等策略全部是
+  状态机里的普通代码（BT 构造 → 代码的逐项对照见 [fsm.md](fsm.md)）。
 
 ## 快速开始（docker 环境 dynamicx）
 
@@ -41,15 +42,15 @@ cd /share/nav_ws/build/ayanami_ros && ctest --timeout 120
 | 页面 | 内容 |
 |---|---|
 | [architecture.md](architecture.md) | 总体架构、分层、线程模型、目录结构 |
+| [fsm.md](fsm.md) | 单体 FSM：状态机、线程模型、BT 语义平移对照、FsmDriverConfig、宿主注入 |
 | [configuration.md](configuration.md) | 配置系统：全部文件、键、默认值与单一来源纪律 |
-| [navigation-flow.md](navigation-flow.md) | 一次导航的完整生命周期（goal → plan → smooth → follow → recover） |
-| [behavior-tree.md](behavior-tree.md) | 行为树层：节点清单、树实例模型、建树期端口/角色校验、reset_token |
-| [execution-runtime.md](execution-runtime.md) | 执行运行时：Execution/Action/并发槽/资源协议/错误码体系 |
-| [map-and-costmap.md](map-and-costmap.md) | 地图族抽象、CostmapReader 回调作用域零拷贝读、唯一写者纪律、清图 |
+| [navigation-flow.md](navigation-flow.md) | 一次导航的完整生命周期（goal → plan → follow → recover → 终态） |
+| [execution-runtime.md](execution-runtime.md) | 执行运行时：Execution 直驱/错误码体系/patience 与零脉冲语义 |
+| [map-and-costmap.md](map-and-costmap.md) | 地图族抽象、costmap 合包与层静态组合、ESDF 派生流水线、唯一写者纪律 |
 | [modules.md](modules.md) | 模块开发指南：接口、工厂、加载后参数注入、Param 结构体、api_version、CMake 集成 |
-| [ros-integration.md](ros-integration.md) | ayanami_ros 边界：AyanamiROS、TF 同步、AMCL 集成、rviz_viewer |
+| [ros-integration.md](ros-integration.md) | ayanami_ros 边界：AyanamiROS、TF 同步、AMCL 集成、扩展 |
 | [testing.md](testing.md) | 测试套件、关键回归测试、写测试的方法论 |
-| [troubleshooting.md](troubleshooting.md) | 故障排查与已知坑（含三次真实卡死案例的复盘） |
+| [troubleshooting.md](troubleshooting.md) | 故障排查与已知坑（含真实事故案例的复盘） |
 
 ## 一分钟架构图
 
@@ -57,16 +58,17 @@ cd /share/nav_ws/build/ayanami_ros && ctest --timeout 120
         ROS 侧 (ayanami_ros)                        纯 C++ 核心 (ayanami)
 /scan /odom /tf ──► AyanamiROS ──setOdometry──► RobotStateController (TF/速度)
  /tf (AMCL)   │        │  submitSensor              │
-              │        └──setLaserScan──┐           ▼
-/goal ────────┼──► submitGoal(邮箱)     │   CostmapNavigationServer
-              │                         │   ├─ CostmapMapContext (global/local)
-rviz_viewer ◄─┘ (旁路可视化)            │   ├─ planner/smoother/controller/
-                                        │   │  recovery/checker 模块
-                                        ▼   ▼
-                                   BehaviorTreePilot（工厂常驻；每次尝试一棵新树）
-                                        │ request* (TaskHandle 直连)
+              │        └──setPointcloud──┐           ▼
+/goal ────────┼──► submitGoal(邮箱)      │   宿主 so（routes json 选择）
+              │                         │   rose_navigation_fsm / costmap_navigation_fsm
+rviz_viewer ◄─┘ (旁路可视化)            │   ├─ CostmapNavigationServer（唯一写者）
+                                        │   ├─ [rose: EsdfWriter（派生有符号距离场）]
+                                        │   └─ planner/smoother/controller/recovery 模块
                                         ▼
-                              ActionBase 并发槽 ──► Execution 线程 ──► 模块
+                                   FsmDriver（PLAN 线程 tick + CONTROL 线程）
+                                        │ 注入三族 Execution + recovery 列表
+                                        ▼
+                              Execution::runBlocking ──► 模块
                                         │
                               cmd_vel ──► 机器人（Gazebo 差速）
 ```

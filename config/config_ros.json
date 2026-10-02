@@ -6,7 +6,6 @@
     "goal_topic": "/move_base_simple/goal",
     "map_frame": "map",
     "odom_frame": "odom",
-    "robot_frame": "base_link",
-    "navigation_so_name": "libayanami_rosemap_navigation.so"
+    "robot_frame": "base_link"
   }
 }

@@ -10,16 +10,12 @@
 #include <string>
 #include <thread>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
-#include <ayanami/costmap/components/costmap_controller_action.hpp>
 #include <ayanami/costmap/components/costmap_controller_execution.hpp>
-#include <ayanami/costmap/components/costmap_planner_action.hpp>
 #include <ayanami/costmap/components/costmap_planner_execution.hpp>
-#include <ayanami/costmap/components/costmap_recovery_action.hpp>
-#include <ayanami/costmap/components/costmap_recovery_execution.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/abstract/core/abstract_progress_checker.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
@@ -86,35 +82,6 @@ class BlockingPlanner : public ayanami::costmap::CostmapPlanner {
   std::condition_variable release;
   std::atomic<bool> canceled{false};
 };
-
-class BlockingRecovery : public ayanami::costmap::CostmapRecovery {
- public:
-  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
-  ResultT<void> tick(RecoveryCycleData& cycle) override {
-    calls++;
-    {
-      std::unique_lock<std::mutex> lock(mutex);
-      entered.notify_all();
-      release.wait_for(lock, std::chrono::milliseconds(2000),
-                        [this] { return canceled.load(); });
-    }
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    cycle = std::move(data);
-    return ResultT<void>::success();
-  }
-  bool cancel() override {
-    canceled = true;
-    release.notify_all();
-    return true;
-  }
-  std::atomic<int> calls{0};
-  std::mutex mutex;
-  std::condition_variable entered;
-  std::condition_variable release;
-  std::atomic<bool> canceled{false};
-};
-
 class TestController : public ayanami::costmap::CostmapController {
  public:
   void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
@@ -154,42 +121,6 @@ class FalseProgressChecker : public ayanami::abstract::AbstractProgressChecker {
   void reset() override {}
   bool check(const PoseStamped&) override { return false; }
 };
-
-class TestRecovery : public ayanami::costmap::CostmapRecovery {
- public:
-  void configure(const ayanami::ModuleContext&, CostmapMapContext::ConstPtr) override {}
-  ResultT<void> tick(RecoveryCycleData& cycle) override {
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    cycle = std::move(data);
-    return ResultT<void>::success();
-  }
-  bool cancel() override { return true; }
-};
-
-/// Exposes the protected createExecution factory to verify the derived Action returns the costmap execution.
-class TestablePlannerAction : public ayanami::costmap::CostmapPlannerAction {
- public:
-  using CostmapPlannerAction::CostmapPlannerAction;
-  ayanami::components::PlannerExecution::Ptr make() { return createExecution(); }
-};
-
-class TestableControllerAction : public ayanami::costmap::CostmapControllerAction {
- public:
-  using CostmapControllerAction::CostmapControllerAction;
-  ayanami::components::ControllerExecution::Ptr make() { return createExecution(); }
-};
-
-class TestableRecoveryAction : public ayanami::costmap::CostmapRecoveryAction {
- public:
-  using CostmapRecoveryAction::CostmapRecoveryAction;
-  ayanami::components::RecoveryExecution::Ptr make() { return createExecution(); }
-};
-
-}  // namespace
-
-// ---- CostmapPlannerExecution: preRun activates / postRun deactivates / never holds the write lock ----
-
 TEST(CostmapComponentsTest, plannerExecutionActivatesBeforeAndDeactivatesAfter) {
   auto wrapper = makeWrapper();
   auto planner = std::make_shared<BlockingPlanner>();
@@ -307,68 +238,4 @@ TEST(CostmapComponentsTest, controllerNoProgressMapsToNoProgressState) {
 
   exec_th.join();
 }
-
-// ---- CostmapRecoveryExecution: activates/deactivates both the global+local costmaps ----
-
-TEST(CostmapComponentsTest, recoveryExecutionActivatesDeactivatesBothCostmaps) {
-  auto global = makeWrapper();
-  auto local = makeWrapper();
-  auto recovery = std::make_shared<BlockingRecovery>();
-  ayanami::costmap::CostmapRecoveryExecution exec(
-      "test_recovery", recovery, makeContext(global, local));
-
-  EXPECT_FALSE(global->isActive());
-  EXPECT_FALSE(local->isActive());
-  std::thread exec_th([&] { exec.runBlocking(); });
-  {
-    std::unique_lock<std::mutex> lock(recovery->mutex);
-    ASSERT_TRUE(recovery->entered.wait_for(
-        lock, std::chrono::milliseconds(1000),
-        [&] { return recovery->calls.load() >= 1; }));
-  }
-  EXPECT_TRUE(global->isActive());
-  EXPECT_TRUE(local->isActive());
-
-  exec.cancel();
-  exec_th.join();
-  EXPECT_FALSE(global->isActive());
-  EXPECT_FALSE(local->isActive());
-}
-
-// ---- Derived Action createExecution factory returns the costmap execution ----
-
-TEST(CostmapComponentsTest, plannerActionFactoryReturnsCostmapPlannerExecution) {
-  auto wrapper = makeWrapper();
-  auto planner = std::make_shared<BlockingPlanner>();
-  TestablePlannerAction action(planner, makeContext(wrapper));
-
-  auto exec = action.make();
-  auto cast = std::dynamic_pointer_cast<ayanami::costmap::CostmapPlannerExecution>(exec);
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast.get(), exec.get());
-}
-
-TEST(CostmapComponentsTest, controllerActionFactoryReturnsCostmapControllerExecution) {
-  auto wrapper = makeWrapper();
-  auto controller = std::make_shared<TestController>();
-  TestableControllerAction action(controller, makeContext(nullptr, wrapper));
-
-  auto exec = action.make();
-  auto cast =
-      std::dynamic_pointer_cast<ayanami::costmap::CostmapControllerExecution>(exec);
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast.get(), exec.get());
-}
-
-TEST(CostmapComponentsTest, recoveryActionFactoryReturnsCostmapRecoveryExecution) {
-  auto global = makeWrapper();
-  auto local = makeWrapper();
-  auto recovery = std::make_shared<TestRecovery>();
-  TestableRecoveryAction action(recovery, makeContext(global, local));
-
-  auto exec = action.make();
-  auto cast =
-      std::dynamic_pointer_cast<ayanami::costmap::CostmapRecoveryExecution>(exec);
-  ASSERT_NE(cast, nullptr);
-  EXPECT_EQ(cast.get(), exec.get());
-}
+}  // namespace

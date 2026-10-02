@@ -22,30 +22,11 @@
 
 #include <ayanami/costmap/components/costmap_navigation_server.hpp>
 #include <ayanami/abstract/components/robot_state_controller.hpp>
-#include <ayanami/costmap/core/costmap_command.hpp>
+#include <ayanami/costmap/components/costmap_commands.hpp>
 #include <ayanami/messages/sensor_msgs.hpp>
 
 using ayanami::testing::testTransforms;
 namespace {
-
-/// @brief Layer module jsons for the rolling fixture (grid-backed obstacle
-/// layer consuming the laser scan; static + inflation on the global map).
-void write_layer_jsons(const std::filesystem::path& dir) {
-  std::ofstream(dir / "layer_static.json")
-      << R"({"layer": {"name": "static_layer", "so_name": "libayanami_costmap_static_layer.so"},)"
-         R"( "static_layer": {"size_x": 20, "size_y": 20, "resolution": 0.05}})";
-  std::ofstream(dir / "layer_inflation_global.json")
-      << R"({"layer": {"name": "inflation_layer", "so_name": "libayanami_costmap_inflation_layer.so"},)"
-         R"( "inflation_layer": {"inflation_radius": 0.3, "inscribed_radius": 0.1, "cost_scaling_factor": 2.0}})";
-  std::ofstream(dir / "layer_inflation_local.json")
-      << R"({"layer": {"name": "inflation_layer", "so_name": "libayanami_costmap_inflation_layer.so"},)"
-         R"( "inflation_layer": {"inflation_radius": 0.2, "inscribed_radius": 0.1, "cost_scaling_factor": 2.0}})";
-  std::ofstream(dir / "layer_obstacle.json")
-      << R"({"layer": {"name": "obstacle_layer", "so_name": "libayanami_costmap_obstacle_layer.so"},)"
-         R"( "obstacle_layer": {"combination": "overwrite", "footprint_clearing": true,)"
-         R"( "observation_sources": ["scan"],)"
-         R"( "scan": {"type": "laserscan", "obstacle_max_range": 3.0, "raytrace_max_range": 3.5}}})";
-}
 
 std::filesystem::path makeRollingConfigDir() {
   auto dir = std::filesystem::temp_directory_path() / "ayanami_rolling_test";
@@ -56,22 +37,33 @@ std::filesystem::path makeRollingConfigDir() {
   }
   {
     std::ofstream out(dir / "navigation.json");
+    // INLINE layer blocks (static composition): global = static+inflation,
+    // local = obstacle+inflation with a laserscan source.
     out << R"({
       "navigation": {"robot_frame": "base_link", "velocity_timeout": 5.0},
       "costmap": {"global_frame": "map", "local_frame": "odom",
                    "resolution": 0.05, "robot_radius": 0.12},
       "costmap_global": {"rolling_window": false, "track_unknown": false,
-                          "layers": ["layer_static.json",
-                                     "layer_inflation_global.json"]},
+                          "static_layer": {"size_x": 20, "size_y": 20,
+                                            "resolution": 0.05},
+                          "inflation_layer": {"inflation_radius": 0.3,
+                                               "inscribed_radius": 0.1,
+                                               "cost_scaling_factor": 2.0}},
       "costmap_local": {"size_x": 60, "size_y": 60, "resolution": 0.05,
                          "rolling_window": true, "track_unknown": false,
                          "update_frequency": 10.0,
                          "observation_keep_time": 0.5,
-                         "layers": ["layer_obstacle.json",
-                                    "layer_inflation_local.json"]}
+                         "obstacle_layer": {"combination": "overwrite",
+                                             "footprint_clearing": true,
+                                             "observation_sources": ["scan"],
+                                             "scan": {"type": "laserscan",
+                                                       "obstacle_max_range": 3.0,
+                                                       "raytrace_max_range": 3.5}},
+                         "inflation_layer": {"inflation_radius": 0.2,
+                                              "inscribed_radius": 0.1,
+                                              "cost_scaling_factor": 2.0}}
     })";
   }
-  write_layer_jsons(dir);
   return dir;
 }
 
@@ -308,7 +300,7 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
  // The robot has advanced to x~0.8 (path end): the occupied start lies
  // before the "closest point" -> valid
   set_base(0.8, 0.0);
-  EXPECT_TRUE(server.isPathValid(path))
+  EXPECT_TRUE(server.costmapContext()->isPathValid(path))
       << "occupied already-passed segment must not invalidate the path";
 
  // The robot stands ON the occupied start cell: the at-robot point is
@@ -316,7 +308,7 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
  // band-grazing tracker into the stop-into-recovery deadlock); the verdict
  // flips to valid and FollowPath keeps driving it out.
   set_base(0.2, 0.0);
-  EXPECT_TRUE(server.isPathValid(path))
+  EXPECT_TRUE(server.costmapContext()->isPathValid(path))
       << "the point at the robot's own position is exempt (it is already there)";
 
  // An occupied cell AHEAD of the robot, beyond the body radius, still gates:
@@ -327,7 +319,7 @@ TEST(LocalWindowRolling, isPathValidStartsAtClosestPointToRobot) {
     auto write_lock = server.globalCostmap()->lockForWrite();
     grid->setCost(12, 0, costmap_2d::LETHAL_OBSTACLE);
   }
-  EXPECT_FALSE(server.isPathValid(path))
+  EXPECT_FALSE(server.costmapContext()->isPathValid(path))
       << "occupied segment beyond the body radius must invalidate the path";
 }
 

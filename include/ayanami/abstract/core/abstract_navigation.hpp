@@ -18,7 +18,7 @@ namespace abstract {
  * The ROS-side dlopen host module (e.g. CostmapNavigation) forwards inputs
  * only through this interface: initialize/start/stop/spinOnce/setGoal +
  * setPointcloud/setLaserScan; internally it holds the full
- * NavigationServerBase + BehaviorTreePilot stack.
+ * NavigationServerBase + FsmDriver stack.
  */
 class AbstractNavigation : public virtual ExtensionModule {
 public:

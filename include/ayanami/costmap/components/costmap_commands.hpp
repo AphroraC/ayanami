@@ -1,13 +1,14 @@
 #pragma once
 
 #include <cmath>
+#include <string>
 #include <shared_mutex>
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d_layers/simple_obstacle_layer.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/simple_obstacle_layer.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 namespace ayanami {
 namespace costmap {
@@ -50,12 +51,12 @@ inline bool clearCostmapArea(const costmap_2d::CostmapWrapper::Ptr& wrapper,
     // layer state on the next cycle (extra bounds work for every layer).
     layer->addExtraBounds(min_x, min_y, max_x, max_y);
     if (auto* obstacle_layer =
-            dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(
+            dynamic_cast<costmap_2d::SimpleObstacleLayer*>(
                 layer.get())) {
       obstacle_layer->clearArea(min_x, min_y, max_x, max_y);
     }
     if (auto* obstacle_layer =
-            dynamic_cast<costmap_2d_layers::SimpleObstacleLayer*>(
+            dynamic_cast<costmap_2d::SimpleObstacleLayer*>(
                 layer.get())) {
       obstacle_layer->clearArea(min_x, min_y, max_x, max_y);
     }
@@ -65,6 +66,16 @@ inline bool clearCostmapArea(const costmap_2d::CostmapWrapper::Ptr& wrapper,
   wrapper->updateMapUnlocked(robot_x, robot_y, yaw);
   return true;
 }
+
+/// @brief One typed map write command (clear-costmap). Consumed by the
+/// sole writer via CostmapNavigationServer::executeClearCommand; the writer
+/// thread's queue carries it when submitted asynchronously.
+struct ClearCostmapCommand {
+  bool enabled = true;
+  /// @brief "global" | "local" | "both".
+  std::string affected_maps = "both";
+  double clear_radius = 0.0;
+};
 
 }  // namespace costmap
 }  // namespace ayanami

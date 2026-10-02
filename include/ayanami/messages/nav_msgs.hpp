@@ -37,6 +37,34 @@ struct OccupancyGrid {
 };
 
 /**
+ * @brief Signed distance field snapshot (ayanami-native; no ROS nav_msgs
+ *        equivalent). Rendered by the ROS bridge as a PointCloud2 whose
+ *        intensity carries the distance (rose_navigation esdf_out style).
+ *
+ * distance: row-major signed meters, positive = free-space distance to the
+ * nearest obstacle, negative = penetration depth inside an obstacle, clamped
+ * to +-max_distance; cell (x, y) at index y * size_x + x, cell center at
+ * world (origin_x + (x + 0.5) * resolution, origin_y + (y + 0.5) * resolution).
+ * occupied: binarized raster of the same shape (1 = obstacle) -- the
+ * visualization surface (distance alone cannot distinguish "obstacle here"
+ * from "clamp plateau"). sequence increments per published rebuild.
+ */
+struct EsdfGrid {
+  ayanami::geometry_msgs::Header header;
+  double resolution = 0.05;
+  int size_x = 0;
+  int size_y = 0;
+  double origin_x = 0.0;
+  double origin_y = 0.0;
+  double max_distance = 3.0;
+  std::uint64_t sequence = 0;
+  std::vector<float> distance;
+  std::vector<unsigned char> occupied;
+  using Ptr = std::shared_ptr<EsdfGrid>;
+  using ConstPtr = std::shared_ptr<const EsdfGrid>;
+};
+
+/**
  * @brief Path (equivalent to nav_msgs/Path); poses is a sequence of framed poses.
  */
 struct Path {

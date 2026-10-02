@@ -1,9 +1,0 @@
-CompileFlags:
-  Add:
-    - -xc++
-    - -std=c++17
-    - -I/share/nav_ws/src/ayanami/thirdparty/BehaviorTree.CPP/include
-    - -I/share/nav_ws/src/ayanami/thirdparty/BehaviorTree.CPP/3rdparty
-    - -I/share/nav_ws/src/ayanami/thirdparty/BehaviorTree.CPP/3rdparty/minitrace
-    - -I/share/nav_ws/src/ayanami/thirdparty/BehaviorTree.CPP/3rdparty/tinyxml2
-    - -I/share/nav_ws/src/ayanami/thirdparty/BehaviorTree.CPP/3rdparty/minicoro

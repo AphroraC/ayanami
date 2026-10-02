@@ -8,7 +8,7 @@ namespace components {
 
 /**
  * @brief Single source of truth for navigation session/version state
- * (BehaviorTreePilot and NavigationServerBase share the same object).
+ * (the FSM host and NavigationServerBase share the same object).
  *
  * Background: the pilot originally held its own session_id/plan_version
  * atomics and the server held another; two counters incrementing

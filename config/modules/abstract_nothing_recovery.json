@@ -1,0 +1,7 @@
+{
+  "recovery": {
+    "name": "abstract_nothing_recovery",
+    "so_name": "libayanami_abstract_nothing_recovery.so"
+  },
+  "abstract_nothing_recovery": {}
+}

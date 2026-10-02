@@ -485,15 +485,6 @@ ResultT<void> CostmapMppiController::computeVelocityCommand(
 
   // Wheel-level telemetry: the rigid-body inverse of the FINAL twist
   // (exactly what the chassis controller's own IK will reproduce).
-  const auto wheels = swerve::twistToWheels8D(twist, geometry_);
-  ayanami::messages::SwerveCommandsStamped swerve_cmd;
-  swerve_cmd.header = pose.header;
-  for (int i = 0; i < 4; ++i) {
-    swerve_cmd.wheels[static_cast<std::size_t>(i)] = {
-        wheels.steer[i], wheels.rotor[i]};
-  }
-  ayanami::interfaces::NavigationCallbacks::on_swerve_command.call(
-      swerve_cmd);
   return ResultT<void>::success();
 }
 

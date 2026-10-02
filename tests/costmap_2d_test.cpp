@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
-#include <costmap_2d/cost_values.hpp>
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/pgm_dump.hpp>
-#include <costmap_2d/layer.hpp>
-#include <costmap_2d/layered_costmap.hpp>
+#include <costmap/cost_values.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/pgm_dump.hpp>
+#include <costmap/layer.hpp>
+#include <costmap/layered_costmap.hpp>
 
 #include <memory>
 

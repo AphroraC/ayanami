@@ -2,68 +2,82 @@
 
 ## 套件概览
 
-- **ayanami**：52 个 ctest（`build/ayanami`），纯 C++，无 ROS 依赖。
-- **ayanami_ros**：5 个 ctest（`build/ayanami_ros`），需要 roscore
+- **ayanami**：32 个 ctest（`build/ayanami`），纯 C++，无 ROS 依赖。
+- **ayanami_ros**：7 个 ctest（`build/ayanami_ros`），需要 roscore
   （容器内注意 ROS_MASTER_URI；VS Code 可能占用 11311 端口导致 roscore 起不来，
   可改用 `roscore -p 11313` 并 `export ROS_MASTER_URI=http://localhost:11313`）。
 
-关键回归测试（改对应模块前先看）：
+## ayanami 测试清单（32 个，按类分组）
+
+| 组 | 测试 |
+|---|---|
+| 基础设施 | config_test、logging_test、callback_slot_test、callbacks_test（跨 .so 槽单实例）、messages_test |
+| 机器人状态 | robot_state_controller_test、robot_state_controller_bench（TF 查询基准：10 边 @500Hz，成功率 >98%、p99 <3ms）、robot_state_controller_cross_dso_test（跨 DSO 单例） |
+| 插件机制 | load_module_test、module_manager_test（含 stale api 版本拒绝）、module_teardown_no_ub_test |
+| 抽象组件 | core_interfaces_test、execution_test |
+| costmap 包 | costmap_2d_test、costmap_layers_test、costmap_server_test |
+| costmap 组件 | costmap_context_test、costmap_components_test、concurrent_controller_obstacle_test（控制器短锁不被落图饿死）、snapshot_stability_test、planner_writer_concurrency_test、local_window_rolling_test |
+| costmap 层静态组合 | costmap_layers_static_test（buildGlobalLayers/buildLocalLayers 解析、重复源类型拒绝、applier 过滤与足印清除） |
+| 生产模块 | costmap_astar_planner_test、costmap_minsnap_smoother_test、costmap_pid_controller_test、costmap_mppi_controller_test、minor_carry_wirings_test（astar+pid 小装配） |
+| ESDF | esdfmap_test（重建发布/generation 门控/静态 mask 经变换融合/插值与梯度/路径校验探针/新鲜度门） |
+| **FSM** | **fsm_test**（进程内 mock 直驱状态机语义）、**fsm_e2e_test**（rose 宿主无头 E2E）、**fsm_costmap_e2e_test**（costmap 宿主无头 E2E） |
+
+期自动跳过该测试（不注册进 ctest）。
+
+## 关键新测试（改 FSM/地图前先看）
 
 | 测试 | 守护的行为 |
 |---|---|
-| production_tree_recovery_test | **生产默认树 + MockRuntime**：恢复后 FollowPath 必须重入（exe≥2）、planner 必须重规划（path≥2）、每树生命恢复次数 ≤ 预算（历史：28 次恢复零重入的恢复风暴） |
-| local_window_rolling_test | 局部滚动窗口跟随机器人（历史：窗口钉死原点导致机器人卡在窗口边缘）；定位跳变清空全局动态层 |
-| goal_update_follow_test | 导航中重设 goal → planner 重规划 + smoother 重平滑 + controller in-place 跟随（RViz 抢占场景回归，60s） |
-| pipeline_sequence_scenarios_test | S1-S6 场景（planner/controller 并行、FAILURE 短路、重规划不中断跟随、goal 更新）+ RateController/RecoverySequence(轮换) reset_token |
-| latest_wins_test / continuous_goal_test | goal 邮箱与连续目标修订语义 |
-| recovery_exhaustion_test / recovery_exception_test | 恢复预算耗尽、模块异常兜底（k_aborted）后互斥释放 |
-| cancel_responsiveness_test | 取消及时性 |
-| snapshot_stability / planner_writer_concurrency / concurrent_controller_obstacle / recovery_vs_obstacle | CostmapReader 回调作用域零拷贝读 + 唯一写者并发 |
-| headless_e2e_test | 无 ROS 全栈在进程内跑通（config → 模块 → 树 → 目标 → 到达） |
-| map_family_abstraction_test | Grid 假族经同一虚钩子装配，核心零 costmap 依赖 |
-| robot_state_controller_cross_dso_test | 跨 DSO 单例解析一致性 |
-| legacy 契约六件套 | action_protocol / cancel_responsiveness / continuous_goal / controller_session / latest_wins / recovery_exhaustion |
+| fsm_test | 状态机语义七场景：正向流水线到达、goal 原地修订（预算复位 + 原地重规划后成功）、恢复轮转烧尽预算后 ABORTED、不可恢复失败短路恢复、平滑失败 DegradeToRawPath、取消结算 CANCELED、成功后二次尝试干净开局 |
+| fsm_e2e_test | **rose FSM 无头 E2E**：按生产方式 dlopen libayanami_rose_navigation_fsm.so（costmap + EsdfWriter + FsmDriver + astar → esdfmap minco → abstract pid → nothing recovery），路由 json 无任何 BT 键；场景：跟随流水线发速度命令、同 goal 连续两次尝试都 SUCCEEDED |
+| fsm_costmap_e2e_test | **costmap FSM 无头 E2E**：同一套宿主装配协议跑纯 costmap 栈（astar → minsnap → costmap pid → nothing recovery） |
+| esdfmap_test | ESDF 派生流水线全语义（见上表） |
+| costmap_layers_static_test | 层静态组合配置解析（层无 so_name 后的配置契约） |
+| local_window_rolling_test | 局部滚动窗口跟随机器人（历史：窗口钉死原点导致机器人卡在窗口边缘） |
+| snapshot_stability / planner_writer_concurrency / concurrent_controller_obstacle | CostmapReader 回调作用域零拷贝读 + 唯一写者并发 |
 
 ## 写测试的方法论
 
-### 1) 单元级：直驱类 + mock
+### 1) 单元级：FSM 直驱 + mock Execution
 
-Execution/Action/BT 层测试不 dlopen，直接在进程内构造。轻量
-`MockRuntime : NavigationRuntime` 模式（见 production_tree_recovery_test）：
+`fsm_test.cpp` 模式：不 dlopen，进程内构造 `FsmDriver`，注入测试用的
+mock Execution（可控成功/失败/延迟的最小 `runBlocking` 实现），
 
-- `request*` 把 pending 项（age + settle lambda）入队；
-- `pump()` 推进年龄并按策略结算（可编程成功/失败/延迟）；
-- 计数器（path/smooth/exe/recovery requests + per-id）做断言；
-- BT 驱动契约：`tickTree()` = `tickExactlyOnce()` + 终端状态时
-  每次终态**重建一棵新树**（与 pilot 的 release/createTreeInstance 一致）；
-- 调试：环境变量 `AYANAMI_BT_TRACE=1` 挂 `BT::StdCoutLogger` 看逐节点迁移。
+- 直接驱动 `beginNavigation` / `cancelNavigation`，用 `state()` /
+  `attemptActive()` / `goalRevision()` / `planVersion()` 原子观测点断言
+  状态迁移与预算/游标行为；
+- 用受控时钟/短频率配置避免裸 sleep 竞态；
+- 恢复列表注入多个 mock recovery 验证**轮转游标**与**预算耗尽**。
+
+Execution 层自身的状态机语义仍由 execution_test 直驱覆盖。
 
 ### 2) 集成级：真实模块 + 临时 config 目录
 
-`makeConfigDir` 模式：写 config.json / navigation.json / 模块 json / PGM 到
+`makeConfigDir` 模式：写 config.json / 路由 json / 模块 json / PGM 到
 `std::filesystem::temp_directory_path()` 子目录，`configureCoreMaps(dir)`
-后直调 `handleObstacleLaserScan` 等公共入口断言地图状态
-（参考 local_window_rolling_test / costmap_navigation_server_test）。
+后直调 `handleObstaclePointCloud` 等公共入口断言地图状态
+（参考 local_window_rolling_test / costmap_components_test）。
 真模块 so 由 CMake 用 `$<TARGET_FILE:...>` 传入（宏 `AYANAMI_TEST_*`）。
 
 ### 3) 跨 DSO：真实 dlopen
 
-模块目标在 CMake 中声明为 SHARED（`tests/modules/`），测试经
-`ExtensionModule::loadModule` 加载并回收（module_teardown_no_ub_test
-验证析构顺序无 UB）。
+模块目标在 CMake 中声明为 SHARED（`tests/modules/` 的
+`ayanami_add_test_plugin`），测试经 `ExtensionModule::loadModule` 加载并
+回收（module_teardown_no_ub_test 验证析构顺序无 UB）。
 
 ### 4) 无头 E2E
 
-headless_e2e_test：全栈进程内（宿主模块 + BT + 执行层 + 假地图 +
-假 TF），发目标、等待到达断言——不依赖 roscore/gazebo。
+fsm_e2e_test / fsm_costmap_e2e_test：全栈进程内按生产加载方式组装
+（dlopen 宿主 so + 6 个模块 so + tests/assets 无头地图），发目标、轮询
+`on_navigation_result` 断言到达——不依赖 roscore/gazebo。静态测试机器人
+场景要把振荡门关到足够宽（位置历史不动会触发 NO_PROGRESS）。
 
 ## 断言纪律
 
-- 先写失败断言再修（本次恢复风暴修复即 TDD：先红 production_tree_recovery，
-  后绿）。
+- 先写失败断言再修（TDD）。
 - 失败消息里带上观测计数（`<< "path=" << n`），方便从 ctest 输出直接定位。
-- 时序敏感断言用事件驱动（TaskHandle::onComplete / waitForStateUpdate），
-  避免裸 sleep 竞态。
+- 时序敏感断言用事件驱动（条件变量 / waitForStateUpdate），避免裸 sleep
+  竞态。
 
 ## 构建状态陷阱（重要）
 
@@ -73,5 +87,5 @@ headless_e2e_test：全栈进程内（宿主模块 + BT + 执行层 + 假地图 
 - 处理：`touch` 对应头文件 + `catkin build`；仍不行就删除具体 .o/二进制
   后 `cd build/<pkg> && make <target>`。
 - 验证产物一致性：比对 `devel/lib/libayanami.so`、
-  `devel/lib/libayanami_costmap_navigation.so`、测试二进制的 mtime 是否都
-  晚于最后一次头文件修改。
+  `devel/lib/libayanami_rose_navigation_fsm.so` 等模块 so、测试二进制的
+  mtime 是否都晚于最后一次头文件修改。

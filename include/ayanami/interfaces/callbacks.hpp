@@ -4,7 +4,6 @@
 
 #include "ayanami/messages/actions.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
-#include "ayanami/messages/swerve.hpp"
 #include "ayanami/utility/callback_slot.hpp"
 
 namespace ayanami {
@@ -19,7 +18,7 @@ namespace interfaces {
  * emitted by the core would land on different objects, silently failing.
  *
  * Division of labor: the mainline control flow goes through BT nodes
- * calling NavigationServerBase's TaskHandle directly and does not pass
+ * calling the server's execution handles directly and does not pass
  * here; this group of slots serves side paths (ROS extension /
  * visualization / fallback / external monitoring) subscriptions.
  *
@@ -36,10 +35,8 @@ struct NavigationCallbacks {
   static CallbackSlot<void(const ayanami::actions::GetPathGoal&)> on_get_path_goal;
   static CallbackSlot<void(const ayanami::actions::GetPathFeedback&)> on_get_path_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::GetPathResult>&)> on_get_path_result;
-  static CallbackSlot<void(const ayanami::actions::SmoothPathGoal&)> on_smooth_path_goal;
   static CallbackSlot<void(const ayanami::actions::SmoothPathFeedback&)> on_smooth_path_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::SmoothPathResult>&)> on_smooth_path_result;
-  static CallbackSlot<void(const ayanami::actions::ExePathGoal&)> on_exe_path_goal;
   static CallbackSlot<void(const ayanami::actions::ExePathFeedback&)> on_exe_path_feedback;
   static CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::ExePathResult>&)> on_exe_path_result;
   static CallbackSlot<void(const ayanami::actions::RecoveryGoal&)> on_recovery_goal;
@@ -48,11 +45,6 @@ struct NavigationCallbacks {
   // ---- State / output / observation (the remaining slots;
   // on_robot_state_updated had no production emit point and was removed) ----
   static CallbackSlot<void(const ayanami::geometry_msgs::TwistStamped&)> on_velocity_command;
-  /// @brief Derived swerve wheel-level view of the latest velocity command
-  /// (rigid-body inverse of the twist; fl, fr, rl, rr). Telemetry for a
-  /// future direct-chassis bridge / diagnostics -- the twist channel stays
-  /// authoritative.
-  static CallbackSlot<void(const ayanami::messages::SwerveCommandsStamped&)> on_swerve_command;
   // ---- Costmap layer streams (one slot per layer artifact; the sole map
   // writer emits unconditionally whenever that artifact's content changes --
   // generation-gated, so an unchanged map stays silent and no rate parameter
@@ -64,11 +56,12 @@ struct NavigationCallbacks {
   /// presence grid, NO inflation): dynamic obstacles only, no decayed halo.
   static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_local_costmap_obstacle;
   static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_local_costmap_inflation;
-  /// @brief The rosemap family's single field artifact (binarized occupancy
-  /// + EDT source grid), emitted by the sole rosemap writer whenever the
-  /// snapshot sequence advances -- same generation-gated unconditional
-  /// semantics as the costmap layer slots.
-  static CallbackSlot<void(const ayanami::nav_msgs::OccupancyGrid&)> on_rosemap_field;
+  /// @brief The rose FSM family's ESDF field artifact (signed distance +
+  /// binarized occupied raster), emitted by the host through the EsdfWriter
+  /// snapshot listener whenever a fresh snapshot is published
+  /// (sequence-gated; same sole-writer unconditional semantics as the
+  /// costmap layer slots, and zero-cost while no subscriber exists).
+  static CallbackSlot<void(const ayanami::nav_msgs::EsdfGrid&)> on_esdfmap_field;
   // ---- session-level navigation terminal outcome (once per tree life) ----
   static CallbackSlot<void(const ayanami::actions::NavigationResult&)> on_navigation_result;
 };

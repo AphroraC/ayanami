@@ -8,7 +8,7 @@
 # declared in that same file right after the call.
 #
 # Output naming is load-bearing: the .so lands as libayanami_<name>.so, and
-# config/modules/*.json (so_name) + navigation.behavior_tree_extension dlopen
+# config/modules/*.json (so_name) + the route json host entry dlopen
 # exactly that name.
 
 function(ayanami_add_module name)

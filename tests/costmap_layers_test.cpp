@@ -6,13 +6,13 @@
 #include <thread>
 #include <limits>
 
-#include <costmap_2d/cost_values.hpp>
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layer.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/inflation_layer.hpp>
-#include <costmap_2d_layers/simple_obstacle_layer.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
+#include <costmap/cost_values.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layer.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/inflation_layer.hpp>
+#include <costmap/simple_obstacle_layer.hpp>
+#include <costmap/static_layer.hpp>
 
 namespace {
 
@@ -41,7 +41,7 @@ TEST(CostmapLayersTest, staticLayerInlineMapCoversFullMap) {
   layer_map.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
   layer_map.setCost(9, 9, costmap_2d::NO_INFORMATION);
 
-  costmap_2d_layers::StaticLayer layer;
+  costmap_2d::StaticLayer layer;
   layer.setMap(layer_map);
 
   double min_x = std::numeric_limits<double>::max();
@@ -106,7 +106,7 @@ TEST(CostmapLayersTest, staticLayerLoadsPgm) {
   writeStaticTestPgm();
 
   auto master = makeGrid(10, 10, 0.5);
-  costmap_2d_layers::StaticLayer layer;
+  costmap_2d::StaticLayer layer;
   layer.setMapPath(k_static_pgm_path, 0.5, 0.0, 0.0);
 
   layer.updateCosts(master, 0, 0, static_cast<int>(master.getSizeInCellsX()),
@@ -132,8 +132,8 @@ TEST(CostmapLayersTest, staticLayerPgmSemanticsVariants) {
     // map cells (1,0) and (2,2)) -> NO_INFORMATION; black/white resolve as
     // always and (0,0) is white regardless.
     auto master = makeGrid(10, 10, 0.5);
-    costmap_2d_layers::StaticLayer layer;
-    costmap_2d_layers::StaticMapSemantics semantics;
+    costmap_2d::StaticLayer layer;
+    costmap_2d::StaticMapSemantics semantics;
     semantics.track_unknown = true;
     layer.setMapPath(k_static_pgm_path, 0.5, 0.0, 0.0, semantics);
     layer.updateCosts(master, 0, 0,
@@ -146,8 +146,8 @@ TEST(CostmapLayersTest, staticLayerPgmSemanticsVariants) {
   {
     // negate: white becomes occupied, black becomes free.
     auto master = makeGrid(10, 10, 0.5);
-    costmap_2d_layers::StaticLayer layer;
-    costmap_2d_layers::StaticMapSemantics semantics;
+    costmap_2d::StaticLayer layer;
+    costmap_2d::StaticMapSemantics semantics;
     semantics.negate = true;
     layer.setMapPath(k_static_pgm_path, 0.5, 0.0, 0.0, semantics);
     layer.updateCosts(master, 0, 0,
@@ -162,8 +162,8 @@ TEST(CostmapLayersTest, staticLayerPgmSemanticsVariants) {
   {
     // scale: the between-threshold band maps linearly to a sub-lethal cost.
     auto master = makeGrid(10, 10, 0.5);
-    costmap_2d_layers::StaticLayer layer;
-    costmap_2d_layers::StaticMapSemantics semantics;
+    costmap_2d::StaticLayer layer;
+    costmap_2d::StaticMapSemantics semantics;
     semantics.trinary = false;
     layer.setMapPath(k_static_pgm_path, 0.5, 0.0, 0.0, semantics);
     layer.updateCosts(master, 0, 0,
@@ -181,7 +181,7 @@ TEST(CostmapLayersTest, staticLayerResizesNonRollingMasterFromMap) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   layered->resizeMap(3, 4, 1.0, 0.0, 0.0);
-  auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto layer = std::make_shared<costmap_2d::StaticLayer>();
   layered->addLayer(layer);
 
   costmap_2d::Costmap2D first(7, 5, 0.25, -1.0, -2.0,
@@ -211,7 +211,7 @@ TEST(CostmapLayersTest, staticLayerResizesNonRollingMasterFromMap) {
 TEST(CostmapLayersTest, staticLayerQueuedMapAppliesInUpdateCycle) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
-  auto layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto layer = std::make_shared<costmap_2d::StaticLayer>();
   layered->addLayer(layer);
   costmap_2d::Costmap2D first(2, 2, 1.0, 0.0, 0.0,
                               costmap_2d::FREE_SPACE);
@@ -236,7 +236,7 @@ TEST(CostmapLayersTest, simpleObstacleLayerMarkThenClear) {
   constexpr double res = 0.5;
   auto master = makeGrid(20, 20, res);
 
-  costmap_2d_layers::SimpleObstacleLayer layer;
+  costmap_2d::SimpleObstacleLayer layer;
 
   double wx = 0.0;
   double wy = 0.0;
@@ -270,7 +270,7 @@ TEST(CostmapLayersTest, obstacleDecayDropsStaleMarks) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
       "map", /*rolling_window=*/false, /*track_unknown=*/false);
   lm->resizeMap(20, 20, res, 0.0, 0.0);
-  auto layer = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
+  auto layer = std::make_shared<costmap_2d::SimpleObstacleLayer>();
   layer->setDecayTime(0.05);          // 50 ms
   layer->setDecaySweepInterval(0.01);  // sweep every 10 ms
   lm->addLayer(layer);
@@ -296,7 +296,7 @@ TEST(CostmapLayersTest, inflationLayerInflatesAroundLethal) {
   auto master = makeGrid(30, 30, res);
   master.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
 
-  costmap_2d_layers::InflationLayer layer;
+  costmap_2d::InflationLayer layer;
   layer.setInflationRadius(3.0 * res);  // 3 cells
   layer.setInscribedRadius(1.0 * res);  // 1 cell
   layer.setCostScalingFactor(2.0);
@@ -338,7 +338,7 @@ TEST(CostmapLayersTest, inflationLayerSmoothGradientWithRealisticParams) {
   auto master = makeGrid(60, 60, res);
   master.setCost(30, 30, costmap_2d::LETHAL_OBSTACLE);
 
-  costmap_2d_layers::InflationLayer layer;
+  costmap_2d::InflationLayer layer;
   layer.setInflationRadius(0.5);
   layer.setInscribedRadius(0.3);
   layer.setCostScalingFactor(3.0);
@@ -375,8 +375,8 @@ TEST(CostmapLayersTest, inflationRadiusShrinkRemovesOldBand) {
   auto lm = std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   lm->resizeMap(30, 30, 0.5, 0.0, 0.0);
   auto obstacles =
-      std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+      std::make_shared<costmap_2d::SimpleObstacleLayer>();
+  auto inflation = std::make_shared<costmap_2d::InflationLayer>();
   inflation->setInflationRadius(2.0);
   inflation->setInscribedRadius(0.5);
   lm->addLayer(obstacles);
@@ -393,7 +393,7 @@ TEST(CostmapLayersTest, inflationRadiusShrinkRemovesOldBand) {
 TEST(CostmapLayersTest, obstacleMaximumOverridesUnknown) {
   costmap_2d::Costmap2D master(10, 10, 1.0, 0.0, 0.0,
                                costmap_2d::NO_INFORMATION);
-  costmap_2d_layers::SimpleObstacleLayer layer;
+  costmap_2d::SimpleObstacleLayer layer;
   layer.markObstacles(master, 2.5, 2.5);
   layer.updateCosts(master, 0, 0, 10, 10);
   EXPECT_EQ(master.getCost(2, 2), costmap_2d::LETHAL_OBSTACLE);
@@ -404,7 +404,7 @@ TEST(CostmapLayersTest, inflationLayerClipsRadiusTo1000) {
   auto master = makeGrid(30, 30, res);
   master.setCost(5, 5, costmap_2d::LETHAL_OBSTACLE);
 
-  costmap_2d_layers::InflationLayer layer;
+  costmap_2d::InflationLayer layer;
   layer.setInflationRadius(1e6);  // Converts to far more than 1000 cells; should clamp and warn
   layer.setInscribedRadius(0.5);
   layer.setCostScalingFactor(2.0);
@@ -427,8 +427,8 @@ TEST(CostmapLayersTest, inflationHaloClearsFullyAfterObstacleRemoval) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   layered->resizeMap(40, 40, 0.5, 0.0, 0.0);
-  auto obstacle = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+  auto obstacle = std::make_shared<costmap_2d::SimpleObstacleLayer>();
+  auto inflation = std::make_shared<costmap_2d::InflationLayer>();
   layered->addLayer(obstacle);
   layered->addLayer(inflation);
   inflation->setInflationRadius(1.0);
@@ -466,8 +466,8 @@ TEST(CostmapLayersTest, inflationEpochSurvivesConsecutiveCycles) {
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("map", false, false);
   layered->resizeMap(40, 40, 0.5, 0.0, 0.0);
-  auto obstacle = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+  auto obstacle = std::make_shared<costmap_2d::SimpleObstacleLayer>();
+  auto inflation = std::make_shared<costmap_2d::InflationLayer>();
   layered->addLayer(obstacle);
   layered->addLayer(inflation);
   inflation->setInflationRadius(1.0);
@@ -498,8 +498,8 @@ TEST(CostmapLayersTest, obstacleLayerRollingShiftKeepsAlignmentAndInflatesStrip)
   auto layered =
       std::make_shared<costmap_2d::LayeredCostmap>("odom", true, false);
   layered->resizeMap(20, 20, 0.5, 0.0, 0.0);
-  auto obstacle = std::make_shared<costmap_2d_layers::SimpleObstacleLayer>();
-  auto inflation = std::make_shared<costmap_2d_layers::InflationLayer>();
+  auto obstacle = std::make_shared<costmap_2d::SimpleObstacleLayer>();
+  auto inflation = std::make_shared<costmap_2d::InflationLayer>();
   layered->addLayer(obstacle);
   layered->addLayer(inflation);
   inflation->setInflationRadius(1.0);

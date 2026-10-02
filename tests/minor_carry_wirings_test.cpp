@@ -28,10 +28,10 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/static_layer.hpp>
+#include <costmap/costmap_wrapper.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/ostream_sink.h>
 #include <ayanami/utility/logging.hpp>
@@ -106,7 +106,7 @@ std::shared_ptr<costmap_2d::CostmapWrapper> makeWrapper(unsigned int size,
   lm->resizeMap(size, size, res, 0.0, 0.0);
   costmap_2d::Costmap2D layer_map(size, size, res, 0.0, 0.0,
                                   costmap_2d::FREE_SPACE);
-  auto static_layer = std::make_shared<costmap_2d_layers::StaticLayer>();
+  auto static_layer = std::make_shared<costmap_2d::StaticLayer>();
   static_layer->setMap(layer_map);
   lm->addLayer(static_layer);
   lm->updateMap(0.0, 0.0, 0.0);
@@ -141,30 +141,30 @@ std::filesystem::path makeNavigationConfigDir(
              "  \"costmap_global\": {\n"
              "    \"rolling_window\": false,\n"
              "    \"track_unknown\": false,\n"
-             "    \"layers\": [\"layer_static.json\", \"layer_inflation.json\"]\n"
+             "    \"static_layer\": {\n"
+             "      \"size_x\": 20, \"size_y\": 20, \"resolution\": 0.5\n"
+             "    },\n"
+             "    \"inflation_layer\": {\n"
+             "      \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3, "
+             "\"cost_scaling_factor\": 3.0\n"
+             "    }\n"
              "  },\n"
              "  \"costmap_local\": {\n"
              "    \"size_x\": 20,    \"size_y\": 20,\n"
              "    \"rolling_window\": true,\n"
              "    \"track_unknown\": false,\n"
-             "    \"layers\": [\"layer_obstacle.json\", \"layer_inflation.json\"]\n"
+             "    \"obstacle_layer\": {\n"
+             "      \"combination\": \"overwrite\", "
+             "\"footprint_clearing\": true,\n"
+             "      \"observation_sources\": [\"scan\"],\n"
+             "      \"scan\": {\"type\": \"laserscan\"}\n"
+             "    },\n"
+             "    \"inflation_layer\": {\n"
+             "      \"inflation_radius\": 0.6, \"inscribed_radius\": 0.3, "
+             "\"cost_scaling_factor\": 3.0\n"
+             "    }\n"
              "  }\n"
              "}\n");
-  write_file(dir / "layer_static.json",
-             "{\"layer\": {\"name\": \"static_layer\", \"so_name\": "
-             "\"libayanami_costmap_static_layer.so\"},\n \"static_layer\": "
-             "{\"size_x\": 20, \"size_y\": 20, \"resolution\": 0.5}}\n");
-  write_file(dir / "layer_inflation.json",
-             "{\"layer\": {\"name\": \"inflation_layer\", \"so_name\": "
-             "\"libayanami_costmap_inflation_layer.so\"},\n \"inflation_layer\": "
-             "{\"inflation_radius\": 0.6, \"inscribed_radius\": 0.3, "
-             "\"cost_scaling_factor\": 3.0}}\n");
-  write_file(dir / "layer_obstacle.json",
-             "{\"layer\": {\"name\": \"obstacle_layer\", \"so_name\": "
-             "\"libayanami_costmap_obstacle_layer.so\"},\n \"obstacle_layer\": {"
-             "\"combination\": \"overwrite\", \"footprint_clearing\": true, "
-             "\"observation_sources\": [\"scan\"], "
-             "\"scan\": {\"type\": \"laserscan\"}}}\n");
   return dir;
 }
 

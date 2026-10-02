@@ -7,11 +7,10 @@
 #include <memory>
 #include <string>
 
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_wrapper.hpp>
+#include <costmap/simple_obstacle_layer.hpp>
 
 #include "ayanami/abstract/components/robot_state_controller.hpp"
-#include "ayanami/map/abstract_map_context.hpp"
-#include "ayanami/costmap/core/costmap_command.hpp"
 #include "ayanami/costmap/core/costmap_reader.hpp"
 #include "ayanami/costmap/core/costmap_snapshot.hpp"
 #include "ayanami/messages/nav_msgs.hpp"
@@ -67,16 +66,13 @@ namespace costmap {
  * - controller/recovery: read the local map (family-defined), the
  *   controller generation-gates its private copy.
  */
-class CostmapMapContext : public map::AbstractMapContext,
-                       public std::enable_shared_from_this<CostmapMapContext> {
+class CostmapMapContext
+    : public std::enable_shared_from_this<CostmapMapContext> {
  public:
   using Ptr = std::shared_ptr<CostmapMapContext>;
   using ConstPtr = std::shared_ptr<const CostmapMapContext>;
 
   CostmapMapContext() = default;
-
-  std::string mapFamily() const override { return "costmap"; }
-  map::MapCommandPort::Ptr commandPort() const override { return command_port; }
 
   /// @brief Path validity check on the fused global+local overlay (the
   /// planning timescale; semantics aligned with nav2
@@ -192,6 +188,19 @@ class CostmapMapContext : public map::AbstractMapContext,
   }
   void setLocalCostmap(costmap_2d::CostmapWrapper::Ptr wrapper) {
     local_costmap = std::move(wrapper);
+    // Cache the local obstacle layer's read view: layer objects live for
+    // the wrapper's lifetime (static composition), so the raw pointer is
+    // stable. Const: readers only see presenceGrid()/geom accessors.
+    local_obstacle_layer = nullptr;
+    if (local_costmap) {
+      for (const auto& layer : local_costmap->get().getModules()) {
+        if (auto* obstacle = dynamic_cast<const costmap_2d::SimpleObstacleLayer*>(
+                layer.get())) {
+          local_obstacle_layer = obstacle;
+          break;
+        }
+      }
+    }
   }
   void setFrames(std::string global_frame, std::string local_frame,
                  std::string robot_frame) {
@@ -227,14 +236,6 @@ class CostmapMapContext : public map::AbstractMapContext,
       }
     }
     cached_inscribed_radius = radius;
-  }
-
-  /// @brief Inject the map write-command port (during configureCoreMaps,
-  /// right after the sole writer is created).
-  /// Map-family modules such as recovery fetch it via commandPort instead
-  /// of side-path injection.
-  void setCommandPort(map::MapCommandPort::Ptr port) {
-    command_port = std::move(port);
   }
 
   // ---- frames / freshness ----
@@ -365,6 +366,35 @@ class CostmapMapContext : public map::AbstractMapContext,
     return true;
   }
 
+  /// @brief Short-lock copy of the LOCAL obstacle PRESENCE mask (the
+  /// SimpleObstacleLayer's raw marks BEFORE inflation -- dynamic obstacles
+  /// only, no decayed halo), expressed in the local map's own frame
+  /// (typically odom). Reuses the CostmapSnapshot carrier: scalars + frame
+  /// + generation describe the mask's geometry, `costs` carries the raw
+  /// presence bytes (nonzero = obstacle). Returns false when no local map
+  /// / obstacle layer exists yet. Consumers: the ESDF mask source and
+  /// point-level controllers (e.g. the neupan controller's obstacle feed).
+  bool snapshotLocalObstaclePresence(costmap::CostmapSnapshot& out) const {
+    resetSnapshotScalars(out);
+    if (!local_costmap || !local_obstacle_layer) {
+      return false;
+    }
+    std::shared_lock<std::shared_mutex> lock(local_costmap->mutex());
+    const auto& presence = local_obstacle_layer->presenceGrid();
+    if (presence.empty() || local_obstacle_layer->geomSizeX() == 0) {
+      return false;
+    }
+    out.frame = local_costmap->globalFrame();
+    out.size_x = local_obstacle_layer->geomSizeX();
+    out.size_y = local_obstacle_layer->geomSizeY();
+    out.resolution = local_obstacle_layer->geomResolution();
+    out.origin_x = local_obstacle_layer->geomOriginX();
+    out.origin_y = local_obstacle_layer->geomOriginY();
+    out.generation = local_costmap->generation();
+    out.costs.assign(presence.begin(), presence.end());
+    return true;
+  }
+
   /// @brief Current master-grid generation (CostmapWrapper::generation(); 0
   /// when the map does not exist). Lock-free atomic read: a consumer that
   /// holds a snapshot compares against this to skip re-copying an unchanged
@@ -456,6 +486,9 @@ class CostmapMapContext : public map::AbstractMapContext,
 
   costmap_2d::CostmapWrapper::Ptr global_costmap;
   costmap_2d::CostmapWrapper::Ptr local_costmap;
+  /// @brief Read view of the local obstacle layer (cached on
+  /// setLocalCostmap; stable for the wrapper's lifetime).
+  const costmap_2d::SimpleObstacleLayer* local_obstacle_layer{nullptr};
   std::string global_frame{"map"};
   std::string local_frame{"odom"};
   std::string robot_frame{"base_link"};
@@ -463,7 +496,6 @@ class CostmapMapContext : public map::AbstractMapContext,
   /// @brief Inscribed radius of cached_footprint (0 when unset) -- the
   /// isPathValid robot-adjacent exemption radius.
   double cached_inscribed_radius{0.0};
-  map::MapCommandPort::Ptr command_port;
 };
 
 }  // namespace costmap

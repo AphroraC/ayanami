@@ -5,7 +5,7 @@
 #include <string>
 #include <utility>
 
-#include <costmap_2d/costmap_2d.hpp>
+#include <costmap/costmap_2d.hpp>
 
 #include "ayanami/messages/geometry_msgs.hpp"
 

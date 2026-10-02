@@ -139,6 +139,16 @@ public:
   bool check(const PoseStamped&) override { return false; }
 };
 
+/// Never progressing; counts reset() calls (the counter must survive
+/// reset() itself -- it observes the rebaseline protocol).
+class CountingProgressChecker
+    : public ayanami::abstract::AbstractProgressChecker {
+public:
+  void reset() override { ++resets; }
+  bool check(const PoseStamped&) override { return false; }
+  int resets = 0;
+};
+
 class TestSmoother : public ayanami::abstract::AbstractSmoother {
 public:
   ResultT<void> smoothPath(Path&, double) override {
@@ -377,6 +387,40 @@ TEST(ExecutionController, noProgressMapsToNoProgressStateAndFailure) {
   EXPECT_EQ(exec.getError(), ErrorCode::NO_PROGRESS);
   EXPECT_EQ(controller->calls, 0);  // Terminates on no progress; the controller is never called
   exec_th.join();
+}
+
+TEST(ExecutionController, runStartRebaselinesCheckersOnEachRun) {
+  // Regression: a re-follow after a NO_PROGRESS failure must get a fresh
+  // progress window. The reused execution keeps its checker state across
+  // runs, and the in-loop reset only fires on an actual goal CHANGE -- so
+  // an unchanged-goal re-follow used to inherit the expired window and fail
+  // again on its first cycle (FSM retries burned the budget in 0.6 s).
+  auto controller = std::make_shared<NeverReachingController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setControllerFrequency(500.0);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  auto progress = std::make_shared<CountingProgressChecker>();
+  exec.setProgressChecker(progress);
+
+  Path plan;
+  plan.poses.resize(4);
+  plan.poses.back().pose.position.x() = 5.0;  // fixed goal pose: the
+  // in-loop goal-change reset can only fire in the FIRST run, so any new
+  // reset in the second run can only come from the run-start baseline.
+  exec.setNewPlan(plan);
+  std::thread exec_th([&] { exec.runBlocking(); });
+  ASSERT_TRUE(waitForState(
+      exec, ayanami::components::ControllerExecution::NO_PROGRESS));
+  exec_th.join();
+  const int resets_after_run1 = progress->resets;
+  EXPECT_GE(resets_after_run1, 1);
+
+  exec.setNewPlan(plan);
+  std::thread exec_th2([&] { exec.runBlocking(); });
+  ASSERT_TRUE(waitForState(
+      exec, ayanami::components::ControllerExecution::NO_PROGRESS));
+  exec_th2.join();
+  EXPECT_GT(progress->resets, resets_after_run1);
 }
 
 TEST(ExecutionController, missingCheckersIsInternalError) {

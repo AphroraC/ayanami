@@ -1,0 +1,90 @@
+{
+  "navigation": {
+    "so_name": "libayanami_rose_navigation_fsm.so",
+    "config_planner": "modules/costmap_astar_planner.json",
+    "config_smoother": "modules/esdfmap_minco_smoother.json",
+    "config_controller": "modules/abstract_pid_controller.json",
+    "config_goal_checker": "modules/simple_goal_checker.json",
+    "config_progress_checker": "modules/simple_progress_checker.json",
+    "config_recovery": [
+      "modules/abstract_nothing_recovery.json"
+    ],
+    "fsm_frequency": 20.0,
+    "planner_frequency": 5.0,
+    "smoother_frequency": 10.0,
+    "smoother_timeout": 2.0,
+    "controller_frequency": 50.0,
+    "max_nav_retries": 6,
+    "oscillation_distance": 0.1,
+    "oscillation_timeout": 5.0,
+    "controller_patience": 1.0,
+    "recovery_patience": 0.0,
+    "max_vel_x": 2.5,
+    "max_vel_y": 2.5,
+    "max_vel_theta": 3.0,
+    "robot_frame": "base_link",
+    "velocity_timeout": 0.25
+  },
+  "esdfmap": {
+    "max_distance": 3.0,
+    "update_rate": 20.0,
+    "stale_timeout": 0.0
+  },
+  "costmap": {
+    "dump_frequency": 0.1,
+    "global_costmap_frame": "map",
+    "local_costmap_frame": "odom",
+    "resolution": 0.05,
+    "robot_radius": 0.3
+  },
+  "costmap_global": {
+    "rolling_window": false,
+    "track_unknown": false,
+    "static_layer": {
+      "static_map": "config/assets/nav.pgm"
+    },
+    "inflation_layer": {
+      "inflation_radius": 0.5,
+      "inscribed_radius": 0.3,
+      "cost_scaling_factor": 3.0
+    }
+  },
+  "costmap_local": {
+    "size_x": 120,
+    "size_y": 120,
+    "resolution": 0.05,
+    "origin": [0.0, 0.0, 0.0],
+    "rolling_window": true,
+    "track_unknown": false,
+    "transform_tolerance": 0.1,
+    "update_frequency": 50.0,
+    "observation_keep_time": 0.5,
+    "filter_static_marks": true,
+    "obstacle_layer": {
+      "combination": "overwrite",
+      "footprint_clearing": true,
+      "decay_time": 1.0,
+      "decay_sweep_interval": 0.2,
+      "observation_sources": [
+        "nagisa_obstacle"
+      ],
+      "nagisa_obstacle": {
+        "type": "pointcloud",
+        "marking": true,
+        "clearing": true,
+        "min_obstacle_height": 0.0,
+        "max_obstacle_height": 1.0,
+        "obstacle_min_range": 0.2,
+        "obstacle_max_range": 3.0,
+        "raytrace_min_range": 0.1,
+        "raytrace_max_range": 3.5,
+        "expected_update_rate": 1.0
+      }
+    },
+    "inflation_layer": {
+      "inflation_radius": 0.55,
+      "inscribed_radius": 0.3,
+      "cost_scaling_factor": 3.0
+    }
+  }
+}

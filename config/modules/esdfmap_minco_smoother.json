@@ -1,0 +1,19 @@
+{
+  "smoother": {
+    "name": "esdfmap_minco_smoother",
+    "so_name": "libayanami_esdfmap_minco_smoother.so"
+  },
+  "esdfmap_minco_smoother": {
+    "safe_dist": 0.35,
+    "weight_pos": 100000.0,
+    "weight_smooth": 1.0,
+    "mu_l1": 0.4,
+    "freeze_window": 0.0,
+    "output_dt": 0.05,
+    "max_iterations": 256,
+    "opt_accuracy": 0.0001,
+    "lbfgs_mem_size": 64,
+    "severe_scale": 1.5,
+    "validation_dt": 0.05
+  }
+}

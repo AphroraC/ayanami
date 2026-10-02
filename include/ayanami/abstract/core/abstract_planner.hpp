@@ -54,6 +54,18 @@ class AbstractPlanner : public virtual ExtensionModule {
       const ayanami::geometry_msgs::PoseStamped& goal,
       double tolerance, ayanami::nav_msgs::Path& plan) = 0;
 
+  /// @brief Sparse path-validity probe on the planner's own map view (the
+  /// nav2 planner_server IsPathValid service counterpart). The planner is
+  /// the map's designated reader, so "is this path still traversable"
+  /// belongs to it -- the FSM consults this every cycle as a replan
+  /// trigger. Abstract default: non-empty = valid (test doubles); map
+  /// families override with a real probe (the costmap family checks the
+  /// fused global+local overlay, starting from the point nearest the
+  /// robot).
+  virtual bool isPathValid(const ayanami::nav_msgs::Path& path) const {
+    return !path.poses.empty();
+  }
+
   virtual void activate() {}
   virtual void deactivate() {}
   virtual void cleanup() {}

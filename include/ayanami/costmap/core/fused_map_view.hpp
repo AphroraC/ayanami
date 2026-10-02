@@ -2,7 +2,7 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/cost_values.hpp>
+#include <costmap/cost_values.hpp>
 
 #include "ayanami/costmap/core/costmap_snapshot.hpp"
 

@@ -16,7 +16,6 @@
 #include <ayanami/costmap/core/costmap_snapshot.hpp>
 #include <ayanami/costmap/core/fused_map_view.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
-#include <ayanami/messages/swerve.hpp>
 
 #include "mppi_core.hpp"
 #include "mppi_critics.hpp"

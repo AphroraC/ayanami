@@ -3,7 +3,7 @@
     "config_path": "",
     "config_ros": "config_ros.json",
     "config_extensions": "config_extensions.json",
-    "config_navigation": "routes/rosemap_navigation.json"
+    "config_navigation": "routes/fsm_rose_navigation.json"
   },
   "logging": {
     "console_output": true,

@@ -16,20 +16,18 @@
 // grid, then markObstacles + updateMap lets the InflationLayer fully
 // recompute within its recompute window, leaving no stale bands.
 
-#include "ayanami/costmap/components/costmap_map_family_factory.hpp"
 #include <ayanami/utility/bootstrap.hpp>
 #include "ayanami/costmap/components/costmap_navigation_server.hpp"
 
-#include <costmap_2d_layers/inflation_layer.hpp>
-#include <costmap_2d_layers/simple_obstacle_layer.hpp>
-#include <costmap_2d_layers/static_layer.hpp>
+#include <costmap/inflation_layer.hpp>
+#include <costmap/simple_obstacle_layer.hpp>
+#include <costmap/static_layer.hpp>
 #include <spdlog/spdlog.h>
 #include <ayanami/utility/logging.hpp>
 
 #include "ayanami/abstract/components/robot_state_controller.hpp"
 #include "ayanami/costmap/components/costmap_commands.hpp"
-#include <costmap_2d/pgm_dump.hpp>
-#include "ayanami/costmap/core/costmap_command.hpp"
+#include <costmap/pgm_dump.hpp>
 #include "ayanami/utility/config.hpp"
 
 #include <algorithm>
@@ -118,45 +116,9 @@ bool robotDiagDue(std::atomic<std::int64_t>& last_diag_ns) {
   return last_diag_ns.compare_exchange_strong(prev, now_ns);
 }
 
-// Command port implementation: hands typed write commands to the sole
-// writer (this server) for execution. Recovery modules only hold the
-// CostmapCommandPort interface and never touch the mutable wrapper/layer.
-class CommandPortImpl : public CostmapCommandPort {
- public:
-  explicit CommandPortImpl(
-      std::function<bool(const ClearCostmapCommand&)> handler)
-      : handler(std::move(handler)) {}
-  bool submit(const ClearCostmapCommand& command) override {
-    return handler ? handler(command) : false;
-  }
-
- private:
-  std::function<bool(const ClearCostmapCommand&)> handler;
-};
 }  // namespace
 
-CostmapNavigationServer::CostmapNavigationServer() {
-  command_port = std::make_shared<CommandPortImpl>(
-      [this](const ClearCostmapCommand& command) {
-        // The clear command joins the writer thread's queue (single literal
-        // writer); the submitter waits bounded for the applied result. With
-        // no writer thread running (tests) the command executes inline.
-        if (!writer_running.load()) {
-          return executeClearCommand(command);
-        }
-        auto done = std::make_shared<std::promise<bool>>();
-        auto applied = done->get_future();
-        {
-          std::lock_guard<std::mutex> lock(writer_mutex);
-          pending_clears.push_back(PendingClear{command, std::move(done)});
-        }
-        writer_cv.notify_all();
-        return applied.wait_for(std::chrono::seconds(2)) ==
-                       std::future_status::ready
-                   ? applied.get()
-                   : false;
-      });
-}
+CostmapNavigationServer::CostmapNavigationServer() = default;
 
 CostmapNavigationServer::~CostmapNavigationServer() { stopWriter(); }
 
@@ -290,8 +252,10 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
   if (!wrapper) {
     return;
   }
-  const auto& plugins = is_local ? local_layer_plugins : global_layer_plugins;
-  if (plugins.empty()) {
+  // Static composition: only the local map consumes observations (the
+  // global build is static+inflation and changes exclusively through clear
+  // commands); a local map without sources has nothing to consume either.
+  if (!is_local || !local_obstacle_applier || observation_sources.empty()) {
     return;
   }
   const std::string& map_frame =
@@ -318,14 +282,9 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
         continue;  // aged out of the keep-time window: frame dropped
       }
       bool consumed = false;
-      for (const auto& plugin : plugins) {
-        for (const auto& plugin_source : plugin->observationSources()) {
-          if (plugin_source.kind == frame->source->kind) {
-            consumed = true;
-            break;
-          }
-        }
-        if (consumed) {
+      for (const auto& source : observation_sources) {
+        if (source.kind == frame->source->kind) {
+          consumed = true;
           break;
         }
       }
@@ -431,15 +390,13 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
       map_observation.robot_pose_xy_yaw =
           Eigen::Vector3d(robot_x, robot_y, robot_yaw);
       map_observation.has_robot_pose = have_pose;
-      for (const auto& plugin : plugins) {
-        for (const auto& plugin_source : plugin->observationSources()) {
-          if (plugin_source.kind != observation.source->kind) {
-            continue;
-          }
-          map_observation.source = &plugin_source;
-          plugin->observe(map_observation);
-          break;
+      for (const auto& source : observation_sources) {
+        if (source.kind != observation.source->kind) {
+          continue;
         }
+        map_observation.source = &source;
+        local_obstacle_applier->apply(map_observation);
+        break;
       }
       any_applied = true;
       tf_wait_total_ms += resolved.tf_wait_ms;
@@ -591,10 +548,9 @@ void CostmapNavigationServer::emitMapLayers(bool is_local) {
       if (!cm) {
         return;
       }
-      for (const auto& plugin : local_layer_plugins) {
-        if (auto* obstacle_layer = dynamic_cast<
-                costmap_2d_layers::SimpleObstacleLayer*>(
-                plugin->layer().get())) {
+      if (local_obstacle_layer) {
+        const auto* obstacle_layer = local_obstacle_layer.get();
+        {
           const auto& presence = obstacle_layer->presenceGrid();
           const unsigned px = obstacle_layer->geomSizeX();
           const unsigned py = obstacle_layer->geomSizeY();
@@ -624,7 +580,6 @@ void CostmapNavigationServer::emitMapLayers(bool is_local) {
             }
           }
           have_obstacle = true;
-          break;
         }
       }
       grid = toOccupancyGrid(*cm, frame);
@@ -642,14 +597,10 @@ void CostmapNavigationServer::emitMapLayers(bool is_local) {
   // Global: the static layer's own grid + the inflated master.
   ayanami::nav_msgs::OccupancyGrid static_grid;
   bool have_static = false;
-  for (const auto& plugin : global_layer_plugins) {
-    if (auto* static_layer = dynamic_cast<costmap_2d_layers::StaticLayer*>(
-            plugin->layer().get())) {
-      // Static content is configure-time only: safe to read lock-free.
-      static_grid = toOccupancyGrid(static_layer->layerMap(), frame);
-      have_static = true;
-      break;
-    }
+  if (global_static_layer) {
+    // Static content is configure-time only: safe to read lock-free.
+    static_grid = toOccupancyGrid(global_static_layer->layerMap(), frame);
+    have_static = true;
   }
   ayanami::nav_msgs::OccupancyGrid master_grid;
   {
@@ -715,14 +666,7 @@ void CostmapNavigationServer::checkSourceLiveness() {
   }
 }
 
-void CostmapNavigationServer::configureCoreMaps(
-    const std::string& config_path, ayanami::map::MapFamilyFactory::Ptr factory) {
-  // The context's sole creation point = the map-family factory (falls back
-  // to the costmap factory by default; core and host only know the
-  // MapFamilyFactory abstract surface, the CostmapMapContext family surface
-  // exists only inside this server).
-  map_family_factory = factory ? std::move(factory)
-                               : std::make_shared<CostmapMapFamilyFactory>();
+void CostmapNavigationServer::configureCoreMaps(const std::string& config_path) {
   // Double configureCoreMaps guard. When a built context already exists,
   // re-entry is ignored: rebuilding would replace costmap_context and leave
   // the wrapper references of already-injected modules dangling (after the
@@ -771,15 +715,12 @@ void CostmapNavigationServer::configureCoreMaps(
       global_frame,
       cfg.param<bool>("costmap_global", "rolling_window", false),
       cfg.param<bool>("costmap_global", "track_unknown", false));
-  // Layer plugin path: a "layers" list in the map section loads the
-  // composition from module jsons (list order = composition order, the
-  // modules/ so+json pattern); a failed load in the plugin path is a
-  // startup error. Absent -> the legacy hardcoded composition below.
-  loadLayerPlugins("costmap_global", cfg, config_path, global_lm,
-                   global_layer_modules, global_layer_plugins);
-  for (const auto& plugin : global_layer_plugins) {
-    plugin->onAddedToMap(*global_lm);
-  }
+  // Static composition (fixed): StaticLayer + InflationLayer. The builder
+  // also performs the former static plugin's onAddedToMap work (pgm load +
+  // master sizing / fallback geometry).
+  const CostmapLayerAssembly global_layer_assembly =
+      buildGlobalLayers(cfg, *global_lm);
+  global_static_layer = global_layer_assembly.static_layer;
   // ---- local: SimpleObstacleLayer + InflationLayer (rolling, LOCAL frame) ----
   auto local_lm = std::make_shared<costmap_2d::LayeredCostmap>(
       local_frame,
@@ -795,8 +736,13 @@ void CostmapNavigationServer::configureCoreMaps(
                         0.0, 0.0);
   }
 
-  loadLayerPlugins("costmap_local", cfg, config_path, local_lm,
-                   local_layer_modules, local_layer_plugins);
+  // Static composition (fixed): SimpleObstacleLayer + InflationLayer; the
+  // observation sources and the applier come with the assembly.
+  const CostmapLayerAssembly local_layer_assembly = buildLocalLayers(cfg);
+  local_lm->addLayer(local_layer_assembly.obstacle_layer);
+  local_lm->addLayer(local_layer_assembly.inflation_layer);
+  local_obstacle_layer = local_layer_assembly.obstacle_layer;
+  local_obstacle_applier = local_layer_assembly.obstacle_applier;
 
   auto local_wrapper =
       std::make_shared<costmap_2d::CostmapWrapper>(local_lm, local_frame);
@@ -873,27 +819,10 @@ void CostmapNavigationServer::configureCoreMaps(
   filter_static_marks =
       cfg.param<bool>("costmap_local", "filter_static_marks", true);
 
-  // Observation sources = the union of every layer plugin's declared
-  // sources (dedup by name; a name declared twice keeps its first
-  // definition): the writer's kind lookup and the liveness check see one
-  // list. Filtering parameters are layer-owned.
-  observation_sources.clear();
-  for (const auto* map_plugins :
-       {&global_layer_plugins, &local_layer_plugins}) {
-    for (const auto& plugin : *map_plugins) {
-      for (const auto& plugin_source : plugin->observationSources()) {
-        const bool known =
-            std::find_if(observation_sources.begin(),
-                         observation_sources.end(),
-                         [&plugin_source](const ObservationSourceConfig& x) {
-                           return x.name == plugin_source.name;
-                         }) != observation_sources.end();
-        if (!known) {
-          observation_sources.push_back(plugin_source);
-        }
-      }
-    }
-  }
+  // Observation sources = the local obstacle layer's parsed list (the
+  // global build consumes none): the writer's kind lookup and the liveness
+  // check see one list. Filtering parameters are layer-owned.
+  observation_sources = local_layer_assembly.observation_sources;
   // Liveness baselines: the writer start re-baselines them, but the inline
   // (no-writer) processing path stamps them too, so size them here.
   source_last_seen.assign(observation_sources.size(),
@@ -903,13 +832,10 @@ void CostmapNavigationServer::configureCoreMaps(
   // Whether the global cycle consumes observations at all: when it does
   // not, its cursor tracks the buffer tail (submitObservation) so the
   // shared storage compacts.
+  // The global build is fixed static+inflation: it never consumes
+  // observations (a special deployment loading a dynamic global layer no
+  // longer exists -- the static-global policy is now the composition).
   global_consumes_observations = false;
-  for (const auto& plugin : global_layer_plugins) {
-    if (!plugin->observationSources().empty()) {
-      global_consumes_observations = true;
-      break;
-    }
-  }
   // Stamp-time TF bounded wait (writer-thread budget; publishers never
   // block). Footprint clearing is an obstacle-layer plugin parameter.
   transform_tolerance =
@@ -942,13 +868,7 @@ void CostmapNavigationServer::configureCoreMaps(
     }
   }
 
-  costmap_context =
-      std::dynamic_pointer_cast<CostmapMapContext>(map_family_factory->createContext());
-  if (!costmap_context) {
-    throw std::runtime_error(
-        "map family factory '" + map_family_factory->familyName() +
-        "' did not create a CostmapMapContext");
-  }
+  costmap_context = std::make_shared<CostmapMapContext>();
   costmap_context->setGlobalCostmap(global_wrapper);
   costmap_context->setLocalCostmap(local_wrapper);
   costmap_context->setFrames(global_frame, local_frame, robot_frame);
@@ -964,11 +884,6 @@ void CostmapNavigationServer::configureCoreMaps(
   // only this cache (never read the live LayeredCostmap's footprint outside
   // the write lock).
   costmap_context->setFootprint(footprint);
-  // The map write command port is exposed via the context
-  // (AbstractMapContext::commandPort):
-  // family modules such as recovery fetch it from the map context at
-  // configure time instead of side-path injection.
-  costmap_context->setCommandPort(command_port);
 
   // One-time configuration of the global RobotStateController: frame names
   // + velocity timeout are cached only here; the hot getRobotState never
@@ -981,82 +896,6 @@ void CostmapNavigationServer::configureCoreMaps(
   has_last_local_robot = false;
 }
 
-void CostmapNavigationServer::loadLayerPlugins(
-    const std::string& section, const ayanami::Config& cfg,
-    const std::string& config_dir,
-    const costmap_2d::LayeredCostmap::Ptr& layered_costmap,
-    ayanami::components::ModuleManager<ayanami::costmap::CostmapLayerPlugin>&
-        manager,
-    std::vector<ayanami::costmap::CostmapLayerPlugin::Ptr>& plugins) {
-  // <section>.layers lists the layers in composition order. Two spellings
-  // per entry:
-  // - INLINE (production): the entry is the layer's own name; its so_name
-  //   and parameters live in <section>.<name> of this same config. All
-  //   costmap layer parameters therefore consolidate into
-  //   routes/costmap_navigation.json (costmap_local/costmap_global).
-  // - FILE (compat, tests): the entry is a module json path (contains '/'
-  //   or ends with ".json"); name/so_name/params come from that file
-  //   ("layer" descriptor + name-keyed section).
-  // The plugin-facing ModuleContext is identical in both modes: a Config
-  // whose document carries the parameters under the layer's own name key,
-  // so plugins read them with the uniform
-  // param(<own name>, <key>) spelling and the loader's unused-keys audit
-  // runs per layer.
-  const auto entries = cfg.paramStringOrList(section, "layers");
-  if (entries.empty()) {
-    throw std::runtime_error(
-        section + ".layers is required (ordered layer list, list order = "
-                  "composition order)");
-  }
-  for (const auto& entry : entries) {
-    if (entry.empty()) {
-      continue;
-    }
-    const bool file_mode =
-        entry.find('/') != std::string::npos ||
-        entry.size() > 5 &&
-            entry.compare(entry.size() - 5, 5, ".json") == 0;
-
-    ayanami::components::ModuleSpec spec;
-    Config layer_cfg;
-    if (file_mode) {
-      // Module json paths resolve relative to the config directory (the
-      // config_recovery convention).
-      const std::string path = std::filesystem::path(entry).is_absolute()
-                                   ? entry
-                                   : (std::filesystem::path(config_dir) / entry)
-                                         .string();
-      layer_cfg = Config(path);
-      spec.name = layer_cfg.param<std::string>("layer", "name", "");
-      spec.so_name = layer_cfg.param<std::string>("layer", "so_name", "");
-    } else {
-      // Inline: the layer's parameters are the <section>.<entry> object.
-      layer_cfg = cfg.child(section, entry);
-      if (!layer_cfg.hasSection(entry)) {
-        throw std::runtime_error(
-            section + "." + entry +
-            " is required (the layers entry names its own parameter "
-            "section; a missing section would silently run on built-in "
-            "defaults)");
-      }
-      spec.name = entry;
-      spec.so_name = layer_cfg.param<std::string>(entry, "so_name", "");
-      if (spec.so_name.empty()) {
-        throw std::runtime_error(section + "." + entry +
-                                 ".so_name is required");
-      }
-    }
-    if (!manager.loadModule(spec, ayanami::ModuleContext{spec.name, layer_cfg},
-                            {})) {
-      throw std::runtime_error(
-          "layer plugin failed to load: " + spec.name + " (" + spec.so_name +
-          "): " + manager.lastFailureMessage());
-    }
-    auto plugin = manager.getModule(spec.name);
-    layered_costmap->addLayer(plugin->layer());
-    plugins.push_back(plugin);
-  }
-}
 
 bool CostmapNavigationServer::initializePlannerModule(
   const std::string& name,
@@ -1137,131 +976,6 @@ bool CostmapNavigationServer::initializeControllerModule(
   cast->configure(ayanami::ModuleContext{name, module_config},
                   costmap_context->getSharedConstPtr());
   return true;
-}
-
-bool CostmapNavigationServer::initializeRecoveryModule(
-  const std::string& name,
-  const ayanami::Config& module_config,
-  ayanami::abstract::AbstractRecovery::Ptr ptr) {
-  if (!costmap_context) {
-    SPDLOG_LOGGER_ERROR(
-      ayanami::costmapLogger(),
-      "CostmapNavigationServer::initializeRecoveryModule('{}'): costmap "
-      "context not configured (call configureCoreMaps first)",
-      name);
-    return false;
-  }
-  auto cast = std::dynamic_pointer_cast<CostmapRecovery>(ptr);
-  if (!cast) {
-    SPDLOG_LOGGER_ERROR(
-      ayanami::costmapLogger(),
-      "CostmapNavigationServer::initializeRecoveryModule('{}'): module is "
-      "not a CostmapRecovery (costmap family interface mismatch)",
-      name);
-    return false;
-  }
-  cast->configure(ayanami::ModuleContext{name, module_config},
-                  costmap_context->getSharedConstPtr());
-  // Stash the module config so createActions can inject per-module
-  // execution settings (tick cycle period).
-  recovery_configs.erase(name);
-  recovery_configs.emplace(name, module_config);
-  // Map write command port: recovery fetches it via map->commandPort
-  // inside configure (CostmapCommandPort), executed by this server (the
-  // sole writer).
-  return true;
-}
-
-// ---- createActions: production path = Costmap*Action ----
-
-void CostmapNavigationServer::createActions() {
-  planner_actions.clear();
-  smoother_actions.clear();
-  controller_actions.clear();
-  recovery_actions.clear();
-
-  // planner/smoother/controller: one Costmap*Action per loaded module
-  // (Costmap*Execution carrying the ctx; nav2 multi-module semantics:
-  // requests select by goal id, empty id = default = first configured).
-  for (const auto& name : planner_modules.getLoadedNames()) {
-    auto planner = planner_modules.getModule(name);
-    if (!planner) {
-      continue;
-    }
-    planner_actions[name] = std::make_unique<CostmapPlannerAction>(
-        planner, costmap_context);
-  }
-  if (!planner_actions.empty() && planner_actions.find(default_planner) == planner_actions.end()) {
-    SPDLOG_LOGGER_ERROR(
-      ayanami::costmapLogger(),
-      "CostmapNavigationServer::createActions: default planner "
-      "'{}' not loaded",
-      default_planner);
-  }
-
-  for (const auto& name : smoother_modules.getLoadedNames()) {
-    auto smoother = smoother_modules.getModule(name);
-    if (!smoother) {
-      continue;
-    }
-    smoother_actions[name] = std::make_unique<CostmapSmootherAction>(
-        smoother, costmap_context);
-  }
-  if (!smoother_actions.empty() && smoother_actions.find(default_smoother) == smoother_actions.end()) {
-    SPDLOG_LOGGER_ERROR(
-      ayanami::costmapLogger(),
-      "CostmapNavigationServer::createActions: default smoother "
-      "'{}' not loaded",
-      default_smoother);
-  }
-
-  // controller: CostmapControllerExecution + checker/velocity-limit/real
-  // pose-source assembly.
-  for (const auto& name : controller_modules.getLoadedNames()) {
-    auto controller = controller_modules.getModule(name);
-    if (!controller) {
-      continue;
-    }
-    controller_actions[name] = std::make_unique<CostmapControllerAction>(
-        controller, costmap_context,
-        [this](ayanami::components::ControllerExecution::Ptr exec) {
-          configureControllerExecution(exec);
-        });
-  }
-  if (!controller_actions.empty() && controller_actions.find(default_controller) == controller_actions.end()) {
-    SPDLOG_LOGGER_ERROR(
-      ayanami::costmapLogger(),
-      "CostmapNavigationServer::createActions: default controller "
-      "'{}' not loaded",
-      default_controller);
-  }
-
-  // recovery: CostmapRecoveryExecution + velocity-limit assembly +
-  // per-module tick cycle period (recovery.sim_cycle_dt, seconds).
-  for (const auto& name : recovery_modules.getLoadedNames()) {
-    auto recovery = recovery_modules.getModule(name);
-    if (!recovery) {
-      continue;
-    }
-    double cycle_period_s = 0.01;
-    const auto config_iter = recovery_configs.find(name);
-    if (config_iter != recovery_configs.end()) {
-      cycle_period_s = config_iter->second.param<double>(
-          "recovery", "sim_cycle_dt", cycle_period_s);
-    }
-    auto action = std::make_unique<CostmapRecoveryAction>(
-        recovery, costmap_context,
-        [this, cycle_period_s](
-            ayanami::components::RecoveryExecution::Ptr exec) {
-          configureRecoveryExecution(exec);
-          if (cycle_period_s > 0.0) {
-            exec->setCyclePeriod(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::duration<double>(cycle_period_s)));
-          }
-        });
-    recovery_actions[name] = std::move(action);
-  }
 }
 
 // ---- Obstacle observation map stamping ----

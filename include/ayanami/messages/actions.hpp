@@ -156,7 +156,7 @@ enum class GoalStatus : uint8_t {
 /**
  * @brief Action result aggregate with status (used by slot signatures).
  *
- * On TaskHandle completion, GoalResult<Result> is delivered: status
+ * On attempt completion, GoalResult<Result> is delivered: status
  * describes the overall goal state, and result carries each action family Result
  * (including failure/session_id/plan_version).
  */

@@ -285,6 +285,12 @@ protected:
     // long-standing outage and trip patience immediately).
     map_stale_since.reset();
     pose_failure_since.reset();
+    // Execution reuse: a new run is a NEW TASK -- re-baseline the checkers
+    // (the in-loop reset only fires on an actual goal CHANGE). Without this,
+    // a re-follow after a NO_PROGRESS failure inherited the expired window
+    // and failed again on its first cycle: the FSM's recovery loop burned
+    // its whole retry budget at replan latency (6 retries in 0.6 s).
+    resetCheckers();
     setState(STARTED, false);
 
     // Loop period from controller_frequency

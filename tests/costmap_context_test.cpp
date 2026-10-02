@@ -11,16 +11,15 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/costmap_2d.hpp>
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/costmap_2d.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
 #include <ayanami/costmap/components/costmap_map_context.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
-#include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/messages/failure.hpp>
 #include <ayanami/types.hpp>
@@ -145,37 +144,6 @@ class TestCostmapController : public ayanami::costmap::CostmapController {
  private:
   ayanami::costmap::CostmapMapContext::ConstPtr map_context;
 };
-
-class TestCostmapRecovery : public ayanami::costmap::CostmapRecovery {
- public:
-  std::string init_name;
-  bool got_view{false};
-
-  virtual ~TestCostmapRecovery() override = default;
-
-  void configure(const ayanami::ModuleContext& context,
-                 ayanami::costmap::CostmapMapContext::ConstPtr map) override {
-    init_name = context.name;
-    map_context = std::move(map);
-  }
-
-  ResultT<void> tick(RecoveryCycleData& cycle) override {
-    got_view = map_context && map_context->readGlobal(
-                                 [](const CostmapReader& r) { return r.valid(); });
-    RecoveryCycleData data;
-    data.status = RecoveryStatus::SUCCESS;
-    cycle = std::move(data);
-    return ResultT<void>::success();
-  }
-
- private:
-  ayanami::costmap::CostmapMapContext::ConstPtr map_context;
-};
-
-}  // namespace
-
-// ---------- Frame-name getters ----------
-
 TEST(CostmapMapContextTest, frameGettersReturnConfiguredFrames) {
   CostmapMapContext ctx;
   EXPECT_EQ(ctx.globalFrame(), "map");
@@ -484,29 +452,6 @@ TEST(CostmapCoreTest, costmapControllerInitializeAndViewCompute) {
   EXPECT_TRUE(controller->got_view);
 }
 
-TEST(CostmapCoreTest, costmapRecoveryInitializeAndViewRun) {
-  auto recovery = std::make_shared<TestCostmapRecovery>();
-
-  ayanami::abstract::AbstractRecovery::Ptr base = recovery;
-  auto cast =
-      std::dynamic_pointer_cast<ayanami::costmap::CostmapRecovery>(base);
-  ASSERT_NE(cast, nullptr);
-
-  auto ctx = std::make_shared<CostmapMapContext>();
-  ctx->setGlobalCostmap(makeWrapper(makeGrid()));
-  cast->configure(ayanami::ModuleContext{"test_recovery", ayanami::Config("")},
-                  ctx->getSharedConstPtr());
-  EXPECT_EQ(recovery->init_name, "test_recovery");
-
-  RecoveryCycleData cycle;
-  auto result = cast->tick(cycle);
-  EXPECT_TRUE(result.ok);
-  EXPECT_EQ(cycle.status, RecoveryStatus::SUCCESS);
-  EXPECT_TRUE(recovery->got_view);
-}
-
-// ---------- CostmapMapContext has no capability / lock ----------
-
 TEST(CostmapMapContextTest, costmapInterfaceOnly) {
   CostmapMapContext ctx;
   // Family-level surface: frame names / freshness -- no capability enum,
@@ -666,3 +611,4 @@ TEST(CostmapMapContextTest, isPathValidExemptsRobotAdjacentPrefix) {
   EXPECT_FALSE(ctx_no_robot.isPathValid(makePathAt({{0.5, 0.5}})));
 }
 
+}  // namespace

@@ -28,8 +28,8 @@
 
 #include <Eigen/Geometry>
 
-#include <costmap_2d/layered_costmap.hpp>
-#include <costmap_server/costmap_wrapper.hpp>
+#include <costmap/layered_costmap.hpp>
+#include <costmap/costmap_wrapper.hpp>
 
 #include <ayanami/abstract/core/abstract_controller.hpp>
 #include <ayanami/abstract/core/abstract_goal_checker.hpp>
