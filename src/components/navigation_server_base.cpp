@@ -140,6 +140,10 @@ void NavigationServerBase::loadModules(const std::string& config_path) {
   // RobotStateController velocity_timeout).
   velocity_timeout =
       nav_cfg.param<double>("navigation", "velocity_timeout", 0.25);
+  // Tracking-deviation guard threshold (meters; 0 = disabled): the
+  // framework-level rose LMPC deviation-rejection analogue.
+  deviation_threshold =
+      nav_cfg.param<double>("navigation", "deviation_threshold", 0.0);
 
   // planner/smoother/controller each have exactly one configured module.
   for (const auto& path : moduleConfigFiles(nav_cfg, "config_planner")) {
@@ -346,6 +350,7 @@ void NavigationServerBase::configureControllerExecution(
   exec->setPatience(controller_patience);
   // Transient pose-loss grace window (navigation.velocity_timeout).
   exec->setPoseGrace(velocity_timeout);
+  exec->setDeviationThreshold(deviation_threshold);
 }
 
 void NavigationServerBase::configureRecoveryExecution(

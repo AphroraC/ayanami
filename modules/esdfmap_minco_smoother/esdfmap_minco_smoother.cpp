@@ -7,8 +7,11 @@
 
 #include "esdfmap_minco_smoother.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <ayanami/abstract/components/robot_state_controller.hpp>
 #include <ayanami/utility/config.hpp>
+#include <ayanami/utility/logging.hpp>
 
 #include "vendor/lbfgs.hpp"
 #include "vendor/minco.hpp"
@@ -186,13 +189,33 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
     }
   }
 
-  // ---- minco problem setup (head/tail at rest: the smoother binds both
-  // ends, the planner's schedule carries the motion) ----
+  // ---- minco problem setup ----
+  // The TAIL binds at rest (the path ends at the goal: stop there). The
+  // HEAD binds the path-start tangent as its velocity: binding zero
+  // velocity/acceleration at the head made the first ~0.5 m of every path
+  // effectively un-pushable (the C2 chain back to a full at-rest state
+  // turns any repulsion into a huge jerk-energy bend) -- on every FSM
+  // replan that dead zone sits at the robot, which then follows raw
+  // geometry into the inflation band and stalls. The tangent matches the
+  // direction the path actually leaves the robot (navi binds the running
+  // trajectory's current PVA; the Path contract carries no velocity, so
+  // the schedule's initial speed drives the magnitude).
   minco::MINCO_S3NU minco;
   Eigen::Matrix<double, 2, 3> head_state = Eigen::Matrix<double, 2, 3>::Zero();
   Eigen::Matrix<double, 2, 3> tail_state = Eigen::Matrix<double, 2, 3>::Zero();
   head_state.col(0) = points.col(0);
   tail_state.col(0) = points.col(input_count - 1);
+  {
+    const Eigen::Vector2d tangent =
+        (points.col(1) - points.col(0)).normalized();
+    const double initial_speed =
+        times_usable ? (points.col(1) - points.col(0)).norm() / times(0)
+                     : (points.col(1) - points.col(0)).norm() /
+                           ((points.col(1) - points.col(0)).norm() > 1e-9
+                                ? (points.col(1) - points.col(0)).norm()
+                                : 1.0);
+    head_state.col(1) = tangent * initial_speed;
+  }
   minco.setConditions(head_state, tail_state, piece_num,
                       Eigen::Vector2d(param.weight_smooth, param.weight_smooth));
 
@@ -232,6 +255,7 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
     const Eigen::Matrix2Xd* points;
     const Eigen::VectorXd* times;
     const std::vector<int>* opt_indices;
+    const std::vector<unsigned char>* frozen;
     const ::esdfmap::EsdfSnapshot* snapshot;
     double weight_pos;
     double safe_dist;
@@ -244,7 +268,8 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
   };
   CostContext cost_context{
       &minco,      &points,           &times,          &opt_indices,
-      snapshot.get(), param.weight_pos, param.safe_dist, param.mu_l1,
+      &frozen,  snapshot.get(), param.weight_pos, param.safe_dist,
+      param.mu_l1,
       opt_num,
       std::chrono::steady_clock::now() +
           std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -283,19 +308,27 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
 
     // ESDF position safety at the control points (navi attach_penalty_
     // functional semantics; Kahan summation against float drift).
+    // Frozen points and out-of-field queries are EXCLUDED from the cost:
+    // both are constants (a frozen point does not move; the package contract
+    // returns no gradient out of field), so they carry zero gradient
+    // information -- but summing them inflates f and drowns lbfgs's RELATIVE
+    // delta stopping criterion (|df|/max(1,f) < delta), which then fires
+    // after ~3 iterations and the output equals the input. Out-of-field is
+    // unobserved space: nothing to push from, nothing to penalize.
     double cost_comp = 0.0;
     for (int i = 0; i < ctrl; ++i) {
+      if ((*ctx->frozen)[static_cast<std::size_t>(i)] != 0) {
+        continue;
+      }
       const Eigen::Vector2d p = in_ps.col(i);
       const auto query =
           ::esdfmap::sampleDistance(*ctx->snapshot, p.x(), p.y());
-      // A failed/out-of-field query counts as violating, never as free.
-      const double distance =
-          query.status == ::esdfmap::EsdfQueryStatus::kOk
-              ? query.distance
-              : -ctx->safe_dist;
+      if (query.status != ::esdfmap::EsdfQueryStatus::kOk) {
+        continue;
+      }
       double f = 0.0;
       double df = 0.0;
-      if (smoothedL1(ctx->safe_dist - distance, ctx->mu_l1, f, df)) {
+      if (smoothedL1(ctx->safe_dist - query.distance, ctx->mu_l1, f, df)) {
         kahanSum(cost_val, cost_comp, ctx->weight_pos * f);
         const Eigen::Vector2d gradient(query.gradient_x, query.gradient_y);
         const Eigen::Vector2d direction =
@@ -377,6 +410,37 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
     const int i = opt_indices[static_cast<std::size_t>(k)];
     in_ps(0, i) = x_opt(k);
     in_ps(1, i) = x_opt(k + opt_num);
+  }
+  // Uniformly scale the durations with the OPTIMIZED geometry: scale =
+  // new total arc length / input total arc length (per-segment proportions
+  // preserved). A repelled path is geometrically longer; keeping the input
+  // schedule would inflate every derived speed by that factor and the
+  // severe-speed validation rolled the whole smoothing back -- with the
+  // wider repulsion band every push tripped it (the "limited ESDF
+  // influence"). A per-segment arc-length re-allocation was tried and
+  // REJECTED: it amplified node-spacing noise into speed spikes (even a
+  // band-untouched path rolled back). The arrival time stretches with the
+  // route, speeds stay at the input profile's level.
+  {
+    double input_length = 0.0;
+    for (int i = 0; i < piece_num; ++i) {
+      input_length += (points.col(i + 1) - points.col(i)).norm();
+    }
+    double output_length = 0.0;
+    Eigen::Vector2d prev = points.col(0);
+    for (int i = 0; i < piece_num; ++i) {
+      const Eigen::Vector2d next = (i + 1 < piece_num)
+                                       ? in_ps.col(i)
+                                       : points.col(input_count - 1);
+      output_length += (next - prev).norm();
+      prev = next;
+    }
+    if (input_length > 1e-6 && output_length > 1e-6) {
+      const double scale = output_length / input_length;
+      for (int i = 0; i < piece_num; ++i) {
+        times(i) = std::max(1e-3, times(i) * scale);
+      }
+    }
   }
   minco.setParameters(in_ps, times);
   std::vector<Piece<5, 2>> pieces;
@@ -500,6 +564,11 @@ ResultT<void> EsdfmapMincoSmoother::smoothPath(nav_msgs::Path& path,
     out.message = "smoothing rolled back (" + invalid_reason +
                   "); input path kept";
   }
+  SPDLOG_LOGGER_INFO(
+      ayanami::smootherLogger(),
+      "esdfmap_minco_smoother: {} (lbfgs ret {}, poses {} -> {})",
+      out.message, ret, input_count,
+      valid ? static_cast<int>(smoothed.poses.size()) : input_count);
   if (valid) {
     path = std::move(smoothed);
   }

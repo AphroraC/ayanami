@@ -190,8 +190,34 @@ void CostmapMppiController::setCyclePeriod(double seconds) {
 }
 
 bool CostmapMppiController::setPlan(const nav_msgs::Path& plan) {
-  if (plan.poses.size() < 2) {
+  if (plan.poses.empty()) {
     return false;
+  }
+  // Degenerate path (single pose / start == goal) is legal input: accept
+  // it and install no reference -- the goal checker owns the arrival
+  // verdict (nav2 accepts any non-empty path; the neupan controller made
+  // the same fix). Rejecting here fails the whole follow branch and burns
+  // the recovery budget on a goal the robot is already standing on.
+  degenerate_path_ =
+      plan.poses.size() < 2 ||
+      (plan.poses.front().pose.position.head<2>() -
+       plan.poses.back().pose.position.head<2>())
+              .norm() < 1e-9;
+  if (degenerate_path_) {
+    // Keep the goal heading: the goal checker's angle tolerance still has
+    // to be met, so the robot must be able to turn in place toward it.
+    const auto& goal_pose = plan.poses.back().pose;
+    degenerate_goal_yaw_ = std::atan2(
+        2.0 * (goal_pose.orientation.w() * goal_pose.orientation.z() +
+               goal_pose.orientation.x() * goal_pose.orientation.y()),
+        1.0 - 2.0 * (goal_pose.orientation.y() * goal_pose.orientation.y() +
+                     goal_pose.orientation.z() * goal_pose.orientation.z()));
+    dense_path_.clear();
+    path_cursor_ = 0;
+    warm_start_4d_.clear();
+    warm_start_3d_.clear();
+    canceled_.store(false);
+    return true;
   }
   densifyPath(plan);
   path_cursor_ = 0;
@@ -399,6 +425,23 @@ ResultT<void> CostmapMppiController::computeVelocityCommand(
     return ResultT<void>::failure(ErrorCode::MAP_UNAVAILABLE,
                                   "CostmapMppiController has no costmap");
   }
+  if (degenerate_path_) {
+    // Start == goal position: zero translation, P-rotation toward the goal
+    // heading (the goal checker's angle tolerance still has to close;
+    // holding a full zero deadlocks it and the progress checker aborts).
+    double e = degenerate_goal_yaw_ - std::atan2(
+        2.0 * (pose.pose.orientation.w() * pose.pose.orientation.z() +
+               pose.pose.orientation.x() * pose.pose.orientation.y()),
+        1.0 - 2.0 * (pose.pose.orientation.y() * pose.pose.orientation.y() +
+                     pose.pose.orientation.z() * pose.pose.orientation.z()));
+    while (e > M_PI) e -= 2.0 * M_PI;
+    while (e < -M_PI) e += 2.0 * M_PI;
+    const double w_cap =
+        param.max_vel_theta > 0.0 ? param.max_vel_theta : 1.0;
+    cmd.twist.angular.z() =
+        std::clamp(2.0 * e, -w_cap, w_cap);
+    return ResultT<void>::success();
+  }
   if (dense_path_.size() < 2) {
     return ResultT<void>::failure(ErrorCode::NO_VALID_COMMAND,
                                   "CostmapMppiController has no plan");
@@ -422,6 +465,7 @@ ResultT<void> CostmapMppiController::computeVelocityCommand(
       map_valid = true;
     }
   }
+  view.prepare();
   // No usable grid: solve without obstacle costs (the BT-level IsPathValid
   // and the execution layer still cover the path).
   const std::function<unsigned char(double, double)> cost_at =

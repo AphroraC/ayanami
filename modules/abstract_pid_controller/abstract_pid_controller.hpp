@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <optional>
 #include <string>
 
@@ -77,7 +78,6 @@ class PidController final : public ayanami::abstract::AbstractController {
     double kp_w = 1.0;
     double ki_w = 0.0;
     double kd_w = 0.0;
-    double dist_decay = 2.0;
     double goal_tolerance = 0.1;
     double slide_window = 1.0;
     // Fallback dt for standalone/test use (no execution layer attached); in
@@ -123,6 +123,18 @@ class PidController final : public ayanami::abstract::AbstractController {
   double last_linear_vel = 0.0;
   double last_angular_vel = 0.0;
   size_t last_track_idx = 1;
+  /// @brief Cumulative arc length of `plan` (cum_[0] = 0; rebuilt on every
+  /// setPlan) and the total -- the interpolated lookahead runs in this
+  /// domain so the tracking target moves CONTINUOUSLY with the robot
+  /// instead of jumping between discrete path points (the jump-then-P
+  /// pattern was the dominant tracking-quality limit: every index step was
+  /// an output step).
+  std::vector<double> plan_cum_;
+  double plan_total_{0.0};
+  /// @brief Arc-length interpolated lookahead point: the point at
+  /// s_nearest + slide_window along the path (clamped to the goal).
+  Eigen::Vector2d lookaheadPoint(const Eigen::Vector2d& robot,
+                                 size_t nearest) const;
   uint64_t plan_signature = 0;
   /// @brief Injected cycle period (s); seeded from param.default_dt at
   /// configure time, overwritten by the execution's setCyclePeriod push.

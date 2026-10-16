@@ -41,6 +41,14 @@ struct FsmDriverConfig {
   /// once per raw path). Iterative refinement keeps the CURRENT smoothed
   /// path as its input; a changed raw path restarts from the raw path.
   double smoother_frequency{20.0};
+  /// @brief Invalidity grace window (seconds): while the current path
+  /// fails isPathValid, the SMOOTHER owns the repair (the re-smooth is
+  /// forced immediately every tick); only after the path has stayed
+  /// invalid this long does the planner re-plan. 0 = replan immediately
+  /// on invalidity (the previous behaviour). The plan-once contract:
+  /// planner_frequency < 0 + a positive grace leaves the planner out of
+  /// the loop entirely during normal following.
+  double replan_grace{0.0};
   /// @brief Advisory time budget per smoothing pass (seconds).
   double max_smooth_duration{2.0};
   /// @brief Outer recovery budget per attempt (goal revisions reset it).
@@ -157,6 +165,10 @@ class FsmDriver {
   /// while an attempt is active.
   void consumeGoalMailbox();
 
+  /// @brief Non-consuming mailbox probe (the recovery-branch interrupt
+  /// predicate): true while a fresh goal is waiting to be consumed.
+  bool goalPending();
+
   /// @brief Reset the per-attempt state and enter kPlan.
   void startAttempt(const geometry_msgs::PoseStamped& goal);
 
@@ -181,6 +193,16 @@ class FsmDriver {
   /// immediately, an empty list or an exhausted budget aborts, otherwise
   /// enter kRecovering.
   void enterRecoveryOrTerminal();
+
+  /// @brief Follow-context failure entry: account the net displacement since
+  /// the last recovery entry (the futility guard) and either abort a
+  /// confirmed stuck loop or hand over to enterRecoveryOrTerminal.
+  void enterRecoveryOrTerminalAfterFollowFailure();
+
+  /// @brief Futility accounting: compare the robot position against the
+  /// last recovery entry; a cycle with < 5 cm of displacement increments
+  /// stuck_cycles_, real movement resets it.
+  void accountRecoveryCycleProgress();
 
   // ---- control thread ----
   void controlLoop();
@@ -246,8 +268,19 @@ class FsmDriver {
   FailureContext failure_context_;
   uint32_t retry_count_{0};
   std::size_t recovery_cursor_{0};
+  /// @brief Robot position at the last recovery entry (net-displacement
+  /// futility guard): a recovery cycle that ends in another follow failure
+  /// WITHOUT the robot having moved is a stuck loop the placeholder
+  /// recovery cannot break -- two such cycles abort the attempt with a
+  /// diagnosis instead of burning the whole budget.
+  Eigen::Vector2d recovery_entry_pos_{Eigen::Vector2d::Zero()};
+  bool recovery_entry_valid_{false};
+  uint32_t stuck_cycles_{0};
   std::chrono::steady_clock::time_point last_plan_at_{};
   std::chrono::steady_clock::time_point last_smooth_at_{};
+  /// @brief When the current path first failed isPathValid (reset on
+  /// recovery); drives the replan_grace window.
+  std::optional<std::chrono::steady_clock::time_point> invalid_since_;
   bool plan_once_done_{false};
 
   // ---- oscillation gate ----

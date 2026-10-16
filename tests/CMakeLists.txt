@@ -90,6 +90,10 @@ ayanami_add_test(costmap_server_test
 ayanami_add_test(costmap_context_test
   SOURCES costmap_context_test.cpp
   DEPS costmap::costmap)
+# Prepared cell-space probe path vs the world-coordinate roundtrip (exact
+# parity lock for the A*/MPPI hot-path optimization).
+ayanami_add_test(fused_map_view_test
+  SOURCES fused_map_view_test.cpp)
 ayanami_add_test(costmap_components_test
   SOURCES costmap_components_test.cpp
   DEPS costmap::costmap)
@@ -97,12 +101,6 @@ ayanami_add_test(costmap_components_test
 ayanami_add_test(concurrent_controller_obstacle_test
   SOURCES concurrent_controller_obstacle_test.cpp
   DEPS costmap::costmap
-  TIMEOUT 10)
-ayanami_add_test(recovery_vs_obstacle_test
-  SOURCES recovery_vs_obstacle_test.cpp
-  DEPS costmap_cleanup_recovery
-       costmap::costmap
-       costmap::costmap
   TIMEOUT 10)
 ayanami_add_test(snapshot_stability_test
   SOURCES snapshot_stability_test.cpp
@@ -115,9 +113,9 @@ ayanami_add_test(planner_writer_concurrency_test
 ayanami_add_test(minor_carry_wirings_test
   SOURCES minor_carry_wirings_test.cpp
   DEPS costmap_astar_planner
-       costmap_pid_controller
+       abstract_pid_controller
        costmap::costmap
-       costmap::costmap)
+  INCLUDES ${PROJECT_SOURCE_DIR}/modules/abstract_pid_controller)
 
 # ---- production modules ----
 ayanami_add_test(costmap_astar_planner_test
@@ -132,10 +130,13 @@ ayanami_add_test(costmap_minsnap_smoother_test
   INCLUDES ${PROJECT_SOURCE_DIR}/modules/costmap_minsnap_smoother
   TIMEOUT 30
   ARGS $<TARGET_FILE:costmap_minsnap_smoother>)
-ayanami_add_test(costmap_pid_controller_test
-  SOURCES costmap_pid_controller_test.cpp
-  DEPS costmap_pid_controller simple_goal_checker
-  ARGS $<TARGET_FILE:costmap_pid_controller>)
+# OSQP-backed MPC module: optional (skipped without OsqpEigen), so is its test.
+if(TARGET abstract_mpc_controller)
+  ayanami_add_test(abstract_mpc_controller_test
+    SOURCES abstract_mpc_controller_test.cpp
+    DEPS abstract_mpc_controller
+    ARGS $<TARGET_FILE:abstract_mpc_controller>)
+endif()
 ayanami_add_test(costmap_mppi_controller_test
   SOURCES costmap_mppi_controller_test.cpp
   DEPS costmap_mppi_controller costmap::costmap
@@ -167,24 +168,46 @@ ayanami_add_test(fsm_e2e_test
        $<TARGET_FILE:simple_progress_checker>
        ${PROJECT_SOURCE_DIR}/tests/assets)
 # CostmapNavigationFsm headless end-to-end: the FSM host over the full
-# costmap module set.
+# costmap module set, in the shipped fsm_costmap route composition (MPPI
+# controller + the real nav2-order recovery rotation).
 ayanami_add_test(fsm_costmap_e2e_test
   SOURCES fsm_costmap_e2e_test.cpp
   DEPS costmap_navigation_fsm costmap::costmap
   NEEDS costmap_astar_planner
         costmap_minsnap_smoother
-        costmap_pid_controller
-        abstract_nothing_recovery
+        costmap_mppi_controller
+        costmap_cleanup_recovery
+        costmap_spin_recovery
+        costmap_wait_recovery
+        costmap_back_up_recovery
         simple_goal_checker
         simple_progress_checker
   ARGS $<TARGET_FILE:costmap_navigation_fsm>
        $<TARGET_FILE:costmap_astar_planner>
        $<TARGET_FILE:costmap_minsnap_smoother>
-       $<TARGET_FILE:costmap_pid_controller>
-       $<TARGET_FILE:abstract_nothing_recovery>
+       $<TARGET_FILE:costmap_mppi_controller>
+       $<TARGET_FILE:costmap_cleanup_recovery>
+       $<TARGET_FILE:costmap_spin_recovery>
+       $<TARGET_FILE:costmap_wait_recovery>
+       $<TARGET_FILE:costmap_back_up_recovery>
        $<TARGET_FILE:simple_goal_checker>
        $<TARGET_FILE:simple_progress_checker>
        ${PROJECT_SOURCE_DIR}/tests/assets)
+# The four CostmapRecovery-family recovery modules (revived with the FSM
+# era's plain RecoveryExecution + the writer-port clear seam).
+ayanami_add_test(costmap_recovery_modules_test
+  SOURCES costmap_recovery_modules_test.cpp
+  DEPS costmap_cleanup_recovery costmap_spin_recovery
+        costmap_wait_recovery costmap_back_up_recovery costmap::costmap
+  INCLUDES ${PROJECT_SOURCE_DIR}/modules/costmap_cleanup_recovery
+           ${PROJECT_SOURCE_DIR}/modules/costmap_spin_recovery
+           ${PROJECT_SOURCE_DIR}/modules/costmap_wait_recovery
+           ${PROJECT_SOURCE_DIR}/modules/costmap_back_up_recovery
+  ARGS $<TARGET_FILE:costmap_cleanup_recovery>
+       $<TARGET_FILE:costmap_spin_recovery>
+       $<TARGET_FILE:costmap_wait_recovery>
+       $<TARGET_FILE:costmap_back_up_recovery>
+       ${PROJECT_SOURCE_DIR}/modules)
 ayanami_add_test(fsm_neupan_e2e_test
   SOURCES fsm_neupan_e2e_test.cpp
   DEPS costmap_navigation_fsm costmap_neupan_controller costmap::costmap

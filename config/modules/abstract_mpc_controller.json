@@ -1,0 +1,22 @@
+{
+  "controller": {
+    "name": "abstract_mpc_controller",
+    "so_name": "libayanami_abstract_mpc_controller.so"
+  },
+  "abstract_mpc_controller": {
+    "predict_dt": 0.1,
+    "predict_steps": 30,
+    "max_iter": 20,
+    "max_speed": 2.0,
+    "max_accel": 1.0,
+    "delay_time": 0.0,
+    "blind_radius": 0.5,
+    "deviation_threshold": 0.5,
+    "cruise_speed": 1.5,
+    "q_pos": 15.0,
+    "r_vel": 0.1,
+    "rd_smooth": 1.0,
+    "angular_kp": 3.0,
+    "fixed_angular_z": 0.0
+  }
+}

@@ -13,6 +13,7 @@
 #include <costmap/inflation_layer.hpp>
 #include <costmap/simple_obstacle_layer.hpp>
 #include <costmap/static_layer.hpp>
+#include "ayanami/costmap/components/costmap_obstacle_applier.hpp"
 
 namespace {
 
@@ -523,4 +524,69 @@ TEST(CostmapLayersTest, obstacleLayerRollingShiftKeepsAlignmentAndInflatesStrip)
   EXPECT_GT(layered->getCostmap()->getCost(16, 10), 0);
   // The strip beyond the inflation radius stays free.
   EXPECT_EQ(layered->getCostmap()->getCost(19, 10), costmap_2d::FREE_SPACE);
+}
+
+TEST(CostmapLayersTest, relativeHeightWindowShiftsWithRobotZ) {
+  constexpr double res = 0.5;
+  auto lm = std::make_shared<costmap_2d::LayeredCostmap>(
+      "map", /*rolling_window=*/false, /*track_unknown=*/false);
+  lm->resizeMap(20, 20, res, 0.0, 0.0);
+  auto layer = std::make_shared<costmap_2d::SimpleObstacleLayer>();
+  lm->addLayer(layer);
+  ayanami::costmap::CostmapObstacleApplier applier(layer,
+                                                   /*footprint_clearing=*/false);
+
+  ayanami::costmap::ObservationSourceConfig source;
+  source.name = "test";
+  source.kind = ayanami::costmap::ObservationSourceConfig::Kind::PointCloud;
+  source.marking = true;
+  source.clearing = false;
+  source.min_obstacle_height = -0.25;
+  source.max_obstacle_height = 1.0;
+  source.obstacle_min_range = 0.0;
+  source.obstacle_max_range = 20.0;
+
+  // Points already in the map frame (identity sensor transform):
+  //   P1 (2.6,2.6) z=0.45 -- above the robot: an obstacle at any setting.
+  //   P2 (5.1,2.6) z=0.10 -- ground/ramp level: an obstacle only under the
+  //   ABSOLUTE window (>= -0.25); under the RELATIVE window with
+  //   robot_z=0.5 (effective [0.25, 1.5]) it drops out (the ramp under
+  //   the robot must not be marked as a wall).
+  const std::vector<Eigen::Vector3d> points = {
+      Eigen::Vector3d(2.6, 2.6, 0.45), Eigen::Vector3d(5.1, 2.6, 0.10)};
+  const std::vector<Eigen::Vector3d> no_rays;
+  ayanami::costmap::MapObservation observation;
+  observation.source = &source;
+  observation.t_frame_sensor = Eigen::Isometry3d::Identity();
+  observation.points = &points;
+  observation.clearing_points = &no_rays;
+  observation.has_robot_pose = true;
+  observation.robot_pose_xy_yaw = Eigen::Vector3d(2.5, 2.5, 0.0);
+
+  auto markAndRead = [&](double robot_z, bool relative) {
+    source.height_relative_to_robot = relative;
+    observation.robot_z = robot_z;
+    lm->updateMap(2.5, 2.5, 0.0);
+    applier.apply(observation);
+    lm->updateMap(2.5, 2.5, 0.0);
+    unsigned mx1 = 0, my1 = 0, mx2 = 0, my2 = 0;
+    lm->getCostmap()->worldToMap(2.6, 2.6, mx1, my1);
+    lm->getCostmap()->worldToMap(5.1, 2.6, mx2, my2);
+    return std::make_pair(lm->getCostmap()->getCost(mx1, my1),
+                          lm->getCostmap()->getCost(mx2, my2));
+  };
+
+  // Relative window riding on robot_z = 0.5: P1 marked, P2 (ramp) filtered.
+  const auto rel = markAndRead(0.5, true);
+  EXPECT_EQ(rel.first, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(rel.second, costmap_2d::FREE_SPACE);
+  // Absolute window: both fall inside [-0.25, 1.0] and are marked.
+  const auto abs = markAndRead(0.5, false);
+  EXPECT_EQ(abs.first, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(abs.second, costmap_2d::LETHAL_OBSTACLE);
+  // NaN robot z degrades the relative window to the absolute one.
+  const auto deg = markAndRead(
+      std::numeric_limits<double>::quiet_NaN(), true);
+  EXPECT_EQ(deg.first, costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_EQ(deg.second, costmap_2d::LETHAL_OBSTACLE);
 }

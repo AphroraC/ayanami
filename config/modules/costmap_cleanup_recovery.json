@@ -1,0 +1,10 @@
+{
+  "recovery": {
+    "name": "costmap_cleanup_recovery",
+    "so_name": "libayanami_costmap_cleanup_recovery.so"
+  },
+  "costmap_cleanup_recovery": {
+    "clear_radius": 1.0,
+    "affected_maps": "both"
+  }
+}

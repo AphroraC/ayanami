@@ -1,6 +1,6 @@
-#include "costmap_pid_controller.hpp"
+#include "costmap_wait_recovery.hpp"
 #include <ayanami/utility/extension_module.hpp>
 
 extern "C" ayanami::ExtensionModule* create_extension_module() {
-  return new ayanami::modules::CostmapPidController();
+  return new ayanami::modules::CostmapWaitRecovery();
 }

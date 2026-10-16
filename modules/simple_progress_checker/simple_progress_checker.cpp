@@ -5,6 +5,9 @@
 
 #include "simple_progress_checker.hpp"
 
+#include <spdlog/spdlog.h>
+#include <ayanami/utility/logging.hpp>
+
 #include <cmath>
 
 namespace ayanami {
@@ -94,6 +97,22 @@ bool SimpleProgressChecker::check(
   }
 
   if (elapsed > param.time_period) {
+    // Self-describing failure: the FSM's recovery ladder (and any remote
+    // diagnosis) needs to know WHAT the checker measured, not just that it
+    // expired. moved/angle below separate the two failure families -- a
+    // frozen pose (physical stall OR a stale/jumping pose feed) shows
+    // near-zero moved AND angle, while a localization frame fighting the
+    // motion shows large per-cycle motion that never nets 0.25 m.
+    SPDLOG_LOGGER_WARN(
+        ayanami::controllerLogger(),
+        "ProgressChecker: no progress for {:.2f}s (need {:.2f} m / {:.2f} "
+        "rad): moved={:.3f} m angle={:.3f} rad base=({:.2f}, {:.2f}, {:.3f}) "
+        "current=({:.2f}, {:.2f}, {:.3f})",
+        elapsed, param.required_movement, param.movement_angle_required,
+        moved, angle_moved, base_pose.pose.position.x(),
+        base_pose.pose.position.y(), yawOf(base_pose.pose),
+        current_pose.pose.position.x(), current_pose.pose.position.y(),
+        yawOf(current_pose.pose));
     return false;  // no progress (stuck)
   }
   return true;

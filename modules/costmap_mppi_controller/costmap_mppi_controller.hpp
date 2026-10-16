@@ -241,6 +241,13 @@ class CostmapMppiController final : public ayanami::costmap::CostmapController {
   ayanami::costmap::CostmapSnapshot local_snapshot_;
 
   std::atomic<bool> canceled_{false};
+
+  /// @brief True while the installed plan is degenerate (start == goal
+  /// position): no reference is installed; compute holds zero translation
+  /// and P-rotates toward the goal heading (the goal checker owns the
+  /// arrival verdict).
+  bool degenerate_path_{false};
+  double degenerate_goal_yaw_{0.0};
 };
 
 }  // namespace modules

@@ -305,6 +305,8 @@ void RoseNavigationFsm::createActions() {
       nav_cfg.param<double>("navigation", "planner_frequency", 5.0);
   driver_config.smoother_frequency =
       nav_cfg.param<double>("navigation", "smoother_frequency", 10.0);
+  driver_config.replan_grace =
+      nav_cfg.param<double>("navigation", "replan_grace", 0.0);
   driver_config.max_smooth_duration =
       nav_cfg.param<double>("navigation", "smoother_timeout", 2.0);
   driver_config.max_nav_retries =
@@ -355,7 +357,7 @@ void RoseNavigationFsm::stop() {
 void RoseNavigationFsm::setGoal(
     const ayanami::geometry_msgs::PoseStamped& goal) {
   if (!fsm_) {
-    SPDLOG_LOGGER_ERROR(ayanami::btLogger(),
+    SPDLOG_LOGGER_ERROR(ayanami::fsmLogger(),
                         "RoseNavigationFsm: setGoal before initialize");
     return;
   }

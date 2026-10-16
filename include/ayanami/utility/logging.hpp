@@ -19,7 +19,7 @@ inline constexpr const char* kPlannerLogger = "planner";
 inline constexpr const char* kSmootherLogger = "smoother";
 inline constexpr const char* kControllerLogger = "controller";
 inline constexpr const char* kRecoveryLogger = "recovery";
-inline constexpr const char* kBtLogger = "BT";
+inline constexpr const char* kFsmLogger = "FSM";
 inline constexpr const char* kCostmapLogger = "costmap";
 }  // namespace logging
 
@@ -49,7 +49,7 @@ std::shared_ptr<spdlog::logger> plannerLogger();
 std::shared_ptr<spdlog::logger> smootherLogger();
 std::shared_ptr<spdlog::logger> controllerLogger();
 std::shared_ptr<spdlog::logger> recoveryLogger();
-std::shared_ptr<spdlog::logger> btLogger();
+std::shared_ptr<spdlog::logger> fsmLogger();
 std::shared_ptr<spdlog::logger> costmapLogger();
 
 /**
@@ -70,17 +70,21 @@ std::shared_ptr<spdlog::logger> costmapLogger();
  *   - max_files        (int,    default 10)    : rotated files retained
  *   - logger_levels    (object, optional)      : per-layer level overrides,
  *     e.g. {"costmap": "debug", "controller": "warn"}. Each known layer
- *     logger ("ros", "planner", "smoother", "controller", "recovery", "BT",
+ *     logger ("ros", "planner", "smoother", "controller", "recovery", "FSM",
  *     "costmap") replaces its master-switch gate with its override; unknown
  *     names are ignored. A more verbose override than logging_level surfaces
  *     in the file (the file sink itself is ungated; gating happens at logger
  *     level) and on the console when console_level also allows it.
  *
- * The file name is <logging_dir>/ayanami.log. Log lines are tagged with the
- * logger name ([ayanami] for the unnamed-framework default, plus one tag per
- * layer logger). Idempotent and reconfigurable: each call rebuilds the
- * console/file sinks (other sinks are kept) and re-syncs levels to all
- * registered loggers.
+ * Files (asuka-style per-logger sinks): the framework default logger writes
+ * <logging_dir>/ayanami.log and EVERY layer logger writes its own
+ * <logging_dir>/ayanami_<layer>.log (ayanami_ros.log, ayanami_planner.log,
+ * ..., ayanami_FSM.log, ayanami_costmap.log) -- one file per layer, so a
+ * layer's history can be read without grepping a shared stream. Log lines
+ * are still tagged with the logger name ([ayanami] for the default, plus
+ * one tag per layer logger). Idempotent and reconfigurable: each call
+ * rebuilds the console/file sinks and re-syncs levels to all registered
+ * loggers.
  */
 void configureLogging();
 

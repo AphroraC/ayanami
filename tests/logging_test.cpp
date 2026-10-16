@@ -1,6 +1,6 @@
 // logging_test: logLevelFromString parsing + configureLogging behavior
 // (console_output / file_output / rotation parameters / level, modeled on the asuka parameter set)
-// + the per-layer named loggers (ros/planner/smoother/controller/recovery/BT/costmap).
+// + the per-layer named loggers (ros/planner/smoother/controller/recovery/FSM/costmap).
 //
 // Coverage:
 // 1. Level string parsing (trace/debug/info/warn/warning/error/critical/off/unknown)
@@ -82,8 +82,9 @@ std::filesystem::path makeConfigDir(const std::string& logging_json) {
   return dir;
 }
 
-std::string readLogFile(const std::filesystem::path& dir) {
-  std::ifstream ifs(dir / "ayanami.log");
+std::string readLogFile(const std::filesystem::path& dir,
+                        const std::string& filename = "ayanami.log") {
+  std::ifstream ifs(dir / filename);
   std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
   return content;
 }
@@ -199,19 +200,19 @@ TEST(LoggingTest, layerLoggersRegisteredAndTagged) {
   ASSERT_NE(spdlog::get("smoother"), nullptr);
   ASSERT_NE(spdlog::get("controller"), nullptr);
   ASSERT_NE(spdlog::get("recovery"), nullptr);
-  ASSERT_NE(spdlog::get("BT"), nullptr);
+  ASSERT_NE(spdlog::get("FSM"), nullptr);
   ASSERT_NE(spdlog::get("costmap"), nullptr);
   EXPECT_EQ(ayanami::rosLogger(), spdlog::get("ros"));
   EXPECT_EQ(ayanami::plannerLogger(), spdlog::get("planner"));
   EXPECT_EQ(ayanami::smootherLogger(), spdlog::get("smoother"));
   EXPECT_EQ(ayanami::controllerLogger(), spdlog::get("controller"));
   EXPECT_EQ(ayanami::recoveryLogger(), spdlog::get("recovery"));
-  EXPECT_EQ(ayanami::btLogger(), spdlog::get("BT"));
+  EXPECT_EQ(ayanami::fsmLogger(), spdlog::get("FSM"));
   EXPECT_EQ(ayanami::costmapLogger(), spdlog::get("costmap"));
 
   // Layer loggers share the sink set with the default logger and inherit the
   // master level when no override is configured.
-  for (const auto& name : {"ros", "planner", "smoother", "controller", "recovery", "BT", "costmap"}) {
+  for (const auto& name : {"ros", "planner", "smoother", "controller", "recovery", "FSM", "costmap"}) {
     EXPECT_TRUE(has_file_sink(spdlog::get(name))) << name;
     EXPECT_FALSE(has_console_sink(spdlog::get(name))) << name;
     EXPECT_EQ(spdlog::get(name)->level(), spdlog::level::info) << name;
@@ -219,15 +220,22 @@ TEST(LoggingTest, layerLoggersRegisteredAndTagged) {
 
   // Lines carry the [name] tag.
   ayanami::costmapLogger()->warn("costmap tag marker");
-  ayanami::btLogger()->info("BT tag marker");
+  ayanami::fsmLogger()->info("FSM tag marker");
   ayanami::recoveryLogger()->error("recovery tag marker");
-  for (const auto& name : spdlog::get("costmap")->sinks()) {
-    name->flush();
+  // Per-logger files: every layer's marker lands in its OWN file.
+  for (const auto& name : {"costmap", "FSM", "recovery"}) {
+    for (const auto& sink : spdlog::get(name)->sinks()) {
+      sink->flush();
+    }
   }
-  const std::string content = readLogFile(dir);
-  EXPECT_NE(content.find("[costmap] [warning] costmap tag marker"), std::string::npos);
-  EXPECT_NE(content.find("[BT] [info] BT tag marker"), std::string::npos);
-  EXPECT_NE(content.find("[recovery] [error] recovery tag marker"), std::string::npos);
+  EXPECT_NE(readLogFile(dir, "ayanami_costmap.log")
+                .find("[costmap] [warning] costmap tag marker"),
+            std::string::npos);
+  EXPECT_NE(readLogFile(dir, "ayanami_FSM.log").find("[FSM] [info] FSM tag marker"),
+            std::string::npos);
+  EXPECT_NE(readLogFile(dir, "ayanami_recovery.log")
+                .find("[recovery] [error] recovery tag marker"),
+            std::string::npos);
 }
 
 TEST(LoggingTest, loggerLevelsOverrideMasterGate) {
@@ -260,10 +268,17 @@ TEST(LoggingTest, loggerLevelsOverrideMasterGate) {
   for (const auto& sink : spdlog::get("costmap")->sinks()) {
     sink->flush();
   }
-  const std::string content = readLogFile(dir);
-  EXPECT_NE(content.find("[costmap] [debug] costmap debug reaches the file"), std::string::npos);
-  EXPECT_EQ(content.find("controller debug must not appear"), std::string::npos);
-  EXPECT_NE(content.find("[controller] [warning] controller warn appears"), std::string::npos);
+  for (const auto& sink : spdlog::get("controller")->sinks()) {
+    sink->flush();
+  }
+  // Per-logger files: each layer's lines land in its OWN file.
+  const std::string costmap_content = readLogFile(dir, "ayanami_costmap.log");
+  EXPECT_NE(costmap_content.find("[costmap] [debug] costmap debug reaches the file"),
+            std::string::npos);
+  const std::string controller_content = readLogFile(dir, "ayanami_controller.log");
+  EXPECT_EQ(controller_content.find("controller debug must not appear"), std::string::npos);
+  EXPECT_NE(controller_content.find("[controller] [warning] controller warn appears"),
+            std::string::npos);
 }
 
 TEST(LoggingTest, defaultLoggerNamedAyanami) {

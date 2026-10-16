@@ -145,6 +145,10 @@ protected:
   double recovery_patience{0.0};
   // Robot-pose loss grace window (navigation.velocity_timeout, seconds).
   double velocity_timeout{0.25};
+  /// @brief Tracking-deviation guard threshold (navigation.
+  /// deviation_threshold, meters; 0 = disabled), injected into the
+  /// controller execution (setDeviationThreshold).
+  double deviation_threshold{0.0};
 
 public:
   /// @brief Cached patience values (config readback for tests/observability).

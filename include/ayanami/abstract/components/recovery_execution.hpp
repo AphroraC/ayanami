@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 
@@ -46,6 +47,10 @@ public:
     STOPPED,
     INTERNAL_ERROR,
     PAT_EXCEEDED,
+    /// @brief A fresh navigation goal preempted the run (the driver's
+    /// goal-mailbox interrupt check fired): settle like a cancel but let
+    /// the driver distinguish preemption-by-goal from a user cancel.
+    INTERRUPTED,
   };
 
   explicit RecoveryExecution(ayanami::abstract::AbstractRecovery::Ptr recovery)
@@ -85,6 +90,15 @@ public:
   /// @brief Cycle period (default 10ms, aligned with the module sim_cycle_dt). Only >0 takes effect.
   void setCyclePeriod(std::chrono::microseconds period) {
     if (period.count() > 0) cycle_period = period;
+  }
+
+  /// @brief Goal-mailbox interrupt hook (nav2 GoalUpdated semantics): when
+  /// set and it returns true, the run settles as INTERRUPTED (CANCELED
+  /// error, zero velocity published) at the next cycle boundary instead of
+  /// running to its own terminal state. Called from the run loop at the
+  /// cycle cadence; must be cheap and never block.
+  void setInterruptCheck(std::function<bool()> check) {
+    interrupt_check = std::move(check);
   }
 
   /// @brief Velocity limit injection (navigation.max_vel_{x,y,theta} single source of truth).
@@ -145,6 +159,15 @@ protected:
           error = ErrorCode::CANCELED;
           publishStopCommand();
           setState(STOPPED, true);
+          break;
+        }
+        if (interrupt_check && interrupt_check()) {
+          // A fresh goal preempts the recovery branch (the ReactiveFallback
+          // GoalUpdated short-circuit): stop the robot and hand the branch
+          // back; the driver consumes the revision and replans.
+          error = ErrorCode::CANCELED;
+          publishStopCommand();
+          setState(INTERRUPTED, true);
           break;
         }
         if (isPatienceExceeded()) {
@@ -290,6 +313,8 @@ protected:
   std::chrono::duration<double> recovery_patience{0};
   std::chrono::steady_clock::time_point start_time;
   std::chrono::microseconds cycle_period{10000};
+  /// @brief Goal-mailbox interrupt predicate (see setInterruptCheck).
+  std::function<bool()> interrupt_check;
   double max_linear_x{std::numeric_limits<double>::infinity()};
   double max_linear_y{std::numeric_limits<double>::infinity()};
   double max_angular_z{std::numeric_limits<double>::infinity()};

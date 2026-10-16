@@ -169,8 +169,6 @@ void PidController::configureParameters(const ayanami::ModuleContext& context) {
                                     param.ki_w);
     param.kd_w = file.param<double>(section, "kd_w",
                                     param.kd_w);
-    param.dist_decay = file.param<double>(section,
-                                          "dist_decay", param.dist_decay);
     param.goal_tolerance =
         file.param<double>(section, "goal_tolerance",
                            param.goal_tolerance);
@@ -215,6 +213,17 @@ bool PidController::setPlan(const nav_msgs::Path& plan) {
   this->plan = plan;
   goal = plan.poses.back();
   canceled.store(false);
+  // Cumulative arc-length table for the interpolated lookahead (O(n) per
+  // setPlan, O(log)/O(step) per cycle).
+  plan_cum_.assign(plan.poses.size(), 0.0);
+  for (size_t i = 1; i < plan.poses.size(); ++i) {
+    plan_cum_[i] = plan_cum_[i - 1] +
+                   (plan.poses[i].pose.position -
+                    plan.poses[i - 1].pose.position)
+                       .head<2>()
+                       .norm();
+  }
+  plan_total_ = plan_cum_.back();
   if (signature != plan_signature) {
     // New goal (or first frame): reset tracking state so the first setPlan frame starts from 0 (no stale velocity carried over).
     plan_signature = signature;
@@ -287,17 +296,26 @@ ResultT<void> PidController::computeVelocityCommand(
       nearest = i;
     }
   }
-  // Advance forward to the first point >= slide_window (or the last point), avoiding stop-and-stall where the target
-  // distance collapses to ~0 when the lookahead window shrinks at dense path points.
-  size_t target_idx = nearest;
-  while (target_idx + 1 < plan.poses.size() &&
-         distance2d(pose, plan.poses[target_idx]) < param.slide_window) {
-    ++target_idx;
+  // Arc-length interpolated lookahead: the target is the path point at
+  // (nearest arc position + slide_window), interpolated within its segment.
+  // Unlike the previous discrete index stepping, the reference moves
+  // continuously with the robot -- no per-index target jumps feeding the P
+  // controller (the dominant tracking-error source).
+  const Eigen::Vector2d target = lookaheadPoint(
+      Eigen::Vector2d(pose.pose.position.x(), pose.pose.position.y()),
+      nearest);
+  {
+    size_t target_idx = nearest;
+    while (target_idx + 1 < plan.poses.size() &&
+           plan_cum_[target_idx + 1] <
+               plan_cum_[nearest] + param.slide_window) {
+      ++target_idx;
+    }
+    last_track_idx = target_idx;
   }
-  last_track_idx = target_idx;
 
   const Eigen::Vector3d rel =
-      plan.poses[target_idx].pose.position - pose.pose.position;
+      Eigen::Vector3d(target.x(), target.y(), 0.0) - pose.pose.position;
   const double c = std::cos(robot_yaw);
   const double s = std::sin(robot_yaw);
   const double local_x = c * rel.x() + s * rel.y();   // forward
@@ -405,12 +423,54 @@ double PidController::limitAcceleration(double last_vel, double cmd_vel,
                   std::min(cmd_vel, last_vel + max_change));
 }
 
+Eigen::Vector2d PidController::lookaheadPoint(
+    const Eigen::Vector2d& robot, size_t nearest) const {
+  if (plan_cum_.size() != plan.poses.size() || plan.poses.size() < 2) {
+    return Eigen::Vector2d(plan.poses.back().pose.position.x(),
+                           plan.poses.back().pose.position.y());
+  }
+  // Clamp the target arc to the path end: the final approach aims at the
+  // goal itself (the distanceDecay cap owns the arrival speed).
+  const double s_target =
+      std::min(plan_cum_[nearest] + param.slide_window, plan_total_);
+  // Locate the segment containing s_target (forward from nearest; both
+  // advance monotonically along the path).
+  size_t j = nearest;
+  while (j + 1 < plan.poses.size() - 1 && plan_cum_[j + 1] < s_target) {
+    ++j;
+  }
+  const double seg = plan_cum_[j + 1] - plan_cum_[j];
+  if (seg <= 1e-9) {
+    return Eigen::Vector2d(plan.poses[j + 1].pose.position.x(),
+                           plan.poses[j + 1].pose.position.y());
+  }
+  const double alpha = std::clamp((s_target - plan_cum_[j]) / seg, 0.0, 1.0);
+  const Eigen::Vector2d a(plan.poses[j].pose.position.x(),
+                          plan.poses[j].pose.position.y());
+  const Eigen::Vector2d b(plan.poses[j + 1].pose.position.x(),
+                          plan.poses[j + 1].pose.position.y());
+  return a + alpha * (b - a);
+}
+
 double PidController::distanceDecay(double distance,
                                            double target_velocity) const {
-  if (distance < param.dist_decay) {
-    return (distance / std::max(param.dist_decay, 1e-9)) * target_velocity;
-  }
-  return target_velocity;
+  // Kinematic braking cap aimed at the STOP LINE (the goal XY tolerance
+  // edge), not the goal center: v = sqrt(2 * k_brake * max(d - tol, 0)).
+  // Braking to zero speed exactly at the tolerance edge means the
+  // hard zero-cut of the linear velocity (inside the tolerance the PID
+  // only aligns heading) happens at ~0 speed -- a curve aimed at the goal
+  // CENTER still carried ~sqrt(2*a*tol) into the cut, which the plant
+  // converted into an overshoot-and-crawl-back at every arrival.
+  // k_brake = 0.8 * max_decel_x keeps 20% decel headroom for plant lag
+  // (the realized decel is rate-limited by limitAcceleration at the full
+  // max_decel_x; a curve demanding exactly the limit has no margin and
+  // overshoots on any tracking error).
+  constexpr double k_brake_utilization = 0.8;
+  const double d_eff =
+      std::max(distance - goalToleranceXy(), 0.0);
+  const double v_cap = std::sqrt(
+      2.0 * k_brake_utilization * param.max_decel_x * d_eff);
+  return std::min(target_velocity, v_cap);
 }
 
 }  // namespace modules

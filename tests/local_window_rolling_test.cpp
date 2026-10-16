@@ -11,6 +11,7 @@
 
 #include "test_transform_source.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -397,6 +398,50 @@ TEST(LocalWindowRolling, localMarksAreImmuneToLocalizationCorrection) {
   EXPECT_FALSE(hasLethalNear(46, 50))
       << "a map-frame-style correction shift (x+0.3 -> cells ~48) must NOT "
          "appear in the local map";
+}
+
+// ---- 2026-10-06 optimization: the layer-artifact render is gated on
+// subscribers (the full-grid toOccupancyGrid pass no longer runs at the map
+// update rate when nobody listens). The lock: the gate must not corrupt the
+// emission bookkeeping -- a subscriber that arrives between updates still
+// receives the NEXT content change. ----
+
+TEST(LocalWindowRolling, layerEmissionGatedOnSubscribersRecoversForLateOnes) {
+  auto dir = makeRollingConfigDir();
+  ayanami::costmap::CostmapNavigationServer server;
+  server.configureCoreMaps(dir.string());
+
+  auto& rsc = ayanami::components::RobotStateController::instance();
+  rsc.initialize("map", "map", "base_link", 5.0);
+  testTransforms().set("odom", "base_link", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity(), false);
+  testTransforms().set("odom", "laser", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity(), false);
+  testTransforms().set("map", "odom", ayanami::Timestamp::latest(),
+                       Eigen::Isometry3d::Identity(), false);
+
+  // Update #1 with NO subscriber anywhere: the render is skipped (nothing
+  // observable), and the inline cycle must complete and stay healthy.
+  server.handleObstacleLaserScan(makeScan());
+
+  std::atomic<int> emissions{0};
+  auto subscription =
+      ayanami::interfaces::NavigationCallbacks::on_local_costmap_inflation
+          .subscribe(
+              [&](const ayanami::nav_msgs::OccupancyGrid&) { ++emissions; });
+  EXPECT_EQ(emissions.load(), 0)
+      << "the subscriber arrived after update #1; nothing may be replayed";
+
+  // Update #2 (marks re-applied -> generation bump): the late subscriber
+  // receives the artifact -- the no-subscriber skip left the bookkeeping
+  // intact.
+  server.handleObstacleLaserScan(makeScan());
+  EXPECT_GE(emissions.load(), 1)
+      << "the subscriber gate swallowed a real content update";
+
+  // And a further update keeps emitting while the subscriber is attached.
+  server.handleObstacleLaserScan(makeScan());
+  EXPECT_GE(emissions.load(), 2);
 }
 
 }  // namespace

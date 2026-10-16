@@ -1,0 +1,9 @@
+{
+  "recovery": {
+    "name": "costmap_wait_recovery",
+    "so_name": "libayanami_costmap_wait_recovery.so"
+  },
+  "costmap_wait_recovery": {
+    "wait_duration": 2.0
+  }
+}

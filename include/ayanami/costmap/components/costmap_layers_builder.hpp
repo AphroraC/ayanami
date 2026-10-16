@@ -219,6 +219,8 @@ inline CostmapLayerAssembly buildLocalLayers(const Config& route_cfg) {
     source.clearing = source_cfg.param<bool>(name, "clearing", true);
     source.min_obstacle_height =
         source_cfg.param<double>(name, "min_obstacle_height", 0.0);
+    source.height_relative_to_robot =
+        source_cfg.param<bool>(name, "height_relative_to_robot", false);
     source.max_obstacle_height =
         source_cfg.param<double>(name, "max_obstacle_height", 1.0);
     source.obstacle_min_range =

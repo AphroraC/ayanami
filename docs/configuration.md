@@ -19,7 +19,6 @@ config/
     ├── costmap_astar_planner.json
     ├── costmap_minsnap_smoother.json
     ├── costmap_mppi_controller.json
-    ├── costmap_pid_controller.json
     ├── esdfmap_minco_smoother.json
     ├── simple_goal_checker.json
     └── simple_progress_checker.json
@@ -72,7 +71,8 @@ config/
 | `so_name` | libayanami_rose_navigation_fsm.so（rose 路由）/ libayanami_costmap_navigation_fsm.so（costmap 路由） | 宿主 so；ayanami_ros dlopen 的唯一来源 |
 | `config_planner` 等 | — | 五族模块文件指针（见上） |
 | `fsm_frequency` | 20.0 | FSM PLAN 线程 tick 频率（Hz） |
-| `planner_frequency` | 5.0 | kFollow 节流重规划（Hz；≤0 = 仅路径失效时重规划） |
+| `planner_frequency` | -1.0 | kFollow 节流重规划（Hz；≤0 = 关闭周期重规划，plan-once 契约） |
+| `replan_grace` | 2.0 | 路径失效宽限窗（秒，0=失效立即重规划）：窗内 smoother 独占路径修复（ESDF 推离），超窗 planner 介入 |
 | `smoother_frequency` | 10.0 | kFollow 迭代重平滑节流（Hz；≤0 = 每条 raw path 只平滑一次） |
 | `smoother_timeout` | 2.0 | 单次平滑建议时间预算（s；→ FsmDriverConfig::max_smooth_duration） |
 | `controller_frequency` | 50.0 | controller execution 周期 |
@@ -83,6 +83,7 @@ config/
 | `max_vel_x / max_vel_y / max_vel_theta` | rose 2.5/2.5/3.0；costmap 2.0/2.0/2.0 | **速度上限单一来源**：execution 层发布前校验，超限清零 |
 | `robot_frame` | base_link | 机器人根帧。**机器人帧的唯一权威**；`config_ros.robot_frame` 只是镜像，不一致时 ROS 层启动即抛异常 |
 | `velocity_timeout` | 0.25 | 速度样本过期阈值（RSC） |
+| `deviation_threshold` | 跟踪偏离防护阈值（米，0=禁用）：机器人距当前路径超过该值时控制器任务以 NO_PROGRESS 终止（rose LMPC 拒解语义），FSM 重规划；路由两条管线配 0.5 |
 
 ## esdfmap 段（仅 rose 路由）
 

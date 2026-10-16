@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,12 @@ struct ObservationSourceConfig {
   /// @brief Hit z window: points outside [min, max] are ignored.
   double min_obstacle_height{0.0};
   double max_obstacle_height{1.0};
+  /// @brief Interpret the z window as RELATIVE to the robot's current
+  /// height (map-frame robot z resolved by the sole writer): the window
+  /// rides with the robot, so ramps/slopes under it fall out of the lower
+  /// edge instead of being marked as walls (rose_navigation semantics,
+  /// first-order). An unavailable robot z degrades to the absolute window.
+  bool height_relative_to_robot{false};
   /// @brief Marking range window: hits closer than min / farther than max
   /// (from the sensor origin) are ignored.
   double obstacle_min_range{0.0};
@@ -64,6 +71,9 @@ struct MapObservation {
   /// clearing); has_robot_pose=false skips that pass.
   Eigen::Vector3d robot_pose_xy_yaw{Eigen::Vector3d::Zero()};
   bool has_robot_pose{false};
+  /// @brief Robot z in the target map's frame when resolvable (NaN
+  /// otherwise -> the relative height window degrades to absolute).
+  double robot_z{std::numeric_limits<double>::quiet_NaN()};
 };
 
 }  // namespace costmap

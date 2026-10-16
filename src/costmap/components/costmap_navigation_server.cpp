@@ -331,9 +331,10 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
   double robot_x = 0.0;
   double robot_y = 0.0;
   double robot_yaw = 0.0;
+  double robot_z = std::numeric_limits<double>::quiet_NaN();
   const bool have_pose =
       resolveRobotPoseInMapFrame(map_frame, is_local, robot_x, robot_y,
-                                 robot_yaw);
+                                 robot_yaw, robot_z);
 
   // ---- apply + rebuild: one write lock, one updateMap for the batch ----
   bool any_applied = false;
@@ -341,6 +342,23 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
   const auto cycle_start = std::chrono::steady_clock::now();
   if (have_pose) {
     auto write_lock = wrapper->lockForWrite();
+    // Static-zone filter (LOCAL only): ONE global read lock for the whole
+    // batch instead of one per frame (this thread is the sole writer of
+    // both maps, so the local-write -> global-read order is safe). Per
+    // frame the probe transform is precomposed (global_from_local *
+    // t_frame_sensor) so each point pays one rigid multiply instead of two.
+    const costmap_2d::Costmap2D* static_probe_grid = nullptr;
+    std::optional<std::shared_lock<std::shared_mutex>> static_probe_lock;
+    if (filter_static) {
+      const auto global = costmap_context->globalCostmap();
+      if (global) {
+        static_probe_lock.emplace(global->mutex());
+        const auto* grid = global->get().getCostmap();
+        if (grid && grid->getSizeInCellsX() > 0) {
+          static_probe_grid = grid;
+        }
+      }
+    }
     for (auto& resolved : batch) {
       if (!resolved.transform_ok) {
         continue;
@@ -349,39 +367,29 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
       ayanami::costmap::MapObservation map_observation;
       map_observation.t_frame_sensor = resolved.t_frame_sensor;
       const std::vector<Eigen::Vector3d>* points = &observation.points;
-      if (filter_static) {
+      if (filter_static && static_probe_grid != nullptr) {
         // Drop hits whose global cell is already blocked: the static map
         // owns that geometry, and noise-marking it only makes the local
-        // halo boundary flicker across legal close passes. Fail open:
-        // an unusable global grid keeps every point.
+        // halo boundary flicker across legal close passes. An unusable
+        // global grid (static_probe_grid == nullptr) keeps every point.
         filtered_points.clear();
         filtered_points.reserve(observation.points.size());
-        const auto global = costmap_context->globalCostmap();
-        bool probe_usable = false;
-        if (global) {
-          std::shared_lock<std::shared_mutex> read_lock(global->mutex());
-          const auto* grid = global->get().getCostmap();
-          if (grid && grid->getSizeInCellsX() > 0) {
-            probe_usable = true;
-            for (const auto& p : observation.points) {
-              const Eigen::Vector3d pg =
-                  global_from_local * (resolved.t_frame_sensor * p);
-              unsigned mx = 0;
-              unsigned my = 0;
-              if (!grid->worldToMap(pg.x(), pg.y(), mx, my)) {
-                filtered_points.push_back(p);  // unmapped: the cloud is all we have
-                continue;
-              }
-              if (grid->getCost(mx, my) >=
-                  costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
-                continue;  // static zone: the global map already blocks it
-              }
-              filtered_points.push_back(p);
-            }
+        const Eigen::Isometry3d t_global_sensor =
+            global_from_local * resolved.t_frame_sensor;
+        const auto* grid = static_probe_grid;
+        for (const auto& p : observation.points) {
+          const Eigen::Vector3d pg = t_global_sensor * p;
+          unsigned mx = 0;
+          unsigned my = 0;
+          if (!grid->worldToMap(pg.x(), pg.y(), mx, my)) {
+            filtered_points.push_back(p);  // unmapped: the cloud is all we have
+            continue;
           }
-        }
-        if (!probe_usable) {
-          filtered_points = observation.points;
+          if (grid->getCost(mx, my) >=
+              costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+            continue;  // static zone: the global map already blocks it
+          }
+          filtered_points.push_back(p);
         }
         points = &filtered_points;
       }
@@ -390,6 +398,7 @@ void CostmapNavigationServer::runMapCycle(bool is_local, bool force) {
       map_observation.robot_pose_xy_yaw =
           Eigen::Vector3d(robot_x, robot_y, robot_yaw);
       map_observation.has_robot_pose = have_pose;
+      map_observation.robot_z = robot_z;
       for (const auto& source : observation_sources) {
         if (source.kind != observation.source->kind) {
           continue;
@@ -521,6 +530,24 @@ void CostmapNavigationServer::emitMapLayers(bool is_local) {
       is_local ? costmap_context->localCostmap() : costmap_context->globalCostmap();
   if (!wrapper) {
     return;
+  }
+  // Subscriber gate FIRST: the full-grid renders (toOccupancyGrid over the
+  // master and the presence raster, under the shared read lock) run on
+  // every generation bump -- up to the local update rate -- and were paid
+  // even with no receiver on the slot. Skipping the render when nobody
+  // subscribes keeps the "unconditional emission" contract (the generation
+  // bookkeeping below still advances only on a real render, so a late
+  // subscriber sees the next content change).
+  if (is_local) {
+    if (!ayanami::interfaces::NavigationCallbacks::on_local_costmap_obstacle &&
+        !ayanami::interfaces::NavigationCallbacks::on_local_costmap_inflation) {
+      return;
+    }
+  } else {
+    if (!ayanami::interfaces::NavigationCallbacks::on_global_costmap_static &&
+        !ayanami::interfaces::NavigationCallbacks::on_global_costmap_inflation) {
+      return;
+    }
   }
   const std::uint64_t gen = wrapper->generation();
   auto& ever = is_local ? local_layers_ever_emitted
@@ -961,9 +988,9 @@ bool CostmapNavigationServer::initializeControllerModule(
       name);
     return false;
   }
-  // Strict costmap family constraint: only CostmapController is accepted;
-  // plain AbstractControllers are no longer allowed (costmap_pid_controller now derives
-  // from CostmapController).
+  // Strict costmap family constraint: only CostmapController is accepted
+  // (plain AbstractControllers are map-free and cannot serve the map-aware
+  // hook contract of this server).
   auto cast = std::dynamic_pointer_cast<CostmapController>(ptr);
   if (!cast) {
     SPDLOG_LOGGER_ERROR(
@@ -1257,7 +1284,7 @@ bool CostmapNavigationServer::resolveObservationTransform(
 
 bool CostmapNavigationServer::resolveRobotPoseInMapFrame(
     const std::string& map_frame, bool is_local_map, double& robot_x,
-    double& robot_y, double& robot_yaw) {
+    double& robot_y, double& robot_yaw, double& robot_z) {
   auto& robot_state_controller =
       ayanami::components::RobotStateController::instance();
   Eigen::Isometry3d t_robot = Eigen::Isometry3d::Identity();
@@ -1266,6 +1293,7 @@ bool CostmapNavigationServer::resolveRobotPoseInMapFrame(
           ayanami::Timestamp::latest(), t_robot, k_tf_lookup_timeout_s)) {
     robot_x = t_robot.translation().x();
     robot_y = t_robot.translation().y();
+    robot_z = t_robot.translation().z();
     robot_yaw = std::atan2(t_robot.linear()(1, 0), t_robot.linear()(0, 0));
     if (is_local_map) {
       has_last_local_robot = true;
@@ -1282,6 +1310,8 @@ bool CostmapNavigationServer::resolveRobotPoseInMapFrame(
     robot_x = last_local_robot_x;
     robot_y = last_local_robot_y;
     robot_yaw = last_local_robot_yaw;
+    // No cached z: the relative height window degrades to the absolute one
+    // for this cycle (the fallback pose predates the cache).
     return true;
   }
   return false;

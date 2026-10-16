@@ -187,6 +187,17 @@ public:
     pose_grace = std::chrono::duration<double>(seconds);
   }
 
+  /// @brief Tracking-deviation guard (the framework-level equivalent of
+  /// rose_navigation's LMPC deviation rejection): the nearest-point search
+  /// always finds a reference no matter how far the robot was pushed, and a
+  /// map-free tracker pulls it back along a straight line that may cross
+  /// obstacles. When the robot strays farther than this from the current
+  /// path, the task fails with NO_PROGRESS so the FSM replans. 0 disables
+  /// (default; the rose deployment uses 0.5 m).
+  void setDeviationThreshold(double meters) { deviation_threshold = meters; }
+
+  double getDeviationThreshold() const { return deviation_threshold; }
+
   double getPoseGrace() const { return pose_grace.count(); }
 
   /// @brief nav2 failure_tolerance semantics: patience < 0 tolerates forever;
@@ -452,6 +463,19 @@ protected:
           return;
         }
 
+        // Tracking-deviation guard: fail the task when the robot strays
+        // beyond the threshold (NO_PROGRESS is recoverable -- the FSM
+        // replans; a map-free tracker's straight-line pull-back may cross
+        // obstacles, so waiting for the oscillation gate is too slow).
+        if (deviation_threshold > 0.0 &&
+            cross_track > deviation_threshold) {
+          error = ErrorCode::NO_PROGRESS;
+          message = "Tracking deviation exceeded the threshold";
+          publishStopCommand();
+          setState(NO_PROGRESS, true);
+          return;
+        }
+
         // Only declare the robot stuck after ruling out successful arrival.
         if (!progress_checker->check(robot_pose)) {
           error = ErrorCode::NO_PROGRESS;
@@ -589,6 +613,11 @@ protected:
   /// @brief nav2 failure_tolerance semantics: <0 (default) tolerates forever,
   /// 0 fails immediately, >0 is the tolerance window in seconds.
   std::chrono::duration<double> patience{-1};
+  /// @brief Cross-track distance to the nearest path point of the cycle
+  /// (meters; refreshed by updateProgressMetrics) and its fail threshold
+  /// (<=0 disables the guard).
+  double cross_track{0.0};
+  double deviation_threshold{0.0};
   std::chrono::steady_clock::time_point start_time;
   /// @brief Last valid-command timestamp (patience window origin) and the
   /// first consecutive failed-safetyCheck timestamp (MAP_STALE window origin).
@@ -613,6 +642,7 @@ protected:
         return (plan.poses[index].pose.position - robot_pose.pose.position)
             .norm();
       };
+      cross_track = 0.0;
       if (progress_index_full_scan) {
         std::size_t nearest_index = 0;
         double best = std::numeric_limits<double>::max();
@@ -623,6 +653,7 @@ protected:
             nearest_index = i;
           }
         }
+        cross_track = best;
         progress_index = nearest_index;
         progress_index_full_scan = false;
       } else {
@@ -643,6 +674,7 @@ protected:
             nearest_index = i;
           }
         }
+        cross_track = best;
         progress_index = nearest_index;
       }
     }

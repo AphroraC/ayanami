@@ -18,7 +18,7 @@
 | costmap 包 | costmap_2d_test、costmap_layers_test、costmap_server_test |
 | costmap 组件 | costmap_context_test、costmap_components_test、concurrent_controller_obstacle_test（控制器短锁不被落图饿死）、snapshot_stability_test、planner_writer_concurrency_test、local_window_rolling_test |
 | costmap 层静态组合 | costmap_layers_static_test（buildGlobalLayers/buildLocalLayers 解析、重复源类型拒绝、applier 过滤与足印清除） |
-| 生产模块 | costmap_astar_planner_test、costmap_minsnap_smoother_test、costmap_pid_controller_test、costmap_mppi_controller_test、minor_carry_wirings_test（astar+pid 小装配） |
+| 生产模块 | costmap_astar_planner_test、costmap_minsnap_smoother_test、costmap_mppi_controller_test、minor_carry_wirings_test（astar+pid 小装配） |
 | ESDF | esdfmap_test（重建发布/generation 门控/静态 mask 经变换融合/插值与梯度/路径校验探针/新鲜度门） |
 | **FSM** | **fsm_test**（进程内 mock 直驱状态机语义）、**fsm_e2e_test**（rose 宿主无头 E2E）、**fsm_costmap_e2e_test**（costmap 宿主无头 E2E） |
 

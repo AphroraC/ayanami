@@ -14,7 +14,7 @@
 3. TF 链：`rosrun tf tf_echo map odom` 与 `odom base_link`。
    缺 map←odom → AMCL（看 ayanami 日志的 "TF health check" 诊断，
    每 5s 附完整帧树）。
-4. FSM 状态：日志 `[BT]` 标签下有完整状态迁移（"FSM: navigation attempt
+4. FSM 状态：日志 `[FSM]` 标签（文件 `ayanami_FSM.log`）下有完整状态迁移（"FSM: navigation attempt
    started / goal revised in place / planning failed / follow failed /
    recovery done / attempt finished"）。终态原因（"retry budget exhausted"
    / "non-recoverable failure"）直接写在 attempt finished 行。
@@ -107,8 +107,7 @@
 - roslaunch 标准输出（无头运行重定向到 /tmp/*.log）；
 - spdlog 同时按 logging 段轮转写 `logs/`；
 - 每行带分层 logger 标签：`[ros] / [planner] / [smoother] / [controller] /
-  [recovery] / [BT] / [costmap]`（框架基础设施为 `[ayanami]`；`[BT]` 名字
-  沿用 BT 时代，现在是 FsmDriver 的编排日志），级别统一由 `logging_level`
+  [recovery] / [FSM] / [costmap]`（框架基础设施为 `[ayanami]`；每个 layer 写独立文件 `ayanami_<layer>.log`），级别统一由 `logging_level`
   控制；
 - ctest 输出在 build/<pkg>/Testing/Temporary/LastTest.log。
 
@@ -117,7 +116,7 @@
 | # | 坑 | 位置 | 状态 |
 |---|---|---|---|
 | P4 | tf2 带超时等待以 ros::Time（sim time）计时，/clock 停摆时无限阻塞 | ayanami_ros sync | 已修：timeout=0（诊断兜底） |
-| P5 | gazebo_ros_diff_drive 轮距/打滑 → 原地旋转里程计欠报 ~6% | urdf_gazebo_demo | 环境已知；AMCL 参数补偿兜底 |
+| P5 | gazebo_ros_diff_drive 轮距/打滑 → 原地旋转里程计欠报 ~6% | nav_demo (car.xacro) | 环境已知；AMCL 参数补偿兜底 |
 | P6 | AMCL alpha_slow/fast=0 → 恢复注入永久禁用（w_diff≡0） | amcl_diff.launch / pf.c:408 | 已修 0.001/0.1 |
 | P7 | amcl_odom DIFF 分支把方差当 sigma 传 pf_ran_gaussian（缺 sqrt）→ 纯旋转噪声 ~12× 过小 | amcl_odom.cpp:168-173 | 已修 alpha1=1.0 参数补偿 |
 | P8 | AMCL 参数须用 `initial_pose_a`（非 _yaw），否则内部 NaN 不发布 map→odom | amcl_diff.launch | 已修 |

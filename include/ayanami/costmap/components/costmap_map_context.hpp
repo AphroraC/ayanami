@@ -114,10 +114,31 @@ class CostmapMapContext
     // snapshot + one lock-free transform lookup, never nested with (or
     // inside) the global shared lock. A missing local map or transform
     // degrades the whole check to global-only (static walls still gate).
+    // (No generation-gated snapshot cache here by design: raw-grid test
+    // seams mutate the layer raster without the wrapper's generation
+    // counter, and the per-call copy is only ~15 KB at supervision rate.)
     ayanami::costmap::CostmapSnapshot local;
     Eigen::Isometry3d local_from_global = Eigen::Isometry3d::Identity();
     const bool have_local = snapshotLocal(local) && local.valid() &&
                             localFromGlobal(local_from_global);
+    // Precomputed 2D rows of local_from_global: identical arithmetic to the
+    // Isometry multiply for z=0 points (the z row/column contribute +0.0
+    // terms only), without the 3D plumbing. This scan sits on the FSM's
+    // supervision path and runs every follow tick.
+    double local_r00 = 1.0;
+    double local_r01 = 0.0;
+    double local_r10 = 0.0;
+    double local_r11 = 1.0;
+    double local_tx = 0.0;
+    double local_ty = 0.0;
+    if (have_local) {
+      local_r00 = local_from_global(0, 0);
+      local_r01 = local_from_global(0, 1);
+      local_r10 = local_from_global(1, 0);
+      local_r11 = local_from_global(1, 1);
+      local_tx = local_from_global.translation().x();
+      local_ty = local_from_global.translation().y();
+    }
     return readGlobal([&](const CostmapReader& global) {
       if (!global.valid()) {
         return true;
@@ -161,15 +182,25 @@ class CostmapMapContext
         auto cost = global_grid->getCost(mx, my);
         if (have_local) {
           // Fused overlay: the local window's fresh marks gate the near
-          // path segment exactly like the planner's overlay model.
-          const Eigen::Vector3d p_local =
-              local_from_global * path.poses[i].pose.position;
-          unsigned int lmx = 0;
-          unsigned int lmy = 0;
-          if (local.worldToMap(p_local.x(), p_local.y(), lmx, lmy)) {
-            const unsigned char local_cost = local.getCost(lmx, lmy);
-            if (local_cost > cost) {
-              cost = local_cost;
+          // path segment exactly like the planner's overlay model. The
+          // inline guard/cast mirrors CostmapSnapshot::worldToMap (reject
+          // below-origin, trunc == floor for non-negative, bounds check).
+          const double px =
+              local_r00 * path.poses[i].pose.position.x() +
+              local_r01 * path.poses[i].pose.position.y() + local_tx;
+          const double py =
+              local_r10 * path.poses[i].pose.position.x() +
+              local_r11 * path.poses[i].pose.position.y() + local_ty;
+          if (px >= local.origin_x && py >= local.origin_y) {
+            const unsigned int lmx = static_cast<unsigned int>(
+                (px - local.origin_x) / local.resolution);
+            const unsigned int lmy = static_cast<unsigned int>(
+                (py - local.origin_y) / local.resolution);
+            if (lmx < local.size_x && lmy < local.size_y) {
+              const unsigned char local_cost = local.getCost(lmx, lmy);
+              if (local_cost > cost) {
+                cost = local_cost;
+              }
             }
           }
         }

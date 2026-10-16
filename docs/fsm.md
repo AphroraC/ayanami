@@ -42,8 +42,8 @@ kAborted / kCanceled`（`FsmDriver::State`）。
 | kInit | 构造后初始态；`start()` 置 kWaitGoal 并拉起两条常驻线程 |
 | kWaitGoal | 空闲：plan 线程在 goal 邮箱条件变量上等待；不触碰任何 Execution |
 | kPlan | 一拍 = `tickPlan`：plan → `isPathValid` → smooth（失败降级 DegradeToRawPath）→ `isPathValid` → `kickFollow` 进 kFollow。失败进恢复/终态判定 |
-| kFollow | 一拍 = `tickFollow`：终态检查（等 control 线程握手）→ 振荡门 → 节流重规划/路径失效即刻重规划/迭代重平滑（都经 controller `updatePlan` 原地落地）。controller 到达 → kSucceeded；失败 → 恢复/终态判定 |
-| kRecovering | 一拍 = `tickRecovering`：轮转游标取下一个 recovery，`preemptController` 后**内联** `runBlocking` 执行；成功 → 重试计数 +1、清失败上下文、强制重规划回 kPlan；失败 → kAborted |
+| kFollow | 一拍 = `tickFollow`：终态检查（等 control 线程握手）→ 振荡门 → 监督分支（都经 controller `updatePlan` 原地落地）——节流重规划（`planner_frequency`≤0 关闭，plan-once 契约）/ **失效宽限**（`replan_grace` 窗内不调 planner：强制本拍重平滑，由 smoother 的 ESDF 推离修复路径；持续失效超窗才 planner 重规划）/ 迭代重平滑。controller 到达 → kSucceeded；失败 → 恢复/终态判定 |
+| kRecovering | 一拍 = `tickRecovering`：轮转游标取下一个 recovery（出厂序 = nav2 默认树：cleanup→spin→wait→back_up），`preemptController` 后**内联** `runBlocking` 执行（进入时记录机器人位置；运行期间挂 goal 邮箱中断谓词——新 goal 到达 → INTERRUPTED 抢占：消费原地修订、回 kPlan，对应 nav2 ReactiveFallback(GoalUpdated) 短路）；成功 → 重试计数 +1、清失败上下文、强制重规划回 kPlan；失败 → kAborted。**止损守卫**：follow 失败进入恢复前核对自上次恢复入口以来的净位移——位移 <5cm（恢复周期内机器人没动）计一次 stuck，连续 2 次 → 直接 kAborted 并给出诊断（占位 recovery 无法改变结局时不再烧满预算） |
 | kSucceeded / kCanceled / kAborted | 尝试终态：结果已发射，**驻留**（不空转、不重新规划），下一个 goal 从任何非活跃态直接开新尝试 |
 
 ## 线程模型
@@ -98,7 +98,8 @@ kAborted / kCanceled`（`FsmDriver::State`）。
 | 字段 | 代码默认 | 说明 |
 |---|---|---|
 | `fsm_frequency` | 20.0 | PLAN 线程 tick 频率（Hz） |
-| `planner_frequency` | 5.0 | kFollow 期间节流重规划（Hz；≤0 = 仅路径失效时重规划） |
+| `planner_frequency` | -1.0 | kFollow 期间节流重规划（Hz；≤0 = 关闭，plan-once 契约） |
+| `replan_grace` | 2.0 | 路径失效宽限窗（秒）：窗内 smoother 独占修复（每拍强制重平滑）；超窗 planner 重规划。0 = 失效立即重规划（旧行为） |
 | `smoother_frequency` | 20.0 | kFollow 期间迭代重平滑节流（Hz；≤0 = 每条 raw path 只平滑一次） |
 | `max_smooth_duration` | 2.0 | 单次平滑的建议时间预算（s；路由键 `smoother_timeout`） |
 | `max_nav_retries` | 6 | 每次尝试的恢复预算（goal 修订复位） |

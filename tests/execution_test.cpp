@@ -586,3 +586,52 @@ TEST(ExecutionController, updatePlanDedupsContentEquivalentPath) {
   consumed = exec.takeNewPlan();
   EXPECT_EQ(consumed.second, 3u);
 }
+
+TEST(ExecutionController, deviationGuardFailsTaskWhenOffPath) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  // 1 m lateral off a straight x-axis path: past the 0.5 m threshold.
+  Eigen::Isometry3d off = Eigen::Isometry3d::Identity();
+  off.translation().x() = 1.5;
+  off.translation().y() = 1.0;
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(), off);
+  auto controller = std::make_shared<TestController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setControllerFrequency(500.0);
+  exec.setDeviationThreshold(0.5);
+  exec.setGoalChecker(std::make_shared<NeverGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
+  Path plan;
+  plan.poses.resize(4);
+  for (std::size_t i = 0; i < plan.poses.size(); ++i) {
+    plan.poses[i].pose.position.x() = static_cast<double>(i);
+  }
+  exec.setNewPlan(plan);
+  std::thread exec_th([&] { exec.runBlocking(); });
+  ASSERT_TRUE(waitForState(
+      exec, ayanami::components::ControllerExecution::NO_PROGRESS));
+  EXPECT_EQ(exec.getError(), ayanami::ErrorCode::NO_PROGRESS);
+  exec_th.join();
+}
+
+TEST(ExecutionController, deviationGuardDisabledKeepsTracking) {
+  auto& robot_state = ayanami::components::RobotStateController::instance();
+  robot_state.initialize("map", "odom", "base_link", 10.0);
+  Eigen::Isometry3d off = Eigen::Isometry3d::Identity();
+  off.translation().x() = 1.5;
+  off.translation().y() = 1.0;
+  testTransforms().set("map", "base_link", ayanami::Timestamp::latest(), off);
+  auto controller = std::make_shared<TestController>();
+  ayanami::components::ControllerExecution exec(controller);
+  exec.setControllerFrequency(500.0);
+  exec.setDeviationThreshold(0.0);  // disabled
+  exec.setGoalChecker(std::make_shared<ReachAfterNChecksGoalChecker>());
+  exec.setProgressChecker(std::make_shared<TrueProgressChecker>());
+  Path plan;
+  plan.poses.resize(4);
+  exec.setNewPlan(plan);
+  std::thread exec_th([&] { exec.runBlocking(); });
+  ASSERT_TRUE(waitForState(
+      exec, ayanami::components::ControllerExecution::ARRIVED_GOAL));
+  exec_th.join();
+}

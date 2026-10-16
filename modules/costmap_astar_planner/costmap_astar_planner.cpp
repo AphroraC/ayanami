@@ -297,6 +297,7 @@ ResultT<void> CostmapAstarPlanner::makePlan(
       view.local = &local_snapshot;
     }
   }
+  view.prepare();
   return makePlanWithMap(start, goal, tolerance, plan_out, view);
 }
 

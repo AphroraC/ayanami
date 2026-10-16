@@ -33,17 +33,21 @@
   **无自定义 deleter** 的 `shared_ptr` 持有，卸载必须先把所有对象释放在
   dlopen 句柄仍存活的窗口内。
 
-## 模块清单（modules/，11 个）
+## 模块清单（modules/，16 个）
 
 | 模块 | 族 | 依赖地图 | 职责 |
 |---|---|---|---|
 | `costmap_astar_planner` | planner | costmap（读者） | costmap A* 全局规划；`isPathValid` 覆写为 FusedMapView（global+local 逐点 MAX）稀疏探针——FSM 的 path validator 来源 |
-| `esdfmap_minco_smoother` | smoother | esdfmap（**唯一读者**） | MINCO 轨迹优化 + ESDF 碰撞代价；整次优化持一份不可变 EsdfSnapshot（零锁） |
+| `esdfmap_minco_smoother` | smoother | esdfmap（**唯一读者**） | MINCO 轨迹优化 + ESDF 碰撞代价；整次优化持一份不可变 EsdfSnapshot（零锁）。头端绑定路径起始切向速度（零速绑定会让首/尾 ~0.5m 不可推离）；尾端锚定终点（静止到位语义）；冻结点/离场点不计入代价（常数项会淹没 lbfgs 相对收敛判据）；**输出时长随优化几何统一缩放**（scale=新/旧总弧长：推离使几何变长，沿用输入时刻表会让派生速度暴涨、被 severe-speed 验证整体回滚——宽推离带下"ESDF 影响有限"的真相；逐段弧长重分摊会把节点间距噪声放大成速度尖峰，已否决）；safe_dist=1.0 强离障带 + weight_pos=5e5；每次调用向 smoother 层日志输出一行结果 |
 | `costmap_minsnap_smoother` | smoother | costmap | 最小 snap 路径平滑（走廊约束 + 碰撞修复环）；纯 costmap 栈路由使用 |
-| `abstract_pid_controller` | controller | 无（**纯跟踪**） | 三轴 PID 路径跟踪（diff/omni 双模式，含五项历史控制修复；继承自 costmap_pid_controller 去掉地图壳） |
-| `costmap_pid_controller` | controller | costmap | costmap 族 PID 控制器（纯 costmap 栈路由使用） |
+| `abstract_pid_controller` | controller | 无（**纯跟踪**） | 三轴 PID 路径跟踪（diff/omni 双模式）。前瞻目标 = **弧长插值点**（最近点弧位 + slide_window，段内线性插值——参考随机器人连续移动，离散点跳变曾是最主要跟踪误差源）；到达 = 运动学刹车曲线 v=min(需求, √(2·max_decel_x·d))（全速保持到 v²/2a 处再恒减速入位，替代线性 ramp 的末端爬行）；dist_decay 已删除（刹车距离由 max_decel_x 单一来源决定） |
+| `abstract_mpc_controller` | controller (abstract) | 无（纯跟踪） | 迭代线性 MPC（rose_navigation LMPC 移植）：弧长参数化参考 + OSQP QP （初态/动力学等式、逐轴速度盒、dv 盒、Q/R/Rd 代价），热启动 + du 早退；偏离超阈值拒解（NO_PROGRESS 交 FSM 重规划） |
 | `costmap_mppi_controller` | controller | costmap | MPPI 控制器（4D swerve 采样空间） |
-| `abstract_nothing_recovery` | recovery | 无 | **占位**恢复行为：跑完整 start/tick/finish 协议、一拍即成功；恢复编排由 FSM 预算/游标驱动并可观测，换真行为是换插件 |
+| `abstract_nothing_recovery` | recovery | 无 | 占位恢复行为（abstract 族，一拍即成功）；测试/最小部署用，出厂 fsm_costmap 路由已换真恢复四件套 |
+| `costmap_cleanup_recovery` | recovery | costmap（经写者端口清图） | nav2 ClearingActions 对应物：一次 run 先后清 local/global 两图（`ClearCostmapCommand` 经宿主注入的 `executeClearCommand` 端口走唯一写者路径，模块自己不碰锁） |
+| `costmap_spin_recovery` | recovery | costmap（读者） | nav2 Spin 对应物：每拍纯角速度建议（wz=max_w），转满 spin_dist 即 SUCCESS；内切晕（≥253）内拒转（FAILED） |
+| `costmap_wait_recovery` | recovery | 无 | nav2 Wait 对应物：RUNNING 到 wait_duration 满，无速度输出 |
+| `costmap_back_up_recovery` | recovery | costmap（读者） | nav2 BackUp 对应物（双带逃逸语义）：接触带=背离重接触侧逃逸（不做地图否决）；近障带=仅倒向障碍才拒；逃逸有效性=物理位移裁决，停滞自动换向一轮，双向停滞才 FAILED |
 | `simple_goal_checker` | goal_checker | 无 | 位置/朝向容差到达判定（容差唯一权威，经执行层下推给控制器） |
 | `simple_progress_checker` | progress_checker | 无 | 无进展判定 |
 | `rose_navigation_fsm` | 宿主（AbstractNavigation） | costmap + esdfmap | rose 路由宿主：CostmapNavigationServer + EsdfWriter 派生场 + 混合族模块 + FsmDriver |
@@ -97,7 +101,9 @@ class EsdfmapSmoother : public abstract::AbstractSmoother {
 
 宿主在 `initialize*Module` 虚钩子里 `dynamic_pointer_cast` 到本族接口，
 非本族模块直接拒绝（spdlog error）——rose 宿主要求 planner 是 CostmapPlanner、
-smoother 是 EsdfmapSmoother、controller/recovery 无地图。
+smoother 是 EsdfmapSmoother、controller/recovery 无地图。costmap 宿主为**双轨**：
+planner/smoother 严格 costmap 族；controller/recovery 先 cast，是 costmap 族就注入
+地图（mppi/neupan/恢复四件套读图），否则放行（map-free abstract 族一等公民）。
 
 ## 标准模块模板
 

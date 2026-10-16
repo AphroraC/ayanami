@@ -6,7 +6,16 @@
   "simple_goal_checker": {
     "position_tolerance": 0.25,
     "angle_tolerance": 0.3,
-    "linear_tolerance": 0.1,
-    "angular_tolerance": 0.1
+    // 2026-10-16 arrival wobble fix: the strict conditions were the VELOCITY
+    // tolerances, not position/angle. Arrival requires |v| AND |w| below
+    // these SIMULTANEOUSLY with pose-in-tolerance; a settling swerve with
+    // ~10 Hz odometry feedback chatter never satisfies them on the first
+    // pass, so the PID keeps nudging (in-place wobble) until the velocities
+    // decay -- or the 4/5 s progress/oscillation backstops fire. Loosened so
+    // arrival latches during the settle: the execution layer answers with an
+    // immediate publishStopCommand() (controller_execution ARRIVED_GOAL
+    // path), which brakes the residual velocity in centimeters.
+    "linear_tolerance": 0.2,
+    "angular_tolerance": 0.25
   }
 }

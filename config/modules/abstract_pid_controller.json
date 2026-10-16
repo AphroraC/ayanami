@@ -4,22 +4,58 @@
     "so_name": "libayanami_abstract_pid_controller.so"
   },
   "abstract_pid_controller": {
-    "max_vel_x": 1.8,
-    "max_vel_theta": 1.2,
-    "max_acc_x": 1.8,
+    // Cruise ceiling. 2026-10-04 speed request: back to 2.5 (5.0 -> 2.5) with
+    // every binding pair halved in tandem (max_acc_x here, the firmware
+    // accel ramp in config_extensions.json::cmd_chassis_publisher, the sim
+    // plant's wheelAcceleration, and the route-level max_vel clamp) so
+    // spool-up TIME stays at ~1 s.
+    "max_vel_x": 2.5,
+    // Spin ceiling: braking distance = w^2/(2*max_acc_theta) = 0.196 rad at
+    // 1.4/5.0 (the 2026-10-02 overshoot-fix operating point).
+    "max_vel_theta": 1.4,
+    // Spool-up pair with the firmware ramp below (2.5 / 2.5 = 1 s).
+    "max_acc_x": 2.5,
+    // Arrival-braking authority: the kinematic braking cap
+    // v = sqrt(2*0.8*max_decel_x*(d-tol)) (distanceDecay) holds cruise until
+    // v^2/(2*0.8*max_decel_x) before the tolerance edge. 2026-10-14: 3.2 -> 2.0
+    // (curve demand 1.6 m/s^2) to restore a 2x margin under the firmware ramp
+    // (3.2, see config_extensions.json): at 3.2 the demand (2.56) exceeded the
+    // old ramp clamp (2.5) and the sentry swerve plant's tracking lag carried
+    // 1.4 m/s across the goal - a 0.31 m overshoot-and-return on every arrival.
+    // Braking distance from the 2.5 cruise: 2.5^2/(2*0.8*2.0) = 1.95 m.
     "max_decel_x": 2.0,
-    "max_acc_theta": 4.0,
+    // Yaw braking authority (chassis firmware caps at 6.0).
+    "max_acc_theta": 5.0,
     "kp_v": 3.0,
     "ki_v": 0.0,
     "kd_v": 0.0,
     "kp_w": 2.0,
     "ki_w": 0.0,
     "kd_w": 0.0,
-    "dist_decay": 2.0,
-    "goal_tolerance": 0.1,
-    "slide_window": 1.0,
+    // 2026-10-16 arrival wobble fix: 0.1 -> 0.15. This is BOTH the stop-linear
+    // region and the distanceDecay braking target (v = sqrt(2*0.8*max_decel_x*
+    // (d - tol))). At 0.1 the arrival edge coincided with the region boundary:
+    // residual momentum (amplified since the cmd_chassis_publisher firmware
+    // ramp was disabled -- the 2026-10-14 tuning relied on its 2x margin)
+    // carried the robot back OUT of the region, where path tracking pulled it
+    // back in -- a translate wobble across the boundary. 0.15 brakes earlier
+    // (arrives slower) and gives the overshoot somewhere to land inside the
+    // region. Must stay < goal_checker position_tolerance (0.25): stopping
+    // farther out than the checker's tolerance would align heading outside
+    // the acceptance region.
+    "goal_tolerance": 0.15,
+    // Lookahead (~0.5 s of travel at 2.5 m/s). The interpolated reference
+    // moves continuously; raise it if corners cut, lower it to track
+    // tighter.
+    "slide_window": 1.25,
     "default_dt": 0.05,
-    "heading_deadband": 0.08,
+    // 2026-10-16 arrival wobble fix: 0.08 -> 0.15. Inside the goal region the
+    // angular PID is plain P on yaw error (no braking curve, unlike linear):
+    // kp_w 2.0 with plant lag overshoots the heading and reverses -- yaw
+    // chatter that keeps |w| above the checker's angular_tolerance. Cutting
+    // corrections inside 0.15 rad lets the checker's angle_tolerance (0.3)
+    // latch during the first settle. Keep deadband < angle_tolerance.
+    "heading_deadband": 0.15,
     "rotate_in_place_angle": 0.45,
     "mode": "omni"
   }

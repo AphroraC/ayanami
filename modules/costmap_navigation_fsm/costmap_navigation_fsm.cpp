@@ -11,6 +11,7 @@
 #include <ayanami/costmap/components/costmap_smoother_execution.hpp>
 #include <ayanami/costmap/core/costmap_controller.hpp>
 #include <ayanami/costmap/core/costmap_planner.hpp>
+#include <ayanami/costmap/core/costmap_recovery.hpp>
 #include <ayanami/costmap/core/costmap_smoother.hpp>
 #include <ayanami/interfaces/callbacks.hpp>
 #include <ayanami/utility/bootstrap.hpp>
@@ -80,24 +81,40 @@ bool CostmapNavigationFsm::initializeSmootherModule(
 bool CostmapNavigationFsm::initializeControllerModule(
     const std::string& name, const ayanami::Config& module_config,
     abstract::AbstractController::Ptr module) {
+  // Dual track (CostmapControllerExecution::callController is dual-track
+  // the same way): costmap-family controllers receive the map-context
+  // injection (costmap_mppi_controller / costmap_neupan_controller read
+  // the local/global grids through it); map-free abstract controllers
+  // (abstract_pid_controller & co.) are first-class without one -- a pure
+  // path tracker needs no map and the tracking-deviation guard lives in
+  // the ControllerExecution layer.
   auto* costmap_controller =
       dynamic_cast<costmap::CostmapController*>(module.get());
-  if (!costmap_controller) {
-    SPDLOG_LOGGER_ERROR(ayanami::controllerLogger(),
-                        "CostmapNavigationFsm: controller '{}' is not a "
-                        "CostmapController",
-                        name);
-    return false;
+  if (costmap_controller) {
+    costmap_controller->configure(
+        ModuleContext{name, module_config},
+        costmap_server_->costmapContextConst());
   }
-  costmap_controller->configure(
-      ModuleContext{name, module_config},
-      costmap_server_->costmapContextConst());
   return true;
 }
 
 bool CostmapNavigationFsm::initializeRecoveryModule(
-    const std::string&, const ayanami::Config&,
-    abstract::AbstractRecovery::Ptr) {
+    const std::string& name, const ayanami::Config& module_config,
+    abstract::AbstractRecovery::Ptr module) {
+  auto* costmap_recovery =
+      dynamic_cast<costmap::CostmapRecovery*>(module.get());
+  if (!costmap_recovery) {
+    // Abstract-family recoveries (the nothing placeholder) need no
+    // injection.
+    return true;
+  }
+  costmap_recovery->configure(
+      ModuleContext{name, module_config},
+      costmap_server_->costmapContextConst(),
+      [server = costmap_server_](
+          const costmap::ClearCostmapCommand& command) {
+        return server->executeClearCommand(command);
+      });
   return true;
 }
 
@@ -163,6 +180,8 @@ void CostmapNavigationFsm::createActions() {
       nav_cfg.param<double>("navigation", "planner_frequency", 5.0);
   driver_config.smoother_frequency =
       nav_cfg.param<double>("navigation", "smoother_frequency", 10.0);
+  driver_config.replan_grace =
+      nav_cfg.param<double>("navigation", "replan_grace", 0.0);
   driver_config.max_smooth_duration =
       nav_cfg.param<double>("navigation", "smoother_timeout", 2.0);
   driver_config.max_nav_retries =
@@ -205,7 +224,7 @@ void CostmapNavigationFsm::stop() {
 void CostmapNavigationFsm::setGoal(
     const ayanami::geometry_msgs::PoseStamped& goal) {
   if (!fsm_) {
-    SPDLOG_LOGGER_ERROR(ayanami::btLogger(),
+    SPDLOG_LOGGER_ERROR(ayanami::fsmLogger(),
                         "CostmapNavigationFsm: setGoal before initialize");
     return;
   }

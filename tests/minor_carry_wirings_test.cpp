@@ -44,7 +44,7 @@
 #include <ayanami/types.hpp>
 #include <ayanami/messages/geometry_msgs.hpp>
 #include <ayanami/messages/nav_msgs.hpp>
-#include <costmap_pid_controller/costmap_pid_controller.hpp>
+#include "abstract_pid_controller.hpp"
 #include <costmap_astar_planner/costmap_astar_planner.hpp>
 #include <ayanami/utility/config.hpp>
 
@@ -57,7 +57,7 @@ using ayanami::costmap::CostmapMapContext;
 using ayanami::costmap::CostmapNavigationServer;
 using ayanami::geometry_msgs::PoseStamped;
 using ayanami::geometry_msgs::TwistStamped;
-using ayanami::modules::CostmapPidController;
+using ayanami::modules::PidController;
 using ayanami::modules::CostmapAstarPlanner;
 using ayanami::nav_msgs::Path;
 
@@ -171,13 +171,13 @@ std::filesystem::path makeNavigationConfigDir(
 // ---------------- Test 4: pid coarse signature ----------------
 
 std::string pidConfigContent() {
-  return "{\n  \"costmap_pid_controller\": {\n"
+  return "{\n  \"abstract_pid_controller\": {\n"
          "    \"max_vel_x\": 2.0,\n    \"max_vel_theta\": 1.0,\n"
          "    \"max_acc_x\": 1.0,\n    \"max_decel_x\": 1.0,\n"
          "    \"max_acc_theta\": 1.0,\n"
          "    \"kp_v\": 1.0,\n    \"ki_v\": 0.0,\n    \"kd_v\": 0.0,\n"
          "    \"kp_w\": 1.0,\n    \"ki_w\": 0.0,\n    \"kd_w\": 0.0,\n"
-         "    \"dist_decay\": 2.0,\n    \"goal_tolerance\": 0.1,\n"
+         "    \"goal_tolerance\": 0.1,\n"
          "    \"slide_window\": 1.0,\n    \"default_dt\": 0.05,\n"
          "    \"heading_deadband\": 0.08,\n"
          "    \"rotate_in_place_angle\": 0.45,\n"
@@ -195,18 +195,17 @@ Path makeXPath(double goal_x = 9.0) {
   return p;
 }
 
-std::shared_ptr<CostmapPidController> makeController() {
-  auto ctl = std::make_shared<CostmapPidController>();
-  // New API: parameters are injected via ModuleContext.config (this module json).
-  ctl->configure(ayanami::ModuleContext{
-                     "test_pid",
-                     ayanami::Config((g_module_dir /
-                                      "costmap_pid_controller.json").string())},
-                 std::make_shared<CostmapMapContext>());
+std::shared_ptr<ayanami::modules::PidController> makeController() {
+  auto ctl = std::make_shared<ayanami::modules::PidController>();
+  // Parameters are injected via ModuleContext.config (this module json).
+  ctl->configureParameters(ayanami::ModuleContext{
+      "test_pid",
+      ayanami::Config((g_module_dir /
+                       "abstract_pid_controller.json").string())});
   return ctl;
 }
 
-TwistStamped compute(const std::shared_ptr<CostmapPidController>& ctl,
+TwistStamped compute(const std::shared_ptr<ayanami::modules::PidController>& ctl,
                      const PoseStamped& robot, ErrorCode& error,
                      std::string& message) {
   TwistStamped cmd;
@@ -359,12 +358,12 @@ int main(int argc, char** argv) {
              "{\n  \"global\": {\n"
              "    \"config_navigation\": \"navigation.json\",\n"
              "    \"config_planner\": \"costmap_astar_planner.json\",\n"
-             "    \"config_controller\": \"costmap_pid_controller.json\",\n"
-             "    \"config_pid_controller\": \"costmap_pid_controller.json\"\n"
+             "    \"config_controller\": \"abstract_pid_controller.json\",\n"
+             "    \"config_pid_controller\": \"abstract_pid_controller.json\"\n"
              "  }\n}\n");
   write_file(g_module_dir / "navigation.json",
              "{\n  \"navigation\": {}\n}\n");
-  write_file(g_module_dir / "costmap_pid_controller.json", pidConfigContent());
+  write_file(g_module_dir / "abstract_pid_controller.json", pidConfigContent());
   write_file(g_module_dir / "costmap_astar_planner.json",
              "{\n  \"costmap_astar_planner\": {\n"
              "    \"use_diagonal\": true,    \"tolerance\": 0.0,\n"

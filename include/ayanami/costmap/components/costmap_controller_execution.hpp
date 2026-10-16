@@ -57,18 +57,19 @@ class CostmapControllerExecution : public ayanami::components::ControllerExecuti
       const ayanami::geometry_msgs::PoseStamped& pose,
       const ayanami::geometry_msgs::TwistStamped& velocity,
       ayanami::geometry_msgs::TwistStamped& cmd) override {
-    auto* typed = dynamic_cast<CostmapController*>(controller.get());
-    if (!typed) {
-      return ResultT<void>::failure(
-          ErrorCode::INTERNAL_ERROR,
-          "CostmapControllerExecution: module is not a CostmapController");
+    // Map-free controllers are first-class (the shipped controller is
+    // abstract_pid_controller): the wrapper adds the map-freshness
+    // safetyCheck for whoever needs it; a pure tracker is called through
+    // the abstract signature directly.
+    if (auto* typed = dynamic_cast<CostmapController*>(controller.get())) {
+      if (!ctx) {
+        return ResultT<void>::failure(
+            ErrorCode::MAP_UNAVAILABLE,
+            "CostmapControllerExecution: no costmap module");
+      }
+      return typed->computeVelocityCommand(pose, velocity, cmd);
     }
-    if (!ctx) {
-      return ResultT<void>::failure(
-          ErrorCode::MAP_UNAVAILABLE,
-          "CostmapControllerExecution: no costmap module");
-    }
-    return typed->computeVelocityCommand(pose, velocity, cmd);
+    return controller->computeVelocityCommand(pose, velocity, cmd);
   }
 
  private:

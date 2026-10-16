@@ -43,7 +43,7 @@ constexpr const char* kLayerLoggers[] = {
   logging::kSmootherLogger,
   logging::kControllerLogger,
   logging::kRecoveryLogger,
-  logging::kBtLogger,
+  logging::kFsmLogger,
   logging::kCostmapLogger,
 };
 
@@ -113,8 +113,8 @@ std::shared_ptr<spdlog::logger> recoveryLogger() {
   return logger;
 }
 
-std::shared_ptr<spdlog::logger> btLogger() {
-  static const auto logger = layerLogger(logging::kBtLogger);
+std::shared_ptr<spdlog::logger> fsmLogger() {
+  static const auto logger = layerLogger(logging::kFsmLogger);
   return logger;
 }
 
@@ -133,63 +133,83 @@ void configureLogging() {
     logLevelFromString(config->param<std::string>("logging", "console_level", std::string("info")));
   const bool console_output = config->param<bool>("logging", "console_output", true);
   const bool file_output = config->param<bool>("logging", "file_output", true);
+  const std::string log_dir =
+    config->param<std::string>("logging", "logging_dir", std::string("logs"));
+  if (file_output) {
+    std::error_code ec;
+    std::filesystem::create_directories(log_dir, ec);
+  }
+
+  // File-sink factory (asuka-style): one file per logger, honoring the
+  // shared rotation settings. Ungated (trace): verbosity is decided per
+  // logger, so a raised layer actually reaches its file.
+  const auto make_file_sink = [&](const std::string& filename)
+      -> std::shared_ptr<spdlog::sinks::sink> {
+    const bool rotate_logs = config->param<bool>("logging", "rotate_logs", true);
+    std::shared_ptr<spdlog::sinks::sink> sink;
+    const std::string log_path = log_dir + "/" + filename;
+    if (rotate_logs) {
+      const size_t max_file_size_bytes =
+        static_cast<size_t>(config->param<int>("logging", "max_file_size_kb", 8192)) * 1024;
+      const size_t max_files = static_cast<size_t>(config->param<int>("logging", "max_files", 10));
+      sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_path, max_file_size_bytes, max_files);
+    } else {
+      sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_path, /*truncate=*/true);
+    }
+    sink->set_level(spdlog::level::trace);
+    return sink;
+  };
+
+  // Console sink: ONE instance shared by the default logger and every layer
+  // logger (the console stays a single interleaved stream; the files split).
+  std::shared_ptr<spdlog::sinks::sink> console_sink;
+  if (console_output) {
+    auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    sink->set_level(console_level);
+    console_sink = std::move(sink);
+  }
 
   auto current_default = spdlog::default_logger();
 
-  // Rebuild the sink set: console (as needed) + file (as needed) + keep other
-  // sinks (ringbuffer etc.). The same sinks are shared by the default logger
-  // and every layer logger; per-line gating happens at logger level, so the
-  // file sink is left ungated and the console sink keeps its console_level.
-  std::vector<spdlog::sink_ptr> new_sinks;
-
-  if (console_output) {
-    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(console_level);
-    new_sinks.push_back(std::move(console_sink));
+  // Default logger: console + its own file (ayanami.log) + any non-console
+  // sinks the default already carried (ringbuffer etc.).
+  std::vector<spdlog::sink_ptr> default_sinks;
+  if (console_sink) {
+    default_sinks.push_back(console_sink);
   }
-
   if (file_output) {
-    const std::string log_dir = config->param<std::string>("logging", "logging_dir", std::string("logs"));
-    std::error_code ec;
-    std::filesystem::create_directories(log_dir, ec);
-    if (!ec) {
-      const bool rotate_logs = config->param<bool>("logging", "rotate_logs", true);
-      spdlog::sink_ptr file_sink;
-      const std::string log_path = log_dir + "/ayanami.log";
-      if (rotate_logs) {
-        const size_t max_file_size_bytes =
-          static_cast<size_t>(config->param<int>("logging", "max_file_size_kb", 8192)) * 1024;
-        const size_t max_files = static_cast<size_t>(config->param<int>("logging", "max_files", 10));
-        file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(log_path, max_file_size_bytes, max_files);
-      } else {
-        file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_path, /*truncate=*/true);
-      }
-      // Ungated: verbosity is decided per logger (the master switch or the
-      // logger_levels override), so a raised layer actually reaches the file.
-      file_sink->set_level(spdlog::level::trace);
-      new_sinks.push_back(std::move(file_sink));
-    }
+    default_sinks.push_back(make_file_sink("ayanami.log"));
   }
-
   for (const auto& sink : current_default->sinks()) {
     if (!is_console_sink(sink) && !is_file_sink(sink)) {
-      new_sinks.push_back(sink);
+      default_sinks.push_back(sink);
     }
   }
 
   // Tag every line with the logger name; the framework's unnamed default
   // logs as [ayanami].
-  for (const auto& sink : new_sinks) {
+  for (const auto& sink : default_sinks) {
     sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v");
   }
 
-  // Layer loggers share the sink set; per-layer overrides are read with the
-  // quiet optional param (missing keys inherit the master switch).
+  // Layer loggers: the shared console + their OWN file
+  // (ayanami_<layer>.log). Per-layer overrides are read with the quiet
+  // optional param (missing keys inherit the master switch).
   const Config logger_levels = config->child("logging", "logger_levels");
   std::vector<std::pair<std::shared_ptr<spdlog::logger>, spdlog::level::level_enum>> overrides;
   for (const char* name : kLayerLoggers) {
     auto logger = layerLogger(name);
-    logger->sinks() = new_sinks;
+    std::vector<spdlog::sink_ptr> sinks;
+    if (console_sink) {
+      sinks.push_back(console_sink);
+    }
+    if (file_output) {
+      sinks.push_back(make_file_sink(std::string("ayanami_") + name + ".log"));
+    }
+    for (const auto& sink : sinks) {
+      sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v");
+    }
+    logger->sinks() = sinks;
     spdlog::level::level_enum level = logging_level;
     if (const auto level_str = logger_levels.param<std::string>("logger_levels", name)) {
       level = logLevelFromString(*level_str);
@@ -205,11 +225,11 @@ void configureLogging() {
   }
 
   // spdlog's built-in default logger is unnamed (an empty [] tag in the
-  // pattern); replace it with a named one sharing the sink set.
+  // pattern); replace it with a named one sharing the default sink set.
   // set_default_logger does not register, so spdlog::set_level/apply_all skip
   // it and its level is managed here: min(logging_level, console_level), so a
   // more verbose console is not truncated by the master switch.
-  auto default_logger = std::make_shared<spdlog::logger>("ayanami", new_sinks.begin(), new_sinks.end());
+  auto default_logger = std::make_shared<spdlog::logger>("ayanami", default_sinks.begin(), default_sinks.end());
   const auto min_level = (console_output && console_level < logging_level) ? console_level : logging_level;
   default_logger->set_level(min_level);
   spdlog::set_default_logger(default_logger);

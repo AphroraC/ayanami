@@ -9,6 +9,9 @@ namespace interfaces {
 // and callbacks added by modules and emitted by the core would land on
 // different objects, silently failing across .so boundaries.
 
+CallbackSlot<void(const ayanami::geometry_msgs::PoseStamped&)>
+    NavigationInputs::on_goal_request;
+
 CallbackSlot<void(const ayanami::actions::GetPathGoal&)> NavigationCallbacks::on_get_path_goal;
 CallbackSlot<void(const ayanami::actions::GetPathFeedback&)> NavigationCallbacks::on_get_path_feedback;
 CallbackSlot<void(const ayanami::actions::GoalResult<ayanami::actions::GetPathResult>&)> NavigationCallbacks::on_get_path_result;

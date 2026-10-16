@@ -127,6 +127,7 @@ void FsmDriver::cancelNavigation() {
 void FsmDriver::planLoop() {
   const auto period = tickPeriod(config_.fsm_frequency);
   while (running_.load()) {
+    const auto tick_start = std::chrono::steady_clock::now();
     consumeGoalMailbox();
     switch (state()) {
       case State::kPlan:
@@ -141,7 +142,27 @@ void FsmDriver::planLoop() {
       default:
         break;
     }
-    std::this_thread::sleep_for(period);
+    // The inter-tick wait doubles as the goal-mailbox wakeup: goal_cv_ is
+    // notified on delivery, and waiting on it (instead of a blind sleep)
+    // starts the next tick -- and a fresh attempt -- immediately. A goal
+    // landing mid-cycle used to wait out the full period because nothing
+    // ever waited on the cv.
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - tick_start);
+    const auto remaining = period > elapsed
+                               ? period - elapsed
+                               : std::chrono::microseconds(0);
+    if (remaining.count() <= 0) {
+      // The tick already consumed the budget (the kFollow follow wait, an
+      // inline planner/smoother pass): no second wait on top -- that used
+      // to double every kFollow period and halve the supervision rate.
+      continue;
+    }
+    std::unique_lock<std::mutex> lock(goal_mutex_);
+    goal_cv_.wait_for(lock, remaining, [this] {
+      return pending_goal_.has_value() || !running_.load();
+    });
   }
 }
 
@@ -168,12 +189,17 @@ void FsmDriver::consumeGoalMailbox() {
     failure_context_ = FailureContext{};
     force_replan_ = true;
     SPDLOG_LOGGER_INFO(
-        btLogger(),
+        fsmLogger(),
         "FSM: goal revised in place (revision {}); budget reset, replan forced",
         goalRevision());
     return;
   }
   startAttempt(*goal);
+}
+
+bool FsmDriver::goalPending() {
+  std::lock_guard<std::mutex> lock(goal_mutex_);
+  return pending_goal_.has_value();
 }
 
 void FsmDriver::startAttempt(const geometry_msgs::PoseStamped& goal) {
@@ -182,6 +208,8 @@ void FsmDriver::startAttempt(const geometry_msgs::PoseStamped& goal) {
   plan_version_.store(0, std::memory_order_release);
   retry_count_ = 0;
   recovery_cursor_ = 0;
+  stuck_cycles_ = 0;
+  recovery_entry_valid_ = false;
   failure_context_ = FailureContext{};
   raw_path_ = nav_msgs::Path{};
   current_path_ = nav_msgs::Path{};
@@ -199,7 +227,7 @@ void FsmDriver::startAttempt(const geometry_msgs::PoseStamped& goal) {
     controller_->resetCheckers();
   }
   setState(State::kPlan);
-  SPDLOG_LOGGER_INFO(btLogger(),
+  SPDLOG_LOGGER_INFO(fsmLogger(),
                      "FSM: navigation attempt started (revision {}, goal "
                      "[{:.2f}, {:.2f}])",
                      goalRevision(), goal.pose.position.x(),
@@ -217,6 +245,7 @@ void FsmDriver::tickPlan() {
   }
   force_replan_ = false;
   plan_once_done_ = true;
+  invalid_since_.reset();
   last_plan_at_ = std::chrono::steady_clock::now();
   last_smooth_at_ = last_plan_at_;
   kickFollow();
@@ -240,7 +269,7 @@ bool FsmDriver::runPlanOnce(const geometry_msgs::PoseStamped& goal) {
     failure_context_ = makeFailureContext(FailureStage::Planner,
                                           planner_->getError(), "",
                                           planner_->getMessage());
-    SPDLOG_LOGGER_WARN(btLogger(),
+    SPDLOG_LOGGER_WARN(fsmLogger(),
                        "FSM: planning failed (code {}): {}",
                        static_cast<int>(planner_->getError()),
                        planner_->getMessage());
@@ -284,7 +313,7 @@ bool FsmDriver::runPlanOnce(const geometry_msgs::PoseStamped& goal) {
   } else {
     // DegradeToRawPath: smoothing is an enhancement -- a failed pass falls
     // back to the raw path instead of failing the plan.
-    SPDLOG_LOGGER_WARN(btLogger(),
+    SPDLOG_LOGGER_WARN(fsmLogger(),
                        "FSM: smoothing failed (code {}: {}), degrading to the "
                        "raw path",
                        static_cast<int>(smoother_->getError()),
@@ -309,7 +338,7 @@ bool FsmDriver::runPlanOnce(const geometry_msgs::PoseStamped& goal) {
           "smoothed and raw paths are both invalid on the current map");
       return false;
     }
-    SPDLOG_LOGGER_WARN(btLogger(),
+    SPDLOG_LOGGER_WARN(fsmLogger(),
                        "FSM: smoothed path invalid, keeping the raw path");
     smoothed = raw_path_;
   }
@@ -335,7 +364,7 @@ void FsmDriver::tickFollow() {
         FailureStage::Navigation, ErrorCode::NO_PROGRESS, "",
         "oscillation gate: no displacement within the timeout window");
     preemptController();
-    enterRecoveryOrTerminal();
+    enterRecoveryOrTerminalAfterFollowFailure();
     return;
   }
 
@@ -374,12 +403,12 @@ void FsmDriver::tickFollow() {
     failure_context_ = makeFailureContext(
         FailureStage::Controller, controller_->getError(), "",
         controller_->getMessage());
-    SPDLOG_LOGGER_WARN(btLogger(),
+    SPDLOG_LOGGER_WARN(fsmLogger(),
                        "FSM: follow failed (code {}): {}",
                        static_cast<int>(controller_->getError()),
                        controller_->getMessage());
     preemptController();  // terminal already; cancel() is idempotent
-    enterRecoveryOrTerminal();
+    enterRecoveryOrTerminalAfterFollowFailure();
     return;
   }
 
@@ -392,10 +421,36 @@ void FsmDriver::tickFollow() {
       std::chrono::duration<double>(now - last_plan_at_).count() >=
           1.0 / config_.planner_frequency;
   const bool validity_lost = !pathValid(current_path_);
-  if (force_replan_ || validity_lost || planner_due) {
+  if (validity_lost) {
+    if (!invalid_since_) {
+      invalid_since_ = now;
+      SPDLOG_LOGGER_INFO(
+          fsmLogger(),
+          "FSM: current path invalid; grace window active (the smoother "
+          "owns the repair)");
+    }
+  } else {
+    invalid_since_.reset();
+  }
+  const bool grace_expired =
+      config_.replan_grace <= 0.0 ||
+      (invalid_since_ &&
+       std::chrono::duration<double>(now - *invalid_since_).count() >=
+           config_.replan_grace);
+  if (validity_lost && !grace_expired && !force_replan_) {
+    // Inside the grace window the SMOOTHER owns path repair (the plan-once
+    // contract): force THIS tick's re-smooth to run immediately with the
+    // fresh field -- the ESDF repulsion moves the path off the new
+    // obstacle without a planner round-trip.
+    last_smooth_at_ = {};
+  }
+  if (force_replan_ || (validity_lost && grace_expired) || planner_due) {
     if (validity_lost) {
       SPDLOG_LOGGER_WARN(
-          btLogger(), "FSM: current path turned invalid, replanning now");
+          fsmLogger(),
+          "FSM: current path stayed invalid past the grace window "
+          "({:.2f}s), replanning",
+          config_.replan_grace);
     }
     if (!runPlanOnce(active_goal_)) {
       preemptController();
@@ -403,6 +458,7 @@ void FsmDriver::tickFollow() {
       return;
     }
     force_replan_ = false;
+    invalid_since_.reset();
     last_plan_at_ = std::chrono::steady_clock::now();
     last_smooth_at_ = last_plan_at_;
     // In-place update (no halt, no zero velocity): the running controller
@@ -433,7 +489,7 @@ void FsmDriver::tickFollow() {
     } else {
       // Refinement failed: keep following the current path (an enhancement
       // pass failing is not a navigation failure).
-      SPDLOG_LOGGER_WARN(btLogger(),
+      SPDLOG_LOGGER_WARN(fsmLogger(),
                          "FSM: re-smoothing failed (code {}: {}), keeping the "
                          "current path",
                          static_cast<int>(smoother_->getError()),
@@ -454,7 +510,17 @@ void FsmDriver::tickRecovering() {
   // Motion recoveries need the robot stopped; preempting the controller at
   // recovery entry is the recovery_exclusive discipline.
   preemptController();
+  {
+    const geometry_msgs::PoseStamped entry =
+        RobotStateController::instance().getRobotPose();
+    recovery_entry_pos_ = entry.pose.position.head<2>();
+    recovery_entry_valid_ = true;
+  }
   recovery->setBehaviorParams(RecoveryBehaviorParams{});
+  // GoalUpdated semantics (nav2 ReactiveFallback): a goal delivered while
+  // the recovery runs preempts it at the next cycle boundary -- the branch
+  // must not sit out a spin/backup while a fresh goal waits.
+  recovery->setInterruptCheck([this] { return goalPending(); });
   {
     actions::RecoveryGoal recovery_goal;
     recovery_goal.cause = failure_context_;
@@ -463,6 +529,28 @@ void FsmDriver::tickRecovering() {
     ayanami::interfaces::NavigationCallbacks::on_recovery_goal(recovery_goal);
   }
   recovery->runBlocking();
+  recovery->setInterruptCheck(nullptr);
+  if (recovery->getState() == RecoveryExecution::INTERRUPTED) {
+    {
+      actions::RecoveryResult recovery_result;
+      recovery_result.error = recovery->getError();
+      recovery_result.message = "preempted by a new goal";
+      recovery_result.session_id = goalRevision();
+      recovery_result.plan_version = planVersion();
+      const auto recovery_out = makeGoalResult(
+          actions::GoalStatus::CANCELED, std::move(recovery_result));
+      ayanami::interfaces::NavigationCallbacks::on_recovery_result(
+          recovery_out);
+    }
+    // The fresh goal owns the driver now: consume the in-place revision
+    // (budget reset + forced replan; the attempt is still active) and
+    // re-enter planning for it -- no terminal result is emitted.
+    SPDLOG_LOGGER_INFO(fsmLogger(),
+                       "FSM: recovery preempted by a new goal; replanning");
+    consumeGoalMailbox();
+    setState(State::kPlan);
+    return;
+  }
   {
     actions::RecoveryResult recovery_result;
     recovery_result.error = recovery->getError();
@@ -480,7 +568,7 @@ void FsmDriver::tickRecovering() {
     ++retry_count_;
     failure_context_ = FailureContext{};
     force_replan_ = true;
-    SPDLOG_LOGGER_INFO(btLogger(),
+    SPDLOG_LOGGER_INFO(fsmLogger(),
                        "FSM: recovery done ({} of {} retries used); replanning",
                        retry_count_, config_.max_nav_retries);
     setState(State::kPlan);
@@ -491,7 +579,7 @@ void FsmDriver::tickRecovering() {
   failure_context_ = makeFailureContext(FailureStage::Recovery,
                                         recovery->getError(), "",
                                         recovery->getMessage());
-  SPDLOG_LOGGER_WARN(btLogger(), "FSM: recovery failed (code {}): {}",
+  SPDLOG_LOGGER_WARN(fsmLogger(), "FSM: recovery failed (code {}): {}",
                      static_cast<int>(recovery->getError()),
                      recovery->getMessage());
   finishAttempt(actions::GoalStatus::ABORTED, "recovery failed");
@@ -510,6 +598,38 @@ void FsmDriver::enterRecoveryOrTerminal() {
     return;
   }
   setState(State::kRecovering);
+}
+
+void FsmDriver::accountRecoveryCycleProgress() {
+  if (!recovery_entry_valid_) {
+    return;
+  }
+  recovery_entry_valid_ = false;
+  const geometry_msgs::PoseStamped pose =
+      RobotStateController::instance().getRobotPose();
+  const double moved =
+      (pose.pose.position.head<2>() - recovery_entry_pos_).norm();
+  if (moved < 0.05) {
+    ++stuck_cycles_;
+  } else {
+    stuck_cycles_ = 0;
+  }
+}
+
+void FsmDriver::enterRecoveryOrTerminalAfterFollowFailure() {
+  accountRecoveryCycleProgress();
+  if (stuck_cycles_ >= 2) {
+    // A recovery cycle that ends in another follow failure without the
+    // robot having moved is a stuck loop; with the placeholder recovery
+    // (test phase) replanning is deterministic and cannot break it -- two
+    // such cycles abort with a diagnosis instead of burning the budget.
+    finishAttempt(actions::GoalStatus::ABORTED,
+                  "no displacement across " + std::to_string(stuck_cycles_) +
+                      " recovery cycles (the configured recovery cannot "
+                      "break the stall)");
+    return;
+  }
+  enterRecoveryOrTerminal();
 }
 
 // ---- control thread ----
@@ -575,7 +695,7 @@ void FsmDriver::finishAttempt(actions::GoalStatus status,
   result.status = status;
   result.context = failure_context_;
   ayanami::interfaces::NavigationCallbacks::on_navigation_result(result);
-  SPDLOG_LOGGER_INFO(btLogger(), "FSM: attempt finished ({}) -- {}",
+  SPDLOG_LOGGER_INFO(fsmLogger(), "FSM: attempt finished ({}) -- {}",
                      static_cast<int>(status), why);
   // Rest in the terminal state until the next goal consumes it (the pilot's
   // resident model: the terminal outcome stays observable; startAttempt is

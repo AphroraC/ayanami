@@ -4,8 +4,8 @@
     "so_name": "libayanami_esdfmap_minco_smoother.so"
   },
   "esdfmap_minco_smoother": {
-    "safe_dist": 0.35,
-    "weight_pos": 100000.0,
+    "safe_dist": 0.6,
+    "weight_pos": 200000.0,
     "weight_smooth": 1.0,
     "mu_l1": 0.4,
     "freeze_window": 0.0,

@@ -1,0 +1,11 @@
+{
+  "recovery": {
+    "name": "costmap_back_up_recovery",
+    "so_name": "libayanami_costmap_back_up_recovery.so"
+  },
+  "costmap_back_up_recovery": {
+    "backup_dist": 0.35,
+    "max_v": 0.3,
+    "collision_radius": 0.3
+  }
+}

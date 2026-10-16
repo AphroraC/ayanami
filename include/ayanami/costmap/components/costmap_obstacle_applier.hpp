@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -66,13 +67,22 @@ class CostmapObstacleApplier {
     // -- points are transformed FIRST, then filtered; sensor-frame z says
     // nothing about height above the ground plane under mounting tilt) and
     // marking range window from the sensor origin (nav2 semantics).
+    // height_relative_to_robot shifts the window onto the robot's current
+    // height (ramps under the robot drop out of the lower edge; a missing
+    // robot z degrades to the absolute window).
+    double z_min = source->min_obstacle_height;
+    double z_max = source->max_obstacle_height;
+    if (source->height_relative_to_robot &&
+        std::isfinite(observation.robot_z)) {
+      z_min += observation.robot_z;
+      z_max += observation.robot_z;
+    }
     std::vector<Eigen::Vector2d> world;
     world.reserve(observation.points->size());
     if (source->marking) {
       for (const auto& p : *observation.points) {
         const Eigen::Vector3d w = t_frame_sensor * p;
-        if (w.z() < source->min_obstacle_height ||
-            w.z() > source->max_obstacle_height) {
+        if (w.z() < z_min || w.z() > z_max) {
           continue;
         }
         const double range = (w.head<2>() - sensor_origin.head<2>()).norm();

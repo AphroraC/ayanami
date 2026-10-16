@@ -30,6 +30,24 @@ namespace interfaces {
  * CostmapNavigationServer::handleObstacle* to stamp the map (handed
  * straight to the host).
  */
+/**
+ * @brief Aggregate of global INPUT request slots (extension -> host).
+ *
+ * Deliberate exception to the "inputs bypass global slots" rule above:
+ * extension modules cannot reach AbstractNavigation (extensions load BEFORE
+ * the host module by startup ordering, and core pointers are not handed to
+ * them), yet some extensions legitimately originate goals (the
+ * mbf_action_server compatibility layer). Requests land in the same
+ * latest-wins goal mailbox the ROS goal topic feeds, so the mailbox
+ * discipline is preserved -- AyanamiROS owns the single hop into submitGoal,
+ * and no core object is exposed to extensions.
+ */
+struct NavigationInputs {
+  /// @brief Request a navigation goal (latest-wins; same semantics as the ROS
+  /// goal topic). Emitted by e.g. the mbf_action_server extension.
+  static CallbackSlot<void(const ayanami::geometry_msgs::PoseStamped&)> on_goal_request;
+};
+
 struct NavigationCallbacks {
   // ---- Four-component action streams (goal / feedback / result) ----
   static CallbackSlot<void(const ayanami::actions::GetPathGoal&)> on_get_path_goal;

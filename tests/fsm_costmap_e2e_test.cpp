@@ -1,10 +1,13 @@
 // CostmapNavigationFsm headless E2E: the FSM host over the full costmap
-// module set (astar -> minsnap -> costmap pid -> nothing recovery), loaded
-// via dlopen exactly as production loads it.
+// module set in the shipped fsm_costmap route composition (astar ->
+// minsnap -> MPPI controller -> the real nav2-order recovery rotation:
+// cleanup/spin/wait/back_up), loaded via dlopen exactly as production
+// loads it.
 //
-// argv: 1=fsm_host.so, 2=astar.so, 3=minsnap.so, 4=costmap_pid.so,
-//       5=nothing_recovery.so, 6=goal_checker.so, 7=progress_checker.so,
-//       8=assets_dir (tests/assets, contains headless_map.pgm)
+// argv: 1=fsm_host.so, 2=astar.so, 3=minsnap.so, 4=mppi.so,
+//       5=cleanup_recovery.so, 6=spin_recovery.so, 7=wait_recovery.so,
+//       8=back_up_recovery.so, 9=goal_checker.so, 10=progress_checker.so,
+//       11=assets_dir (tests/assets, contains headless_map.pgm)
 
 #include <gtest/gtest.h>
 
@@ -42,7 +45,10 @@ std::string g_host_so;
 std::string g_planner_so;
 std::string g_smoother_so;
 std::string g_controller_so;
-std::string g_recovery_so;
+std::string g_cleanup_recovery_so;
+std::string g_spin_recovery_so;
+std::string g_wait_recovery_so;
+std::string g_back_up_recovery_so;
 std::string g_goal_checker_so;
 std::string g_progress_checker_so;
 std::string g_assets_dir;
@@ -78,7 +84,9 @@ std::filesystem::path makeConfigDir() {
       << "    \"config_planner\": \"planner.json\",\n"
       << "    \"config_smoother\": \"smoother.json\",\n"
       << "    \"config_controller\": \"controller.json\",\n"
-      << "    \"config_recovery\": [\"recovery.json\"],\n"
+      << "    \"config_recovery\": [\"cleanup_recovery.json\", "
+         "\"spin_recovery.json\", \"wait_recovery.json\", "
+         "\"back_up_recovery.json\"],\n"
       << "    \"config_goal_checker\": \"goal_checker.json\",\n"
       << "    \"config_progress_checker\": \"progress_checker.json\",\n"
       << "    \"fsm_frequency\": 50.0,\n"
@@ -134,11 +142,39 @@ std::filesystem::path makeConfigDir() {
              moduleJson("smoother", "costmap_minsnap_smoother",
                         g_smoother_so));
   write_file(dir / "controller.json",
-             moduleJson("controller", "costmap_pid_controller",
+             moduleJson("controller", "costmap_mppi_controller",
                         g_controller_so));
-  write_file(dir / "recovery.json",
-             moduleJson("recovery", "abstract_nothing_recovery",
-                        g_recovery_so));
+  write_file(dir / "cleanup_recovery.json",
+             "{\n  \"recovery\": {\n"
+             "    \"name\": \"costmap_cleanup_recovery\",\n"
+             "    \"so_name\": \"" + g_cleanup_recovery_so +
+                 "\"\n  },\n"
+             "  \"costmap_cleanup_recovery\": {\n"
+             "    \"clear_radius\": 1.0, \"affected_maps\": \"both\"\n"
+             "  }\n}\n");
+  write_file(dir / "spin_recovery.json",
+             "{\n  \"recovery\": {\n"
+             "    \"name\": \"costmap_spin_recovery\",\n"
+             "    \"so_name\": \"" + g_spin_recovery_so + "\"\n  },\n"
+             "  \"costmap_spin_recovery\": {\n"
+             "    \"spin_dist\": 1.57, \"max_w\": 0.5, "
+             "\"collision_radius\": 0.3\n"
+             "  }\n}\n");
+  write_file(dir / "wait_recovery.json",
+             "{\n  \"recovery\": {\n"
+             "    \"name\": \"costmap_wait_recovery\",\n"
+             "    \"so_name\": \"" + g_wait_recovery_so + "\"\n  },\n"
+             "  \"costmap_wait_recovery\": {\n"
+             "    \"wait_duration\": 2.0\n"
+             "  }\n}\n");
+  write_file(dir / "back_up_recovery.json",
+             "{\n  \"recovery\": {\n"
+             "    \"name\": \"costmap_back_up_recovery\",\n"
+             "    \"so_name\": \"" + g_back_up_recovery_so + "\"\n  },\n"
+             "  \"costmap_back_up_recovery\": {\n"
+             "    \"backup_dist\": 0.35, \"max_v\": 0.3, "
+             "\"collision_radius\": 0.3\n"
+             "  }\n}\n");
   write_file(
       dir / "goal_checker.json",
       "{\n  \"goal_checker\": {\n"
@@ -312,9 +348,12 @@ int main(int argc, char** argv) {
   if (argc > 2) g_planner_so = argv[2];
   if (argc > 3) g_smoother_so = argv[3];
   if (argc > 4) g_controller_so = argv[4];
-  if (argc > 5) g_recovery_so = argv[5];
-  if (argc > 6) g_goal_checker_so = argv[6];
-  if (argc > 7) g_progress_checker_so = argv[7];
-  if (argc > 8) g_assets_dir = argv[8];
+  if (argc > 5) g_cleanup_recovery_so = argv[5];
+  if (argc > 6) g_spin_recovery_so = argv[6];
+  if (argc > 7) g_wait_recovery_so = argv[7];
+  if (argc > 8) g_back_up_recovery_so = argv[8];
+  if (argc > 9) g_goal_checker_so = argv[9];
+  if (argc > 10) g_progress_checker_so = argv[10];
+  if (argc > 11) g_assets_dir = argv[11];
   return RUN_ALL_TESTS();
 }

@@ -243,7 +243,8 @@ class CostmapNavigationServer
   /// rolling pose-cache fallback (never (0,0,0); see last_local_robot).
   bool resolveRobotPoseInMapFrame(const std::string& map_frame,
                                   bool is_local_map, double& robot_x,
-                                  double& robot_y, double& robot_yaw);
+                                  double& robot_y, double& robot_yaw,
+                                  double& robot_z);
   /// @brief A clear command queued for the writer thread, with the promise
   /// the submitter waits on (bounded).
   struct PendingClear {

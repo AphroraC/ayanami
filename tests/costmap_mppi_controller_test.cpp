@@ -404,9 +404,47 @@ Path makePathPoints(const std::vector<Eigen::Vector2d>& points) {
 
 TEST(CostmapMppiControllerTest, setPlanValidation) {
   auto controller = makeController(makeWrapper(40, 0.5));
-  EXPECT_FALSE(controller->setPlan(makePathPoints({{1.0, 1.0}})));
+  // An empty plan is rejected.
+  EXPECT_FALSE(controller->setPlan(Path{}));
+  // A degenerate single-pose plan (start == goal) is ACCEPTED: no
+  // reference installs and compute holds zero -- the goal checker owns the
+  // arrival verdict (a same-position goal must not fail the follow branch
+  // and burn the recovery budget).
+  EXPECT_TRUE(controller->setPlan(makePathPoints({{1.0, 1.0}})));
+  {
+    TwistStamped cmd;
+    const ResultT<void> held = controller->computeVelocityCommand(
+        makePose(1.0, 1.0), TwistStamped{}, cmd);
+    EXPECT_TRUE(held.ok);
+    EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
+    EXPECT_NEAR(cmd.twist.angular.z(), 0.0, 1e-9);
+  }
+  // A normal plan installs.
   EXPECT_TRUE(
       controller->setPlan(makePathPoints({{1.0, 1.0}, {5.0, 1.0}})));
+
+  // Degenerate plan with a HEADING mismatch: the robot must rotate toward
+  // the goal heading (zero translation, P angular) -- a full zero hold
+  // deadlocks the goal checker's angle tolerance and the progress checker
+  // aborts (field finding 2026-10-15).
+  {
+    Path yaw_goal = makePathPoints({{1.0, 1.0}});
+    yaw_goal.poses.back().pose.orientation = Eigen::Quaterniond(
+        Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ()));
+    EXPECT_TRUE(controller->setPlan(yaw_goal));
+    TwistStamped cmd;
+    const ResultT<void> rot = controller->computeVelocityCommand(
+        makePose(1.0, 1.0, 0.0), TwistStamped{}, cmd);
+    EXPECT_TRUE(rot.ok);
+    EXPECT_NEAR(cmd.twist.linear.x(), 0.0, 1e-9);
+    EXPECT_GT(cmd.twist.angular.z(), 0.1)
+        << "goal at +pi/2, robot facing 0 -> CCW rotation toward the goal";
+    // Converged side: facing the goal heading -> (near) zero.
+    const ResultT<void> settled = controller->computeVelocityCommand(
+        makePose(1.0, 1.0, M_PI / 2), TwistStamped{}, cmd);
+    EXPECT_TRUE(settled.ok);
+    EXPECT_NEAR(cmd.twist.angular.z(), 0.0, 0.05);
+  }
 }
 
 TEST(CostmapMppiControllerTest, noPlanReturnsNoValidCommand) {

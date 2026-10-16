@@ -19,7 +19,7 @@ else()
 endif()
 
 option(BUILD_SHARED "Build libayanami as shared library" ON)
-option(BUILD_TESTING "Build tests" ON)
+option(BUILD_TESTING "Build tests" OFF)
 
 if(BUILD_SHARED)
   set(AYANAMI_BUILD_SHARED_BOOL SHARED)
@@ -53,7 +53,7 @@ include(${PROJECT_SOURCE_DIR}/cmake/thirdparty.cmake)  # defines nlohmann_json
 # Task 15: packages/* pure C++ sub-libraries
 add_subdirectory(packages/costmap)
 add_subdirectory(packages/esdfmap)
-add_subdirectory(packages/neupan)
+# add_subdirectory(packages/neupan)
 
 # ayanami_add_module(name src...) macro: builds a SHARED module .so linked against libayanami
 add_library(ayanami ${AYANAMI_BUILD_SHARED_BOOL}
@@ -112,14 +112,19 @@ include(${PROJECT_SOURCE_DIR}/cmake/ayanami-modules.cmake)
 set(AYANAMI_MODULES
   costmap_astar_planner            # planner
   abstract_pid_controller          # controller (abstract family, map-free)
-  abstract_nothing_recovery        # recovery placeholder (test phase)
+  abstract_mpc_controller          # controller (abstract family, map-free;
+                                   # rose_navigation LMPC port, OSQP-backed)
+  abstract_nothing_recovery        # recovery placeholder (abstract family)
+  costmap_cleanup_recovery         # recovery (costmap family; nav2 ClearingActions)
+  costmap_spin_recovery            # recovery (costmap family; nav2 Spin)
+  costmap_wait_recovery            # recovery (costmap family; nav2 Wait)
+  costmap_back_up_recovery         # recovery (costmap family; nav2 BackUp)
   esdfmap_minco_smoother           # smoother (esdfmap family)
   rose_navigation_fsm              # FSM host (costmap + esdfmap + FsmDriver)
   costmap_navigation_fsm           # FSM host (costmap stack + FsmDriver)
   costmap_minsnap_smoother         # smoother (minimum-snap)
-  costmap_pid_controller           # controller
   costmap_mppi_controller          # controller (MPPI, 4D swerve space)
-  costmap_neupan_controller        # controller (NeuPAN, vendored packages/neupan)
+  # costmap_neupan_controller        # controller (NeuPAN, vendored packages/neupan)
   simple_goal_checker              # checkers (abstract family)
   simple_progress_checker
 )

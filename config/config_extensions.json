@@ -3,11 +3,20 @@
     "loading_extension_modules": [
       "libayanami_rviz_viewer.so",
       "libayanami_rose_viewer.so",
-      "libayanami_cmd_chassis_publisher.so"
+      // "libayanami_cmd_chassis_publisher.so",
+      "libayanami_mbf_action_server.so"
     ]
   },
+  "mbf_action_server": {
+    "action_name": "/move_base_flex/move_base",
+    "map_frame": "map",
+    "base_frame": "base_link",
+    "stop_goal_tf_timeout": 0.1
+  },
   "rviz_viewer": {
-    "planner_path_topic": "/ayanami/planner/path",
+    // BT compatibility name (perception_layer.h GLOBAL_PLANNER_DATA): the
+    // planner path is a functional BT/bag input now, not just visualization.
+    "planner_path_topic": "/move_base_flex/GlobalPlanner/plan",
     "smoother_path_topic": "/ayanami/smoother/path",
     "planner_goal_topic": "/ayanami/planner/goal",
     "planner_feedback_topic": "/ayanami/planner/feedback",
@@ -20,8 +29,17 @@
     "navigation_status_topic": "/ayanami/navigation_status"
   },
   "rose_viewer": {
-    "global_static_topic": "/ayanami/global_costmap/static",
-    "global_inflation_topic": "/ayanami/global_costmap/inflation",
+    // BT compatibility name: service_processor's GLOBAL costmap static layer
+    // (map_topic: /map) consumes the pure static-layer grid -- the semantic
+    // equivalent of a map_server (same pgm/json geometry, latched publisher).
+    // Single map source: the chase check uses the same map the ayanami
+    // planner uses.
+    "global_static_topic": "/map",
+    // BT compatibility name: service_processor's local_costmap static layer
+    // (map_topic: /move_base_flex/global_costmap/costmap) consumes the global
+    // master grid (static + inflation, map frame) -- the semantic equivalent
+    // of the old MBF global costmap topic.
+    "global_inflation_topic": "/move_base_flex/global_costmap/costmap",
     "local_obstacle_topic": "/ayanami/local_costmap/obstacle",
     "local_inflation_topic": "/ayanami/local_costmap/inflation",
     "esdf_field_topic": "/ayanami/esdf/field",
@@ -36,8 +54,14 @@
   "cmd_chassis_publisher": {
     "cmd_chassis_topic": "/cmd_chassis",
     "mode": 0,
-    "accel_linear_x": 1.8,
-    "accel_linear_y": 1.8,
+    // The chassis RampFilter clamps BOTH accel AND decel at this value, so it
+    // must stay >= the arrival braking curve demand (0.8 * max_decel_x of the
+    // active PID controller, 1.6 as of 2026-10-14) with plant-lag margin.
+    // 2.5 sat exactly at the old demand (0.8*3.2=2.56 clamped to 2.5) and the
+    // sentry swerve plant's tracking lag turned that into a 0.31 m arrival
+    // overshoot. max_acc_x (2.5) stays BELOW this, so spool-up is unchanged.
+    "accel_linear_x": 3.2,
+    "accel_linear_y": 3.2,
     "accel_angular_z": 6.0,
     "power_limit": 100.0
   }

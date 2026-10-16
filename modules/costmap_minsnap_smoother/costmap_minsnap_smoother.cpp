@@ -253,6 +253,7 @@ ResultT<void> CostmapMinSnapSmoother::smoothPath(
       local_valid = true;
     }
   }
+  view.prepare();
   // Without any usable grid the smoother degrades to unchecked solving
   // (the BT-level IsPathValid still covers the path).
   const bool map_available = global_valid || local_valid;
